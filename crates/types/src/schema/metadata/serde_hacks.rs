@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
+
 use crate::identifiers::DeploymentId;
 use crate::schema::deployment::DeploymentMetadata;
-use crate::schema::invocation_target::InvocationTargetMetadata;
 use crate::schema::service::ServiceMetadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -78,6 +78,109 @@ mod v1_data_model {
         pub documentation: Option<String>,
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         pub metadata: HashMap<String, String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(
+        from = "serde_hacks::InvocationTargetMetadata",
+        into = "serde_hacks::InvocationTargetMetadata"
+    )]
+    pub struct InvocationTargetMetadata {
+        pub public: bool,
+        pub completion_retention: Duration,
+        pub journal_retention: Duration,
+        pub target_ty: InvocationTargetType,
+        pub input_rules: InputRules,
+        pub output_rules: OutputRules,
+    }
+
+    mod serde_hacks {
+        use super::*;
+
+        /// Some good old serde hacks here to make sure we can parse the old data structure.
+        /// See the tests for more details on the old data structure and the various cases.
+        /// Revisit this for Restate 1.5
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        pub struct InvocationTargetMetadata {
+            pub public: bool,
+
+            #[serde(default)]
+            pub completion_retention: Option<Duration>,
+            /// This is unused at this point, we just write it for backward compatibility.
+            #[serde(default)]
+            pub idempotency_retention: Duration,
+            #[serde(default, skip_serializing_if = "Duration::is_zero")]
+            pub journal_retention: Duration,
+
+            pub target_ty: InvocationTargetType,
+            pub input_rules: InputRules,
+            pub output_rules: OutputRules,
+        }
+
+        impl From<super::InvocationTargetMetadata> for InvocationTargetMetadata {
+            fn from(
+                super::InvocationTargetMetadata {
+                    public,
+                    completion_retention,
+                    journal_retention,
+                    target_ty,
+                    input_rules,
+                    output_rules,
+                }: super::InvocationTargetMetadata,
+            ) -> Self {
+                // This is the 1.3 business logic we need to please here.
+                // Note that completion_retention was set only for Workflow methods anyway
+                //   if has_idempotency_key {
+                //     Some(cmp::max(
+                //       self.completion_retention.unwrap_or_default(),
+                //       self.idempotency_retention,
+                //     ))
+                //   } else {
+                //     self.completion_retention
+                //   }
+                let completion_retention_old =
+                    if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
+                        Some(completion_retention)
+                    } else {
+                        None
+                    };
+                Self {
+                    public,
+                    completion_retention: completion_retention_old,
+                    // Just always set it, won't hurt and doesn't violate the code below.
+                    idempotency_retention: completion_retention,
+                    journal_retention,
+                    target_ty,
+                    input_rules,
+                    output_rules,
+                }
+            }
+        }
+
+        impl From<InvocationTargetMetadata> for super::InvocationTargetMetadata {
+            fn from(
+                InvocationTargetMetadata {
+                    public,
+                    completion_retention,
+                    idempotency_retention,
+                    journal_retention,
+                    target_ty,
+                    input_rules,
+                    output_rules,
+                }: InvocationTargetMetadata,
+            ) -> Self {
+                Self {
+                    public,
+                    // In the old data structure, either completion_retention was filled and used, or idempotency retention was filled.
+                    // So just try to pick first the one, then the other
+                    completion_retention: completion_retention.unwrap_or(idempotency_retention),
+                    journal_retention,
+                    target_ty,
+                    input_rules,
+                    output_rules,
+                }
+            }
+        }
     }
 }
 
@@ -206,7 +309,6 @@ mod conversions {
     use crate::schema::deployment::DeploymentMetadata;
     use crate::schema::invocation_target::{
         DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
-        InvocationTargetMetadata,
     };
     use crate::schema::service::{HandlerMetadata, HandlerMetadataType, ServiceMetadata};
     use std::collections::HashMap;
@@ -448,7 +550,7 @@ mod conversions {
                         v1_handler_schemas.insert(
                             handler_name.clone(),
                             v1_data_model::HandlerSchemas {
-                                target_meta: InvocationTargetMetadata {
+                                target_meta: v1_data_model::InvocationTargetMetadata {
                                     public: handler.public.unwrap_or(service.public),
                                     completion_retention,
                                     journal_retention,
@@ -511,6 +613,7 @@ mod conversions {
 
         use crate::Version;
         use crate::schema::deployment::{DeploymentType, ProtocolType};
+        use crate::schema::invocation_target::InvocationTargetMetadata;
         use crate::storage::StorageCodec;
         use crate::time::MillisSinceEpoch;
         use googletest::prelude::*;
@@ -971,7 +1074,7 @@ mod conversions {
                             handlers: HashMap::from([(
                                 "greet".to_owned(),
                                 HandlerSchemas {
-                                    target_meta: InvocationTargetMetadata {
+                                    target_meta: v1_data_model::InvocationTargetMetadata {
                                         public: false,
                                         completion_retention: Default::default(),
                                         journal_retention: Duration::from_millis(500),
@@ -1012,7 +1115,7 @@ mod conversions {
                                 (
                                     "greet".to_owned(),
                                     HandlerSchemas {
-                                        target_meta: InvocationTargetMetadata {
+                                        target_meta: v1_data_model::InvocationTargetMetadata {
                                             public: true,
                                             completion_retention: Default::default(),
                                             journal_retention: Default::default(),
@@ -1035,7 +1138,7 @@ mod conversions {
                                 (
                                     "another_greet".to_owned(),
                                     HandlerSchemas {
-                                        target_meta: InvocationTargetMetadata {
+                                        target_meta: v1_data_model::InvocationTargetMetadata {
                                             public: true,
                                             completion_retention: Default::default(),
                                             journal_retention: Default::default(),

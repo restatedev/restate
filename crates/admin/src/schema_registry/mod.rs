@@ -29,7 +29,6 @@ use restate_types::schema::subscriptions::{
 use restate_types::schema::{Schema, updater};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-#[allow(clippy::large_enum_variant)]
 pub enum SchemaRegistryError {
     #[error(transparent)]
     Schema(
