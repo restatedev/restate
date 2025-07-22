@@ -552,6 +552,7 @@ where
         Ok(())
     }
 }
+
 impl<I> LeadershipState<I> {
     pub async fn handle_rpc_proposal_command(
         &mut self,
