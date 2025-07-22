@@ -566,9 +566,9 @@ impl SnapshotSummary {
     }
 }
 
-/// Ensures that the initial nodes configuration contains the current node and has the right
-/// [`MetadataServerState`] set.
-fn prepare_initial_nodes_configuration(
+/// Ensures that the initial nodes configuration contains the current node and sets this node to be
+/// a [`MetadataServerState::Member`] because it is the seed node for the metadata store cluster.
+fn nodes_configuration_for_metadata_cluster_seed(
     configuration: &Configuration,
     nodes_configuration: &mut NodesConfiguration,
 ) -> Result<PlainNodeId, InvalidConfiguration> {
@@ -594,6 +594,8 @@ fn prepare_initial_nodes_configuration(
 
         restate_node_id
     } else {
+        // We have to add ourselves to the NodesConfiguration because we aren't part of it yet.
+
         // give precedence to the force node id
         let current_generation = configuration
             .common
