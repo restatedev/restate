@@ -58,6 +58,12 @@ pub struct MetadataServerOptions {
 
     #[serde(flatten)]
     pub raft_options: RaftOptions,
+
+    /// Auto join the metadata cluster when being started
+    ///
+    /// Defines whether this node should auto join the metadata store cluster when being started
+    /// for the first time.
+    pub auto_join: bool,
 }
 
 impl MetadataServerOptions {
@@ -115,6 +121,7 @@ impl Default for MetadataServerOptions {
             rocksdb_memory_ratio: 0.01,
             rocksdb,
             raft_options: RaftOptions::default(),
+            auto_join: true,
         }
     }
 }
