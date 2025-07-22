@@ -32,21 +32,22 @@ use restate_wal_protocol::Command;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+#[cfg_attr(test, mockall::automock)]
 pub(super) trait CommandProposer {
-    async fn self_propose_and_respond_asynchronously<O>(
+    fn self_propose_and_respond_asynchronously<O: 'static>(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
         replier: Replier<O>,
-    );
+    ) -> impl Future<Output = ()>;
 
-    async fn handle_rpc_proposal_command<O>(
+    fn handle_rpc_proposal_command<O: 'static>(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
         request_id: PartitionProcessorRpcRequestId,
         replier: Replier<O>,
-    );
+    ) -> impl Future<Output = ()>;
 }
 
 impl<I> CommandProposer for LeadershipState<I> {
