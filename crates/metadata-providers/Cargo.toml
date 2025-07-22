@@ -19,7 +19,6 @@ objstore = [
   "serde",
   "url",
   "rand",
-  "strum",
 ]
 replicated = [
   "restate-metadata-server-grpc",
@@ -36,11 +35,10 @@ replicated = [
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-metadata-server-grpc = { workspace = true, optional = true, features = ["grpc-client"] }
 restate-metadata-store = { workspace = true, features = ["grpc-client"] }
 restate-types = { workspace = true }
-restate-metadata-server-grpc = { workspace = true, optional = true, features = [
-  "grpc-client",
-] }
+
 # Deps for objstore
 restate-core = { workspace = true, optional = true }
 restate-object-store-util = { workspace = true, optional = true }
@@ -50,27 +48,25 @@ async-trait = { workspace = true }
 bilrost = { workspace = true, optional = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
+
 # Deps for etcd
-etcd-client = { workspace = true, optional = true }
 ciborium = { workspace = true, optional = true }
+etcd-client = { workspace = true, optional = true }
 object_store = { workspace = true, optional = true, features = ["aws"] }
 rand = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
+
 # Deps for replicated metadata client
+derive_more = { workspace = true, optional = true }
 indexmap = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
-tonic = { workspace = true, optional = true, features = [
-  "transport",
-  "codegen",
-  "prost",
-] }
-derive_more = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-strum = { workspace = true, optional = true }
+tonic = { workspace = true, optional = true, features = ["codegen", "prost", "transport"] }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
