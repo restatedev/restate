@@ -167,9 +167,8 @@ impl PartitionStoreManager {
     }
 
     pub async fn refresh_latest_archived_lsn(&self, partition_id: PartitionId) -> Option<Lsn> {
-        self.snapshots
-            .refresh_latest_archived_lsn(partition_id)
-            .await
+        let db = self.get_partition_db(partition_id).await?;
+        self.snapshots.refresh_latest_archived_lsn(db).await
     }
 
     pub async fn get_partition_db(&self, partition_id: PartitionId) -> Option<PartitionDb> {
