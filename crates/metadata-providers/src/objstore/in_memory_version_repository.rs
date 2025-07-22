@@ -20,25 +20,20 @@ use super::version_repository::{
 
 /// Simple in-memory VersionRepository for tests.
 /// Generates monotonically increasing tags.
-#[derive(Debug, Clone)]
-pub struct InMemoryVersionRepository {
-    storage: Arc<Mutex<HashMap<ByteString, (Tag, Content)>>>,
-    next_tag: Arc<Mutex<u64>>,
+#[derive(Clone)]
+pub struct InMemoryVersionRepository(Arc<Mutex<Inner>>);
+
+struct Inner {
+    storage: HashMap<ByteString, (Tag, Content)>,
+    next_tag: u64,
 }
 
 impl InMemoryVersionRepository {
     pub fn new() -> Self {
-        Self {
-            storage: Arc::new(Mutex::new(HashMap::new())),
-            next_tag: Arc::new(Mutex::new(1)),
-        }
-    }
-
-    fn generate_tag(&self) -> Tag {
-        let mut counter = self.next_tag.lock().unwrap();
-        let tag = Tag::from(format!("tag_{}", *counter));
-        *counter += 1;
-        tag
+        Self(Arc::new(Mutex::new(Inner {
+            storage: HashMap::new(),
+            next_tag: 1,
+        })))
     }
 }
 
@@ -58,12 +53,13 @@ impl VersionRepository for InMemoryVersionRepository {
     ) -> Result<Tag, VersionRepositoryError> {
         debug!(%key, size = content.bytes.len(), "create");
 
-        let mut storage = self.storage.lock().unwrap();
-        if storage.contains_key(&key) {
+        let mut inner = self.0.lock().unwrap();
+        if inner.storage.contains_key(&key) {
             return Err(VersionRepositoryError::AlreadyExists);
         }
-        let tag = self.generate_tag();
-        storage.insert(key, (tag.clone(), content));
+        let tag = Tag::from(format!("tag_{}", inner.next_tag));
+        inner.next_tag += 1;
+        inner.storage.insert(key, (tag.clone(), content));
         Ok(tag)
     }
 
@@ -71,8 +67,8 @@ impl VersionRepository for InMemoryVersionRepository {
     async fn get(&self, key: ByteString) -> Result<TaggedValue, VersionRepositoryError> {
         debug!(%key, "get");
 
-        let storage = self.storage.lock().unwrap();
-        match storage.get(&key) {
+        let inner = self.0.lock().unwrap();
+        match inner.storage.get(&key) {
             Some((tag, content)) => Ok(TaggedValue {
                 tag: tag.clone(),
                 content: content.clone(),
@@ -90,11 +86,12 @@ impl VersionRepository for InMemoryVersionRepository {
     ) -> Result<Tag, VersionRepositoryError> {
         debug!(%key, ?expected, size = content.bytes.len(), "put_if_tag_matches");
 
-        let mut storage = self.storage.lock().unwrap();
-        match storage.get(&key) {
+        let mut inner = self.0.lock().unwrap();
+        match inner.storage.get(&key) {
             Some((current_tag, _)) if current_tag == &expected => {
-                let new_tag = self.generate_tag();
-                storage.insert(key, (new_tag.clone(), content));
+                let new_tag = Tag::from(format!("tag_{}", inner.next_tag));
+                inner.next_tag += 1;
+                inner.storage.insert(key, (new_tag.clone(), content));
                 Ok(new_tag)
             }
             Some(_) => Err(VersionRepositoryError::PreconditionFailed),
@@ -106,9 +103,10 @@ impl VersionRepository for InMemoryVersionRepository {
     async fn put(&self, key: ByteString, content: Content) -> Result<Tag, VersionRepositoryError> {
         debug!(%key, size = content.bytes.len(), "put");
 
-        let mut storage = self.storage.lock().unwrap();
-        let tag = self.generate_tag();
-        storage.insert(key, (tag.clone(), content));
+        let mut inner = self.0.lock().unwrap();
+        let tag = Tag::from(format!("tag_{}", inner.next_tag));
+        inner.next_tag += 1;
+        inner.storage.insert(key, (tag.clone(), content));
         Ok(tag)
     }
 
@@ -116,8 +114,8 @@ impl VersionRepository for InMemoryVersionRepository {
     async fn delete(&self, key: ByteString) -> Result<(), VersionRepositoryError> {
         debug!(%key, "delete");
 
-        let mut storage = self.storage.lock().unwrap();
-        if storage.remove(&key).is_some() {
+        let mut inner = self.0.lock().unwrap();
+        if inner.storage.remove(&key).is_some() {
             Ok(())
         } else {
             Err(VersionRepositoryError::NotFound)
@@ -132,10 +130,10 @@ impl VersionRepository for InMemoryVersionRepository {
     ) -> Result<(), VersionRepositoryError> {
         debug!(%key, ?expected_tag, "delete_if_tag_matches");
 
-        let mut storage = self.storage.lock().unwrap();
-        match storage.get(&key) {
+        let mut inner = self.0.lock().unwrap();
+        match inner.storage.get(&key) {
             Some((current_tag, _)) if current_tag == &expected_tag => {
-                storage.remove(&key);
+                inner.storage.remove(&key);
                 Ok(())
             }
             Some(_) => Err(VersionRepositoryError::PreconditionFailed),
