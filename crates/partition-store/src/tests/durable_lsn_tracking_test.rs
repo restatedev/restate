@@ -15,7 +15,7 @@ use restate_types::{
     time::MillisSinceEpoch,
 };
 
-use crate::{OpenMode, PartitionStoreManager};
+use crate::PartitionStoreManager;
 
 const PARTITION: Partition =
     Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX);
@@ -26,9 +26,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 
     let partition_store_manager = PartitionStoreManager::create().await?;
 
-    let mut partition_store = partition_store_manager
-        .open_local_partition_store(&PARTITION, OpenMode::CreateIfMissing)
-        .await?;
+    let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
 
     let watch_durable_lsn = partition_store.get_durable_lsn().await?;
 
@@ -50,12 +48,10 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     drop(partition_store);
     partition_store_manager
         .close_partition_store(PARTITION.partition_id)
-        .await?;
+        .await;
     assert_eq!(None, *watch_durable_lsn.borrow());
 
-    let mut partition_store = partition_store_manager
-        .open_local_partition_store(&PARTITION, OpenMode::CreateIfMissing)
-        .await?;
+    let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
     assert_eq!(
         Some(Lsn::new(100)),
         *partition_store.get_durable_lsn().await?.borrow(),
@@ -97,9 +93,7 @@ async fn partition_durability_fsm() -> googletest::Result<()> {
 
     let partition_store_manager = PartitionStoreManager::create().await?;
 
-    let mut partition_store = partition_store_manager
-        .open_local_partition_store(&PARTITION, OpenMode::CreateIfMissing)
-        .await?;
+    let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
 
     // by default, we don't have partition durability.
     assert_that!(partition_store.get_partition_durability().await?, none());
