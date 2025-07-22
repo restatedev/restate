@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use crate::ShutdownError;
 use crate::network::ConnectError;
 use crate::network::{NetworkSender, RpcReplyError, Swimlane};
@@ -23,7 +21,7 @@ use restate_types::identifiers::{
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PurgeInvocationResponse, SubmittedInvocationNotification,
+    PurgeInvocationResponse, RestartAsNewInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
@@ -34,6 +32,7 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
+use std::sync::Arc;
 use tracing::trace;
 
 #[derive(Debug, thiserror::Error)]
@@ -490,6 +489,28 @@ where
             }
             _ => {
                 panic!("Expecting PurgeInvocation rpc response")
+            }
+        })
+    }
+
+    async fn restart_as_new_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> Result<RestartAsNewInvocationResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                restart_as_new_invocation_response,
+            ) => restart_as_new_invocation_response.into(),
+            _ => {
+                panic!("Expecting RestartAsNewInvocation rpc response")
             }
         })
     }

@@ -171,6 +171,30 @@ impl_meta_api_error!(InvocationWasAlreadyCompletedError: CONFLICT "The invocatio
 pub(crate) struct PurgeInvocationNotCompletedError(pub(crate) String);
 impl_meta_api_error!(PurgeInvocationNotCompletedError: CONFLICT "The invocation is not yet completed. An invocation can be purged only when completed.");
 
+#[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' is still running.")]
+pub(crate) struct RestartAsNewInvocationStillRunningError(pub(crate) String);
+impl_meta_api_error!(RestartAsNewInvocationStillRunningError: CONFLICT "The invocation is still running. An invocation can be restarted only when completed.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "Restarting the invocation '{0}' is not supported. Restarting workflows is not supported, and restarting invocations created using the old service protocol."
+)]
+pub(crate) struct RestartAsNewInvocationUnsupportedError(pub(crate) String);
+impl_meta_api_error!(RestartAsNewInvocationUnsupportedError: UNPROCESSABLE_ENTITY "Restarting the invocation is not supported. Restarting workflows is not supported, and restarting invocations created using the old service protocol.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The invocation '{0}' cannot be restarted because the input is not available. This indicates that the journal was already purged, or not retained at all."
+)]
+pub(crate) struct RestartAsNewInvocationMissingInputError(pub(crate) String);
+impl_meta_api_error!(RestartAsNewInvocationMissingInputError: GONE "The invocation cannot be restarted because the input is not available. In order to restart an invocation, the journal must be available in order to read the input again. Journal can be retained after completion by enabling journal retention.");
+
+#[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' cannot be restarted because it's not running yet.")]
+pub(crate) struct RestartAsNewInvocationNotStartedError(pub(crate) String);
+impl_meta_api_error!(RestartAsNewInvocationNotStartedError: TOO_EARLY "The invocation cannot be restarted because it's not running yet, meaning it might have been scheduled or inboxed.");
+
 // --- Old Meta API errors. Please don't use these anymore.
 
 /// This error is used by handlers to propagate API errors,
