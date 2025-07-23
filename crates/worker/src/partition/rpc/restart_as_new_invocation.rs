@@ -183,3 +183,408 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::partition::rpc::MockCommandProposer;
+    use assert2::let_assert;
+    use futures::{FutureExt, Stream, stream};
+    use googletest::prelude::*;
+    use restate_storage_api::invocation_status_table::{
+        CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
+        PreFlightInvocationMetadata, ScheduledInvocation,
+    };
+    use restate_test_util::rand;
+    use restate_test_util::rand::bytestring;
+    use restate_types::identifiers::EntryIndex;
+    use restate_types::invocation::{Header, InvocationTarget};
+    use restate_types::journal_v2::raw::RawCommand;
+    use restate_types::journal_v2::{CompletionId, Entry, NotificationId};
+    use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+    use restate_types::time::MillisSinceEpoch;
+    use rstest::rstest;
+    use std::collections::{HashMap, HashSet};
+    use std::future::ready;
+    use test_log::test;
+
+    struct MockStorage {
+        expected_invocation_id: InvocationId,
+        status: InvocationStatus,
+        journal_entry: Option<StoredRawEntry>,
+    }
+
+    impl ReadOnlyJournalTable for MockStorage {
+        fn has_journal(
+            &mut self,
+            invocation_id: InvocationId,
+        ) -> impl Future<Output = restate_storage_api::Result<bool>> + Send {
+            assert_eq!(self.expected_invocation_id, invocation_id);
+            ready(Ok(true))
+        }
+
+        fn get_journal_entry(
+            &mut self,
+            invocation_id: InvocationId,
+            index: u32,
+        ) -> impl Future<Output = restate_storage_api::Result<Option<StoredRawEntry>>> + Send
+        {
+            assert_eq!(self.expected_invocation_id, invocation_id);
+            if index == 0 {
+                ready(Ok(self.journal_entry.clone()))
+            } else {
+                ready(Ok(None))
+            }
+        }
+
+        fn get_journal(
+            &mut self,
+            invocation_id: InvocationId,
+            _: EntryIndex,
+        ) -> restate_storage_api::Result<
+            impl Stream<Item = restate_storage_api::Result<(EntryIndex, StoredRawEntry)>> + Send,
+        > {
+            assert_eq!(self.expected_invocation_id, invocation_id);
+            Ok(stream::empty())
+        }
+
+        fn get_notifications_index(
+            &mut self,
+            invocation_id: InvocationId,
+        ) -> impl Future<Output = restate_storage_api::Result<HashMap<NotificationId, EntryIndex>>> + Send
+        {
+            assert_eq!(self.expected_invocation_id, invocation_id);
+            ready(Ok(Default::default()))
+        }
+
+        fn get_command_by_completion_id(
+            &mut self,
+            invocation_id: InvocationId,
+            _: CompletionId,
+        ) -> impl Future<Output = restate_storage_api::Result<Option<RawCommand>>> + Send {
+            assert_eq!(self.expected_invocation_id, invocation_id);
+            ready(Ok(None))
+        }
+    }
+
+    impl ReadOnlyInvocationStatusTable for MockStorage {
+        fn get_invocation_status(
+            &mut self,
+            _: &InvocationId,
+        ) -> impl Future<Output = restate_storage_api::Result<InvocationStatus>> + Send {
+            ready(Ok(self.status.clone()))
+        }
+    }
+
+    #[test(restate_core::test)]
+    async fn reply_when_appended() {
+        let old_invocation_id = InvocationId::mock_random();
+        let invocation_target = InvocationTarget::mock_virtual_object();
+        let headers = vec![Header::new("key", "value")];
+        let payload = rand::bytes();
+
+        let mut proposer = MockCommandProposer::new();
+        let invocation_target_clone = invocation_target.clone();
+        let headers_clone = vec![Header::new("key", "value")];
+        let payload_clone = payload.clone();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
+            .return_once_st(move |_, cmd, _, response| {
+                let_assert!(Command::Invoke(service_invocation) = cmd);
+                assert_that!(
+                    response,
+                    pat!(PartitionProcessorRpcResponse::RestartAsNewInvocation(pat!(
+                        RestartAsNewInvocationRpcResponse::Ok {
+                            new_invocation_id: eq(service_invocation.invocation_id)
+                        }
+                    )))
+                );
+                assert_that!(
+                    service_invocation,
+                    points_to(all!(
+                        field!(ServiceInvocation.invocation_id, not(eq(old_invocation_id))),
+                        field!(ServiceInvocation.argument, eq(payload_clone)),
+                        field!(ServiceInvocation.headers, eq(headers_clone)),
+                        field!(
+                            ServiceInvocation.invocation_target,
+                            eq(invocation_target_clone)
+                        ),
+                        field!(ServiceInvocation.response_sink, none()),
+                        field!(ServiceInvocation.submit_notification_sink, none()),
+                    ))
+                );
+                ready(()).boxed()
+            });
+        proposer
+            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .never();
+
+        let mut storage = MockStorage {
+            expected_invocation_id: old_invocation_id,
+            status: InvocationStatus::Completed(CompletedInvocation {
+                idempotency_key: Some(bytestring()),
+                journal_metadata: JournalMetadata {
+                    length: 10,
+                    ..JournalMetadata::empty()
+                },
+                invocation_target: invocation_target.clone(),
+                ..CompletedInvocation::mock_neo()
+            }),
+            journal_entry: Some(StoredRawEntry::new(
+                StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                Entry::from(InputCommand {
+                    headers: headers.clone(),
+                    payload: payload.clone(),
+                    name: Default::default(),
+                })
+                .encode::<ServiceProtocolV4Codec>(),
+            )),
+        };
+
+        let (tx, _rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id: old_invocation_id,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[test(restate_core::test)]
+    async fn reply_not_found_for_unknown_invocation() {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockCommandProposer::new();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .never();
+
+        let mut storage = MockStorage {
+            expected_invocation_id: invocation_id,
+            status: Default::default(),
+            journal_entry: None,
+        };
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                RestartAsNewInvocationRpcResponse::NotFound
+            )
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn reply_missing_input() {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockCommandProposer::new();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .never();
+
+        let mut storage = MockStorage {
+            expected_invocation_id: invocation_id,
+            status: InvocationStatus::Completed(CompletedInvocation {
+                journal_metadata: JournalMetadata {
+                    length: 0,
+                    ..JournalMetadata::empty()
+                },
+                ..CompletedInvocation::mock_neo()
+            }),
+            journal_entry: None,
+        };
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                RestartAsNewInvocationRpcResponse::MissingInput
+            )
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn reply_unsupported() {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockCommandProposer::new();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .never();
+
+        let mut storage = MockStorage {
+            expected_invocation_id: invocation_id,
+            status: InvocationStatus::Completed(CompletedInvocation {
+                journal_metadata: JournalMetadata {
+                    length: 1,
+                    ..JournalMetadata::empty()
+                },
+                invocation_target: InvocationTarget::mock_workflow(),
+                ..CompletedInvocation::mock_neo()
+            }),
+            journal_entry: Some(StoredRawEntry::new(
+                StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                Entry::from(InputCommand {
+                    headers: vec![Header::new("key", "value")],
+                    payload: rand::bytes(),
+                    name: Default::default(),
+                })
+                .encode::<ServiceProtocolV4Codec>(),
+            )),
+        };
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                RestartAsNewInvocationRpcResponse::Unsupported
+            )
+        );
+    }
+
+    #[rstest]
+    #[restate_core::test]
+    async fn reply_still_running(
+        #[values(
+            InvocationStatus::Suspended {
+                metadata: InFlightInvocationMetadata::mock(),
+                waiting_for_notifications: HashSet::new(),
+            },
+            InvocationStatus::Invoked(InFlightInvocationMetadata::mock())
+        )]
+        status: InvocationStatus,
+    ) {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockCommandProposer::new();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .never();
+
+        let mut storage = MockStorage {
+            expected_invocation_id: invocation_id,
+            status,
+            journal_entry: None,
+        };
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                RestartAsNewInvocationRpcResponse::StillRunning
+            )
+        );
+    }
+
+    #[rstest]
+    #[restate_core::test]
+    async fn reply_not_started(
+        #[values(
+            InvocationStatus::Inboxed(InboxedInvocation {
+                inbox_sequence_number: 0,
+                metadata: PreFlightInvocationMetadata::mock(),
+            }),
+            InvocationStatus::Scheduled(ScheduledInvocation {
+                metadata: PreFlightInvocationMetadata::mock(),
+            })
+        )]
+        status: InvocationStatus,
+    ) {
+        let invocation_id = InvocationId::mock_random();
+
+        let mut proposer = MockCommandProposer::new();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<PartitionProcessorRpcResponse>()
+            .never();
+
+        let mut storage = MockStorage {
+            expected_invocation_id: invocation_id,
+            status,
+            journal_entry: None,
+        };
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                RestartAsNewInvocationRpcResponse::NotStarted
+            )
+        );
+    }
+}

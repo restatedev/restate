@@ -774,6 +774,30 @@ mod test_util {
         }
     }
 
+    impl PreFlightInvocationMetadata {
+        pub fn mock() -> Self {
+            PreFlightInvocationMetadata {
+                invocation_target: InvocationTarget::virtual_object(
+                    "MyService",
+                    "MyKey",
+                    "mock",
+                    VirtualObjectHandlerType::Exclusive,
+                ),
+                created_using_restate_version: RestateVersion::current(),
+                response_sinks: HashSet::new(),
+                timestamps: StatusTimestamps::mock(),
+                source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
+                span_context: Default::default(),
+                headers: vec![],
+                execution_time: None,
+                completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
+                idempotency_key: None,
+                argument: Default::default(),
+            }
+        }
+    }
+
     impl InFlightInvocationMetadata {
         pub fn mock() -> Self {
             InFlightInvocationMetadata {
