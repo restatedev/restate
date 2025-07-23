@@ -16,6 +16,7 @@ mod get_invocation_output;
 mod kill_invocation;
 mod purge_invocation;
 mod purge_journal;
+mod restart_as_new_invocation;
 
 use crate::partition::leadership::LeadershipState;
 use restate_core::network::{Oneshot, Reciprocal};
@@ -141,8 +142,10 @@ impl<'a, Proposer, Storage> RpcHandler<PartitionProcessorRpcRequest>
     for RpcContext<'a, Proposer, Storage>
 where
     Proposer: CommandProposer,
-    Storage:
-        ReadOnlyInvocationStatusTable + ReadOnlyVirtualObjectStatusTable + ReadOnlyIdempotencyTable,
+    Storage: ReadOnlyInvocationStatusTable
+        + ReadOnlyVirtualObjectStatusTable
+        + ReadOnlyIdempotencyTable
+        + ReadOnlyJournalTable,
 {
     type Output = PartitionProcessorRpcResponse;
     type Error = ();
@@ -237,6 +240,16 @@ where
             PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
                 self.handle(
                     purge_journal::Request {
+                        request_id,
+                        invocation_id,
+                    },
+                    replier.map(),
+                )
+                .await
+            }
+            PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id } => {
+                self.handle(
+                    restart_as_new_invocation::Request {
                         request_id,
                         invocation_id,
                     },

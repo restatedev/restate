@@ -292,6 +292,12 @@ impl From<RestartAsNewInvocationResponse> for RestartAsNewInvocationRpcResponse 
     }
 }
 
+impl From<RestartAsNewInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: RestartAsNewInvocationRpcResponse) -> Self {
+        Self::RestartAsNewInvocation(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
     Appended,
