@@ -13,10 +13,12 @@ use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface};
 use crate::ui::invocations::render_simple_invocation_list;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use cling::prelude::*;
-use restate_cli_util::ui::console::confirm_or_exit;
-use restate_cli_util::{c_println, c_success};
+use comfy_table::{Attribute, Cell, Table};
+use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
+use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
+use restate_cli_util::{c_indent_table, c_println, c_success};
 use restate_types::identifiers::InvocationId;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -68,13 +70,31 @@ pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) 
     // Get the invocation and confirm
     confirm_or_exit("Are you sure you want to restart these invocations?")?;
 
+    // Restart invocations
+    let mut restarted = Vec::with_capacity(invocations.len());
     for inv in invocations {
-        let result = client.restart_invocation(&inv.id).await?;
-        let _ = result.success_or_error()?;
+        let RestartAsNewInvocationResponse { new_invocation_id } = client
+            .restart_invocation(&inv.id)
+            .await?
+            .into_body()
+            .await
+            .with_context(|| anyhow!("Error when trying to restart invocation {}", inv.id))?;
+        restarted.push((inv.id, new_invocation_id));
     }
 
     c_println!();
-    c_success!("Request was sent successfully");
+    c_success!("Restarted invocations:");
+
+    // Print new ids
+    let mut invocations_table = Table::new_styled();
+    invocations_table.set_styled_header(vec!["OLD ID", "NEW ID"]);
+    for (old_id, new_id) in restarted {
+        invocations_table.add_row(vec![
+            Cell::new(&old_id),
+            Cell::new(new_id).add_attribute(Attribute::Bold),
+        ]);
+    }
+    c_indent_table!(0, invocations_table);
 
     Ok(())
 }
