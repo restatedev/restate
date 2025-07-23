@@ -55,6 +55,7 @@ enum State {
     Done,
     Sealed,
     Cancelled,
+    WriteUnavailable,
 }
 
 /// Appender makes sure a batch of records will run to completion
@@ -143,7 +144,9 @@ impl<T: TransportConnect> SequencerAppender<T> {
         let final_state = loop {
             state = match state {
                 // termination conditions
-                State::Done | State::Cancelled | State::Sealed => break state,
+                State::Done | State::Cancelled | State::Sealed | State::WriteUnavailable => {
+                    break state;
+                }
                 State::Wave => {
                     self.current_wave += 1;
                     // # Why is this cancellation safe?
@@ -225,6 +228,14 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     ));
                 }
             }
+            State::WriteUnavailable => {
+                trace!("Loglet has not enough writable nodes");
+                if let Some(commit_resolver) = self.commit_resolver.take() {
+                    commit_resolver.error(AppendError::ReconfigurationNeeded(
+                        "loglet is write unavailable".into(),
+                    ));
+                }
+            }
             State::Sealed => {
                 trace!("Append ended because of sealing");
                 if let Some(commit_resolver) = self.commit_resolver.take() {
@@ -276,12 +287,12 @@ impl<T: TransportConnect> SequencerAppender<T> {
         // select the spread
         let spread = match self.generate_spread() {
             Ok(spread) => spread,
-            Err(err) => {
+            Err(err @ SpreadSelectorError::InsufficientWriteableNodes) => {
                 trace!(
                     nodeset_status = %self.nodeset_status,
                     "Cannot select a spread: {err}"
                 );
-                return State::Backoff;
+                return State::WriteUnavailable;
             }
         };
 
