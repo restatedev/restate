@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
+use opentelemetry::trace::Span;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadOnlyInvocationStatusTable,
@@ -141,6 +142,22 @@ where
         );
         debug_assert_ne!(new_invocation_id, invocation_id);
 
+        // Generate the tracing span
+        let restart_as_new_span = restate_tracing_instrumentation::info_invocation_span!(
+            relation = SpanRelation::Linked(
+                completed_invocation
+                    .journal_metadata
+                    .span_context
+                    .span_context()
+                    .clone(),
+            ),
+            prefix = "restart-as-new",
+            id = new_invocation_id,
+            target = completed_invocation.invocation_target,
+            tags = (restate.invocation.restart_as_new.original_invocation_id =
+                invocation_id.to_string())
+        );
+
         // We copy in invocation_request_header the things we care about
         let mut invocation_request_header = InvocationRequestHeader::initialize(
             new_invocation_id,
@@ -151,14 +168,8 @@ where
             completion_retention: completed_invocation.completion_retention_duration,
             journal_retention: completed_invocation.journal_retention_duration,
         });
-
-        // Attach the new invocation as linked to the old one via span context
-        invocation_request_header.with_related_span(SpanRelation::Linked(
-            completed_invocation
-                .journal_metadata
-                .span_context
-                .span_context()
-                .clone(),
+        invocation_request_header.with_related_span(SpanRelation::Parent(
+            restart_as_new_span.span_context().clone(),
         ));
 
         // Final bundling of the service invocation
