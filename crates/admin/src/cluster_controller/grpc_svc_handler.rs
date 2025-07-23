@@ -24,8 +24,8 @@ use restate_core::protobuf::cluster_ctrl_svc::{
     CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
     FindTailResponse, GetClusterConfigurationRequest, GetClusterConfigurationResponse,
     ListLogsRequest, ListLogsResponse, QueryRequest, QueryResponse, SealAndExtendChainRequest,
-    SealAndExtendChainResponse, SealedSegment, SetClusterConfigurationRequest,
-    SetClusterConfigurationResponse, TailState, TrimLogRequest,
+    SealAndExtendChainResponse, SealChainRequest, SealChainResponse, SealedSegment,
+    SetClusterConfigurationRequest, SetClusterConfigurationResponse, TailState, TrimLogRequest,
     cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
 };
 use restate_core::{Metadata, MetadataWriter};
@@ -210,6 +210,27 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 min_applied_lsn: min_applied_lsn.as_u64(),
             })),
         }
+    }
+
+    async fn seal_chain(
+        &self,
+        request: Request<SealChainRequest>,
+    ) -> Result<Response<SealChainResponse>, Status> {
+        let request = request.into_inner();
+
+        let tail_lsn = self
+            .controller_handle
+            .seal_chain(
+                request.log_id.into(),
+                request.segment_index.map(SegmentIndex::from),
+            )
+            .await
+            .map_err(|_| Status::aborted("Node is shutting down"))?
+            .map_err(|err| Status::internal(err.to_string()))?;
+
+        Ok(Response::new(SealChainResponse {
+            tail_offset: tail_lsn.into(),
+        }))
     }
 
     async fn seal_and_extend_chain(
