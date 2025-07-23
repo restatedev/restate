@@ -28,6 +28,7 @@ use super::{APPLICATION_JSON, Handler};
 use crate::RequestDispatcher;
 use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
 use crate::metric_definitions::{INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED};
+use restate_serde_util::DurationString;
 use restate_types::identifiers::{InvocationId, WithInvocationId};
 use restate_types::invocation::{
     Header, InvocationRequest, InvocationRequestHeader, InvocationTarget, InvocationTargetType,
@@ -111,6 +112,10 @@ where
             return Err(HandlerError::UnsupportedIdempotencyKey);
         }
 
+        // Compute retention values
+        let invocation_retention =
+            invocation_target_meta.compute_retention(idempotency_key.is_some());
+
         // Craft Invocation Target and Id
         let invocation_target = if let TargetType::Keyed { key } = target {
             match invocation_target_meta.target_ty {
@@ -140,7 +145,8 @@ where
         let runtime_span = tracing::info_span!(
             "ingress",
             restate.invocation.id = %invocation_id,
-            restate.invocation.target = %invocation_target.short()
+            restate.invocation.target = %invocation_target.short(),
+            restate.invocation.journal.retention = DurationString::display(invocation_retention.journal_retention)
         );
 
         let result = async move {
@@ -187,9 +193,7 @@ where
             let mut invocation_request_header =
                 InvocationRequestHeader::initialize(invocation_id, invocation_target);
             invocation_request_header.with_related_span(SpanRelation::Parent(ingress_span_context));
-            invocation_request_header.with_retention(
-                invocation_target_meta.compute_retention(idempotency_key.is_some()),
-            );
+            invocation_request_header.with_retention(invocation_retention);
             if let Some(key) = idempotency_key {
                 invocation_request_header.idempotency_key = Some(key);
             }
