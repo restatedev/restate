@@ -21,6 +21,7 @@ use crate::partition::leadership::LeadershipState;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
+use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
 use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
 use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationRequest;
@@ -34,11 +35,12 @@ use std::sync::Arc;
 
 #[cfg_attr(test, mockall::automock)]
 pub(super) trait CommandProposer {
-    fn self_propose_and_respond_asynchronously<O: 'static>(
+    fn self_propose_and_respond_asynchronously<O: 'static + Into<PartitionProcessorRpcResponse>>(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
         replier: Replier<O>,
+        on_proposed_response: O,
     ) -> impl Future<Output = ()>;
 
     fn handle_rpc_proposal_command<O: 'static>(
@@ -51,17 +53,19 @@ pub(super) trait CommandProposer {
 }
 
 impl<I> CommandProposer for LeadershipState<I> {
-    async fn self_propose_and_respond_asynchronously<O>(
+    async fn self_propose_and_respond_asynchronously<O: Into<PartitionProcessorRpcResponse>>(
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
         replier: Replier<O>,
+        on_proposed_response: O,
     ) {
         LeadershipState::self_propose_and_respond_asynchronously(
             self,
             partition_key,
             cmd,
             replier.0,
+            on_proposed_response.into(),
         )
         .await
     }

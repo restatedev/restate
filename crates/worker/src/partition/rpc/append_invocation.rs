@@ -48,6 +48,7 @@ impl<'a, Proposer: CommandProposer, Storage> RpcHandler<Request>
                         service_invocation.partition_key(),
                         Command::Invoke(Box::new(service_invocation)),
                         replier,
+                        PartitionProcessorRpcResponse::Appended,
                     )
                     .await;
                 return Ok(());
@@ -91,7 +92,7 @@ mod tests {
         let mut proposer = MockCommandProposer::new();
         proposer
             .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
-            .return_once_st(|_, cmd, _| {
+            .return_once_st(|_, cmd, _, _| {
                 let_assert!(Command::Invoke(service_invocation) = cmd);
                 assert_that!(
                     service_invocation,

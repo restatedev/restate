@@ -42,6 +42,7 @@ impl<'a, Proposer: CommandProposer, Storage> RpcHandler<Request>
                     signal,
                 }),
                 replier,
+                PartitionProcessorRpcResponse::Appended,
             )
             .await;
 
