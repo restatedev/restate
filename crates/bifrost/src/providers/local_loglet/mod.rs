@@ -30,7 +30,6 @@ use tracing::{debug, warn};
 
 use restate_core::ShutdownError;
 use restate_types::logs::TailOffsetWatch;
-use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
 
 use self::log_store::LogStoreError;
@@ -128,8 +127,8 @@ impl Loglet for LocalLoglet {
         LogletId::from(self.loglet_id)
     }
 
-    fn provider(&self) -> ProviderKind {
-        ProviderKind::Local
+    fn provider(&self) -> &str {
+        "local"
     }
 
     async fn create_read_stream(

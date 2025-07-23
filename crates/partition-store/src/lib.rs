@@ -10,6 +10,7 @@
 
 pub mod deduplication_table;
 mod durable_lsn_tracking;
+pub mod error;
 pub mod fsm_table;
 pub mod idempotency_table;
 pub mod inbox_table;
@@ -19,6 +20,7 @@ pub mod journal_table_v2;
 pub mod keys;
 pub mod outbox_table;
 mod owned_iter;
+mod partition_db;
 mod partition_store;
 mod partition_store_manager;
 pub mod promise_table;
@@ -31,6 +33,8 @@ pub mod timer_table;
 #[cfg(test)]
 mod tests;
 
+pub use error::*;
+pub use partition_db::PartitionDb;
 pub use partition_store::*;
 pub use partition_store_manager::*;
 // re-export

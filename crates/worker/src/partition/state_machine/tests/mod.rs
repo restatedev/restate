@@ -31,7 +31,7 @@ use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat, property};
 use restate_core::TaskCenter;
 use restate_invoker_api::{Effect, EffectKind, InvokeInputJournal};
-use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::Transaction;
@@ -65,6 +65,7 @@ use restate_types::journal::{
 use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_v2::raw::TryFromEntry;
 use restate_types::live::Constant;
+use restate_types::partitions::Partition;
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::{HashMap, HashSet};
 use test_log::test;
@@ -130,15 +131,14 @@ impl TestEnv {
             "Using RocksDB temp directory {}",
             storage_options.data_dir().display()
         );
-        let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()))
-            .await
-            .unwrap();
+        let manager = PartitionStoreManager::create().await.unwrap();
         let rocksdb_storage = manager
-            .open_partition_store(
-                PartitionId::MIN,
-                RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
-                OpenMode::CreateIfMissing,
-                &storage_options.rocksdb,
+            .open(
+                &Partition::new(
+                    PartitionId::MIN,
+                    RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+                ),
+                None,
             )
             .await
             .unwrap();

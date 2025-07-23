@@ -39,7 +39,6 @@ use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
 use crate::metric_definitions::{NUM_PARTITIONS, PARTITION_APPLIED_LSN};
 use crate::partition::ProcessorError;
-use crate::partition::snapshots::{SnapshotPartitionTask, SnapshotRepository};
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
@@ -61,8 +60,9 @@ use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::{
-    PartitionSnapshotMetadata, SnapshotCreated, SnapshotError, SnapshotErrorKind,
+    PartitionSnapshotMetadata, SnapshotPartitionTask, SnapshotRepository,
 };
+use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
@@ -71,7 +71,7 @@ use restate_types::health::HealthStatus;
 use restate_types::identifiers::SnapshotId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
-use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::PartitionLeaderService;
@@ -87,6 +87,24 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString};
+
+#[derive(Debug, Clone, derive_more::Display)]
+#[display("{}", snapshot_id)]
+pub struct SnapshotCreated {
+    pub snapshot_id: SnapshotId,
+    pub log_id: LogId,
+    pub min_applied_lsn: Lsn,
+}
+
+impl From<&PartitionSnapshotMetadata> for SnapshotCreated {
+    fn from(metadata: &PartitionSnapshotMetadata) -> SnapshotCreated {
+        SnapshotCreated {
+            snapshot_id: metadata.snapshot_id,
+            log_id: metadata.log_id,
+            min_applied_lsn: metadata.min_applied_lsn,
+        }
+    }
+}
 
 pub struct PartitionProcessorManager {
     health_status: HealthStatus<WorkerStatus>,
@@ -503,7 +521,7 @@ impl PartitionProcessorManager {
                                     trim_gap_end: to_lsn,
                                     read_pointer: sequence_number,
                                 }) => {
-                                    if self.snapshot_repository.is_some() {
+                                    if self.partition_store_manager.is_repository_configured() {
                                         info!(
                                             %partition_id,
                                             trim_gap_to_lsn = ?to_lsn,
@@ -918,7 +936,7 @@ impl PartitionProcessorManager {
             });
 
         for partition_id in unknown_archived_lsn {
-            self.spawn_update_archived_lsn_task(partition_id, snapshot_repository.clone());
+            self.spawn_update_archived_lsn_task(partition_id);
         }
 
         // Limit the number of snapshots we schedule automatically
@@ -1054,25 +1072,17 @@ impl PartitionProcessorManager {
         }
     }
 
-    fn spawn_update_archived_lsn_task(
-        &mut self,
-        partition_id: PartitionId,
-        snapshot_repository: SnapshotRepository,
-    ) {
+    fn spawn_update_archived_lsn_task(&mut self, partition_id: PartitionId) {
+        let psm = self.partition_store_manager.clone();
         self.asynchronous_operations
             .build_task()
             .name(&format!("update-archived-lsn-{partition_id}"))
             .spawn(
                 async move {
-                    let archived_lsn = snapshot_repository
-                        .get_latest_archived_lsn(partition_id)
+                    let archived_lsn = psm
+                        .refresh_latest_archived_lsn(partition_id)
                         .await
-                        .inspect(|lsn| debug!(?partition_id, "Latest archived LSN: {}", lsn))
-                        .inspect_err(|err| {
-                            warn!(?partition_id, "Unable to get latest archived LSN: {}", err)
-                        })
-                        .ok()
-                        .unwrap_or(Lsn::INVALID);
+                        .expect("repository must be configured here");
 
                     AsynchronousEvent {
                         partition_id,
@@ -1230,7 +1240,6 @@ impl PartitionProcessorManager {
             self.bifrost.clone(),
             self.replica_set_states.clone(),
             self.partition_store_manager.clone(),
-            self.snapshot_repository.clone(),
             self.fast_forward_on_startup.remove(&partition_id),
         );
 
@@ -1390,7 +1399,7 @@ mod tests {
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{CommonOptions, Configuration, StorageOptions};
+    use restate_types::config::{CommonOptions, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
     use restate_types::live::{Constant, Live};
@@ -1433,8 +1442,7 @@ mod tests {
 
         let replica_set_states = PartitionReplicaSetStates::default();
 
-        let partition_store_manager =
-            PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
+        let partition_store_manager = PartitionStoreManager::create().await?;
 
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,

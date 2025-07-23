@@ -28,7 +28,6 @@ use futures::stream::BoxStream;
 use futures::{FutureExt, Stream};
 use tokio::sync::oneshot;
 
-use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, TailState};
 
 use crate::LogEntry;
@@ -85,7 +84,7 @@ pub trait Loglet: Send + Sync {
     fn id(&self) -> LogletId;
 
     /// What is the provider of this loglet
-    fn provider(&self) -> ProviderKind;
+    fn provider(&self) -> &str;
 
     /// Create a stream watching the state of tail for this loglet
     ///

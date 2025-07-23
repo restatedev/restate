@@ -17,14 +17,15 @@ use std::time::Duration;
 
 use jiff::Timestamp;
 use parking_lot::Mutex;
-use tokio::time::MissedTickBehavior;
-use tracing::{debug, instrument, warn};
+use tokio::time::{Instant, MissedTickBehavior};
+use tracing::{debug, info, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::{ShutdownError, TaskCenter, TaskId, cancellation_token};
 use restate_storage_api::fsm_table::PartitionDurability;
 use restate_types::config::Configuration;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
+use restate_types::retries::with_jitter;
 use restate_types::time::MillisSinceEpoch;
 
 /// A task that trims the log by removing durable LSNs from the log.
@@ -54,11 +55,20 @@ impl LogTrimmer {
 
     async fn run(self) -> anyhow::Result<()> {
         let cancel = cancellation_token();
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        // wait for 60-ish seconds before starting the first trim
+        let mut interval = tokio::time::interval_at(
+            Instant::now() + with_jitter(Duration::from_secs(60), 0.3),
+            with_jitter(Duration::from_secs(30), 0.5),
+        );
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         debug!(log_id = %self.log_id, "Log trimmer task started");
         loop {
+            // wait to pace down
+            if cancel.run_until_cancelled(interval.tick()).await.is_none() {
+                break;
+            }
+
             if let Some(durability_point) = self.trim_queue.pop() {
                 let Some(result) = cancel
                     .run_until_cancelled(self.trim_logs(&durability_point))
@@ -75,11 +85,6 @@ impl LogTrimmer {
                     // the next retry happens after the sleep.
                 }
             }
-
-            // wait to pace down
-            if cancel.run_until_cancelled(interval.tick()).await.is_none() {
-                break;
-            }
         }
         debug!(log_id = %self.log_id, "Log trimmer task terminated");
         Ok(())
@@ -87,7 +92,7 @@ impl LogTrimmer {
 
     #[instrument(
         level = "error",
-        skip(self),
+        skip_all,
         fields(
             log_id = %self.log_id,
         ),
@@ -100,13 +105,14 @@ impl LogTrimmer {
             .await;
         if let Err(err) = result {
             warn!(
-                "Could not trim the log (requested trim_point was {}). This can lead to increased disk usage: {err}",
+                "Could not trim the log (requested trim_point was {:?}). This can lead to increased disk usage: {err}",
                 durability.durable_point,
             );
             false
         } else {
-            debug!(
-                "Trimmed the log to {}. This LSN was reported durable at {}",
+            info!(
+                "Trimmed log {} to {:?}. This Lsn was reported durable at {}",
+                self.log_id,
                 durability.durable_point,
                 Timestamp::from_millisecond(durability.modification_time.as_u64() as i64)
                     .unwrap_or_default()

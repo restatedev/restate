@@ -18,7 +18,7 @@ use tracing::{debug, info, instrument, trace};
 
 use restate_core::my_node_id;
 use restate_core::network::{Networking, TransportConnect};
-use restate_types::logs::metadata::{ProviderKind, SegmentIndex};
+use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{
     KeyFilter, LogId, LogletId, LogletOffset, Record, RecordCache, SequenceNumber, TailOffsetWatch,
     TailState,
@@ -273,8 +273,8 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         self.my_params.loglet_id
     }
 
-    fn provider(&self) -> ProviderKind {
-        ProviderKind::Replicated
+    fn provider(&self) -> &str {
+        "replicated"
     }
 
     async fn create_read_stream(

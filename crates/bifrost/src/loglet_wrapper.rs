@@ -17,7 +17,7 @@ use futures::{Stream, StreamExt};
 use tracing::instrument;
 
 use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
-use restate_types::logs::{KeyFilter, LogletOffset, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Lsn, SequenceNumber};
 use restate_types::logs::{Record, TailState};
 
 use crate::Result;
@@ -69,14 +69,12 @@ impl LogletWrapper {
         }
     }
 
-    /// Panics if `tail_lsn` is lower than the loglet's `base_lsn`
-    pub fn set_tail_lsn(&mut self, tail_lsn: Lsn) {
-        debug_assert!(tail_lsn >= self.base_lsn);
-        self.tail_lsn = Some(tail_lsn)
-    }
-
     pub fn segment_index(&self) -> SegmentIndex {
         self.segment_index
+    }
+
+    pub fn id(&self) -> LogletId {
+        self.loglet.id()
     }
 
     pub async fn create_read_stream(
@@ -263,7 +261,7 @@ impl LogletReadStreamWrapper {
     }
 
     pub fn set_tail_lsn(&mut self, tail_lsn: Lsn) {
-        self.loglet.set_tail_lsn(tail_lsn)
+        self.loglet.tail_lsn = Some(tail_lsn)
     }
 
     #[inline(always)]

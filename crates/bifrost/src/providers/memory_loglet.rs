@@ -331,9 +331,10 @@ impl Loglet for MemoryLoglet {
         self.loglet_id
     }
 
-    fn provider(&self) -> ProviderKind {
-        ProviderKind::InMemory
+    fn provider(&self) -> &str {
+        "in-memory"
     }
+
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,

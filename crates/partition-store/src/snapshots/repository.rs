@@ -28,13 +28,12 @@ use tracing::{Instrument, Span, debug, info, instrument, warn};
 use url::Url;
 
 use restate_object_store_util::create_object_store_client;
-use restate_partition_store::snapshots::{
-    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion,
-};
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::nodes_config::ClusterFingerprint;
+
+use super::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
@@ -333,7 +332,7 @@ impl SnapshotRepository {
         err,
         fields(%partition_id, snapshot_id = tracing::field::Empty),
     )]
-    pub(crate) async fn get_latest(
+    pub async fn get_latest(
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
@@ -494,10 +493,7 @@ impl SnapshotRepository {
 
     /// Retrieve the latest known LSN to be archived to the snapshot repository.
     /// Response of `Ok(Lsn::INVALID)` indicates no existing snapshot for the partition.
-    pub(crate) async fn get_latest_archived_lsn(
-        &self,
-        partition_id: PartitionId,
-    ) -> anyhow::Result<Lsn> {
+    pub async fn get_latest_archived_lsn(&self, partition_id: PartitionId) -> anyhow::Result<Lsn> {
         let latest_path = self.get_latest_snapshot_pointer(partition_id);
 
         let latest = match self.object_store.get(&latest_path).await {
@@ -702,8 +698,7 @@ async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
 mod tests {
     use bytes::Bytes;
     use object_store::ObjectStore;
-    use restate_object_store_util::create_object_store_client;
-    use restate_types::retries::RetryPolicy;
+    use object_store::path::Path as ObjectPath;
     use std::time::SystemTime;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
@@ -713,13 +708,14 @@ mod tests {
     use tracing_subscriber::{EnvFilter, fmt};
     use url::Url;
 
-    use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};
-    use restate_partition_store::snapshots::{PartitionSnapshotMetadata, SnapshotFormatVersion};
+    use restate_object_store_util::create_object_store_client;
     use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
+    use restate_types::retries::RetryPolicy;
 
-    use crate::partition::snapshots::repository::ObjectPath;
+    use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};
+    use super::{PartitionSnapshotMetadata, SnapshotFormatVersion};
 
     #[tokio::test]
     async fn test_overwrite_unparsable_latest() -> anyhow::Result<()> {

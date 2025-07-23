@@ -36,8 +36,9 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item);
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct LocalPartitionsScanner<S> {
+    #[debug(skip)]
     partition_store_manager: PartitionStoreManager,
     _marker: std::marker::PhantomData<S>,
 }
