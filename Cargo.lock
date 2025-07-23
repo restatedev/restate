@@ -7108,6 +7108,7 @@ dependencies = [
  "rdkafka",
  "restate-bifrost",
  "restate-core",
+ "restate-serde-util",
  "restate-storage-api",
  "restate-timer-queue",
  "restate-tracing-instrumentation",
