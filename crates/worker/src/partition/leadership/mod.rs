@@ -586,6 +586,7 @@ impl<I> LeadershipState<I> {
         reciprocal: Reciprocal<
             Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
         >,
+        success_response: PartitionProcessorRpcResponse,
     ) {
         match &mut self.state {
             State::Follower | State::Candidate { .. } => reciprocal.send(Err(
@@ -593,7 +594,12 @@ impl<I> LeadershipState<I> {
             )),
             State::Leader(leader_state) => {
                 leader_state
-                    .self_propose_and_respond_asynchronously(partition_key, cmd, reciprocal)
+                    .self_propose_and_respond_asynchronously(
+                        partition_key,
+                        cmd,
+                        reciprocal,
+                        success_response,
+                    )
                     .await;
             }
         }
