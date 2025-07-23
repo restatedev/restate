@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn};
 
-use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher, task_center};
 use restate_serde_util::ByteCount;
 use restate_types::config::{
     CommonOptions, Configuration, RocksDbLogLevel, RocksDbOptions, StatisticsLevel,
@@ -55,6 +55,8 @@ pub struct RocksDbManager {
     close_db_tasks: TaskTracker,
     high_pri_pool: threadpool::ThreadPool,
     low_pri_pool: threadpool::ThreadPool,
+
+    tc_handle: task_center::Handle,
 }
 
 impl RocksDbManager {
@@ -119,6 +121,7 @@ impl RocksDbManager {
             high_pri_pool,
             low_pri_pool,
             stall_detection_millis,
+            tc_handle: TaskCenter::current(),
         };
 
         DB_MANAGER.set(manager).expect("DBManager initialized once");
@@ -262,9 +265,27 @@ impl RocksDbManager {
             // database has already been closed via other means
             return;
         };
-        self.close_db_tasks.spawn_blocking(move || {
-            db.shutdown();
-        });
+
+        // make sure that we are spawn_blocking our tasks from within a Tokio context
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                self.close_db_tasks.spawn_blocking_on(
+                    move || {
+                        db.shutdown();
+                    },
+                    &handle,
+                );
+            }
+            Err(_) => {
+                // This is a very hacky solution to ensure that spawn_blocking runs within a Tokio context.
+                // It relies on the fact that block_on is implemented as tokio::runtime::Handle::block_on.
+                self.tc_handle.block_on(async {
+                    self.close_db_tasks.spawn_blocking(move || {
+                        db.shutdown();
+                    });
+                });
+            }
+        }
     }
 
     /// Ask all databases to shut down cleanly
