@@ -16,6 +16,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
+use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
@@ -23,7 +24,7 @@ use restate_types::invocation::client::{
 };
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_wal_protocol::{Command, Envelope};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -309,12 +310,6 @@ where
     Ok(())
 }
 
-#[derive(Debug, Serialize, JsonSchema)]
-pub struct RestartInvocationResponse {
-    /// The invocation id of the new invocation.
-    pub new_invocation_id: InvocationId,
-}
-
 generate_meta_api_error!(RestartInvocationError: [
     InvocationNotFoundError,
     InvocationClientError,
@@ -340,7 +335,7 @@ generate_meta_api_error!(RestartInvocationError: [
 pub async fn restart_as_new_invocation<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
     Path(invocation_id): Path<String>,
-) -> Result<Json<RestartInvocationResponse>, RestartInvocationError>
+) -> Result<Json<RestartAsNewInvocationResponse>, RestartInvocationError>
 where
     IC: InvocationClient,
 {
@@ -355,7 +350,7 @@ where
         .map_err(InvocationClientError)?
     {
         client::RestartAsNewInvocationResponse::Ok { new_invocation_id } => {
-            Ok(RestartInvocationResponse { new_invocation_id }.into())
+            Ok(RestartAsNewInvocationResponse { new_invocation_id }.into())
         }
         client::RestartAsNewInvocationResponse::NotFound => {
             Err(InvocationNotFoundError(invocation_id.to_string()))?
