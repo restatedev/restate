@@ -102,7 +102,7 @@ enum ChainOp {
 }
 
 /// Component which coalesces multiple log-chain updates into a single [`Logs`] update. It works
-/// by draining all available [`ExtendLogChain`] commands and applying them to the current logs
+/// by draining all available [`LogChainCommand`] commands and applying them to the current logs
 /// configuration using a read-modify-write metadata operation. A log chain can only be extended if
 /// the last segment index equals the value specified by the [`LogChainCommand`] command.
 pub struct LogChainExtender {
@@ -154,7 +154,6 @@ impl LogChainExtender {
                             .into_builder();
 
                     for extend_log_chain in &mut buffer {
-                        let last_segment_index = extend_log_chain.last_segment_index;
                         match extend_log_chain.op {
                             ChainOp::Extend {
                                 base_lsn,
@@ -165,13 +164,13 @@ impl LogChainExtender {
                                 response.stage_output(Self::extend_log_chain(
                                     &mut builder,
                                     extend_log_chain.log_id,
-                                    last_segment_index,
+                                    extend_log_chain.last_segment_index,
                                     base_lsn,
                                     provider,
                                     params,
                                 ));
                             }
-                        };
+                        }
                     }
                     Ok(builder.build())
                 })
