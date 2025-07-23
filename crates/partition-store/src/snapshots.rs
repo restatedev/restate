@@ -15,42 +15,18 @@ mod snapshot_task;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::PartitionStore;
+use crate::{PartitionStore, SnapshotError, SnapshotErrorKind};
 
 pub use self::metadata::*;
 pub use self::repository::SnapshotRepository;
 pub use self::snapshot_task::*;
 
+use tokio::sync::Semaphore;
+use tracing::{debug, instrument, warn};
+
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{Lsn, SequenceNumber};
-use tokio::sync::Semaphore;
-use tracing::{debug, warn};
-
-#[derive(Debug, derive_more::Display)]
-#[display("{kind} for partition {partition_id}")]
-pub struct SnapshotError {
-    pub partition_id: PartitionId,
-    pub kind: SnapshotErrorKind,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum SnapshotErrorKind {
-    #[error("Partition not found")]
-    PartitionNotFound,
-    #[error("Snapshot export in progress")]
-    SnapshotInProgress,
-    #[error("Partition Processor state does not permit snapshotting")]
-    InvalidState,
-    #[error("Snapshot repository is not configured")]
-    RepositoryNotConfigured,
-    #[error("Snapshot export failed for partition")]
-    Export(#[source] anyhow::Error),
-    #[error("Snapshot repository IO error")]
-    RepositoryIo(#[source] anyhow::Error),
-    #[error("Internal error")]
-    Internal(anyhow::Error),
-}
 
 #[derive(Clone)]
 pub struct Snapshots {
@@ -126,6 +102,7 @@ impl Snapshots {
         Some(archived_lsn)
     }
 
+    #[instrument(level = "error", skip_all, fields(partition_id = %partition_id))]
     pub async fn download_latest_snapshot(
         &self,
         partition_id: PartitionId,
@@ -133,18 +110,12 @@ impl Snapshots {
         // Attempt to get the latest available snapshot from the snapshot repository:
         let snapshot = match &self.repository {
             Some(repository) => {
-                debug!(
-                    partition_id = %partition_id,
-                    "Looking for partition snapshot from which to bootstrap partition store"
-                );
+                debug!("Looking for partition snapshot from which to bootstrap partition store");
                 // todo(pavel): pass target LSN to repository
                 repository.get_latest(partition_id).await?
             }
             None => {
-                debug!(
-                    %partition_id,
-                    "No snapshot repository configured"
-                );
+                debug!("No snapshot repository configured");
                 None
             }
         };
