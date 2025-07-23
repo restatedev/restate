@@ -79,7 +79,7 @@ use crate::{
     MetadataServerConfiguration, MetadataServerSummary, MetadataStoreRequest,
     PreconditionViolation, ProvisionError, ProvisionReceiver, RaftSummary, RemoveNodeError,
     RemoveNodeResponseSender, Request, RequestError, RequestReceiver, SnapshotSummary,
-    StatusSender, WriteRequest, local, prepare_initial_nodes_configuration,
+    StatusSender, WriteRequest, local, nodes_configuration_for_metadata_cluster_seed,
 };
 
 const RAFT_INITIAL_LOG_TERM: u64 = 1;
@@ -406,7 +406,7 @@ impl RaftMetadataServer {
     ) -> anyhow::Result<MemberId> {
         debug!("Initialize storage from nodes configuration");
 
-        let my_plain_node_id = prepare_initial_nodes_configuration(
+        let my_plain_node_id = nodes_configuration_for_metadata_cluster_seed(
             &Configuration::pinned(),
             &mut nodes_configuration,
         )?;
@@ -428,7 +428,7 @@ impl RaftMetadataServer {
         let mut nodes_configuration = initial_state.last_seen_nodes_configuration().clone();
 
         let previous_version = nodes_configuration.version();
-        let my_plain_node_id = prepare_initial_nodes_configuration(
+        let my_plain_node_id = nodes_configuration_for_metadata_cluster_seed(
             &Configuration::pinned(),
             &mut nodes_configuration,
         )?;
@@ -830,9 +830,14 @@ impl Member {
 
         let mut storage = self.raw_node.raft.r.raft_log.store;
 
-        // set our raft server state to standby so that we don't start as a member when restarting
+        // Set our raft server state to standby and store the latest nodes configuration so that we
+        // don't start as a member and don't try to join again when restarting.
         let mut txn = storage.txn();
         txn.delete_raft_server_state()?;
+        txn.store_nodes_configuration(Self::latest_nodes_configuration(
+            &self.kv_storage,
+            nodes_config.live_load(),
+        ))?;
         txn.commit().await?;
 
         // todo if I am the leader, then tell others to immediately start campaigning to avoid the leader election timeout
@@ -1029,6 +1034,14 @@ impl Member {
 
         trace!("Handle join request from node '{}'", joining_member_id);
 
+        if self.is_member(joining_member_id) {
+            let _ = response_tx.send(Ok(self
+                .kv_storage
+                .last_seen_nodes_configuration()
+                .version()));
+            return;
+        }
+
         // sanity checks
 
         if !self.is_leader {
@@ -1040,14 +1053,6 @@ impl Member {
 
         if self.raw_node.raft.has_pending_conf() {
             let _ = response_tx.send(Err(JoinClusterError::PendingReconfiguration));
-            return;
-        }
-
-        if self.is_member(joining_member_id) {
-            let _ = response_tx.send(Ok(self
-                .kv_storage
-                .last_seen_nodes_configuration()
-                .version()));
             return;
         }
 
@@ -1989,7 +1994,11 @@ impl Standby {
                     }
                 },
                 Some((my_member_id, min_expected_nodes_config_version)) = &mut join_cluster => {
-                    storage.store_raft_server_state(&RaftServerState::Member{ my_member_id, min_expected_nodes_config_version: Some(min_expected_nodes_config_version) }).await?;
+                    let mut txn = storage.txn();
+                    txn.store_raft_server_state(&RaftServerState::Member{ my_member_id, min_expected_nodes_config_version: Some(min_expected_nodes_config_version) })?;
+                    // Persist the latest NodesConfiguration so that we know about the peers as of now.
+                    txn.store_nodes_configuration(nodes_config.live_load())?;
+                    txn.commit().await?;
 
                     for response_tx in pending_response_txs {
                         let _ = response_tx.send(Ok(()));
@@ -2017,8 +2026,8 @@ impl Standby {
                             my_member_id = Some(member_id);
                         }
 
-                        if join_cluster.is_terminated() && matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member) {
-                            debug!("Node is part of the metadata store cluster. Trying to join the raft cluster.");
+                        if join_cluster.is_terminated() && matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member | MetadataServerState::Provisioning) {
+                            debug!("Node's metadata server state: {}. Trying to join the raft cluster.", node_config.metadata_server_config.metadata_server_state);
 
                             // Persist the latest NodesConfiguration so that we know about the MetadataServerState at least
                             // as of now when restarting.

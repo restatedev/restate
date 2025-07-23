@@ -331,6 +331,7 @@ impl RocksDbStorage {
             .map_err(Into::into)
     }
 
+    #[allow(dead_code)]
     pub async fn store_raft_server_state(
         &mut self,
         raft_server_state: &RaftServerState,
@@ -647,6 +648,19 @@ impl<'a> Transaction<'a> {
 
     pub fn delete_raft_server_state(&mut self) -> Result<(), Error> {
         self.delete_metadata_cf(RAFT_SERVER_STATE_KEY);
+        Ok(())
+    }
+
+    pub fn store_nodes_configuration(
+        &mut self,
+        nodes_configuration: &NodesConfiguration,
+    ) -> Result<(), Error> {
+        self.put_bytes_metadata_cf(
+            NODES_CONFIGURATION_KEY,
+            &RocksDbStorage::serialize_value(nodes_configuration)
+                .map_err(|err| Error::Encode(err.into()))?,
+        );
+
         Ok(())
     }
 

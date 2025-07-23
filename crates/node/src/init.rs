@@ -12,10 +12,12 @@ use crate::cluster_marker::mark_cluster_as_provisioned;
 use restate_core::{MetadataWriter, ShutdownError, cancellation_token};
 use restate_metadata_store::{MetadataStoreClient, ReadWriteError};
 use restate_types::PlainNodeId;
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::Configuration;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
+use restate_types::nodes_config::{
+    MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
+};
 use restate_types::retries::RetryPolicy;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,7 +65,7 @@ impl<'a> NodeInit<'a> {
 
         let join_cluster = Self::join_cluster(
             self.metadata_writer.raw_metadata_store_client(),
-            &config.common,
+            &config,
             self.is_provisioned,
         );
 
@@ -101,18 +103,18 @@ impl<'a> NodeInit<'a> {
 
     async fn join_cluster(
         metadata_store_client: &MetadataStoreClient,
-        common_opts: &CommonOptions,
+        config: &Configuration,
         is_provisioned: bool,
     ) -> anyhow::Result<NodesConfiguration> {
         if is_provisioned {
             info!(
                 "Trying to join the provisioned cluster '{}'",
-                common_opts.cluster_name()
+                config.common.cluster_name()
             );
         } else {
             info!(
                 "Trying to join the cluster '{}'",
-                common_opts.cluster_name()
+                config.common.cluster_name()
             );
         }
 
@@ -132,34 +134,35 @@ impl<'a> NodeInit<'a> {
 
         join_retry
             .retry_if(
-                || Self::join_cluster_inner(metadata_store_client, common_opts),
+                || Self::join_cluster_inner(metadata_store_client, config),
                 |err| {
                     let elapsed_since_join_start = join_start.elapsed();
                     if elapsed_since_join_start < next_info_message {
                         debug!(%err, "Failed joining the cluster; retrying");
                     } else {
+                        let cluster_name = config.common.cluster_name();
                         if is_provisioned {
                             if elapsed_since_join_start <= tone_escalation_after {
                                 if enabled!(Level::DEBUG) {
-                                    info!(%err, "Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", common_opts.cluster_name());
+                                    info!(%err, "Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", cluster_name);
                                 } else {
-                                    info!("Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", common_opts.cluster_name());
+                                    info!("Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", cluster_name);
                                 }
                             } else if enabled!(Level::DEBUG) {
-                                warn!(%err, "Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", common_opts.cluster_name());
+                                warn!(%err, "Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", cluster_name);
                             } else {
-                                warn!("Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", common_opts.cluster_name());
+                                warn!("Failed to join the provisioned cluster '{}'. Please make sure that the cluster is up and running. Still trying to join...", cluster_name);
                             }
                         } else if elapsed_since_join_start <= tone_escalation_after {
                             if enabled!(Level::DEBUG) {
-                                info!(%err, "Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", common_opts.cluster_name());
+                                info!(%err, "Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", cluster_name);
                             } else {
-                                info!("Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", common_opts.cluster_name());
+                                info!("Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", cluster_name);
                             }
                         } else if enabled!(Level::DEBUG) {
-                            warn!(%err, "Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", common_opts.cluster_name());
+                            warn!(%err, "Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", cluster_name);
                         } else {
-                            warn!("Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", common_opts.cluster_name());
+                            warn!("Failed to join the cluster '{}'. Has the cluster been provisioned, yet? Still trying to join...", cluster_name);
                         }
                         next_info_message += Duration::from_secs(30);
                     }
@@ -178,9 +181,11 @@ impl<'a> NodeInit<'a> {
 
     async fn join_cluster_inner(
         metadata_store_client: &MetadataStoreClient,
-        common_opts: &CommonOptions,
+        config: &Configuration,
     ) -> Result<NodesConfiguration, JoinError> {
         let mut previous_node_generation = None;
+
+        let common = &config.common;
 
         metadata_store_client
             .read_modify_write::<NodesConfiguration, _, _>(
@@ -190,32 +195,32 @@ impl<'a> NodeInit<'a> {
                         nodes_config.ok_or(JoinError::MissingNodesConfiguration)?;
 
                     // check that we are joining the right cluster
-                    if nodes_config.cluster_name() != common_opts.cluster_name() {
+                    if nodes_config.cluster_name() != common.cluster_name() {
                         return Err(JoinError::ClusterMismatch {
-                            expected_cluster_name: common_opts.cluster_name().to_owned(),
+                            expected_cluster_name: common.cluster_name().to_owned(),
                             actual_cluster_name: nodes_config.cluster_name().to_owned(),
                         });
                     }
 
                     // check whether we have registered before
                     let node_config = nodes_config
-                        .find_node_by_name(common_opts.node_name())
+                        .find_node_by_name(common.node_name())
                         .cloned();
 
                     let my_node_config = if let Some(mut node_config) = node_config {
                         assert_eq!(
-                            common_opts.node_name(),
+                            common.node_name(),
                             node_config.name,
                             "node name must match"
                         );
 
                         // do location changes according to the following truth table
                         let current_location = &node_config.location;
-                        let new_location = common_opts.location();
+                        let new_location = common.location();
                         match (current_location.is_empty(), new_location.is_empty()) {
                             (true, false) => {
                                 // relatively safe and an expected change for someone enabling locality for the first time.
-                                node_config.location = common_opts.location().clone();
+                                node_config.location = common.location().clone();
                             }
                             (false, false) if current_location != new_location => {
                                 warn!(
@@ -223,7 +228,7 @@ impl<'a> NodeInit<'a> {
                                     This change can be dangerous if the cluster is configured with geo-aware replication, but we'll still apply it. \
                                     You can reverted back on the next server restart.",
                                 );
-                                node_config.location = common_opts.location().clone();
+                                node_config.location = common.location().clone();
                             }
                             (false, false) => { /* do nothing; location didn't change */ }
                             (true, true) => { /* do nothing; both are empty */}
@@ -236,11 +241,11 @@ impl<'a> NodeInit<'a> {
                             }
                         }
 
-                        if common_opts.force_node_id.is_some_and(|configured_node_id| {
+                        if common.force_node_id.is_some_and(|configured_node_id| {
                             configured_node_id != node_config.current_generation.as_plain()
                         }) {
                             return Err(JoinError::NodeIdMismatch {
-                                configured_node_id: common_opts.force_node_id.unwrap(),
+                                configured_node_id: common.force_node_id.unwrap(),
                                 actual_node_id: node_config.current_generation.as_plain(),
                             });
                         }
@@ -252,7 +257,7 @@ impl<'a> NodeInit<'a> {
                             {
                                 // detected a concurrent registration of the same node
                                 return Err(JoinError::ConcurrentNodeRegistration(
-                                    common_opts.node_name().to_owned(),
+                                    common.node_name().to_owned(),
                                 ));
                             }
                         } else {
@@ -261,13 +266,13 @@ impl<'a> NodeInit<'a> {
                         }
 
                         // update node_config
-                        node_config.roles = common_opts.roles;
-                        node_config.address = common_opts.advertised_address.clone();
+                        node_config.roles = common.roles;
+                        node_config.address = common.advertised_address.clone();
                         node_config.current_generation.bump_generation();
 
                         node_config
                     } else {
-                        let plain_node_id = common_opts.force_node_id.unwrap_or_else(|| {
+                        let plain_node_id = common.force_node_id.unwrap_or_else(|| {
                             nodes_config
                                 .max_plain_node_id()
                                 .map(|n| n.next())
@@ -281,12 +286,23 @@ impl<'a> NodeInit<'a> {
 
                         let my_node_id = plain_node_id.with_generation(1);
 
-                        NodeConfig::builder().name(
-                            common_opts.node_name().to_owned()).current_generation(
-                            my_node_id).location(
-                            common_opts.location().clone()).address(
-                            common_opts.advertised_address.clone()).roles(
-                            common_opts.roles).build()
+                        let metadata_server_state = if config.metadata_server.auto_join {
+                            // todo change to MetadataServerState::Provisioning with v1.5.0
+                            MetadataServerState::Member
+                        } else {
+                            MetadataServerState::Standby
+                        };
+
+                        NodeConfig::builder()
+                            .name(common.node_name().to_owned())
+                            .current_generation(my_node_id)
+                            .location(common.location().clone())
+                            .address(common.advertised_address.clone())
+                            .roles(common.roles)
+                            .metadata_server_config(MetadataServerConfig {
+                                metadata_server_state,
+                            })
+                            .build()
                     };
 
                     nodes_config.upsert_node(my_node_config);

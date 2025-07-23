@@ -99,8 +99,15 @@ impl Drop for RocksDb {
     fn drop(&mut self) {
         // Safety: self.db is exclusives "taken" at drop time, so we know that it's
         // still valid. We don't provide &mut access to db, and it's not a public field.
-        self.manager
-            .background_close_db(unsafe { ManuallyDrop::take(&mut self.db) })
+        let inner_db = unsafe { ManuallyDrop::take(&mut self.db) };
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let _rt_guard = handle.enter();
+            self.manager.background_close_db(inner_db);
+        } else {
+            // inline shutdown if the last drop was outside of tokio (in tests or
+            inner_db.shutdown();
+        }
     }
 }
 

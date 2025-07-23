@@ -25,15 +25,13 @@ use restate_metadata_server_grpc::grpc::{
     StatusResponse,
 };
 use restate_metadata_store::serialize_value;
+use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::errors::ConversionError;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::nodes_config::{
-    MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
-};
+use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
-use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use crate::metric_definitions::{
     METADATA_SERVER_DELETE_DURATION, METADATA_SERVER_DELETE_TOTAL, METADATA_SERVER_GET_DURATION,
@@ -42,71 +40,10 @@ use crate::metric_definitions::{
     STATUS_COMPLETED, STATUS_FAILED,
 };
 use crate::{
-    InvalidConfiguration, MetadataCommand, MetadataCommandSender, MetadataServerSummary,
-    MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender, RequestError,
-    RequestSender, StatusWatch,
+    MetadataCommand, MetadataCommandSender, MetadataServerSummary, MetadataStoreRequest,
+    ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
+    nodes_configuration_for_metadata_cluster_seed,
 };
-
-/// Ensures that the initial nodes configuration contains the current node and has the right
-/// [`MetadataServerState`] set.
-fn prepare_initial_nodes_configuration(
-    configuration: &Configuration,
-    nodes_configuration: &mut NodesConfiguration,
-) -> Result<PlainNodeId, InvalidConfiguration> {
-    let plain_node_id = if let Some(node_config) =
-        nodes_configuration.find_node_by_name(configuration.common.node_name())
-    {
-        if let Some(force_node_id) = configuration.common.force_node_id {
-            if force_node_id != node_config.current_generation.as_plain() {
-                return Err(InvalidConfiguration(format!(
-                    "nodes configuration has wrong plain node id; expected: {}, actual: {}",
-                    force_node_id,
-                    node_config.current_generation.as_plain()
-                )));
-            }
-        }
-
-        let restate_node_id = node_config.current_generation.as_plain();
-
-        let mut node_config = node_config.clone();
-        node_config.metadata_server_config.metadata_server_state = MetadataServerState::Member;
-
-        nodes_configuration.upsert_node(node_config);
-
-        restate_node_id
-    } else {
-        // give precedence to the force node id
-        let current_generation = configuration
-            .common
-            .force_node_id
-            .map(|node_id| node_id.with_generation(1))
-            .unwrap_or_else(|| {
-                nodes_configuration
-                    .max_plain_node_id()
-                    .map(|node_id| node_id.next().with_generation(1))
-                    .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID)
-            });
-
-        let metadata_server_config = MetadataServerConfig {
-            metadata_server_state: MetadataServerState::Member,
-        };
-
-        let node_config = NodeConfig::builder()
-            .name(configuration.common.node_name().to_owned())
-            .current_generation(current_generation)
-            .location(configuration.common.location().clone())
-            .address(configuration.common.advertised_address.clone())
-            .roles(configuration.common.roles)
-            .metadata_server_config(metadata_server_config)
-            .build();
-
-        nodes_configuration.upsert_node(node_config);
-
-        current_generation.as_plain()
-    };
-
-    Ok(plain_node_id)
-}
 
 /// Grpc svc handler for the metadata server.
 #[derive(Debug)]
@@ -341,9 +278,12 @@ impl MetadataServerSvc for MetadataServerHandler {
                 StorageCodec::decode(&mut request.nodes_configuration)
                     .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
-            // Make sure that the NodesConfiguration our node and has the right metadata server state set.
-            prepare_initial_nodes_configuration(&Configuration::pinned(), &mut nodes_configuration)
-                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+            // Make sure that the NodesConfiguration contains our node and has the MetadataServerState::Member
+            nodes_configuration_for_metadata_cluster_seed(
+                &Configuration::pinned(),
+                &mut nodes_configuration,
+            )
+            .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
             let versioned_value = serialize_value(&nodes_configuration)
                 .map_err(|err| Status::invalid_argument(err.to_string()))?;

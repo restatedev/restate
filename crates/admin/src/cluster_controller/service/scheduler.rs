@@ -28,7 +28,7 @@ use restate_types::metadata_store::keys::partition_processor_epoch_key;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, ProcessorCommand,
 };
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, WorkerState};
 use restate_types::partition_table::{PartitionReplication, PartitionTable};
 use restate_types::partitions::state::{PartitionReplicaSetStates, ReplicaSetState};
 use restate_types::partitions::{PartitionConfiguration, worker_candidate_filter};
@@ -344,30 +344,35 @@ impl<T: TransportConnect> Scheduler<T> {
                 }
             };
 
-            // check whether we can transition from the current configuration to the next
-            // configuration, which is possible as soon as a single partition processor from the
-            // next configuration has become active
-            if let Some(next) = &occupied_entry.get().next {
-                if next.replica_set().iter().any(|node_id| {
-                    legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
-                }) {
-                    let partition_configuration_update = Self::complete_reconfiguration(
-                        self.metadata_writer.raw_metadata_store_client(),
+            let partition_state = occupied_entry.get();
+
+            if Self::should_complete_reconfiguration(
+                partition_id,
+                nodes_config,
+                partition_state,
+                legacy_cluster_state,
+            ) {
+                let partition_configuration_update = Self::complete_reconfiguration(
+                    self.metadata_writer.raw_metadata_store_client(),
+                    partition_id,
+                    occupied_entry.get().current.version(),
+                    occupied_entry
+                        .get()
+                        .next
+                        .as_ref()
+                        .expect("to be present")
+                        .version(),
+                )
+                .await?;
+                if occupied_entry.get_mut().update_configuration(
+                    partition_configuration_update.current,
+                    partition_configuration_update.next,
+                ) {
+                    Self::note_observed_membership_update(
                         partition_id,
-                        occupied_entry.get().current.version(),
-                        next.version(),
-                    )
-                    .await?;
-                    if occupied_entry.get_mut().update_configuration(
-                        partition_configuration_update.current,
-                        partition_configuration_update.next,
-                    ) {
-                        Self::note_observed_membership_update(
-                            partition_id,
-                            occupied_entry.get(),
-                            &self.replica_set_states,
-                        );
-                    }
+                        occupied_entry.get(),
+                        &self.replica_set_states,
+                    );
                 }
             }
 
@@ -376,6 +381,41 @@ impl<T: TransportConnect> Scheduler<T> {
         }
 
         Ok(())
+    }
+
+    /// Checks whether a pending reconfiguration should be completed. Conditions for doing this are:
+    ///
+    /// * All workers in the current configuration are disabled
+    /// * Any of the partition processors in the next configuration is active (== caught up)
+    ///
+    /// Note: We don't complete the reconfiguration if all current nodes are dead for some time,
+    /// because we might need any of them to send a partition store snapshot to the next nodes once
+    /// we support in-band snapshot exchanges and trimming based on durable lsns.
+    fn should_complete_reconfiguration(
+        partition_id: PartitionId,
+        nodes_config: &NodesConfiguration,
+        partition_state: &PartitionState,
+        legacy_cluster_state: &LegacyClusterState,
+    ) -> bool {
+        // we can only complete the reconfiguration if a next configuration has been set
+        let Some(next) = partition_state.next.as_ref() else {
+            return false;
+        };
+
+        let all_current_workers_disabled = partition_state
+            .current
+            .replica_set()
+            .iter()
+            .all(|node_id| nodes_config.get_worker_state(node_id) == WorkerState::Disabled);
+
+        // check whether we can transition from the current configuration to the next
+        // configuration, which is possible as soon as a single partition processor from the
+        // next configuration has become active
+        let any_next_pp_active = next.replica_set().iter().any(|node_id| {
+            legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
+        });
+
+        all_current_workers_disabled || any_next_pp_active
     }
 
     fn partition_replication_to_replication_property(
@@ -550,7 +590,10 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         cluster_state: &ClusterState,
     ) -> bool {
-        let next_requires_reconfiguration = partition_state.next.as_ref().map(|next| {
+        // We only need to check current if next == None. If next != None, then there is a
+        // reconfiguration ongoing, and we need to check whether this target configuration requires
+        // reconfiguration.
+        if let Some(next) = partition_state.next.as_ref() {
             next.replication() != default_replication ||
                 // check if a different replica-set is eminent
                 Self::choose_partition_configuration(
@@ -560,29 +603,26 @@ impl<T: TransportConnect> Scheduler<T> {
                     NodeSet::default(),
                     cluster_state,
                 )
-                .map(|new_config|
-                    !new_config.replica_set().is_equivalent(next.replica_set()))
+                    .map(|new_config|
+                        !new_config.replica_set().is_equivalent(next.replica_set()))
+                    .unwrap_or(false)
+        } else {
+            // if we are here then there is no reconfiguration ongoing
+            partition_state.current.replication() != default_replication
+                || Self::choose_partition_configuration(
+                    partition_id,
+                    nodes_config,
+                    default_replication.clone(),
+                    NodeSet::default(),
+                    cluster_state,
+                )
+                .map(|new_config| {
+                    !new_config
+                        .replica_set()
+                        .is_equivalent(partition_state.current.replica_set())
+                })
                 .unwrap_or(false)
-        });
-
-        if next_requires_reconfiguration.is_some_and(|c| c) {
-            return true;
         }
-
-        partition_state.current.replication() != default_replication
-            || Self::choose_partition_configuration(
-                partition_id,
-                nodes_config,
-                default_replication.clone(),
-                NodeSet::default(),
-                cluster_state,
-            )
-            .map(|new_config| {
-                !new_config
-                    .replica_set()
-                    .is_equivalent(partition_state.current.replica_set())
-            })
-            .unwrap_or(false)
     }
 
     fn choose_partition_configuration(
