@@ -58,7 +58,7 @@ impl SnapshotPartitionTask {
     async fn create_snapshot_inner(&self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
         let snapshot = self
             .partition_store_manager
-            .export_partition_snapshot(
+            .export_partition(
                 self.partition_id,
                 self.min_target_lsn,
                 self.snapshot_id,
@@ -75,6 +75,7 @@ impl SnapshotPartitionTask {
                 partition_id: self.partition_id,
                 kind: SnapshotErrorKind::RepositoryIo(e),
             })?;
+        // todo: update partition_store archived lsn if this one is higher
 
         Ok(metadata)
     }

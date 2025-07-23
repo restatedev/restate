@@ -65,6 +65,7 @@ use restate_types::journal::{
 use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_v2::raw::TryFromEntry;
 use restate_types::live::Constant;
+use restate_types::partitions::Partition;
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::{HashMap, HashSet};
 use test_log::test;
@@ -130,15 +131,14 @@ impl TestEnv {
             "Using RocksDB temp directory {}",
             storage_options.data_dir().display()
         );
-        let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()))
-            .await
-            .unwrap();
+        let manager = PartitionStoreManager::create().await.unwrap();
         let rocksdb_storage = manager
-            .open_partition_store(
-                PartitionId::MIN,
-                RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+            .open_local_partition_store(
+                &Partition::new(
+                    PartitionId::MIN,
+                    RangeInclusive::new(PartitionKey::MIN, PartitionKey::MAX),
+                ),
                 OpenMode::CreateIfMissing,
-                &storage_options.rocksdb,
             )
             .await
             .unwrap();
