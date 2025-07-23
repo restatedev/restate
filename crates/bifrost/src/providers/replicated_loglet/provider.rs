@@ -26,7 +26,9 @@ use restate_types::logs::{LogId, LogletId, RecordCache};
 use restate_types::net::replicated_loglet::{SequencerDataService, SequencerMetaService};
 use restate_types::nodes_config::{Role, StorageState};
 use restate_types::replicated_loglet::{ReplicatedLogletParams, logserver_candidate_filter};
-use restate_types::replication::{NodeSet, NodeSetSelector, NodeSetSelectorOptions};
+use restate_types::replication::{
+    NodeSet, NodeSetChecker, NodeSetSelector, NodeSetSelectorOptions, ReplicationProperty,
+};
 
 use super::loglet::ReplicatedLoglet;
 use super::metric_definitions;
@@ -271,7 +273,17 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
         );
 
         let new_nodeset = selection.map_err(OperationError::retryable)?;
-        debug_assert!(new_nodeset.len() >= defaults.replication_property.num_copies() as usize);
+
+        let mut node_set_checker =
+            NodeSetChecker::new(&new_nodeset, &nodes_config, &defaults.replication_property);
+        node_set_checker.fill_with(true);
+
+        // check that the new node set fulfills the replication property
+        if !node_set_checker.check_write_quorum(|attr| *attr) {
+            // we couldn't find a nodeset that fulfills the desired replication property
+            return Ok(Improvement::None);
+        }
+
         if new_nodeset.len() < current_params.nodeset.len() {
             // a bigger nodeset is a better nodeset, we reject a smaller offer
             return Ok(Improvement::None);
@@ -349,7 +361,18 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
 
         match selection {
             Ok(nodeset) => {
-                debug_assert!(nodeset.len() >= defaults.replication_property.num_copies() as usize);
+                let mut node_set_checker =
+                    NodeSetChecker::new(&nodeset, &nodes_config, &defaults.replication_property);
+                node_set_checker.fill_with(true);
+
+                // check that the new node set fulfills the replication property
+                if !node_set_checker.check_write_quorum(|attr| *attr) {
+                    // we couldn't find a nodeset that fulfills the desired replication property
+                    return Err(OperationError::terminal(InsufficientNodesError(
+                        defaults.replication_property.clone(),
+                    )));
+                }
+
                 if defaults.replication_property.num_copies() > 1
                     && nodeset.len() == defaults.replication_property.num_copies() as usize
                 {
@@ -373,7 +396,7 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
                     .expect("LogletParams serde is infallible");
                 Ok(LogletParams::from(new_params))
             }
-            Err(err) => Err(OperationError::retryable(err)),
+            Err(err) => Err(OperationError::terminal(err)),
         }
     }
 
@@ -394,3 +417,7 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
         Ok(())
     }
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("not enough candidate nodes to form a node set that fulfills the replication property {0}")]
+pub struct InsufficientNodesError(ReplicationProperty);

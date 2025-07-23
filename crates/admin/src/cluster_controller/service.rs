@@ -56,7 +56,7 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::{MembershipState, PartitionReplicaSetStates};
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
-use restate_types::replication::{NodeSet, ReplicationProperty};
+use restate_types::replication::{NodeSet, NodeSetChecker, ReplicationProperty};
 use restate_types::{GenerationalNodeId, NodeId, Version};
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateRefresher;
@@ -863,9 +863,17 @@ pub fn build_new_replicated_loglet_configuration(
     match selection {
         Ok(nodeset) => {
             // todo(asoli): here is the right place to do additional validation and reject the nodeset if it
-            // fails to meet some safety margin. For now, we'll accept the nodeset as it meets the
-            // minimum replication requirement only.
-            debug_assert!(nodeset.len() >= replication.num_copies() as usize);
+            //  fails to meet some safety margin. For now, we'll accept the nodeset if it fulfills the replication
+            //  property.
+            let mut node_set_checker = NodeSetChecker::new(&nodeset, nodes_config, &replication);
+            node_set_checker.fill_with(true);
+
+            // check that the new node set fulfills the replication property
+            if !node_set_checker.check_write_quorum(|attr| *attr) {
+                // we couldn't find a nodeset that fulfills the desired replication property
+                return None;
+            }
+
             if replication.num_copies() > 1 && nodeset.len() == replication.num_copies() as usize {
                 warn!(
                     ?log_id,
