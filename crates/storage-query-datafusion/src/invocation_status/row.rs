@@ -176,6 +176,10 @@ fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, output: &mut String,
             row.invoked_by("subscription");
             row.invoked_by_subscription_id(format_using(output, &sub_id))
         }
+        Source::RestartAsNew(invocation_id) => {
+            row.invoked_by("restart_as_new");
+            row.restarted_from(format_using(output, &invocation_id))
+        }
     }
 }
 

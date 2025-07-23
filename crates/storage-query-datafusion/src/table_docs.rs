@@ -137,6 +137,9 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
             .remove("invoked_by_target")
             .expect("invoked_by_target should exist"),
         sys_invocation_status
+            .remove("restarted_from")
+            .expect("restarted_from should exist"),
+        sys_invocation_status
             .remove("pinned_deployment_id")
             .expect("pinned_deployment_id should exist"),
         sys_invocation_status
