@@ -667,6 +667,7 @@ pub enum Source {
     Ingress(PartitionProcessorRpcRequestId),
     Subscription(SubscriptionId),
     Service(InvocationId, InvocationTarget),
+    RestartAsNew(InvocationId),
     /// Internal calls for the non-deterministic built-in services
     Internal,
 }
@@ -1147,6 +1148,7 @@ mod serde_hacks {
         Ingress,
         Subscription(SubscriptionId),
         Service(InvocationId, InvocationTarget),
+        RestartAsNew(InvocationId),
         /// Internal calls for the non-deterministic built-in services
         Internal,
     }
@@ -1188,6 +1190,7 @@ mod serde_hacks {
                     }
                     Source::Subscription(sid) => super::Source::Subscription(sid),
                     Source::Service(id, target) => super::Source::Service(id, target),
+                    Source::RestartAsNew(id) => super::Source::RestartAsNew(id),
                     Source::Internal => super::Source::Internal,
                 },
                 restate_version,
@@ -1238,6 +1241,7 @@ mod serde_hacks {
                     super::Source::Subscription(subid) => Source::Subscription(subid),
                     super::Source::Service(id, target) => Source::Service(id, target),
                     super::Source::Internal => Source::Internal,
+                    super::Source::RestartAsNew(id) => Source::RestartAsNew(id),
                 },
             }
         }
