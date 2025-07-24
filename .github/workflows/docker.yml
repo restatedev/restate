@@ -194,9 +194,9 @@ jobs:
             RESTATE_FEATURES=${{ inputs.features || '' }}
           secrets: |
             parca=${{ secrets.PARCA_TOKEN }}
-          cache-from: type=gha,url=http://127.0.0.1:49160/
+          cache-from: type=gha,url=http://127.0.0.1:49160/,version=1
           # don't cache debug/parca builds, its just too big
-          cache-to: ${{ (!inputs.debug && !inputs.parca) && 'type=gha,url=http://127.0.0.1:49160/,mode=max' || '' }}
+          cache-to: ${{ (!inputs.debug && !inputs.parca) && 'type=gha,url=http://127.0.0.1:49160/,mode=max,version=1' || '' }}
 
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball != '' }}
