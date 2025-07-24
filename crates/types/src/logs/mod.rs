@@ -112,6 +112,17 @@ impl Lsn {
     }
 }
 
+// Allows using Lsn as a range bound
+impl std::ops::RangeBounds<Lsn> for std::ops::Range<std::ops::Bound<Lsn>> {
+    fn start_bound(&self) -> std::ops::Bound<&Lsn> {
+        self.start.as_ref()
+    }
+
+    fn end_bound(&self) -> std::ops::Bound<&Lsn> {
+        self.end.as_ref()
+    }
+}
+
 impl From<crate::protobuf::common::Lsn> for Lsn {
     fn from(lsn: crate::protobuf::common::Lsn) -> Self {
         Self::from(lsn.value)

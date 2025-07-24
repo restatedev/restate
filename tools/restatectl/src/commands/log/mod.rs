@@ -15,6 +15,7 @@ mod find_tail;
 mod gen_metadata;
 pub mod list_logs;
 mod reconfigure;
+mod seal;
 mod trim_log;
 
 use cling::prelude::*;
@@ -41,6 +42,8 @@ pub enum Logs {
     /// Reconfigure a log manually by sealing the tail segment
     /// and extending the chain with a new one
     Reconfigure(reconfigure::ReconfigureOpts),
+    /// Force sealing the current log chain
+    Seal(seal::SealOpts),
     /// Find and show tail state of a log
     FindTail(find_tail::FindTailOpts),
 }
@@ -56,18 +59,15 @@ where
 }
 
 pub fn deserialize_replicated_log_params(segment: &Segment) -> Option<ReplicatedLogletParams> {
-    match segment.config.kind {
-        ProviderKind::Replicated => {
-            ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
-                .inspect_err(|e| {
-                    c_println!(
-                        "⚠️ Failed to deserialize ReplicatedLogletParams for segment {}: {}",
-                        segment.index(),
-                        e
-                    );
-                })
-                .ok()
-        }
-        _ => None,
-    }
+    (segment.config.kind == ProviderKind::Replicated).then(|| {
+        ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
+            .inspect_err(|e| {
+                c_println!(
+                    "⚠️ Failed to deserialize ReplicatedLogletParams for segment {}: {}",
+                    segment.index(),
+                    e
+                );
+            })
+            .expect("deserialization of replicated loglet configuration failed")
+    })
 }

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -18,10 +19,9 @@ use tracing::{debug, info, instrument, trace};
 
 use restate_core::my_node_id;
 use restate_core::network::{Networking, TransportConnect};
-use restate_types::logs::metadata::{ProviderKind, SegmentIndex};
+use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{
-    KeyFilter, LogId, LogletId, LogletOffset, Record, RecordCache, SequenceNumber, TailOffsetWatch,
-    TailState,
+    KeyFilter, LogId, LogletOffset, Record, RecordCache, SequenceNumber, TailOffsetWatch, TailState,
 };
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 
@@ -269,12 +269,8 @@ impl<T: TransportConnect> ReplicatedLoglet<T> {
 
 #[async_trait]
 impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
-    fn id(&self) -> LogletId {
-        self.my_params.loglet_id
-    }
-
-    fn provider(&self) -> ProviderKind {
-        ProviderKind::Replicated
+    fn debug_str(&self) -> Cow<'static, str> {
+        Cow::from(format!("replicated/{}", self.my_params.loglet_id))
     }
 
     async fn create_read_stream(

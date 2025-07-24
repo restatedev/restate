@@ -18,6 +18,7 @@ use restate_core::network::{
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskKind};
 use restate_types::Version;
 use restate_types::errors::MaybeRetryableError;
+use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{LogletOffset, SequenceNumber, TailOffsetWatch};
 use restate_types::net::RpcRequest;
 use restate_types::net::replicated_loglet::{
@@ -233,10 +234,10 @@ fn create_loglet<T: TransportConnect>(
         .ok_or(SequencerStatus::UnknownLogId)?;
 
     let segment = chain
-        .iter()
-        .rev()
-        .find(|segment| segment.index() == header.segment_index)
+        .find_segment_by_index(header.segment_index, ProviderKind::Replicated)
         .ok_or(SequencerStatus::UnknownSegmentIndex)?;
+
+    debug_assert_eq!(segment.config.kind, ProviderKind::Replicated);
 
     provider
         .get_or_create_loglet(header.log_id, header.segment_index, &segment.config.params)
