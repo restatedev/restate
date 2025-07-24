@@ -16,6 +16,7 @@ use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::mem;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
@@ -143,7 +144,7 @@ pub(crate) struct LeadershipState<I> {
     state: State,
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
-    partition: Partition,
+    partition: Arc<Partition>,
     invoker_tx: I,
     bifrost: Bifrost,
     #[allow(unused)]
@@ -156,7 +157,7 @@ where
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        partition: Partition,
+        partition: Arc<Partition>,
         invoker_tx: I,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
@@ -640,6 +641,7 @@ mod tests {
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
     use std::ops::RangeInclusive;
+    use std::sync::Arc;
     use test_log::test;
     use tokio_stream::StreamExt;
 
@@ -659,7 +661,7 @@ mod tests {
 
         let invoker_tx = MockInvokerHandle::default();
         let mut state = LeadershipState::new(
-            PARTITION,
+            Arc::new(PARTITION),
             invoker_tx,
             bifrost.clone(),
             None,
