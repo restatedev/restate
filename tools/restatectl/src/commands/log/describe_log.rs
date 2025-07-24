@@ -19,7 +19,7 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_core::protobuf::cluster_ctrl_svc::{DescribeLogRequest, new_cluster_ctrl_client};
 use restate_types::Versioned;
 use restate_types::logs::LogId;
-use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};
+use restate_types::logs::metadata::{InternalKind, Logs, Segment, SegmentIndex};
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
@@ -172,7 +172,7 @@ async fn describe_log(
         let is_tail_segment = segment.index() == last_segment;
 
         match segment.config.kind {
-            ProviderKind::Replicated => {
+            InternalKind::Replicated => {
                 let params = log::deserialize_replicated_log_params(&segment);
                 let mut segment_row = vec![
                     render_tail_segment_marker(is_tail_segment),

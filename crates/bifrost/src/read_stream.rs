@@ -251,10 +251,8 @@ impl Stream for LogReadStream {
                         None
                     };
                     // => Start Reading
-                    // let log_metadata = Metadata::with_current(|m| m.updateable_logs_metadata());
                     this.substream.set(Some(substream));
                     this.state.set(State::Reading {
-                        // log_metadata,
                         safe_known_tail,
                         tail_watch,
                     });
@@ -416,6 +414,12 @@ impl Stream for LogReadStream {
                         this.state.set(State::Terminated);
                         return Poll::Ready(Some(Err(Error::UnknownLogId(*this.log_id))));
                     };
+                    // todo: the chain is permanently sealed and we have reached the chain sealed tail
+                    // todo: we are waiting at seal marker, keep waiting until new segment is
+                    // created or until the chain is permanently sealed. (watching the chain for changes)
+                    //
+                    // todo: we are waiting and no seal marker is in sigh, we schedule creating one to
+                    // ensure the read stream can advance.
 
                     match chain.find_segment_for_lsn(*this.read_pointer) {
                         MaybeSegment::Some(segment) => {
@@ -424,7 +428,9 @@ impl Stream for LogReadStream {
                             // one (if it was an empty sealed loglet) or that the loglet has been
                             // sealed and the read_pointer points to the next segment. In all
                             // cases, we want to get the right loglet.
-                            if segment.index() != substream.loglet().segment_index() {
+                            if segment.index() != substream.loglet().segment_index()
+                                || segment.config.kind != substream.loglet().config.kind
+                            {
                                 this.substream.set(None);
                                 let find_loglet_fut = Box::pin(
                                     bifrost_inner

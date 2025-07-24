@@ -303,18 +303,18 @@ impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
 
         // use the last loglet if it was replicated as a source for preferred nodes to reduce data
         // scatter for this log.
-        let mut preferred_nodes = match chain {
-            Some(chain) if chain.tail().config.kind == ProviderKind::Replicated => {
-                let tail = chain.tail();
-                // Json serde
-                let params =
-                    ReplicatedLogletParams::deserialize_from(tail.config.params.as_bytes())
-                        .map_err(|e| {
-                            ReplicatedLogletError::LogletParamsParsingError(log_id, tail.index(), e)
-                        })?;
-                params.nodeset
-            }
-            _ => NodeSet::new(),
+        let mut preferred_nodes = if let Some(chain) = chain
+            && let Some(tail) = chain.non_special_tail()
+            && tail.config.kind == ProviderKind::Replicated
+        {
+            // Json serde
+            let params = ReplicatedLogletParams::deserialize_from(tail.config.params.as_bytes())
+                .map_err(|e| {
+                    ReplicatedLogletError::LogletParamsParsingError(log_id, tail.index(), e)
+                })?;
+            params.nodeset
+        } else {
+            NodeSet::new()
         };
 
         let new_segment_index = chain
