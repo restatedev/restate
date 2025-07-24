@@ -424,7 +424,9 @@ impl Stream for LogReadStream {
                             // one (if it was an empty sealed loglet) or that the loglet has been
                             // sealed and the read_pointer points to the next segment. In all
                             // cases, we want to get the right loglet.
-                            if segment.index() != substream.loglet().segment_index() {
+                            if segment.index() != substream.loglet().segment_index()
+                                || segment.config.kind != substream.loglet().config.kind
+                            {
                                 this.substream.set(None);
                                 let find_loglet_fut = Box::pin(
                                     bifrost_inner
