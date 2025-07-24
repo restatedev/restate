@@ -272,7 +272,7 @@ impl Watchdog {
             let segment_index = tail_segment.index();
             let current_provider = tail_segment.config.kind;
 
-            // wW abort the task it has not finished and the tail segment has moved beyond what the
+            // Abort the task if it has not finished and the tail segment has moved beyond what the
             // task is about.
             //
             // if there is a task in-flight, we let it continue and we touch the checked instant
@@ -294,7 +294,9 @@ impl Watchdog {
                 }
             }
 
-            let may_improve = if current_provider != provider_config.kind() {
+            let may_improve = if !current_provider.is_seal_marker()
+                && current_provider != provider_config.kind()
+            {
                 Improvement::Possible {
                     reason: format!(
                         "provider change from {current_provider} to {}",

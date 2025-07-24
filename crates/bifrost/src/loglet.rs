@@ -28,8 +28,7 @@ use futures::stream::BoxStream;
 use futures::{FutureExt, Stream};
 use tokio::sync::oneshot;
 
-use restate_types::logs::metadata::ProviderKind;
-use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, TailState};
+use restate_types::logs::{KeyFilter, LogletOffset, Record, TailState};
 
 use crate::LogEntry;
 use crate::Result;
@@ -70,6 +69,9 @@ use crate::Result;
 
 #[async_trait]
 pub trait Loglet: Send + Sync {
+    /// A string describing this instance of the loglet, used for debugging purposes.
+    fn debug_str(&self) -> Cow<'static, str>;
+
     /// Create a read stream that streams record from a single loglet instance.
     ///
     /// `to`: The offset of the last record to be read (inclusive). If `None`, the
@@ -80,12 +82,6 @@ pub trait Loglet: Send + Sync {
         from: LogletOffset,
         to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError>;
-
-    /// A string representation of the id of this loglet
-    fn id(&self) -> LogletId;
-
-    /// What is the provider of this loglet
-    fn provider(&self) -> ProviderKind;
 
     /// Create a stream watching the state of tail for this loglet
     ///

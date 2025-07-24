@@ -82,18 +82,21 @@ async fn inner_reconfigure(
         .chain(&log_id)
         .with_context(|| format!("Unknown log id '{log_id}'"))?;
 
-    let tail_segment = chain.tail();
+    let tail_segment = chain.non_special_tail().unwrap();
+    let tail_provider = ProviderKind::try_from(tail_segment.config.kind)?;
 
-    let provider = opts.provider.unwrap_or(tail_segment.config.kind);
+    let new_provider = opts
+        .provider
+        .unwrap_or(logs.configuration().default_provider.kind());
 
-    let extension = match (provider, tail_segment.config.kind) {
+    let extension = match (new_provider, tail_provider) {
         // we can always go to replicated loglet
         (ProviderKind::Replicated, _) => replicated_loglet_params(opts, &tail_segment)?,
         // but never back to anything else
         (_, ProviderKind::Replicated) => {
             bail!(
                 "Switching back to {} provider kind is not supported",
-                provider
+                new_provider
             );
         }
         (ProviderKind::Local, _) => {
@@ -102,7 +105,7 @@ async fn inner_reconfigure(
             }
             ChainExtension {
                 segment_index: opts.segment_index,
-                provider: provider.to_string(),
+                provider: new_provider.to_string(),
                 ..Default::default()
             }
         }
@@ -112,7 +115,7 @@ async fn inner_reconfigure(
             }
             ChainExtension {
                 segment_index: opts.segment_index,
-                provider: provider.to_string(),
+                provider: new_provider.to_string(),
                 ..Default::default()
             }
         }
