@@ -112,22 +112,17 @@ impl SpawnPartitionProcessorTask {
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());
 
-        let pp_builder = PartitionProcessorBuilder::new(
-            partition.clone(),
-            status,
-            control_rx,
-            net_rx,
-            watch_tx,
-            invoker.handle(),
-        );
+        let pp_builder =
+            PartitionProcessorBuilder::new(status, control_rx, net_rx, watch_tx, invoker.handle());
 
         let invoker_name = Arc::from(format!("invoker-{}", partition.partition_id));
         let invoker_config = configuration.clone().map(|c| &c.worker.invoker);
+        let key_range = partition.key_range.clone();
 
         let root_task_handle = TaskCenter::current().start_runtime(
             TaskKind::PartitionProcessor,
             task_name,
-            Some(pp_builder.partition.partition_id),
+            Some(partition.partition_id),
             {
                 move || async move {
                     if let Some(delay) = delay {
@@ -135,7 +130,7 @@ impl SpawnPartitionProcessorTask {
                     }
 
                     let partition_store = match partition_store_manager
-                        .open(&pp_builder.partition, fast_forward_lsn)
+                        .open(&partition, fast_forward_lsn)
                         .await
                     {
                         Ok(partition_store) => Ok(partition_store),
@@ -176,7 +171,7 @@ impl SpawnPartitionProcessorTask {
 
         let state = StartedProcessor::new(
             root_task_handle.cancellation_token().clone(),
-            partition.key_range,
+            key_range,
             control_tx,
             status_reader,
             net_tx,
