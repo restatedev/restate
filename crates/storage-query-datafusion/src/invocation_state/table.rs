@@ -80,9 +80,10 @@ async fn partition_key_range(
         .map(|store| store.partition_key_range().clone())
 }
 
-#[derive(Debug, Clone)]
+#[derive(derive_more::Debug, Clone)]
 struct StatusScanner<S> {
     status_handle: S,
+    #[debug(skip)]
     partition_store_manager: PartitionStoreManager,
 }
 

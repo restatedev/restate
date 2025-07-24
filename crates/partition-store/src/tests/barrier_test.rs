@@ -13,7 +13,7 @@ use restate_types::{
     partitions::Partition,
 };
 
-use crate::{OpenMode, PartitionStoreManager};
+use crate::PartitionStoreManager;
 
 #[restate_core::test]
 async fn barrier_fsm() -> googletest::Result<()> {
@@ -28,9 +28,7 @@ async fn barrier_fsm() -> googletest::Result<()> {
     let partition_store_manager = PartitionStoreManager::create().await?;
 
     let partition = Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX);
-    let mut partition_store = partition_store_manager
-        .open_local_partition_store(&partition, OpenMode::CreateIfMissing)
-        .await?;
+    let mut partition_store = partition_store_manager.open(&partition, None).await?;
 
     // we default to unknown if FSM doesn't have a min version, in that case, any "real" version
     // should be greater.

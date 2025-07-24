@@ -55,7 +55,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
     drop(partition_store);
     drop(snapshot);
 
-    manager.drop_partition(partition_id).await;
+    manager.drop_partition(partition_id).await.unwrap();
 
     let snapshot_meta: PartitionSnapshotMetadata = serde_json::from_str(&metadata_json).unwrap();
 
@@ -69,7 +69,7 @@ pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_stor
     };
 
     let mut new_partition_store = manager
-        .open_partition_store_from_snapshot(
+        .open_from_snapshot(
             &Partition::new(partition_id, RangeInclusive::new(0, PartitionKey::MAX - 1)),
             snapshot,
         )

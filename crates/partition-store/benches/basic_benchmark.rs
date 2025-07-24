@@ -14,7 +14,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use tokio::runtime::Builder;
 
 use restate_core::TaskCenterBuilder;
-use restate_partition_store::{OpenMode, PartitionStore, PartitionStoreManager};
+use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::deduplication_table::{
@@ -59,9 +59,9 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
             .await
             .expect("DB creation succeeds");
         manager
-            .open_local_partition_store(
+            .open(
                 &Partition::new(PartitionId::MIN, RangeInclusive::new(0, PartitionKey::MAX)),
-                OpenMode::CreateIfMissing,
+                None,
             )
             .await
             .expect("column family is open")
