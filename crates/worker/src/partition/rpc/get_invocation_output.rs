@@ -21,8 +21,7 @@ use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
-    AttachInvocationRequest, InvocationQuery, InvocationTarget, InvocationTargetType,
-    ServiceInvocationResponseSink, WorkflowHandlerType,
+    AttachInvocationRequest, InvocationQuery, ServiceInvocationResponseSink,
 };
 use restate_types::net::partition_processor::{
     GetInvocationOutputResponseMode, PartitionProcessorRpcError, PartitionProcessorRpcResponse,
@@ -75,16 +74,6 @@ where
 
         match invocation_status {
             InvocationStatus::Free => Ok(PartitionProcessorRpcResponse::NotFound),
-            is if is.idempotency_key().is_none()
-                && is
-                    .invocation_target()
-                    .map(InvocationTarget::invocation_target_ty)
-                    != Some(InvocationTargetType::Workflow(
-                        WorkflowHandlerType::Workflow,
-                    )) =>
-            {
-                Ok(PartitionProcessorRpcResponse::NotSupported)
-            }
             InvocationStatus::Completed(completed) => {
                 let completion_expiry_time = completed.completion_expiry_time();
                 Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {

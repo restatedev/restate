@@ -56,10 +56,9 @@ use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, TimerTable};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::errors::{
-    ALREADY_COMPLETED_INVOCATION_ERROR, ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
-    CANCELED_INVOCATION_ERROR, GenericError, InvocationErrorCode, KILLED_INVOCATION_ERROR,
-    NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
-    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError,
+    InvocationErrorCode, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
+    NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, PartitionKey,
@@ -3335,23 +3334,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.send_response_to_sinks(
                     vec![attach_invocation_request.response_sink],
                     NOT_FOUND_INVOCATION_ERROR,
-                    Some(invocation_id),
-                    None,
-                    None,
-                )
-                .await?
-            }
-            is if is.idempotency_key().is_none()
-                && is
-                    .invocation_target()
-                    .map(InvocationTarget::invocation_target_ty)
-                    != Some(InvocationTargetType::Workflow(
-                        WorkflowHandlerType::Workflow,
-                    )) =>
-            {
-                self.send_response_to_sinks(
-                    vec![attach_invocation_request.response_sink],
-                    ATTACH_NOT_SUPPORTED_INVOCATION_ERROR,
                     Some(invocation_id),
                     None,
                     None,
