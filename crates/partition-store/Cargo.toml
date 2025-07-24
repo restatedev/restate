@@ -32,6 +32,7 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 humantime = { workspace = true }
 object_store = { workspace = true }
+parking_lot = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }

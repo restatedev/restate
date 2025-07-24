@@ -240,6 +240,12 @@ impl CfName {
     }
 }
 
+impl From<CfName> for SmartString {
+    fn from(val: CfName) -> Self {
+        val.0
+    }
+}
+
 impl AsRef<str> for CfName {
     fn as_ref(&self) -> &str {
         self.0.as_ref()
