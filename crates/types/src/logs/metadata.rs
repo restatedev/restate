@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{BTreeMap, HashMap, HashSet, hash_map};
+use std::collections::{BTreeMap, HashSet, hash_map};
 use std::num::NonZeroU8;
+use std::ops::Bound;
 use std::str::FromStr;
 use std::sync::Arc;
 
+use ahash::{HashMap, HashMapExt};
 use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
@@ -29,6 +31,7 @@ use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::replicated_loglet::ReplicatedLogletParams;
 use crate::replication::ReplicationProperty;
+use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
 
 // Starts with 0 being the oldest loglet in the chain.
@@ -377,9 +380,7 @@ impl TryFrom<LogsSerde> for Logs {
         let mut config = value.config;
         for (log_id, chain) in value.logs {
             for loglet_config in chain.chain.values() {
-                // needed if other loglets than the replicated one are enabled
-                #[allow(irrefutable_let_patterns)]
-                if let ProviderKind::Replicated = loglet_config.kind {
+                if ProviderKind::Replicated == loglet_config.kind {
                     let params =
                         ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())?;
                     lookup_index.add_replicated_loglet(log_id, loglet_config.index, params);
@@ -425,25 +426,50 @@ struct LogsSerde {
     config: Option<LogsConfiguration>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, Eq, PartialEq, derive_more::IsVariant)]
-pub enum ChainState {
-    /// Chain is allowed to grow
-    #[default]
-    Open,
-    /// Chain is sealed. No new segments can be added.
-    Sealed {
-        /// The LSN of the virtually impossible next segment, akin to the first lsn of the next
-        /// segment in an open chain.
-        tail_lsn: Lsn,
-    },
+/// Seal metadata is json-serialized and stored as loglet params of the seal marker segment.
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
+pub struct SealMetadata {
+    /// If seal is permanent, the chain will not be allowed to grow.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub permanent_seal: bool,
+    pub sealed_at: MillisSinceEpoch,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub context: HashMap<String, String>,
+}
+
+impl SealMetadata {
+    pub fn deserialize_from(slice: &[u8]) -> Result<Self, serde_json::Error> {
+        serde_json::from_slice(slice)
+    }
+
+    pub fn serialize(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+}
+
+impl Default for SealMetadata {
+    fn default() -> Self {
+        Self {
+            permanent_seal: false,
+            sealed_at: MillisSinceEpoch::now(),
+            context: HashMap::new(),
+        }
+    }
+}
+
+impl TryFrom<&SealMetadata> for LogletParams {
+    type Error = serde_json::Error;
+
+    fn try_from(value: &SealMetadata) -> Result<Self, Self::Error> {
+        Ok(LogletParams::from(serde_json::to_string(value)?))
+    }
 }
 
 /// the chain is a list of segments in (from Lsn) order.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chain {
-    #[serde(default)]
-    pub(super) state: ChainState,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub(super) chain: BTreeMap<Lsn, LogletConfig>,
@@ -470,7 +496,7 @@ impl<'a> Segment<'a> {
 /// A segment in the chain of loglet instances.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogletConfig {
-    pub kind: ProviderKind,
+    pub kind: InternalKind,
     pub params: LogletParams,
     /// This is a cheap and collision-free way to identify loglets within the same log without
     /// using random numbers. Globally, the tuple (log_id, index) is unique.
@@ -487,7 +513,7 @@ impl LogletConfig {
     #[cfg(feature = "test-util")]
     pub fn for_testing() -> Self {
         Self {
-            kind: ProviderKind::InMemory,
+            kind: InternalKind::InMemory,
             params: LogletParams(ByteString::default()),
             index: 0.into(),
         }
@@ -512,6 +538,87 @@ impl From<String> for LogletParams {
 impl From<&'static str> for LogletParams {
     fn from(value: &'static str) -> Self {
         Self(ByteString::from_static(value))
+    }
+}
+
+/// An enum with the list of supported loglet providers.
+///
+/// Internal kinds may include special loglets that are not exposed to the user.
+#[derive(
+    Debug,
+    Clone,
+    Hash,
+    Eq,
+    PartialEq,
+    Copy,
+    serde::Serialize,
+    serde::Deserialize,
+    Enum,
+    strum::EnumIter,
+    strum::Display,
+)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum InternalKind {
+    /// A local rocksdb-backed loglet.
+    Local,
+    /// An in-memory loglet, for testing.
+    InMemory,
+    /// Replicated loglets are restate's native log replication system. This requires
+    /// `log-server` role to run on enough nodes in the cluster.
+    Replicated,
+
+    /// A loglet that's always sealed and has no records. Used as a seal marker for a sealed chain.
+    Sealed,
+}
+
+impl InternalKind {
+    pub fn is_seal_marker(&self) -> bool {
+        matches!(self, Self::Sealed)
+    }
+}
+
+impl From<ProviderKind> for InternalKind {
+    fn from(value: ProviderKind) -> Self {
+        match value {
+            ProviderKind::Local => Self::Local,
+            ProviderKind::InMemory => Self::InMemory,
+            ProviderKind::Replicated => Self::Replicated,
+        }
+    }
+}
+
+impl TryFrom<InternalKind> for ProviderKind {
+    type Error = anyhow::Error;
+    fn try_from(value: InternalKind) -> Result<Self, Self::Error> {
+        match value {
+            InternalKind::Local => Ok(Self::Local),
+            InternalKind::InMemory => Ok(Self::InMemory),
+            InternalKind::Replicated => Ok(Self::Replicated),
+            InternalKind::Sealed => Err(anyhow::anyhow!(
+                "a special loglet kind that cannot be converted into user-facing kind"
+            )),
+        }
+    }
+}
+
+impl PartialEq<InternalKind> for ProviderKind {
+    fn eq(&self, other: &InternalKind) -> bool {
+        match self {
+            ProviderKind::Local => matches!(other, InternalKind::Local),
+            ProviderKind::InMemory => matches!(other, InternalKind::InMemory),
+            ProviderKind::Replicated => matches!(other, InternalKind::Replicated),
+        }
+    }
+}
+
+impl PartialEq<ProviderKind> for InternalKind {
+    fn eq(&self, other: &ProviderKind) -> bool {
+        match other {
+            ProviderKind::Local => matches!(self, InternalKind::Local),
+            ProviderKind::InMemory => matches!(self, InternalKind::InMemory),
+            ProviderKind::Replicated => matches!(self, InternalKind::Replicated),
+        }
     }
 }
 
@@ -560,10 +667,21 @@ impl FromStr for ProviderKind {
 impl LogletConfig {
     pub(crate) fn new(index: SegmentIndex, kind: ProviderKind, params: LogletParams) -> Self {
         Self {
-            kind,
+            kind: InternalKind::from(kind),
             params,
             index,
         }
+    }
+
+    pub(crate) fn new_sealed(
+        index: SegmentIndex,
+        metadata: &SealMetadata,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Self {
+            kind: InternalKind::Sealed,
+            params: LogletParams::try_from(metadata)?,
+            index,
+        })
     }
 
     pub fn index(&self) -> SegmentIndex {
@@ -663,10 +781,46 @@ impl Chain {
             base_lsn,
             LogletConfig::new(SegmentIndex::default(), kind, config),
         );
-        Self {
-            chain,
-            state: ChainState::Open,
+        Self { chain }
+    }
+
+    /// Returns the sealed tail if the chain is sealed.
+    pub fn sealed_tail(&self) -> Option<Lsn> {
+        if let Some((&lsn, config)) = self.chain.last_key_value()
+            && config.kind.is_seal_marker()
+        {
+            Some(lsn)
+        } else {
+            None
         }
+    }
+
+    /// Is the chain sealed?
+    pub fn is_sealed(&self) -> bool {
+        self.sealed_tail().is_some()
+    }
+
+    /// Finds the last non-special segment in the chain if it exists.
+    pub fn non_special_tail(&self) -> Option<Segment<'_>> {
+        let (&base_lsn, config) = self
+            .chain
+            .iter()
+            .rfind(|(_, config)| !config.kind.is_seal_marker())?;
+
+        // Does it have a next segment? then it's sealed.
+        //
+        // Checkout the comment in `find_segment_for_lsn()` for why we use `range()` here.
+        let tail_lsn = self
+            .chain
+            .range(Bound::Excluded(base_lsn)..Bound::Unbounded)
+            .next()
+            .map(|(lsn, _)| *lsn);
+
+        Some(Segment {
+            base_lsn,
+            tail_lsn,
+            config,
+        })
     }
 
     #[track_caller]
@@ -692,24 +846,47 @@ impl Chain {
     #[track_caller]
     pub fn head(&self) -> Segment<'_> {
         let mut iter = self.chain.iter();
-        let maybe_head = iter.next();
-        let tail_lsn = iter.next().map(|(k, _)| *k);
+        let (&base_lsn, config) = iter.next().expect("Chain must have at least one segment");
+        let tail_lsn = iter.next().map(|(&lsn, _)| lsn);
 
-        maybe_head
-            .map(|(base_lsn, config)| Segment {
-                base_lsn: *base_lsn,
-                tail_lsn,
-                config,
-            })
-            .expect("Chain must have at least one segment")
+        Segment {
+            base_lsn,
+            tail_lsn,
+            config,
+        }
     }
 
     pub fn num_segments(&self) -> usize {
         self.chain.len()
     }
 
+    pub fn find_segment_by_index(
+        &self,
+        index: SegmentIndex,
+        provider: ProviderKind,
+    ) -> Option<Segment<'_>> {
+        let (&base_lsn, config) = self
+            .chain
+            .iter()
+            .rfind(|(_, config)| config.index() == index && config.kind == provider)?;
+
+        // Checkout the comment in `find_segment_for_lsn()` for why we use `range()` here.
+        let tail_lsn = self
+            .chain
+            .range(Bound::Excluded(base_lsn)..Bound::Unbounded)
+            .next()
+            .map(|(lsn, _)| *lsn);
+
+        Some(Segment {
+            base_lsn,
+            tail_lsn,
+            config,
+        })
+    }
+
     /// Finds the segment that contains the given Lsn.
     /// Returns `MaybeSegment::Trim` if the Lsn is behind the oldest segment (trimmed).
+    #[track_caller]
     pub fn find_segment_for_lsn(&self, lsn: Lsn) -> MaybeSegment<'_> {
         // Ensure we don't actually consider INVALID as INVALID.
         let lsn = lsn.max(Lsn::OLDEST);
@@ -717,36 +894,51 @@ impl Chain {
         // efficient cursor seeks in the chain (or use nightly channel)
         // Reference: https://github.com/rust-lang/rust/issues/107540
 
-        // The tail lsn is the base_lsn of the next segment (if exists)
-        let mut tail_lsn = None;
         // linear backward search until we can use the Cursor API.
-        let mut range = self.chain.range(..);
         // walking backwards.
-        while let Some((base_lsn, config)) = range.next_back() {
-            if lsn >= *base_lsn {
-                return MaybeSegment::Some(Segment {
-                    base_lsn: *base_lsn,
-                    tail_lsn,
-                    config,
-                });
-            }
-            tail_lsn = Some(*base_lsn);
-        }
+        let Some((&base_lsn, config)) = self.chain.iter().rfind(|(base_lsn, _)| lsn >= **base_lsn)
+        else {
+            let (&next_base_lsn, _) = self.chain.iter().next().expect("Chain is not empty");
+            return MaybeSegment::Trim { next_base_lsn };
+        };
 
-        MaybeSegment::Trim {
-            next_base_lsn: tail_lsn.expect("Chain is not empty"),
-        }
+        // Why not we just drive the iter() iterator forward instead of creating a new one?
+        // glad you asked. Rust iterators do not guarantee that they will drive the iterator
+        // forward once they return None. When `rfind()` stops searching, it might have hit a
+        // None. In the case of btreemap range iterator, calling next() on that iterator will
+        // not advance it and we'll always see None.
+        let tail_lsn = {
+            let next = self
+                .chain
+                .range(Bound::Excluded(base_lsn)..Bound::Unbounded)
+                .next();
+            next.map(|(&lsn, _)| lsn)
+        };
+
+        MaybeSegment::Some(Segment {
+            base_lsn,
+            tail_lsn,
+            config,
+        })
     }
 
-    /// Note that this is a special case, we don't set tail_lsn on segments, why?
-    /// - It adds complexity
-    /// - Tail LSN can be established by visiting the next item in the iterator externally
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = Segment<'_>> + '_ {
-        self.chain.iter().map(|(lsn, loglet_config)| Segment {
-            base_lsn: *lsn,
-            // See note above
-            tail_lsn: None,
-            config: loglet_config,
+    pub fn iter(&self) -> impl Iterator<Item = Segment<'_>> + '_ {
+        let mut iter = self.chain.iter();
+        let mut maybe_current = iter.next();
+
+        std::iter::from_fn(move || {
+            let (&base_lsn, config) = maybe_current?;
+            let tmp_next = iter.next();
+            let tail_lsn = tmp_next.map(|(&lsn, _)| lsn);
+
+            let segment = Segment {
+                base_lsn,
+                tail_lsn,
+                config,
+            };
+            maybe_current = tmp_next;
+
+            Some(segment)
         })
     }
 }

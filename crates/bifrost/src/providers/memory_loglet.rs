@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, hash_map};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -327,13 +328,10 @@ impl Stream for MemoryReadStream {
 
 #[async_trait]
 impl Loglet for MemoryLoglet {
-    fn id(&self) -> LogletId {
-        self.loglet_id
+    fn debug_str(&self) -> Cow<'static, str> {
+        Cow::from(format!("in-memory/{}", self.loglet_id))
     }
 
-    fn provider(&self) -> ProviderKind {
-        ProviderKind::InMemory
-    }
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,

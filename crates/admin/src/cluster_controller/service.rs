@@ -43,7 +43,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::live::Live;
 use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
-    ReplicatedLogletConfig, SegmentIndex,
+    ReplicatedLogletConfig, SealMetadata, SegmentIndex,
 };
 use restate_types::logs::{LogId, LogletId, Lsn};
 use restate_types::net::node::NodeState;
@@ -196,6 +196,11 @@ enum ClusterControllerCommand {
         extension: Option<ChainExtension>,
         response_tx: oneshot::Sender<anyhow::Result<SealedSegment>>,
     },
+    SealChain {
+        log_id: LogId,
+        segment_index: Option<SegmentIndex>,
+        response_tx: oneshot::Sender<anyhow::Result<Lsn>>,
+    },
 }
 
 pub struct ClusterControllerHandle {
@@ -283,6 +288,25 @@ impl ClusterControllerHandle {
                 partition_replication,
                 default_provider,
                 num_partitions,
+                response_tx,
+            })
+            .await;
+
+        response_rx.await.map_err(|_| ShutdownError)
+    }
+
+    pub async fn seal_chain(
+        &self,
+        log_id: LogId,
+        segment_index: Option<SegmentIndex>,
+    ) -> Result<anyhow::Result<Lsn>, ShutdownError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let _ = self
+            .tx
+            .send(ClusterControllerCommand::SealChain {
+                log_id,
+                segment_index,
                 response_tx,
             })
             .await;
@@ -499,6 +523,27 @@ impl<T: TransportConnect> Service<T> {
                         Ok(())
                     });
             }
+            ClusterControllerCommand::SealChain {
+                log_id,
+                segment_index,
+                response_tx,
+            } => {
+                let bifrost = self.bifrost.clone();
+
+                // receiver will get error if response_tx is dropped
+                _ = TaskCenter::spawn(TaskKind::Disposable, "seal-chain", async move {
+                    let result = SealChainTask {
+                        log_id,
+                        segment_index,
+                        bifrost,
+                    }
+                    .run()
+                    .await;
+
+                    _ = response_tx.send(result);
+                    Ok(())
+                });
+            }
             ClusterControllerCommand::SealAndExtendChain {
                 log_id,
                 min_version,
@@ -672,6 +717,33 @@ where
     }
 }
 
+struct SealChainTask {
+    log_id: LogId,
+    segment_index: Option<SegmentIndex>,
+    bifrost: Bifrost,
+}
+
+impl SealChainTask {
+    async fn run(self) -> anyhow::Result<Lsn> {
+        let logs = Metadata::with_current(|m| m.logs_ref());
+        let actual_tail_segment = logs
+            .chain(&self.log_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown log id"))?
+            .tail()
+            .index();
+
+        let segment_index = self.segment_index.unwrap_or(actual_tail_segment);
+
+        let tail_lsn = self
+            .bifrost
+            .admin()
+            .seal(self.log_id, segment_index, SealMetadata::default())
+            .await?;
+
+        Ok(tail_lsn)
+    }
+}
+
 struct SealAndExtendTask {
     log_id: LogId,
     min_version: Version,
@@ -713,7 +785,7 @@ impl SealAndExtendTask {
             .tail();
 
         let next_loglet_id = LogletId::new(self.log_id, segment.index().next());
-        let previous_params = if matches!(segment.config.kind, ProviderKind::Replicated) {
+        let previous_params = if segment.config.kind == ProviderKind::Replicated {
             let replicated_loglet_params =
                 ReplicatedLogletParams::deserialize_from(segment.config.params.as_bytes())
                     .context("Invalid replicated loglet params")?;
