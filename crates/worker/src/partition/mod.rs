@@ -12,7 +12,6 @@ mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
 pub mod shuffle;
-pub mod snapshots;
 mod state_machine;
 pub mod types;
 

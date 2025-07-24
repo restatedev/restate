@@ -15,6 +15,7 @@ restate-workspace-hack = { workspace = true }
 
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
+restate-object-store-util = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
@@ -30,6 +31,7 @@ enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 humantime = { workspace = true }
+object_store = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
 rocksdb = { workspace = true }
@@ -38,10 +40,13 @@ serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
 static_assertions = { workspace = true }
 strum = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["io-util"] }
 tracing = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
@@ -57,6 +62,7 @@ num-bigint = "0.4"
 rand = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [[bench]]
 name = "basic_benchmark"
