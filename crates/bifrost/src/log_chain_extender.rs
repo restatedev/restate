@@ -25,35 +25,87 @@ use crate::error::AdminError;
 
 const MAX_BATCH_SIZE_LOG_CHAIN_EXTENSIONS: usize = 128;
 
-pub(super) struct ExtendLogChain {
-    pub log_id: LogId,
-    pub last_segment_index: SegmentIndex,
-    pub base_lsn: Lsn,
-    pub provider: ProviderKind,
-    pub params: LogletParams,
-    pub response_tx: Option<oneshot::Sender<Result<(), Error>>>,
+struct OpOutput<T> {
+    tx: oneshot::Sender<Result<T, Error>>,
+    staged_result: Option<Result<T, Error>>,
 }
 
-impl ExtendLogChain {
-    fn fail(&mut self, err: Error) {
-        if let Some(response_tx) = self.response_tx.take() {
-            // ignore if the receiver disappeared
-            let _ = response_tx.send(Err(err));
+impl<T> OpOutput<T> {
+    fn stage_output(&mut self, result: Result<T, Error>) {
+        self.staged_result = Some(result);
+    }
+
+    fn fail(self, err: Error) {
+        // ignore if the receiver disappeared
+        let _ = self.tx.send(Err(err));
+    }
+
+    fn complete(self) {
+        let result = self
+            .staged_result
+            .expect("complete must be called on a staged result");
+        // ignore if the receiver disappeared
+        let _ = self.tx.send(result);
+    }
+}
+
+pub(super) struct LogChainCommand {
+    log_id: LogId,
+    last_segment_index: SegmentIndex,
+    op: ChainOp,
+}
+
+impl LogChainCommand {
+    pub fn extend(
+        log_id: LogId,
+        last_segment_index: SegmentIndex,
+        base_lsn: Lsn,
+        provider: ProviderKind,
+        params: LogletParams,
+    ) -> (oneshot::Receiver<Result<(), Error>>, Self) {
+        let (tx, rx) = oneshot::channel();
+        let cmd = Self {
+            log_id,
+            last_segment_index,
+            op: ChainOp::Extend {
+                base_lsn,
+                provider,
+                params,
+                response: OpOutput {
+                    tx,
+                    staged_result: None,
+                },
+            },
+        };
+        (rx, cmd)
+    }
+
+    fn fail(self, err: Error) {
+        match self.op {
+            ChainOp::Extend { response, .. } => response.fail(err),
         }
     }
 
-    fn complete(&mut self) {
-        if let Some(response_tx) = self.response_tx.take() {
-            // ignore if the receiver disappeared
-            let _ = response_tx.send(Ok(()));
+    fn complete(self) {
+        match self.op {
+            ChainOp::Extend { response, .. } => response.complete(),
         }
     }
+}
+
+enum ChainOp {
+    Extend {
+        base_lsn: Lsn,
+        provider: ProviderKind,
+        params: LogletParams,
+        response: OpOutput<()>,
+    },
 }
 
 /// Component which coalesces multiple log-chain updates into a single [`Logs`] update. It works
-/// by draining all available [`ExtendLogChain`] commands and applying them to the current logs
+/// by draining all available [`LogChainCommand`] commands and applying them to the current logs
 /// configuration using a read-modify-write metadata operation. A log chain can only be extended if
-/// the last segment index equals the value specified by the [`ExtendLogChain`] command.
+/// the last segment index equals the value specified by the [`LogChainCommand`] command.
 pub struct LogChainExtender {
     inner: Arc<BifrostInner>,
     extend_log_chain_rx: ExtendLogChainReceiver,
@@ -81,7 +133,7 @@ impl LogChainExtender {
     pub async fn run_inner(mut self) {
         let mut buffer = Vec::new();
 
-        // await the first extend log chain command
+        // await the first log chain command
         loop {
             let received = self
                 .extend_log_chain_rx
@@ -92,29 +144,35 @@ impl LogChainExtender {
                 break;
             }
 
-            // batch-apply all collected extend log chain commands
+            // batch-apply all collected log chain commands
             match self
                 .inner
                 .metadata_writer
                 .global_metadata()
                 .read_modify_write(|logs: Option<Arc<Logs>>| {
-                    let mut builder = logs
-                        .ok_or(Error::LogsMetadataNotProvisioned)?
-                        .as_ref()
-                        .clone()
-                        .into_builder();
+                    let mut builder =
+                        Arc::unwrap_or_clone(logs.ok_or(Error::LogsMetadataNotProvisioned)?)
+                            .into_builder();
 
-                    for extend_log_chain in &mut buffer {
-                        if let Err(err) = Self::extend_log_chain(
-                            &mut builder,
-                            extend_log_chain.log_id,
-                            extend_log_chain.last_segment_index,
-                            extend_log_chain.base_lsn,
-                            extend_log_chain.provider,
-                            extend_log_chain.params.clone(),
-                        ) {
-                            extend_log_chain.fail(err);
-                        }
+                    for cmd in &mut buffer {
+                        let last_segment_index = cmd.last_segment_index;
+                        match cmd.op {
+                            ChainOp::Extend {
+                                base_lsn,
+                                provider,
+                                ref params,
+                                ref mut response,
+                            } => {
+                                response.stage_output(Self::extend_log_chain(
+                                    &mut builder,
+                                    cmd.log_id,
+                                    last_segment_index,
+                                    base_lsn,
+                                    provider,
+                                    params,
+                                ));
+                            }
+                        };
                     }
                     Ok(builder.build())
                 })
@@ -122,13 +180,13 @@ impl LogChainExtender {
                 .map_err(|err: ReadModifyWriteError<Error>| err.transpose())
             {
                 Ok(_) => {
-                    for mut extend_log_chain in buffer.drain(..) {
-                        extend_log_chain.complete();
+                    for cmd in buffer.drain(..) {
+                        cmd.complete();
                     }
                 }
                 Err(err) => {
-                    for mut extend_log_chain in buffer.drain(..) {
-                        extend_log_chain.fail(err.clone());
+                    for cmd in buffer.drain(..) {
+                        cmd.fail(err.clone());
                     }
                 }
             }
@@ -141,7 +199,7 @@ impl LogChainExtender {
         last_segment_index: SegmentIndex,
         base_lsn: Lsn,
         provider_kind: ProviderKind,
-        params: LogletParams,
+        params: &LogletParams,
     ) -> Result<(), Error> {
         let mut chain_builder = builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
 
