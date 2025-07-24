@@ -229,7 +229,9 @@ impl AsRef<str> for DbName {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, derive_more::Display, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct CfName(SmartString);
 
 impl CfName {

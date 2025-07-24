@@ -15,12 +15,13 @@ use std::pin::pin;
 
 use futures::Stream;
 use restate_core::TestCoreEnv;
+use restate_types::partitions::Partition;
 use tokio_stream::StreamExt;
 
 use crate::{OpenMode, PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
-use restate_types::config::{CommonOptions, StorageOptions};
+use restate_types::config::CommonOptions;
 use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
@@ -51,17 +52,17 @@ async fn storage_test_environment_with_manager() -> (PartitionStoreManager, Part
     // create a rocksdb storage from options
     //
     RocksDbManager::init(Constant::new(CommonOptions::default()));
-    let storage_options = StorageOptions::default();
-    let manager = PartitionStoreManager::create(Constant::new(storage_options.clone()))
+    let manager = PartitionStoreManager::create()
         .await
         .expect("DB storage creation succeeds");
     // A single partition store that spans all keys.
     let store = manager
-        .open_partition_store(
-            PartitionId::MIN,
-            RangeInclusive::new(0, PartitionKey::MAX - 1),
+        .open_local_partition_store(
+            &Partition::new(
+                PartitionId::MIN,
+                RangeInclusive::new(0, PartitionKey::MAX - 1),
+            ),
             OpenMode::CreateIfMissing,
-            &storage_options.rocksdb,
         )
         .await
         .expect("DB storage creation succeeds");
