@@ -21,7 +21,9 @@ use exporter::RuntimeModifierSpanExporter;
 use opentelemetry::trace::{TraceError, TracerProvider};
 use opentelemetry::{InstrumentationScope, KeyValue, global};
 use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
-use opentelemetry_otlp::{SpanExporter, WithExportConfig, WithTonicConfig};
+use opentelemetry_otlp::{
+    Protocol, SpanExporter, WithExportConfig, WithHttpConfig, WithTonicConfig,
+};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::BatchSpanProcessor;
 use pretty::Pretty;
@@ -37,6 +39,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
+use restate_serde_util::SerdeableHeaderHashMap;
 use restate_types::config::{CommonOptions, LogFormat};
 #[cfg(feature = "console-subscriber")]
 use restate_types::net::BindAddress;
@@ -59,8 +62,13 @@ pub enum Error {
         "could not initialize tracing: you must specify at least `tracing_endpoint` or `tracing_json_path`"
     )]
     InvalidTracingConfiguration,
+
+    #[error("invalid tracing endpoint: {0}")]
+    InvalidTracingEndpoint(#[from] EndpointError),
+
     #[error("could not initialize tracing: {0}")]
     Tracing(#[from] TraceError),
+
     #[error(
         "cannot parse log configuration {e} environment variable: {0}",
         e = EnvFilter::DEFAULT_ENV
@@ -68,11 +76,121 @@ pub enum Error {
     LogDirectiveParseError(#[from] ParseError),
 }
 
-/// creates and register a global opentelemetry tracer provider. The global
-/// provider is exclusively used by the [`invocation_span!`] macro
-fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct EndpointError(String);
+
+fn bad_endpoint<T: Into<String>>(msg: T) -> Error {
+    Error::InvalidTracingEndpoint(EndpointError(msg.into()))
+}
+
+fn parse_tracing_endpoint(
+    endpoint: &str,
+    tracing_headers: SerdeableHeaderHashMap,
+) -> Result<SpanExporter, Error> {
+    // Parse it as a URI and extract the scheme.
+    let uri = endpoint
+        .parse::<http::Uri>()
+        .map_err(|e| bad_endpoint(format!("{endpoint}: URI: {e}")))?;
+
+    let scheme = uri
+        .scheme()
+        .ok_or_else(|| bad_endpoint(format!("{endpoint}: no scheme")))?
+        .to_string();
+
+    // Tokenize the scheme on '+' to determine the type of exporter.
+    let mut scheme_tokens: Vec<&str> = scheme.split('+').collect();
+    scheme_tokens.sort();
+
+    enum Transport {
+        Tonic, // gRPC
+        Http,  // HTTP(s)
+    }
+
+    // Map specific token combinations to ultimate endpoint scheme, exporter
+    // transport, and exporter protocol.
+    let (final_scheme, use_transport, use_protocol) = match scheme_tokens.as_slice() {
+        ["http"] => ("http", Transport::Tonic, Protocol::Grpc),
+        ["https"] => ("https", Transport::Tonic, Protocol::Grpc),
+        ["grpc"] => ("http", Transport::Tonic, Protocol::Grpc),
+        ["grpc", "otlp"] => ("http", Transport::Tonic, Protocol::Grpc),
+        ["http", "otlp"] => ("http", Transport::Http, Protocol::HttpBinary),
+        ["https", "otlp"] => ("https", Transport::Http, Protocol::HttpBinary),
+        ["http", "otlp", "proto"] => ("http", Transport::Http, Protocol::HttpBinary),
+        ["https", "otlp", "proto"] => ("https", Transport::Http, Protocol::HttpBinary),
+        ["http", "json", "otlp"] => ("http", Transport::Http, Protocol::HttpJson),
+        ["https", "json", "otlp"] => ("https", Transport::Http, Protocol::HttpJson),
+        _ => return Err(bad_endpoint(format!("{endpoint}: invalid scheme"))),
+    };
+
+    // Reconstruct the endpoint with the ultimate scheme from above.
+    let endpoint = http::uri::Builder::from(uri)
+        .scheme(final_scheme)
+        .build()
+        .map_err(|e| bad_endpoint(format!("rebuild endpoint: {e}")))?
+        .to_string();
+
+    // Build the exporter as specified.
+    let exporter = match use_transport {
+        Transport::Tonic => {
+            let metadata_headers: MetadataMap =
+                MetadataMap::from_headers(HeaderMap::from_iter(HashMap::from(tracing_headers)));
+            SpanExporter::builder()
+                .with_tonic()
+                .with_protocol(use_protocol)
+                .with_tls_config(ClientTlsConfig::new().with_native_roots()) // TODO: maybe only when https?
+                .with_metadata(metadata_headers)
+                .with_endpoint(&endpoint)
+                .build()
+                .map_err(|e| bad_endpoint(format!("build gRPC exporter: {e}")))?
+        }
+
+        Transport::Http => {
+            let client = reqwest::Client::builder()
+                .use_rustls_tls() // match with_tonic with_tls_config
+                .tls_built_in_root_certs(true) // match with_tonic with_tls_config
+                .build()
+                .map_err(|e| bad_endpoint(format!("build HTTP client: {e}")))?;
+            let string_headers: HashMap<String, String> = HashMap::from(tracing_headers)
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        k.as_str().into(),
+                        String::from_utf8_lossy(v.as_bytes()).into(),
+                    )
+                })
+                .collect();
+            SpanExporter::builder()
+                .with_http()
+                .with_http_client(client)
+                .with_protocol(use_protocol)
+                .with_headers(string_headers)
+                .with_endpoint(&endpoint)
+                .build()
+                .map_err(|e| bad_endpoint(format!("build HTTP exporter: {e}")))?
+        }
+    };
+
+    Ok(exporter)
+}
+
+/// This function parses tracing-services-endpoint and/or tracing-endpoint, and
+/// builds an OpenTelemetry trace exporter emitting to that endpoiont. It then
+/// installs that exporter as the global OpenTelemetry tracer provider, which is
+/// used by the [`invocation_span!`] macro.
+///
+/// The endpoint needs to be a valid URI. The URI scheme can be used to specify
+/// the transport and/or protocol of the exporter. By default, `http[s]://` will
+/// emit binary (protobuf) trace data over gRPC, which is typically what an OTLP
+/// collector expects on :4317. Whereas `otlp+http[s]://` will emit binary
+/// (protobuf) trace data over HTTP[s], which is typically what a collector
+///  expects on :4318. See the code for all supported combinations.
+///
+/// This function ignores tracing-json-path and tracing-filter.
+fn install_opentelemetry_tracer_provider(common_opts: &CommonOptions) -> Result<(), Error> {
     let opts = &common_opts.tracing;
 
+    // Determine the tracing endpoint for services.
     let endpoint = match &opts
         .tracing_services_endpoint
         .as_ref()
@@ -82,6 +200,15 @@ fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
         None => return Ok(()),
     };
 
+    // Parse the endpoint and headers to build the exporter.
+    let exporter = parse_tracing_endpoint(endpoint, common_opts.tracing.tracing_headers.clone())?;
+    let exporter = UserServiceModifierSpanExporter::new(exporter);
+
+    // Build the processor.
+    let processor =
+        BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build();
+
+    // Build the tracer provider.
     let resource = opentelemetry_sdk::Resource::new(vec![
         KeyValue::new(
             opentelemetry_semantic_conventions::resource::SERVICE_NAME,
@@ -101,22 +228,9 @@ fn build_services_tracing(common_opts: &CommonOptions) -> Result<(), Error> {
         ),
     ]);
 
-    let header_map = HeaderMap::from_iter(HashMap::from(opts.tracing_headers.clone()));
-
-    let exporter = SpanExporter::builder()
-        .with_tonic()
-        .with_tls_config(ClientTlsConfig::new().with_native_roots())
-        .with_endpoint(endpoint)
-        .with_metadata(MetadataMap::from_headers(header_map.clone()))
-        .build()?;
-
-    let exporter = UserServiceModifierSpanExporter::new(exporter);
-
     let provider = opentelemetry_sdk::trace::TracerProvider::builder()
         .with_resource(resource)
-        .with_span_processor(
-            BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
-        )
+        .with_span_processor(processor)
         .build();
 
     opentelemetry::global::set_tracer_provider(provider);
@@ -173,17 +287,11 @@ where
         opentelemetry_sdk::trace::TracerProvider::builder().with_resource(resource);
 
     if let Some(endpoint) = endpoint {
-        let header_map =
-            HeaderMap::from_iter(HashMap::from(common_opts.tracing.tracing_headers.clone()));
-
-        let exporter = SpanExporter::builder()
-            .with_tonic()
-            .with_tls_config(ClientTlsConfig::new().with_native_roots())
-            .with_endpoint(endpoint)
-            .with_metadata(MetadataMap::from_headers(header_map))
-            .build()?;
+        let exporter =
+            parse_tracing_endpoint(endpoint, common_opts.tracing.tracing_headers.clone())?;
 
         let exporter = RuntimeModifierSpanExporter::new(exporter);
+
         tracer_provider_builder = tracer_provider_builder.with_span_processor(
             BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build(),
         );
@@ -233,6 +341,7 @@ pub fn init_tracing_and_logging(
     _service_name: impl Display,
 ) -> Result<TracingGuard, Error> {
     let layers = tracing_subscriber::registry();
+
     // Console subscriber layer
     #[cfg(feature = "console-subscriber")]
     let layers = {
@@ -256,8 +365,8 @@ pub fn init_tracing_and_logging(
         )
     };
 
-    // User-Service Tracing Layer
-    build_services_tracing(common_opts)?;
+    // Service (user) tracing.
+    install_opentelemetry_tracer_provider(common_opts)?;
 
     // Runtime Distributed Tracing layer
     // **
@@ -271,11 +380,14 @@ pub fn init_tracing_and_logging(
     // Logging Layer
     let (stdout_writer, _stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
     let (stderr_writer, _stderr_guard) = tracing_appender::non_blocking(std::io::stderr());
+
     let log_filter = EnvFilter::try_new(&common_opts.log_filter)?;
+
     // Write WARN and ERR to stderr, everything else to stdout
     let log_writer = stderr_writer
         .with_max_level(Level::WARN)
         .or_else(stdout_writer);
+
     let log_layer = tracing_subscriber::fmt::layer()
         .with_writer(log_writer)
         .with_ansi(!common_opts.log_disable_ansi_codes);
@@ -288,6 +400,7 @@ pub fn init_tracing_and_logging(
         LogFormat::Compact => log_layer.compact().boxed(),
         LogFormat::Json => log_layer.json().boxed(),
     };
+
     let layers = layers.with(log_layer.with_filter(log_filter));
 
     layers.init();

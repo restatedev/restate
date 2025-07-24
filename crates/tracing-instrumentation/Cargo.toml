@@ -28,20 +28,24 @@ prometheus = [
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-serde-util = { workspace = true }
 restate-types = { workspace = true }
 
 arc-swap = { workspace = true }
-console-subscriber = { version = "0.4.1", features = [ "parking_lot", ], optional = true }
+console-subscriber = { version = "0.4.1", features = ["parking_lot"], optional = true }
 futures = { workspace = true }
+http = { workspace = true }
 metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }
 metrics-util = { workspace = true, optional = true }
 nu-ansi-term = "0.50.1"
 opentelemetry = { workspace = true }
-opentelemetry-contrib = { workspace = true, features = [ "jaeger_json_exporter", "rt-tokio", ] }
-opentelemetry-otlp = { workspace = true, features = ["tls", "tls-roots"] }
+opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", "rt-tokio"] }
+opentelemetry-http = { workspace = true, features = ["reqwest"] }
+opentelemetry-otlp = { workspace = true, features = ["http-json", "http-proto", "reqwest-client", "tls", "tls-roots"] }
 opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+reqwest = { workspace = true }
 schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
