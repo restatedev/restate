@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use jiff::Timestamp;
 use parking_lot::Mutex;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, info, instrument, warn};
@@ -114,9 +113,7 @@ impl LogTrimmer {
                 "Trimmed log {} to {:?}. This Lsn was reported durable at {}",
                 self.log_id,
                 durability.durable_point,
-                Timestamp::from_millisecond(durability.modification_time.as_u64() as i64)
-                    .unwrap_or_default()
-                    .to_string()
+                durability.modification_time.into_timestamp().to_string()
             );
             true
         }
