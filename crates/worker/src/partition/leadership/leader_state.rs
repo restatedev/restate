@@ -47,6 +47,8 @@ use crate::partition::shuffle;
 use crate::partition::shuffle::HintSender;
 use crate::partition::state_machine::Action;
 
+use super::durability_tracker::DurabilityTracker;
+
 const BATCH_READY_UP_TO: usize = 10;
 
 type RpcReciprocal =
@@ -74,6 +76,7 @@ pub struct LeaderState {
     pub pending_cleanup_timers_to_schedule: VecDeque<(InvocationId, Duration)>,
     cleaner_task_id: TaskId,
     trimmer_task_id: TaskId,
+    durability_tracker: DurabilityTracker,
 }
 
 impl LeaderState {
@@ -90,6 +93,7 @@ impl LeaderState {
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
+        durability_tracker: DurabilityTracker,
     ) -> Self {
         LeaderState {
             partition_id,
@@ -106,6 +110,7 @@ impl LeaderState {
             invoker_stream: invoker_rx,
             shuffle_stream: ReceiverStream::new(shuffle_rx),
             pending_cleanup_timers_to_schedule: Default::default(),
+            durability_tracker,
         }
     }
 
@@ -125,6 +130,9 @@ impl LeaderState {
 
         let invoker_stream = (&mut self.invoker_stream).map(ActionEffect::Invoker);
         let shuffle_stream = (&mut self.shuffle_stream).map(ActionEffect::Shuffle);
+        let dur_tracker_stream =
+            (&mut self.durability_tracker).map(ActionEffect::PartitionMaintenance);
+
         let action_effects_stream = stream::unfold(
             &mut self.pending_cleanup_timers_to_schedule,
             |pending_cleanup_timers_to_schedule| {
@@ -146,7 +154,8 @@ impl LeaderState {
             shuffle_stream,
             timer_stream,
             action_effects_stream,
-            awaiting_rpc_self_propose_stream
+            awaiting_rpc_self_propose_stream,
+            dur_tracker_stream
         );
         let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
 
@@ -234,6 +243,18 @@ impl LeaderState {
     ) -> Result<(), Error> {
         for effect in action_effects {
             match effect {
+                ActionEffect::PartitionMaintenance(partition_durability) => {
+                    // based on configuration, whether to consider partition-local durability in
+                    // the replica-set as a sufficient source of durability, or only snapshots.
+                    //
+                    // todo: check config if this feature is enabled
+                    self.self_proposer
+                        .propose(
+                            self.own_partition_key,
+                            Command::UpdatePartitionDurability(partition_durability),
+                        )
+                        .await?;
+                }
                 ActionEffect::Invoker(invoker_effect) => {
                     self.self_proposer
                         .propose(

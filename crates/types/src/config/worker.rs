@@ -82,13 +82,26 @@ pub struct WorkerOptions {
     /// across regions (typically a few seconds, but can be longer. Check S3's guidelines and
     /// cross-region replication SLA for more information).
     ///
-    /// This setting is only effective if `features.experimental-partition-driven-log-trimming` is
+    /// This setting is only effective if `worker.experimental-partition-driven-log-trimming` is
     /// set to `true`.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    // todo: remove in v1.6
+    // todo: remove in v1.5 or v1.6
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "Option::is_none")]
     trim_delay_interval: Option<humantime::Duration>,
+
+    // todo: remove in v1.5 or v1.6
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub durability_mode: Option<DurabilityMode>,
+
+    // todo: remove and auto-enable in v1.5 (or v1.6)
+    //
+    // Underlying dependency `PartitionDurability` wal-protocol message is
+    // supported since v1.4.2
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub experimental_partition_driven_log_trimming: bool,
 }
 
 impl WorkerOptions {
@@ -124,8 +137,84 @@ impl Default for WorkerOptions {
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
             snapshots: SnapshotsOptions::default(),
             trim_delay_interval: None,
+            durability_mode: None,
+            experimental_partition_driven_log_trimming: false,
         }
     }
+}
+
+#[serde_as]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::Display, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum DurabilityMode {
+    /// This disables durability tracking and trimming completely.
+    ///
+    /// Trims and snapshots are still possible if performed manually or by an external
+    /// component.
+    None,
+
+    /// In this mode, a partition is considered durable when its state can be restored from
+    /// any of members of the replica-set as well as the latest snapshot.
+    ///
+    /// In other words, do not trim unless **all** replicas cover this Lsn, **and** the snapshot.
+    ///
+    /// [requires snapshot repository]
+    /// DurabilityPoint = Min(Min(ReplicaSetDurablePoints), SnapshotDurablePoint)
+    SnapshotAndReplicaSet,
+
+    // A partition is fully durable if the _entire_ replica-set is durable at this Lsn
+    // **or** if a snapshot is available.
+    //
+    // Do not trim unless the Lsn is covered by a snapshot, **or** by _all_ the replicas
+    // in the replica-set.
+    //
+    // DurabilityPoint = Max(Min(ReplicaSetDurablePoints), SnapshotDurablePoint)
+    //
+    // [Requires node-to-node sharing of ad-hoc snapshots] so it's commented until support is
+    // added
+    // SnapshotOrReplicaSet,
+    // -----
+    //
+    /// In this mode, a partition is considered durable when its state can be restored from
+    /// the snapshot and at least a single replica.
+    ///
+    /// Do not trim unless the Lsn is covered (durably) by _any_ of the replicas **and** by
+    /// the snapshot. Gives weight to snapshots over the durability of the replica-set but
+    /// without ignoring the replica-set completely.
+    ///
+    /// In practice, this means that after a snapshot has been created on the leader, the
+    /// system will wait for the nearest memtable flush that cover this Lsn before considering
+    /// this Lsn for trimming. If the leader crashes before the memtable flush, we are confident
+    /// that the leader will be able to replay the log without any trim-gaps. This is under the
+    /// condition that the leader didn't move to another node. In the latter case, the system will
+    /// fetch the snapshot as usual.
+    ///
+    /// [requires snapshot repository]
+    /// [default] if snapshot repository configured
+    /// DurabilityPoint = Min(Max(ReplicaSetDurablePoints), SnapshotDurablePoint)
+    Balanced,
+
+    /// A partition is considered durable once all nodes in the replica-set are durable, regardless
+    /// of the state of snapshots.
+    ///
+    /// Do not trim unless all replicas durably include this Lsn.
+    ///
+    /// default in standalone-mode with no snapshot repository configured
+    ///
+    /// [default] if snapshot repository is not configured
+    /// DurabilityPoint = Min(ReplicaSetDurablePoints)
+    // [Requires node-to-on-node sharing of ad-hoc snapshots] if used in cluster mode.
+    ReplicaSetOnly,
+
+    /// A partition is durable ONLY after a snapshot has been created.
+    /// [requires snapshot repository]
+    ///
+    /// Do not trim unless the Lsn is covered by the snapshot with no regard to the
+    /// state of durability of the replica-set members.
+    ///
+    /// DurabilityPoint = SnapshotDurablePoint
+    SnapshotOnly,
 }
 
 /// # Invoker options
