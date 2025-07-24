@@ -602,6 +602,10 @@ impl PartitionStore {
             key_range: self.db.partition().key_range.clone(),
         })
     }
+
+    pub fn partition(&self) -> &Arc<Partition> {
+        self.db.partition()
+    }
 }
 
 impl Storage for PartitionStore {
