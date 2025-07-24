@@ -632,9 +632,9 @@ mod tests {
     use restate_partition_store::{OpenMode, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_types::GenerationalNodeId;
-    use restate_types::config::{CommonOptions, Configuration, RocksDbOptions, StorageOptions};
+    use restate_types::config::{CommonOptions, Configuration};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
-    use restate_types::live::{Constant, LiveLoadExt};
+    use restate_types::live::Constant;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_types::partitions::Partition;
     use restate_wal_protocol::control::AnnounceLeader;
@@ -651,14 +651,11 @@ mod tests {
     #[test(restate_core::test)]
     async fn become_leader_then_step_down() -> googletest::Result<()> {
         let env = TestCoreEnv::create_with_single_node(0, 0).await;
-        let storage_options = StorageOptions::default();
-        let rocksdb_options = RocksDbOptions::default();
 
         RocksDbManager::init(Constant::new(CommonOptions::default()));
         let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
 
-        let partition_store_manager =
-            PartitionStoreManager::create(Constant::new(storage_options.clone()).boxed()).await?;
+        let partition_store_manager = PartitionStoreManager::create().await?;
 
         let invoker_tx = MockInvokerHandle::default();
         let mut state = LeadershipState::new(
@@ -696,12 +693,7 @@ mod tests {
         );
 
         let mut partition_store = partition_store_manager
-            .open_partition_store(
-                PARTITION_ID,
-                PARTITION_KEY_RANGE,
-                OpenMode::CreateIfMissing,
-                &rocksdb_options,
-            )
+            .open_local_partition_store(&PARTITION, OpenMode::CreateIfMissing)
             .await?;
         state
             .on_announce_leader(
