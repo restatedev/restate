@@ -248,6 +248,8 @@ impl HttpError {
             .map(|err| {
                 use std::fmt::Write;
 
+                // Write dance to avoid allocating strings for matching the specific error string below.
+                //  Unfortunately there's no other way to match this error from hyper APIs :(
                 struct Matcher(bool);
                 impl Write for Matcher {
                     fn write_str(&mut self, s: &str) -> fmt::Result {
