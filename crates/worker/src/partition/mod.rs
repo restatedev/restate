@@ -16,7 +16,6 @@ mod state_machine;
 pub mod types;
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,9 +49,7 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::{StorageError, Transaction};
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::Configuration;
-use restate_types::identifiers::{
-    LeaderEpoch, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
-};
+use restate_types::identifiers::{LeaderEpoch, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationMutationResponseSink,
@@ -68,7 +65,6 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner,
     PartitionProcessorRpcResponse,
 };
-use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::storage::StorageDecodeError;
@@ -96,8 +92,6 @@ pub enum TargetLeaderState {
 
 #[derive(Debug)]
 pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
-    pub partition: Partition,
-
     status: PartitionProcessorStatus,
     invoker_tx: InvokerInputSender,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
@@ -111,7 +105,6 @@ where
         restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
     pub(super) fn new(
-        partition: Partition,
         status: PartitionProcessorStatus,
         target_leader_state_rx: watch::Receiver<TargetLeaderState>,
         network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
@@ -119,7 +112,6 @@ where
         invoker_tx: InvokerInputSender,
     ) -> Self {
         Self {
-            partition,
             status,
             invoker_tx,
             target_leader_state_rx,
@@ -135,7 +127,6 @@ where
         replica_set_states: PartitionReplicaSetStates,
     ) -> Result<PartitionProcessor<InvokerInputSender>, state_machine::Error> {
         let PartitionProcessorBuilder {
-            partition,
             invoker_tx,
             target_leader_state_rx,
             network_svc_rx: rpc_rx,
@@ -144,8 +135,8 @@ where
             ..
         } = self;
 
-        let state_machine =
-            Self::create_state_machine(&mut partition_store, partition.key_range.clone()).await?;
+        let partition_id_str = SharedString::from(partition_store.partition_id().to_string());
+        let state_machine = Self::create_state_machine(&mut partition_store).await?;
 
         let trim_queue = TrimQueue::default();
         if let Some(ref partition_durability) = partition_store.get_partition_durability().await? {
@@ -165,7 +156,7 @@ where
 
         if let Some(last_leader_epoch) = last_seen_leader_epoch {
             replica_set_states.note_observed_leader(
-                partition.partition_id,
+                partition_store.partition_id(),
                 restate_types::partitions::state::LeadershipState {
                     current_leader_epoch: last_leader_epoch,
                     // we don't know the old leader node-id, another node might update it
@@ -175,7 +166,7 @@ where
         }
 
         let leadership_state = LeadershipState::new(
-            partition.clone(),
+            Arc::clone(partition_store.partition()),
             invoker_tx,
             bifrost.clone(),
             last_seen_leader_epoch,
@@ -183,7 +174,7 @@ where
         );
 
         Ok(PartitionProcessor {
-            partition,
+            partition_id_str,
             leadership_state,
             state_machine,
             partition_store,
@@ -199,7 +190,6 @@ where
 
     async fn create_state_machine(
         partition_store: &mut PartitionStore,
-        partition_key_range: RangeInclusive<PartitionKey>,
     ) -> Result<StateMachine, state_machine::Error> {
         let inbox_seq_number = partition_store.get_inbox_seq_number().await?;
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
@@ -220,7 +210,7 @@ where
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
-            partition_key_range,
+            partition_store.partition_key_range().clone(),
             min_restate_version,
             EnumSet::empty(),
         );
@@ -230,7 +220,7 @@ where
 }
 
 pub struct PartitionProcessor<InvokerSender> {
-    partition: Partition,
+    partition_id_str: SharedString,
     leadership_state: LeadershipState<InvokerSender>,
     state_machine: StateMachine,
     bifrost: Bifrost,
@@ -279,7 +269,7 @@ where
 {
     #[instrument(
         level = "error", skip_all,
-        fields(partition_id = %self.partition.partition_id)
+        fields(partition_id = %self.partition_store.partition_id())
     )]
     pub async fn run(mut self) -> Result<(), ProcessorError> {
         debug!("Starting the partition processor.");
@@ -296,7 +286,7 @@ where
                             "Shutting partition processor down because it encountered a trim gap in the log."
                         ),
                     Err(ProcessorError::StateMachine(state_machine::Error::VersionBarrier { .. })) => {
-                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition.partition_id.to_string()).set(1);
+                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id_str.clone()).set(1);
                     }
                     Err(err) => warn!("Shutting partition processor down because of error: {err}"),
                 }
@@ -328,8 +318,8 @@ where
             .await?
             .unwrap_or(Lsn::INVALID);
 
-        let log_id = self.partition.log_id();
-        let partition_id = self.partition.partition_id;
+        let log_id = self.partition_store.partition().log_id();
+        let partition_id = self.partition_store.partition_id();
         let my_node = my_node_id().as_plain();
 
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
@@ -413,13 +403,12 @@ where
         let mut live_config = Configuration::live();
 
         // Telemetry setup
-        let partition_id_str = SharedString::from(partition_id.to_string());
-        let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => partition_id_str.clone(), "leader" => "1");
-        let follower_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => partition_id_str.clone(), "leader" => "0");
+        let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => self.partition_id_str.clone(), "leader" => "1");
+        let follower_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => self.partition_id_str.clone(), "leader" => "0");
         let command_read_count =
-            counter!(PARTITION_RECORD_READ_COUNT, PARTITION_LABEL => partition_id_str.clone());
+            counter!(PARTITION_RECORD_READ_COUNT, PARTITION_LABEL => self.partition_id_str.clone());
         // Start reading after the last applied lsn
-        let key_query = KeyFilter::Within(self.partition.key_range.clone());
+        let key_query = KeyFilter::Within(self.partition_store.partition_key_range().clone());
 
         let mut record_stream = self
             .bifrost
@@ -949,11 +938,12 @@ where
             } else if let Command::UpdatePartitionDurability(partition_durability) =
                 envelope.command
             {
-                if partition_durability.partition_id != self.partition.partition_id {
+                if partition_durability.partition_id != self.partition_store.partition_id() {
                     self.status.num_skipped_records += 1;
                     trace!(
                         "Ignore update-partition-durability message which is not targeted to me. Message is for {} but I'm {}",
-                        partition_durability.partition_id, self.partition.partition_id
+                        partition_durability.partition_id,
+                        self.partition_store.partition_id()
                     );
                     return Ok(None);
                 }
@@ -994,7 +984,13 @@ where
             Destination::Processor {
                 partition_key,
                 dedup,
-            } if self.partition.key_range.contains(partition_key) => Some(dedup),
+            } if self
+                .partition_store
+                .partition_key_range()
+                .contains(partition_key) =>
+            {
+                Some(dedup)
+            }
             _ => None,
         }
     }
