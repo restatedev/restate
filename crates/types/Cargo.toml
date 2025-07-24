@@ -51,6 +51,7 @@ http = { workspace = true }
 humantime = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
+jiff = { workspace = true }
 metrics = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }
 notify = { version = "8.0.0" }

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::task::Poll;
 
 use std::pin::Pin;
@@ -48,7 +49,7 @@ pub struct LogletWrapper {
     pub(crate) tail_lsn: Option<Lsn>,
     #[debug(skip)]
     pub(crate) config: LogletConfig,
-    #[debug("{}/{}", loglet.provider(), loglet.id())]
+    #[debug("{}", loglet.debug_str())]
     loglet: Arc<dyn Loglet>,
 }
 
@@ -69,14 +70,12 @@ impl LogletWrapper {
         }
     }
 
-    /// Panics if `tail_lsn` is lower than the loglet's `base_lsn`
-    pub fn set_tail_lsn(&mut self, tail_lsn: Lsn) {
-        debug_assert!(tail_lsn >= self.base_lsn);
-        self.tail_lsn = Some(tail_lsn)
-    }
-
     pub fn segment_index(&self) -> SegmentIndex {
         self.segment_index
+    }
+
+    pub fn debug_str(&self) -> Cow<'static, str> {
+        self.loglet.debug_str()
     }
 
     pub async fn create_read_stream(
@@ -263,7 +262,7 @@ impl LogletReadStreamWrapper {
     }
 
     pub fn set_tail_lsn(&mut self, tail_lsn: Lsn) {
-        self.loglet.set_tail_lsn(tail_lsn)
+        self.loglet.tail_lsn = Some(tail_lsn)
     }
 
     #[inline(always)]

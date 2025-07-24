@@ -30,6 +30,8 @@ service ClusterCtrlSvc {
   rpc SealAndExtendChain(SealAndExtendChainRequest)
       returns (SealAndExtendChainResponse);
 
+  rpc SealChain(SealChainRequest) returns (SealChainResponse);
+
   rpc FindTail(FindTailRequest) returns (FindTailResponse);
 
   rpc GetClusterConfiguration(GetClusterConfigurationRequest)
@@ -147,6 +149,20 @@ message SealedSegment {
 message SealAndExtendChainResponse {
   uint32 new_segment_index = 1;
   SealedSegment sealed_segment = 2;
+}
+
+message SealChainRequest {
+  uint32 log_id = 1;
+  // segment_index will be automatically selected (to the index of last segment)
+  // if not set.
+  optional uint32 segment_index = 2;
+  // todo: allow user to pass human context
+  // todo: option for permanently sealing the chain when this is fully supported
+}
+
+message SealChainResponse {
+  // tail offset lsn
+  uint64 tail_offset = 1;
 }
 
 message FindTailRequest { uint32 log_id = 1; }
