@@ -31,7 +31,6 @@ restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-metadata-store = { workspace = true }
-restate-object-store-util = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
@@ -58,7 +57,6 @@ humantime = { workspace = true }
 itertools = { workspace = true }
 jiff = { workspace = true }
 metrics = { workspace = true }
-object_store = { workspace = true }
 opentelemetry = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
@@ -68,15 +66,14 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 strum = { workspace = true }
-tempfile = { workspace = true }
+#tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-tokio-util = { workspace = true, features = ["io-util"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 ulid = { workspace = true }
-url = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }
