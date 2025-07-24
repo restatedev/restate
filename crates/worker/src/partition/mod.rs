@@ -560,7 +560,7 @@ where
                                     self.status.last_observed_leader_node.unwrap_or(GenerationalNodeId::INVALID),
                                 });
 
-                            let is_leader = self.leadership_state.on_announce_leader(&announce_leader, &mut partition_store, config).await?;
+                            let is_leader = self.leadership_state.on_announce_leader(&announce_leader, &mut partition_store, &self.replica_set_states, config).await?;
 
                             Span::current().record("is_leader", is_leader);
 
