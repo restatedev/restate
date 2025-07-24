@@ -134,7 +134,22 @@ impl RocksDbManager {
     }
 
     pub fn get_db(&self, name: DbName) -> Option<Arc<RocksDb>> {
-        self.dbs.read().get(&name).map(|db| db.upgrade())?
+        let read_guard = self.dbs.upgradable_read();
+        let db = read_guard.get(&name)?.upgrade();
+        if let Some(db) = db {
+            Some(db)
+        } else {
+            let mut write_guard = parking_lot::RwLockUpgradableReadGuard::upgrade(read_guard);
+            // clean it up unless someone else added it back
+            let db = write_guard.get(&name)?.upgrade();
+            match db {
+                Some(db) => Some(db),
+                None => {
+                    write_guard.remove(&name);
+                    None
+                }
+            }
+        }
     }
 
     pub async fn open_db(
