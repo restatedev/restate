@@ -16,7 +16,6 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
-use codederror::CodedError;
 use enum_map::Enum;
 use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{
@@ -175,25 +174,6 @@ impl TableKind {
         };
         self.key_kinds().iter().find(|k| **k == kind).copied()
     }
-}
-
-#[derive(Debug, thiserror::Error, CodedError)]
-pub enum BuildError {
-    #[error(transparent)]
-    RocksDbManager(
-        #[from]
-        #[code]
-        RocksError,
-    ),
-    #[error("db contains no storage format version")]
-    #[code(restate_errors::RT0009)]
-    MissingStorageFormatVersion,
-    #[error(transparent)]
-    #[code(unknown)]
-    Other(#[from] rocksdb::Error),
-    #[error(transparent)]
-    #[code(unknown)]
-    Shutdown(#[from] ShutdownError),
 }
 
 pub struct PartitionStore {
@@ -577,7 +557,7 @@ impl PartitionStore {
     /// *NB:* Creating a snapshot causes an implicit flush of the column family!
     ///
     /// See [rocksdb::checkpoint::Checkpoint::export_column_family] for additional implementation details.
-    pub async fn create_snapshot(
+    pub(crate) async fn create_local_snapshot(
         &mut self,
         snapshot_base_path: &Path,
         min_target_lsn: Option<Lsn>,
@@ -1183,9 +1163,10 @@ mod tests {
     use bytes::{Buf, BufMut};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::{IsolationLevel, StorageError, Transaction};
-    use restate_types::config::{CommonOptions, RocksDbOptions, StorageOptions};
+    use restate_types::config::CommonOptions;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::live::Constant;
+    use restate_types::partitions::Partition;
 
     impl TableKey for String {
         const TABLE: TableKind = TableKind::State;
@@ -1223,14 +1204,11 @@ mod tests {
     #[restate_core::test]
     async fn concurrent_writes_and_reads() -> googletest::Result<()> {
         let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
-        let partition_store_manager =
-            PartitionStoreManager::create(Constant::new(StorageOptions::default())).await?;
+        let partition_store_manager = PartitionStoreManager::create().await?;
         let mut partition_store = partition_store_manager
-            .open_partition_store(
-                PartitionId::MIN,
-                PartitionKey::MIN..=PartitionKey::MAX,
+            .open_local_partition_store(
+                &Partition::new(PartitionId::MIN, PartitionKey::MIN..=PartitionKey::MAX),
                 OpenMode::CreateIfMissing,
-                &RocksDbOptions::default(),
             )
             .await?;
         let key_a = "a".to_owned();
