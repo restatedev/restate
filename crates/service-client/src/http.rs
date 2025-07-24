@@ -199,8 +199,10 @@ impl HttpClient {
 pub enum HttpError {
     #[error(transparent)]
     Http(#[from] http::Error),
-    #[error("server possibly only supports HTTP1.1, consider discovery with --use-http1.1.\nReason: {}", FormatHyperError(.0))]
+    #[error("server possibly supports only HTTP1.1, consider discovery with --use-http1.1.\nReason: {}", FormatHyperError(.0))]
     PossibleHTTP11Only(#[source] hyper_util::client::legacy::Error),
+    #[error("server possibly supports only HTTP/2, consider discovering without --use-http1.1.\nReason: {}", FormatHyperError(.0))]
+    PossibleHTTP2Only(#[source] hyper_util::client::legacy::Error),
     #[error("unable to reach the remote endpoint.\nReason: {}", FormatHyperError(.0))]
     Connect(#[source] hyper_util::client::legacy::Error),
     #[error("{}", FormatHyperError(.0))]
@@ -215,6 +217,7 @@ impl HttpError {
             HttpError::Hyper(err) => err.is_retryable(),
             HttpError::Http(err) => err.is_retryable(),
             HttpError::PossibleHTTP11Only(_) => false,
+            HttpError::PossibleHTTP2Only(_) => false,
             HttpError::Connect(_) => true,
         }
     }
@@ -225,9 +228,43 @@ impl HttpError {
         // HTTP1.1 method, so typically 1.1 servers respond with a 40x, and the h2 client sees
         // this as an invalid frame.
         err.source()
-            .and_then(|err| err.downcast_ref::<h2::Error>())
+            // Cause can either be h2 directly, or hyper::Error and then h2.
+            .and_then(|err| {
+                err.downcast_ref::<h2::Error>().or_else(|| {
+                    err.downcast_ref::<hyper::Error>()
+                        .and_then(|e| e.source())
+                        .and_then(|err| err.downcast_ref::<h2::Error>())
+                })
+            })
             .and_then(|err| err.reason())
             == Some(h2::Reason::FRAME_SIZE_ERROR)
+    }
+
+    fn is_possible_h2_only_error(err: &hyper_util::client::legacy::Error) -> bool {
+        // This is a reasonably fuzzy check to figure out if the user passed --http1.1-only when doing discovery,
+        // but the service supports only HTTP/2
+        err.source()
+            .and_then(|err| err.downcast_ref::<hyper::Error>())
+            .map(|err| {
+                use std::fmt::Write;
+
+                // Write dance to avoid allocating strings for matching the specific error string below.
+                //  Unfortunately there's no other way to match this error from hyper APIs :(
+                struct Matcher(bool);
+                impl Write for Matcher {
+                    fn write_str(&mut self, s: &str) -> fmt::Result {
+                        if s == "invalid HTTP version parsed" {
+                            self.0 = true;
+                        }
+                        Ok(())
+                    }
+                }
+
+                let mut matcher = Matcher(false);
+                let _ = write!(&mut matcher, "{err}");
+                matcher.0
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -235,6 +272,8 @@ impl From<hyper_util::client::legacy::Error> for HttpError {
     fn from(err: hyper_util::client::legacy::Error) -> Self {
         if Self::is_possible_h11_only_error(&err) {
             Self::PossibleHTTP11Only(err)
+        } else if Self::is_possible_h2_only_error(&err) {
+            Self::PossibleHTTP2Only(err)
         } else if err.is_connect() {
             Self::Connect(err)
         } else {
