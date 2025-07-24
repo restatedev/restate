@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use enum_map::EnumMap;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::{info, instrument, warn};
 
@@ -29,14 +29,14 @@ use restate_types::storage::StorageEncode;
 
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
-use crate::log_chain_extender::ExtendLogChain;
+use crate::log_chain_extender::LogChainCommand;
 use crate::loglet::{FindTailOptions, LogletProvider, OperationError};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
 
-pub(super) type ExtendLogChainSender = mpsc::UnboundedSender<ExtendLogChain>;
-pub(super) type ExtendLogChainReceiver = mpsc::UnboundedReceiver<ExtendLogChain>;
+pub(super) type ExtendLogChainSender = mpsc::UnboundedSender<LogChainCommand>;
+pub(super) type ExtendLogChainReceiver = mpsc::UnboundedReceiver<LogChainCommand>;
 
 /// The strategy to use when bifrost fails to append or when it observes
 /// a sealed loglet while it's tailing a log.
@@ -524,15 +524,9 @@ impl BifrostInner {
         provider: ProviderKind,
         params: LogletParams,
     ) -> std::result::Result<(), Error> {
-        let (response_tx, response_rx) = oneshot::channel();
-        let _ = self.extend_log_chain_tx.send(ExtendLogChain {
-            log_id,
-            last_segment_index,
-            base_lsn,
-            provider,
-            params,
-            response_tx: Some(response_tx),
-        });
+        let (response_rx, cmd) =
+            LogChainCommand::extend(log_id, last_segment_index, base_lsn, provider, params);
+        let _ = self.extend_log_chain_tx.send(cmd);
 
         response_rx.await.map_err(|_| ShutdownError)?
     }
