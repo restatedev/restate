@@ -8110,7 +8110,6 @@ dependencies = [
  "enumset",
  "enumset_derive",
  "flate2",
- "form_urlencoded",
  "futures",
  "futures-channel",
  "futures-core",

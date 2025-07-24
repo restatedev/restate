@@ -51,7 +51,6 @@ either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
 enumset = { version = "1", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
-form_urlencoded = { version = "1" }
 futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }
@@ -179,7 +178,6 @@ enum-map = { version = "2", default-features = false, features = ["serde"] }
 enumset = { version = "1", default-features = false, features = ["serde"] }
 enumset_derive = { version = "0.11", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
-form_urlencoded = { version = "1" }
 futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }
