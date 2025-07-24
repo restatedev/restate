@@ -19,6 +19,7 @@ mod record_format;
 
 pub use self::provider::Factory;
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -30,7 +31,6 @@ use tracing::{debug, warn};
 
 use restate_core::ShutdownError;
 use restate_types::logs::TailOffsetWatch;
-use restate_types::logs::metadata::ProviderKind;
 use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
 
 use self::log_store::LogStoreError;
@@ -124,12 +124,8 @@ impl LocalLoglet {
 
 #[async_trait]
 impl Loglet for LocalLoglet {
-    fn id(&self) -> LogletId {
-        LogletId::from(self.loglet_id)
-    }
-
-    fn provider(&self) -> ProviderKind {
-        ProviderKind::Local
+    fn debug_str(&self) -> Cow<'static, str> {
+        Cow::from(format!("local/{}", LogletId::from(self.loglet_id)))
     }
 
     async fn create_read_stream(

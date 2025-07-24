@@ -10,7 +10,7 @@
 
 use restate_types::PlainNodeId;
 use restate_types::logs::LogletId;
-use restate_types::logs::metadata::{Logs, ProviderKind};
+use restate_types::logs::metadata::{InternalKind, Logs, ProviderKind};
 use restate_types::nodes_config::{
     MetadataServerState, NodesConfigError, NodesConfiguration, Role, StorageState,
 };
@@ -123,21 +123,21 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
                 match segment.config.kind {
                     // we assume that the given node runs the local and memory loglet and, therefore,
                     // cannot be disabled
-                    ProviderKind::InMemory => {
+                    InternalKind::InMemory => {
                         return Err(DisableNodeError::LocalLoglet {
-                            provider_kind: segment.config.kind,
+                            provider_kind: segment.config.kind.try_into().unwrap(),
                             loglet_id: LogletId::new(*log_id, segment.index()),
                             node_id,
                         });
                     }
-                    ProviderKind::Local => {
+                    InternalKind::Local => {
                         return Err(DisableNodeError::LocalLoglet {
-                            provider_kind: segment.config.kind,
+                            provider_kind: segment.config.kind.try_into().unwrap(),
                             loglet_id: LogletId::new(*log_id, segment.index()),
                             node_id,
                         });
                     }
-                    ProviderKind::Replicated => {
+                    InternalKind::Replicated => {
                         if self
                             .logs
                             .get_replicated_loglet(&LogletId::new(*log_id, segment.index()))
@@ -152,6 +152,7 @@ impl<'a, 'b> DisableNodeChecker<'a, 'b> {
                             )));
                         }
                     }
+                    InternalKind::Sealed => {}
                 }
             }
         }

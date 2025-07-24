@@ -43,6 +43,8 @@ pub enum Error {
     AdminError(#[from] AdminError),
     #[error(transparent)]
     MetadataStoreError(#[from] Arc<ReadWriteError>),
+    #[error("{0}")]
+    Other(String),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -57,6 +59,8 @@ pub enum EnqueueError<T> {
 pub enum AdminError {
     #[error("log {0} is permanently sealed")]
     ChainPermanentlySealed(LogId),
+    #[error("could not seal the loglet or the chain")]
+    ChainSealIncomplete,
     #[error("log {0} already exists")]
     LogAlreadyExists(LogId),
     #[error("segment conflicts with existing segment with base_lsn={0}")]

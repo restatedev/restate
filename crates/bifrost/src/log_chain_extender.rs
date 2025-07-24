@@ -16,7 +16,7 @@ use tracing::trace;
 use restate_core::{ShutdownError, cancellation_token};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::logs::builder::LogsBuilder;
-use restate_types::logs::metadata::{LogletParams, Logs, ProviderKind, SegmentIndex};
+use restate_types::logs::metadata::{LogletParams, Logs, ProviderKind, SealMetadata, SegmentIndex};
 use restate_types::logs::{LogId, Lsn};
 
 use crate::Error;
@@ -79,15 +79,39 @@ impl LogChainCommand {
         (rx, cmd)
     }
 
+    pub fn seal_chain(
+        log_id: LogId,
+        last_segment_index: SegmentIndex,
+        tail_lsn: Lsn,
+        metadata: SealMetadata,
+    ) -> (oneshot::Receiver<Result<Lsn, Error>>, Self) {
+        let (tx, rx) = oneshot::channel();
+        let cmd = Self {
+            log_id,
+            last_segment_index,
+            op: ChainOp::SealChain {
+                tail_lsn,
+                metadata,
+                response: OpOutput {
+                    tx,
+                    staged_result: None,
+                },
+            },
+        };
+        (rx, cmd)
+    }
+
     fn fail(self, err: Error) {
         match self.op {
             ChainOp::Extend { response, .. } => response.fail(err),
+            ChainOp::SealChain { response, .. } => response.fail(err),
         }
     }
 
     fn complete(self) {
         match self.op {
             ChainOp::Extend { response, .. } => response.complete(),
+            ChainOp::SealChain { response, .. } => response.complete(),
         }
     }
 }
@@ -98,6 +122,11 @@ enum ChainOp {
         provider: ProviderKind,
         params: LogletParams,
         response: OpOutput<()>,
+    },
+    SealChain {
+        tail_lsn: Lsn,
+        metadata: SealMetadata,
+        response: OpOutput<Lsn>,
     },
 }
 
@@ -154,7 +183,6 @@ impl LogChainExtender {
                             .into_builder();
 
                     for extend_log_chain in &mut buffer {
-                        let last_segment_index = extend_log_chain.last_segment_index;
                         match extend_log_chain.op {
                             ChainOp::Extend {
                                 base_lsn,
@@ -165,14 +193,28 @@ impl LogChainExtender {
                                 response.stage_output(Self::extend_log_chain(
                                     &mut builder,
                                     extend_log_chain.log_id,
-                                    last_segment_index,
+                                    extend_log_chain.last_segment_index,
                                     base_lsn,
                                     provider,
                                     params,
                                 ));
                             }
-                        };
+                            ChainOp::SealChain {
+                                tail_lsn,
+                                ref metadata,
+                                ref mut response,
+                            } => {
+                                response.stage_output(Self::seal_log_chain(
+                                    &mut builder,
+                                    extend_log_chain.log_id,
+                                    extend_log_chain.last_segment_index,
+                                    tail_lsn,
+                                    metadata,
+                                ));
+                            }
+                        }
                     }
+
                     Ok(builder.build())
                 })
                 .await
@@ -215,5 +257,29 @@ impl LogChainExtender {
             .map_err(AdminError::from)?;
 
         Ok(())
+    }
+
+    fn seal_log_chain(
+        builder: &mut LogsBuilder,
+        log_id: LogId,
+        last_segment_index: SegmentIndex,
+        tail_lsn: Lsn,
+        metadata: &SealMetadata,
+    ) -> Result<Lsn, Error> {
+        let mut chain_builder = builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
+
+        if chain_builder.tail().index() != last_segment_index {
+            // tail segment is not what we expected.
+            Err(AdminError::SegmentMismatch {
+                expected: last_segment_index,
+                found: chain_builder.tail().index(),
+            })?;
+        }
+
+        let lsn = chain_builder
+            .seal(tail_lsn, metadata)
+            .map_err(AdminError::from)?;
+
+        Ok(lsn)
     }
 }
