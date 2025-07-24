@@ -15,7 +15,7 @@ mod snapshot_task;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{PartitionStore, SnapshotError, SnapshotErrorKind};
+use crate::{PartitionDb, PartitionStore, SnapshotError, SnapshotErrorKind};
 
 pub use self::metadata::*;
 pub use self::repository::SnapshotRepository;
@@ -86,11 +86,12 @@ impl Snapshots {
             })
     }
 
-    pub async fn refresh_latest_archived_lsn(&self, partition_id: PartitionId) -> Option<Lsn> {
+    pub async fn refresh_latest_archived_lsn(&self, db: PartitionDb) -> Option<Lsn> {
         let Some(repository) = &self.repository else {
             return None;
         };
 
+        let partition_id = db.partition().partition_id;
         let archived_lsn = repository
             .get_latest_archived_lsn(partition_id)
             .await
@@ -98,7 +99,7 @@ impl Snapshots {
             .inspect_err(|err| warn!(?partition_id, "Unable to get latest archived LSN: {}", err))
             .ok()
             .unwrap_or(Lsn::INVALID);
-        // todo: update partition_store archived lsn
+        db.note_archived_lsn(archived_lsn);
         Some(archived_lsn)
     }
 

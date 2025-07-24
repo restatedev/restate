@@ -75,7 +75,13 @@ impl SnapshotPartitionTask {
                 partition_id: self.partition_id,
                 kind: SnapshotErrorKind::RepositoryIo(e),
             })?;
-        // todo: update partition_store archived lsn if this one is higher
+        if let Some(db) = self
+            .partition_store_manager
+            .get_partition_db(self.partition_id)
+            .await
+        {
+            db.note_archived_lsn(metadata.min_applied_lsn);
+        }
 
         Ok(metadata)
     }
