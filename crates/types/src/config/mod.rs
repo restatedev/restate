@@ -180,6 +180,10 @@ pub struct Configuration {
 }
 
 impl Configuration {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set(c: Configuration) {
+        set_current_config(c);
+    }
     /// Potentially fast access to a snapshot, should be used if an Updateable<T>
     /// isn't possible (Updateable trait is not object-safe, and requires mut to load()).
     /// Guard acquired doesn't track config updates. ~10x slower than Updateable's load().
