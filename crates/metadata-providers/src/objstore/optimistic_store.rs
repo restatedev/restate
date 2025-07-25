@@ -20,6 +20,7 @@ use restate_metadata_store::{ReadError, WriteError};
 use restate_types::Version;
 use restate_types::config::MetadataClientKind;
 use restate_types::metadata::{Precondition, VersionedValue};
+use tracing::{instrument, trace};
 
 use super::version_repository::VersionRepositoryError::PreconditionFailed;
 use super::version_repository::{TaggedValue, VersionRepository, VersionRepositoryError};
@@ -60,10 +61,12 @@ struct SaltedVersionedValue {
     value: VersionedValue,
 }
 
+#[instrument(level = "trace", skip(tagged_value), err)]
 fn tagged_value_to_versioned_value(
     tagged_value: TaggedValue,
 ) -> anyhow::Result<(Tag, VersionedValue)> {
     let tag = tagged_value.tag;
+
     let versioned_value = match tagged_value.content.encoding {
         ValueEncoding::Cbor => {
             let on_disk: OnDiskValue<'static> =
@@ -76,6 +79,15 @@ fn tagged_value_to_versioned_value(
             .context("failed to decode bilrost")
             .map(|v| v.value),
     }?;
+
+    trace!(
+        tag = %tag.as_string(),
+        encoding = ?tagged_value.content.encoding,
+        input_value_len = tagged_value.content.bytes.len(),
+        output_encoded_len = versioned_value.encoded_len(),
+        "successfully decoded tagged value"
+    );
+
     Ok((tag, versioned_value))
 }
 
@@ -113,6 +125,7 @@ impl OptimisticLockingMetadataStore {
         }
     }
 
+    #[instrument(level = "trace", skip(self, versioned_value), err)]
     fn serialize_versioned_value(
         &mut self,
         encoding: ValueEncoding,

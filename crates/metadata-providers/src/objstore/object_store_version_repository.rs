@@ -15,7 +15,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use object_store::path::{Path, PathPart};
 use object_store::{Attribute, Error, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
-use tracing::info;
+use tracing::{debug, info, instrument};
 use url::Url;
 
 use restate_object_store_util::create_object_store_client;
@@ -87,6 +87,7 @@ const DELETED_HEADER: Bytes = Bytes::from_static(b"d");
 
 #[async_trait::async_trait]
 impl VersionRepository for ObjectStoreVersionRepository {
+    #[instrument(level = "debug", skip(self, content), err)]
     async fn create(
         &self,
         key: ByteString,
@@ -103,6 +104,8 @@ impl VersionRepository for ObjectStoreVersionRepository {
             .insert(Attribute::ContentEncoding, content.encoding.into());
 
         let payload = PutPayload::from_iter([EXISTS_HEADER, content.bytes.clone()]);
+
+        debug!(%key, %path, size = content.bytes.len(), "calling put");
 
         match self.object_store.put_opts(&path, payload, opts).await {
             Ok(res) => {
@@ -140,8 +143,12 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
+    #[instrument(level = "debug", skip(self), err)]
     async fn get(&self, key: ByteString) -> Result<TaggedValue, VersionRepositoryError> {
         let path = self.path(&key);
+
+        debug!(%key, %path, "calling get");
+
         match self.object_store.get(&path).await {
             Ok(res) => {
                 let encoding = res
@@ -176,6 +183,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
+    #[instrument(level = "debug", skip(self, new_content), err)]
     async fn put_if_tag_matches(
         &self,
         key: ByteString,
@@ -193,6 +201,14 @@ impl VersionRepository for ObjectStoreVersionRepository {
         put_options
             .attributes
             .insert(Attribute::ContentEncoding, new_content.encoding.into());
+
+        debug!(
+            %key,
+            %path,
+            ?expected,
+            size = new_content.bytes.len(),
+            "calling put"
+        );
 
         match self
             .object_store
@@ -215,6 +231,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
+    #[instrument(level = "debug", skip(self, new_content), err)]
     async fn put(
         &self,
         key: ByteString,
@@ -225,6 +242,8 @@ impl VersionRepository for ObjectStoreVersionRepository {
         put_options
             .attributes
             .insert(Attribute::ContentEncoding, new_content.encoding.into());
+
+        debug!(%key, %path, size = new_content.bytes.len(), "calling put");
 
         match self
             .object_store
@@ -246,8 +265,12 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
+    #[instrument(level = "debug", skip(self), err)]
     async fn delete(&self, key: ByteString) -> Result<(), VersionRepositoryError> {
         let path = self.path(&key);
+
+        debug!(%key, %path, "calling put with deleted tombstone");
+
         match self
             .object_store
             .put(&path, PutPayload::from_bytes(DELETED_HEADER))
@@ -258,6 +281,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
+    #[instrument(level = "debug", skip(self), err)]
     async fn delete_if_tag_matches(
         &self,
         key: ByteString,
@@ -270,6 +294,9 @@ impl VersionRepository for ObjectStoreVersionRepository {
         };
 
         let path = self.path(&key);
+
+        debug!(%key, %path, ?expected, "calling put with deleted tombstone");
+
         match self
             .object_store
             .put_opts(
@@ -304,7 +331,7 @@ mod tests {
     const HELLO: Bytes = Bytes::from_static(b"hello");
     const WORLD: Bytes = Bytes::from_static(b"world");
 
-    #[tokio::test]
+    #[test_log::test(tokio::test)]
     async fn simple_usage() {
         let store = ObjectStoreVersionRepository::new_for_testing();
 
@@ -401,7 +428,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[test_log::test(tokio::test)]
     async fn create_after_delete_should_work() {
         let store = ObjectStoreVersionRepository::new_for_testing();
 
