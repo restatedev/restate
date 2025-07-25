@@ -81,14 +81,9 @@ pub struct LogReadStream {
 ///
 #[pin_project(project = StateProj)]
 enum State {
-    /// Initial state of the stream. No work has been done at this point
-    New,
     /// Stream is waiting for bifrost to get a loglet that maps to the `read_pointer`
-    FindingLoglet {
-        /// The future to continue finding the loglet instance via Bifrost
-        #[pin]
-        find_loglet_fut: BoxFuture<'static, Result<MaybeLoglet>>,
-    },
+    /// This is the initial state of the state machine.
+    FindingLoglet,
     /// Waiting for the loglet read stream (substream) to be initialized
     CreatingSubstream {
         /// Future to continue creating the substream
@@ -130,7 +125,7 @@ impl LogReadStream {
             next_log_metadata_watch_fut: None,
             log_metadata,
             substream: None,
-            state: State::New,
+            state: State::FindingLoglet,
         })
     }
 
@@ -173,12 +168,6 @@ impl Stream for LogReadStream {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        // # Safety
-        // BifrostInner is dropped last, we can safely lift it's lifetime to 'static as
-        // long as we don't leak this externally. External users should not see any `'static`
-        // lifetime as a result.
-        let bifrost_inner = unsafe { &*Arc::as_ptr(&self.bifrost_inner) };
-
         let mut this = self.as_mut().project();
         loop {
             let state = this.state.as_mut().project();
@@ -203,21 +192,16 @@ impl Stream for LogReadStream {
             }
 
             match state {
-                StateProj::New => {
-                    let find_loglet_fut = Box::pin(
-                        bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer),
-                    );
-                    // => Find Loglet
-                    this.state.set(State::FindingLoglet { find_loglet_fut });
-                }
-
                 // Finding a loglet and creating the loglet instance through the provider
-                StateProj::FindingLoglet { find_loglet_fut } => {
-                    let loglet = match ready!(find_loglet_fut.poll(cx)) {
+                StateProj::FindingLoglet => {
+                    let loglet = match this
+                        .bifrost_inner
+                        .find_loglet_for_lsn(*this.log_id, *this.read_pointer)
+                    {
                         Ok(MaybeLoglet::Some(loglet)) => loglet,
                         Ok(MaybeLoglet::Trim { next_base_lsn }) => {
                             // deliver trim gap and advance read pointer.
-                            let record = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
+                            let record = deliver_trim_gap(&mut this, next_base_lsn);
                             return Poll::Ready(Some(Ok(record)));
                         }
                         Err(e) => {
@@ -275,14 +259,10 @@ impl Stream for LogReadStream {
                     match substream.tail_lsn() {
                         // Next LSN is beyond the boundaries of this substream
                         Some(tail) if *this.read_pointer >= tail => {
-                            // Switch loglets.
-                            let find_loglet_fut = Box::pin(
-                                bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer),
-                            );
                             // => Find the next loglet. We know we _probably_ have one, otherwise
                             // `stream_tail_lsn` wouldn't have been set.
                             this.substream.set(None);
-                            this.state.set(State::FindingLoglet { find_loglet_fut });
+                            this.state.set(State::FindingLoglet);
                             continue;
                         }
                         // Unsealed loglet, we can only read as far as the safe unsealed tail.
@@ -428,12 +408,8 @@ impl Stream for LogReadStream {
                                 || segment.config.kind != substream.loglet().config.kind
                             {
                                 this.substream.set(None);
-                                let find_loglet_fut = Box::pin(
-                                    bifrost_inner
-                                        .find_loglet_for_lsn(*this.log_id, *this.read_pointer),
-                                );
                                 // => Find Loglet
-                                this.state.set(State::FindingLoglet { find_loglet_fut });
+                                this.state.set(State::FindingLoglet);
                                 continue;
                             }
                             if let Some(sealed_tail) = segment.tail_lsn {
@@ -451,7 +427,7 @@ impl Stream for LogReadStream {
                         }
                         // Oh, we have a prefix trim, deliver the trim-gap and fast-forward.
                         MaybeSegment::Trim { next_base_lsn } => {
-                            let record = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
+                            let record = deliver_trim_gap(&mut this, next_base_lsn);
                             // Deliver the trim gap
                             return Poll::Ready(Some(Ok(record)));
                         }
@@ -475,20 +451,14 @@ impl Stream for LogReadStream {
     }
 }
 
-fn deliver_trim_gap(
-    this: &mut ReadStreamProj,
-    next_base_lsn: Lsn,
-    bifrost_inner: &'static BifrostInner,
-) -> LogEntry {
+fn deliver_trim_gap(this: &mut ReadStreamProj, next_base_lsn: Lsn) -> LogEntry {
     let read_pointer = *this.read_pointer;
     let record = LogEntry::new_trim_gap(read_pointer, next_base_lsn.prev());
     // fast-forward.
     *this.read_pointer = next_base_lsn;
-    let find_loglet_fut =
-        Box::pin(bifrost_inner.find_loglet_for_lsn(*this.log_id, *this.read_pointer));
     // => Find Loglet
     this.substream.set(None);
-    this.state.set(State::FindingLoglet { find_loglet_fut });
+    this.state.set(State::FindingLoglet);
     record
 }
 
@@ -755,8 +725,7 @@ mod tests {
         // manually seal the loglet, create a new in-memory loglet at base_lsn=11
         let raw_loglet = bifrost
             .inner
-            .find_loglet_for_lsn(LOG_ID, Lsn::new(5))
-            .await?
+            .find_loglet_for_lsn(LOG_ID, Lsn::new(5))?
             .unwrap();
         raw_loglet.seal().await?;
         // In fact, reader is allowed to go as far as the last known unsealed tail which
@@ -919,8 +888,7 @@ mod tests {
         // validate that the first segment is sealed
         let segment_1_loglet = bifrost
             .inner
-            .find_loglet_for_lsn(LOG_ID, Lsn::from(1))
-            .await?
+            .find_loglet_for_lsn(LOG_ID, Lsn::from(1))?
             .unwrap();
 
         assert_that!(

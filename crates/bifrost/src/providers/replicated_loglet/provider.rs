@@ -194,7 +194,7 @@ impl<T: TransportConnect> ReplicatedLogletProvider<T> {
 
 #[async_trait]
 impl<T: TransportConnect> LogletProvider for ReplicatedLogletProvider<T> {
-    async fn get_loglet(
+    fn get_loglet(
         &self,
         log_id: LogId,
         segment_index: SegmentIndex,

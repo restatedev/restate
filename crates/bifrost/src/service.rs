@@ -66,7 +66,7 @@ impl BifrostService {
 
     #[cfg(any(test, feature = "memory-loglet"))]
     pub fn enable_in_memory_loglet(mut self) -> Self {
-        let factory = memory_loglet::Factory::default();
+        let factory = memory_loglet::Factory;
         self.factories.insert(factory.kind(), Box::new(factory));
         self
     }

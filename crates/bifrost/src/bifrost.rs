@@ -82,7 +82,7 @@ impl Bifrost {
     pub async fn init_in_memory(metadata_writer: MetadataWriter) -> Self {
         use crate::providers::memory_loglet;
 
-        Self::init_with_factory(metadata_writer, memory_loglet::Factory::default()).await
+        Self::init_with_factory(metadata_writer, memory_loglet::Factory).await
     }
 
     #[cfg(all(any(test, feature = "test-util"), feature = "local-loglet"))]
@@ -416,7 +416,7 @@ impl BifrostInner {
         let mut chain_seal_total_wait = Duration::ZERO;
         loop {
             let logs = metadata.live_load();
-            let loglet = self.tail_loglet_from_metadata(logs, log_id).await?;
+            let loglet = self.tail_loglet_from_metadata(logs, log_id)?;
 
             match loglet.find_tail(opts).await {
                 Ok(tail) => {
@@ -506,7 +506,7 @@ impl BifrostInner {
 
         // Iterate over the chain until we find the first missing trim point, return value before
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(log_id, segment).await?;
+            let loglet = self.get_loglet(log_id, segment)?;
             let loglet_specific_trim_point = loglet.get_trim_point().await?;
 
             // if a loglet has no trim point, then all subsequent loglets should also not contain a trim point
@@ -528,7 +528,7 @@ impl BifrostInner {
             .ok_or(Error::UnknownLogId(log_id))?;
 
         for segment in log_chain.iter() {
-            let loglet = self.get_loglet(log_id, segment).await?;
+            let loglet = self.get_loglet(log_id, segment)?;
 
             if loglet.base_lsn > trim_point {
                 break;
@@ -628,16 +628,16 @@ impl BifrostInner {
         Ok(())
     }
 
-    pub async fn tail_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
+    pub fn tail_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
         let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
         let tail_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
             .tail();
-        self.get_loglet(log_id, tail_segment).await
+        self.get_loglet(log_id, tail_segment)
     }
 
-    pub async fn tail_loglet_from_metadata(
+    pub fn tail_loglet_from_metadata(
         &self,
         log_metadata: &Logs,
         log_id: LogId,
@@ -646,28 +646,22 @@ impl BifrostInner {
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
             .tail();
-        self.get_loglet(log_id, tail_segment).await
+        self.get_loglet(log_id, tail_segment)
     }
 
-    pub async fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<MaybeLoglet> {
+    pub fn find_loglet_for_lsn(&self, log_id: LogId, lsn: Lsn) -> Result<MaybeLoglet> {
         let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
         let maybe_segment = log_metadata
             .chain(&log_id)
             .ok_or(Error::UnknownLogId(log_id))?
             .find_segment_for_lsn(lsn);
         match maybe_segment {
-            MaybeSegment::Some(segment) => {
-                Ok(MaybeLoglet::Some(self.get_loglet(log_id, segment).await?))
-            }
+            MaybeSegment::Some(segment) => Ok(MaybeLoglet::Some(self.get_loglet(log_id, segment)?)),
             MaybeSegment::Trim { next_base_lsn } => Ok(MaybeLoglet::Trim { next_base_lsn }),
         }
     }
 
-    pub async fn get_loglet(
-        &self,
-        log_id: LogId,
-        segment: Segment<'_>,
-    ) -> Result<LogletWrapper, Error> {
+    pub fn get_loglet(&self, log_id: LogId, segment: Segment<'_>) -> Result<LogletWrapper, Error> {
         let loglet = if segment.config.kind.is_seal_marker() {
             SealedLoglet::get()
         } else {
@@ -678,9 +672,7 @@ impl BifrostInner {
                     .try_into()
                     .expect("non-special provider"),
             )?;
-            provider
-                .get_loglet(log_id, segment.index(), &segment.config.params)
-                .await?
+            provider.get_loglet(log_id, segment.index(), &segment.config.params)?
         };
 
         Ok(LogletWrapper::new(
@@ -773,7 +765,7 @@ mod tests {
     use tracing_test::traced_test;
 
     use restate_core::TestCoreEnvBuilder;
-    use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
+    use restate_core::{TaskCenter, TaskKind};
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::CommonOptions;
     use restate_types::live::Constant;
@@ -782,8 +774,6 @@ mod tests {
     use restate_types::metadata::Precondition;
     use restate_types::partition_table::PartitionTable;
     use restate_types::{Version, Versioned};
-
-    use crate::providers::memory_loglet::{self};
 
     #[restate_core::test]
     #[traced_test]
@@ -859,26 +849,6 @@ mod tests {
         // Validate the watchdog has called the provider::start() function.
         assert!(logs_contain("Shutting down in-memory loglet provider"));
         assert!(logs_contain("Bifrost watchdog shutdown complete"));
-        Ok(())
-    }
-
-    #[restate_core::test(start_paused = true)]
-    async fn test_lazy_initialization() -> googletest::Result<()> {
-        let env = TestCoreEnv::create_with_single_node(1, 1).await;
-        let delay = Duration::from_secs(5);
-        // This memory provider adds a delay to its loglet initialization, we want
-        // to ensure that appends do not fail while waiting for the loglet;
-        let factory = memory_loglet::Factory::with_init_delay(delay);
-        let bifrost = Bifrost::init_with_factory(env.metadata_writer, factory).await;
-
-        let start = tokio::time::Instant::now();
-        let lsn = bifrost
-            .create_appender(LogId::new(0), ErrorRecoveryStrategy::Wait)?
-            .append("")
-            .await?;
-        assert_eq!(Lsn::from(1), lsn);
-        // The append was properly delayed
-        assert_eq!(delay, start.elapsed());
         Ok(())
     }
 
@@ -998,8 +968,7 @@ mod tests {
 
         let segment_1 = bifrost
             .inner
-            .find_loglet_for_lsn(LOG_ID, Lsn::OLDEST)
-            .await?
+            .find_loglet_for_lsn(LOG_ID, Lsn::OLDEST)?
             .unwrap();
 
         // seal the segment
@@ -1091,8 +1060,7 @@ mod tests {
 
         let segment_2 = bifrost
             .inner
-            .find_loglet_for_lsn(LOG_ID, Lsn::new(5))
-            .await?
+            .find_loglet_for_lsn(LOG_ID, Lsn::new(5))?
             .unwrap();
 
         assert_ne!(segment_1, segment_2);
@@ -1189,8 +1157,7 @@ mod tests {
 
         let segment_1 = bifrost
             .inner
-            .find_loglet_for_lsn(LOG_ID, Lsn::OLDEST)
-            .await?
+            .find_loglet_for_lsn(LOG_ID, Lsn::OLDEST)?
             .unwrap();
 
         // seal the segment (simulating partial seal where the loglet is sealed but the chain is
@@ -1320,8 +1287,7 @@ mod tests {
 
         let segment_2 = bifrost
             .inner
-            .find_loglet_for_lsn(LOG_ID, Lsn::new(6))
-            .await?
+            .find_loglet_for_lsn(LOG_ID, Lsn::new(6))?
             .unwrap();
 
         assert_ne!(segment_1, segment_2);
@@ -1451,7 +1417,7 @@ mod tests {
         }
 
         for i in 1..=5 {
-            let last_segment = bifrost.inner.tail_loglet(LOG_ID).await?.segment_index();
+            let last_segment = bifrost.inner.tail_loglet(LOG_ID)?.segment_index();
             // allow appender to run a little.
             tokio::time::sleep(Duration::from_millis(500)).await;
             // seal the loglet and extend with an in-memory one
@@ -1468,7 +1434,7 @@ mod tests {
                 .await?;
             println!("Seal {i}");
             assert_that!(
-                bifrost.inner.tail_loglet(LOG_ID).await?.segment_index(),
+                bifrost.inner.tail_loglet(LOG_ID)?.segment_index(),
                 gt(last_segment)
             );
         }

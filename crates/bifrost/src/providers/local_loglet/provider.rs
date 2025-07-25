@@ -68,7 +68,7 @@ pub(crate) struct LocalLogletProvider {
 
 #[async_trait]
 impl LogletProvider for LocalLogletProvider {
-    async fn get_loglet(
+    fn get_loglet(
         &self,
         log_id: LogId,
         segment_index: SegmentIndex,
