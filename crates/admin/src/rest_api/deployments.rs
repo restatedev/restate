@@ -11,7 +11,6 @@
 use super::error::*;
 use crate::state::AdminServiceState;
 
-use crate::schema_registry::{ApplyMode, Force};
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
@@ -24,6 +23,7 @@ use restate_errors::warn_it;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN};
+use restate_types::schema::updater;
 use serde::Deserialize;
 
 /// Create deployment and return discovered services.
@@ -109,12 +109,16 @@ pub async fn create_deployment<V, IC>(
         ),
     };
 
-    let force = if force { Force::Yes } else { Force::No };
+    let force = if force {
+        updater::Force::Yes
+    } else {
+        updater::Force::No
+    };
 
     let apply_mode = if dry_run {
-        ApplyMode::DryRun
+        updater::ApplyMode::DryRun
     } else {
-        ApplyMode::Apply
+        updater::ApplyMode::Apply
     };
 
     let (deployment, services) = state
@@ -341,9 +345,9 @@ pub async fn update_deployment<V, IC>(
     };
 
     let apply_mode = if dry_run {
-        ApplyMode::DryRun
+        updater::ApplyMode::DryRun
     } else {
-        ApplyMode::Apply
+        updater::ApplyMode::Apply
     };
 
     let (deployment, services) = state

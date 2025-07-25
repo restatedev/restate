@@ -15,10 +15,11 @@ use opentelemetry::trace::{Span, SpanContext, TraceContextExt};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, my_node_id};
+use restate_serde_util::DurationString;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
 use restate_types::invocation::{
-    InvocationRetention, InvocationTarget, InvocationTargetType, ServiceInvocation, SpanRelation,
+    InvocationRetention, InvocationTarget, ServiceInvocation, SpanRelation,
     VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
@@ -123,20 +124,14 @@ impl KafkaIngressEvent {
             },
         };
 
-        // For workflows, we need to set the retention here
-        let invocation_retention = if invocation_target.invocation_target_ty()
-            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-        {
-            schema
-                .resolve_latest_invocation_target(
-                    invocation_target.service_name(),
-                    invocation_target.handler_name(),
-                )
-                .map(|target| target.compute_retention(false))
-                .unwrap_or_default()
-        } else {
-            InvocationRetention::none()
-        };
+        // Compute the retention values
+        let invocation_retention = schema
+            .resolve_latest_invocation_target(
+                invocation_target.service_name(),
+                invocation_target.handler_name(),
+            )
+            .ok_or_else(|| anyhow::anyhow!("Service and handler are not registered"))?
+            .compute_retention(false);
 
         // Time to generate invocation id
         let invocation_id = InvocationId::generate(&invocation_target, None);
@@ -146,6 +141,7 @@ impl KafkaIngressEvent {
             &invocation_id,
             &invocation_target,
             &headers,
+            &invocation_retention,
             consumer_group_id,
             topic,
             partition as i64,
@@ -255,10 +251,13 @@ fn wrap_service_invocation_in_envelope(
 
     Envelope::new(header, Command::ProxyThrough(service_invocation))
 }
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_tracing_span(
     invocation_id: &InvocationId,
     invocation_target: &InvocationTarget,
     headers: &[restate_types::invocation::Header],
+    retention: &InvocationRetention,
     consumer_group_name: &str,
     topic: &str,
     partition: i64,
@@ -284,7 +283,8 @@ pub(crate) fn prepare_tracing_span(
             messaging.operation.type = "process",
             messaging.kafka.offset = offset,
             messaging.source.partition.id = partition,
-            messaging.source.name = topic.to_owned()
+            messaging.source.name = topic.to_owned(),
+            restate.invocation.journal.retention = DurationString::display(retention.journal_retention)
         )
     );
 

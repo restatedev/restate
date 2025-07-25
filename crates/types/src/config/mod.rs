@@ -20,6 +20,7 @@ mod common;
 mod gossip;
 mod http;
 mod ingress;
+mod invocation;
 mod kafka;
 mod log_server;
 mod metadata_server;
@@ -38,6 +39,7 @@ pub use common::*;
 pub use gossip::*;
 pub use http::*;
 pub use ingress::*;
+pub use invocation::*;
 pub use kafka::*;
 pub use log_server::*;
 pub use metadata_server::*;
@@ -170,6 +172,8 @@ pub fn set_current_config(config: Configuration) {
 pub struct Configuration {
     #[serde(flatten)]
     pub common: CommonOptions,
+    #[serde(flatten)]
+    pub invocation: InvocationOptions,
     pub worker: WorkerOptions,
     pub admin: AdminOptions,
     pub ingress: IngressOptions,
