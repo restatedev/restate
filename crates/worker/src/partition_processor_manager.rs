@@ -11,14 +11,14 @@
 mod processor_state;
 mod spawn_processor_task;
 
-use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ahash::{HashMap, HashSet};
+use ahash::HashSet;
 use anyhow::{Context, bail};
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
@@ -86,6 +86,7 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SharedString};
 
 #[derive(Debug, Clone, derive_more::Display)]
@@ -155,6 +156,16 @@ pub enum Error {
     InvokerBuild(#[from] BuildError),
 }
 
+enum RestartDelay {
+    Immediate,
+    Fixed,
+    Exponential {
+        started_time: MillisSinceEpoch,
+        last_delay: Option<Duration>,
+    },
+    MaxBackoff,
+}
+
 type ChannelStatusReaderList = Vec<(RangeInclusive<PartitionKey>, ChannelStatusReader)>;
 
 #[derive(Debug, Clone, Default)]
@@ -188,7 +199,7 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
             }
         }
         // although we never have a single scans that cross partitions (thus overlapping_partitions.len() == 1),
-        // we can make this code path abit more future resilent cheaply, by ordering the partitions by their start key.
+        // we can make this code path a bit more future resilient cheaply, by ordering the partitions by their start key.
         // (this uniquely defines the order between the partitions)
         overlapping_partitions.sort_by(|(a, _), (b, _)| a.start().cmp(b.start()));
 
@@ -419,9 +430,6 @@ impl PartitionProcessorManager {
         fields(partition_id = %event.partition_id, event = %<&'static str as From<&EventKind>>::from(&event.inner))
     )]
     fn on_asynchronous_event(&mut self, event: AsynchronousEvent) {
-        // todo make dependent on retry attempt (e.g. using an exponential retry policy)
-        const PARTITION_PROCESSOR_ERROR_RESTART_DELAY: Duration = Duration::from_secs(1);
-
         let AsynchronousEvent {
             partition_id,
             inner,
@@ -434,14 +442,22 @@ impl PartitionProcessorManager {
                         if let Some(processor_state) = self.processor_states.get_mut(&partition_id)
                         {
                             match processor_state {
-                                ProcessorState::Starting { target_run_mode } => {
+                                ProcessorState::Starting {
+                                    target_run_mode,
+                                    start_time,
+                                    delay,
+                                } => {
                                     debug!(%target_run_mode, "Partition processor was successfully created.");
                                     self.invokers_status_reader.push(
                                         started_processor.key_range().clone(),
                                         started_processor.invoker_status_reader().clone(),
                                     );
 
-                                    let mut new_state = ProcessorState::started(started_processor);
+                                    let mut new_state = ProcessorState::started(
+                                        started_processor,
+                                        *start_time,
+                                        *delay,
+                                    );
                                     // check whether we need to obtain a new leader epoch
                                     if *target_run_mode == RunMode::Leader {
                                         if let Some(leader_epoch_token) = new_state.run_as_leader()
@@ -492,9 +508,9 @@ impl PartitionProcessorManager {
                     Err(err) => {
                         info!(%partition_id, %err, "Partition processor failed to start");
                         self.processor_states.remove(&partition_id);
-                        self.start_partition_processor_if_replica(
+                        self.restart_partition_processor_if_replica(
                             partition_id,
-                            Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY),
+                            RestartDelay::Fixed,
                         );
                     }
                 }
@@ -505,14 +521,19 @@ impl PartitionProcessorManager {
                     None => {
                         debug!("Stopped partition processor which is no longer running.");
                         // immediately try to restart if we are still part of the partition's membership
-                        None
+                        RestartDelay::Immediate
                     }
                     Some(processor_state) => match processor_state {
                         ProcessorState::Starting { .. } => {
                             warn!(%partition_id, "Partition processor failed to start: {result:?}");
-                            Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY)
+                            RestartDelay::Fixed
                         }
-                        ProcessorState::Started { processor, .. } => {
+                        ProcessorState::Started {
+                            processor,
+                            start_time,
+                            delay,
+                            ..
+                        } => {
                             self.invokers_status_reader
                                 .remove(processor.as_ref().expect("must be some").key_range());
 
@@ -529,41 +550,40 @@ impl PartitionProcessorManager {
                                             "Partition processor stopped due to a log trim gap, will attempt to fast-forward on restart",
                                         );
                                         self.fast_forward_on_startup.insert(partition_id, *to_lsn);
-                                        // immediately try to restart if we are still part of the partition's membership
-                                        None
+                                        RestartDelay::Immediate
                                     } else {
-                                        warn!(
+                                        error!(
                                             %partition_id,
                                             trim_gap_to_lsn = ?to_lsn,
                                             "Partition processor stopped due to a log trim gap, and no snapshot repository is configured",
                                         );
-                                        Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY)
+                                        // configuration problem; until we have peer-to-peer state exchange we can only wait
+                                        RestartDelay::MaxBackoff
                                     }
                                 }
                                 Err(err) => {
                                     warn!(%partition_id, %err, "Partition processor exited unexpectedly");
-                                    // todo make delay depending on number of restart attempts
-                                    Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY)
+                                    RestartDelay::Exponential {
+                                        started_time: start_time,
+                                        last_delay: delay,
+                                    }
                                 }
                                 Ok(_) => {
                                     info!(%partition_id, "Partition processor stopped");
-                                    // immediately try to restart if we are still part of the partition's membership
-                                    None
+                                    RestartDelay::Immediate
                                 }
                             }
                         }
-                        ProcessorState::Stopping { processor } => {
+                        ProcessorState::Stopping { processor, .. } => {
                             if let Some(processor) = processor {
                                 self.invokers_status_reader.remove(processor.key_range());
                             }
-
-                            // immediately try to restart if we are still part of the partition's membership
-                            None
+                            RestartDelay::Immediate
                         }
                     },
                 };
 
-                if !self.start_partition_processor_if_replica(partition_id, delay) {
+                if !self.restart_partition_processor_if_replica(partition_id, delay) {
                     debug!("Partition processor stopped: {result:?}");
                 }
 
@@ -1192,22 +1212,48 @@ impl PartitionProcessorManager {
 
     /// Starts a partition processor if this node is part of the replica set of the given partition.
     /// Returns true if this node is part of the replica set of the given partition. Otherwise, false.
-    fn start_partition_processor_if_replica(
+    fn restart_partition_processor_if_replica(
         &mut self,
         partition_id: PartitionId,
-        delay: Option<Duration>,
+        delay: RestartDelay,
     ) -> bool {
+        const PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE: Duration = Duration::from_secs(1);
+        const PARTITION_PROCESSOR_ERROR_RESTART_DELAY_MAX: Duration = Duration::from_secs(30);
+        const PARTITION_PROCESSOR_DELAY_RESET_RUNNING_TIME: Duration = Duration::from_secs(60);
+
         // only restart partition processors if the partition processor manager is still supposed to run
         if restate_core::is_cancellation_requested() {
             return false;
         }
+
+        let delay = match delay {
+            RestartDelay::Immediate => None,
+            RestartDelay::Fixed => Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE),
+            RestartDelay::Exponential {
+                started_time,
+                last_delay: previous_backoff,
+            } => {
+                if started_time.elapsed() > PARTITION_PROCESSOR_DELAY_RESET_RUNNING_TIME {
+                    // if we have been running for a while, reset back to the base delay
+                    Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE)
+                } else {
+                    Some(
+                        previous_backoff
+                            .unwrap_or(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE)
+                            .mul_f64(2.0)
+                            .min(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_MAX),
+                    )
+                }
+            }
+            RestartDelay::MaxBackoff => Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_MAX),
+        };
 
         if self
             .replica_set_states
             .membership_state(partition_id)
             .contains(Metadata::with_current(|m| m.my_node_id().as_plain()))
         {
-            self.start_partition_processor(partition_id, delay);
+            self.start_partition_processor(partition_id, delay.map(|d| with_jitter(d, 0.3)));
             true
         } else {
             false
@@ -1258,8 +1304,10 @@ impl PartitionProcessorManager {
             )
             .expect("to spawn starting pp task");
 
-        self.processor_states
-            .insert(partition_id, ProcessorState::starting(RunMode::Follower));
+        self.processor_states.insert(
+            partition_id,
+            ProcessorState::starting(RunMode::Follower, delay),
+        );
     }
 }
 

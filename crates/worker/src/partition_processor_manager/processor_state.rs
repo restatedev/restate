@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::time::Duration;
 
 use tokio::sync::mpsc::error::{SendError, TrySendError};
 use tokio::sync::{mpsc, watch};
@@ -48,10 +49,14 @@ pub enum LeaderState {
 pub enum ProcessorState {
     Starting {
         target_run_mode: RunMode,
+        start_time: MillisSinceEpoch,
+        delay: Option<Duration>,
     },
     Started {
         processor: Option<StartedProcessor>,
         leader_state: LeaderState,
+        start_time: MillisSinceEpoch,
+        delay: Option<Duration>,
     },
     Stopping {
         processor: Option<StartedProcessor>,
@@ -59,8 +64,12 @@ pub enum ProcessorState {
 }
 
 impl ProcessorState {
-    pub fn starting(target_run_mode: RunMode) -> Self {
-        Self::Starting { target_run_mode }
+    pub fn starting(target_run_mode: RunMode, delay: Option<Duration>) -> Self {
+        Self::Starting {
+            target_run_mode,
+            start_time: MillisSinceEpoch::now(),
+            delay,
+        }
     }
 
     pub fn stopping(processor: StartedProcessor) -> Self {
@@ -69,10 +78,16 @@ impl ProcessorState {
         }
     }
 
-    pub fn started(processor: StartedProcessor) -> Self {
+    pub fn started(
+        processor: StartedProcessor,
+        start_time: MillisSinceEpoch,
+        delay: Option<Duration>,
+    ) -> Self {
         Self::Started {
             processor: Some(processor),
             leader_state: LeaderState::Follower,
+            start_time,
+            delay,
         }
     }
 
@@ -105,6 +120,7 @@ impl ProcessorState {
             ProcessorState::Started {
                 processor,
                 leader_state,
+                ..
             } => {
                 match leader_state {
                     LeaderState::Leader(_) => {
@@ -128,7 +144,9 @@ impl ProcessorState {
     /// Returns a new [`LeaderEpochToken`] if a new leader epoch should be obtained.
     pub fn run_as_leader(&mut self) -> Option<LeaderEpochToken> {
         match self {
-            ProcessorState::Starting { target_run_mode } => {
+            ProcessorState::Starting {
+                target_run_mode, ..
+            } => {
                 debug!("Starting partition processor as leader.");
                 *target_run_mode = RunMode::Leader;
                 None
@@ -136,6 +154,7 @@ impl ProcessorState {
             ProcessorState::Started {
                 processor,
                 leader_state,
+                ..
             } => {
                 match leader_state {
                     LeaderState::Leader(leader_epoch) => {
@@ -190,6 +209,7 @@ impl ProcessorState {
             ProcessorState::Started {
                 processor,
                 leader_state,
+                ..
             } => match leader_state {
                 LeaderState::Leader(_) => {
                     debug!("Received leader epoch while already being leader. Ignoring.");
@@ -241,7 +261,9 @@ impl ProcessorState {
 
     pub fn partition_processor_status(&self) -> Option<PartitionProcessorStatus> {
         match self {
-            ProcessorState::Starting { target_run_mode } => {
+            ProcessorState::Starting {
+                target_run_mode, ..
+            } => {
                 let status = PartitionProcessorStatus {
                     planned_mode: *target_run_mode,
                     ..Default::default()
@@ -252,6 +274,7 @@ impl ProcessorState {
             ProcessorState::Started {
                 processor,
                 leader_state,
+                ..
             } => {
                 let mut status = processor
                     .as_ref()
@@ -328,7 +351,6 @@ impl ProcessorState {
 #[derive(Debug)]
 pub struct StartedProcessor {
     cancellation_token: CancellationToken,
-    _created_at: MillisSinceEpoch,
     key_range: RangeInclusive<PartitionKey>,
     control_tx: watch::Sender<TargetLeaderState>,
     status_reader: ChannelStatusReader,
@@ -347,7 +369,6 @@ impl StartedProcessor {
     ) -> Self {
         Self {
             cancellation_token,
-            _created_at: MillisSinceEpoch::now(),
             key_range,
             control_tx,
             status_reader,
