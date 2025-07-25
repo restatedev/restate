@@ -43,7 +43,7 @@ pub async fn run_listener(
                                 return Ok(Response::builder()
                                     .header("content-type", "application/vnd.restate.endpointmanifest.v1+json")
                                     .body(Either::Left(Full::new(Bytes::from(
-                                        r#"{"protocolMode":"BIDI_STREAM","minProtocolVersion":1,"maxProtocolVersion":1,"services":[{"name":"Counter","ty":"VIRTUAL_OBJECT","handlers":[{"name":"add","input":{"required":false,"contentType":"application/json"},"output":{"setContentTypeIfEmpty":false,"contentType":"application/json"},"ty":"EXCLUSIVE"},{"name":"get","input":{"required":false,"contentType":"application/json"},"output":{"setContentTypeIfEmpty":false,"contentType":"application/json"},"ty":"EXCLUSIVE"}]}]}"#
+                                        r#"{"protocolMode":"BIDI_STREAM","minProtocolVersion":5,"maxProtocolVersion":5,"services":[{"name":"Counter","ty":"VIRTUAL_OBJECT","handlers":[{"name":"add","input":{"required":false,"contentType":"application/json"},"output":{"setContentTypeIfEmpty":false,"contentType":"application/json"},"ty":"EXCLUSIVE"},{"name":"get","input":{"required":false,"contentType":"application/json"},"output":{"setContentTypeIfEmpty":false,"contentType":"application/json"},"ty":"EXCLUSIVE"}]}]}"#
                                     )))).unwrap());
                             }
 
