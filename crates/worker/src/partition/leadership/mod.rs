@@ -551,7 +551,9 @@ where
 
         Ok(())
     }
+}
 
+impl<I> LeadershipState<I> {
     pub async fn handle_rpc_proposal_command(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
@@ -584,6 +586,7 @@ where
         reciprocal: Reciprocal<
             Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
         >,
+        success_response: PartitionProcessorRpcResponse,
     ) {
         match &mut self.state {
             State::Follower | State::Candidate { .. } => reciprocal.send(Err(
@@ -591,7 +594,12 @@ where
             )),
             State::Leader(leader_state) => {
                 leader_state
-                    .self_propose_and_respond_asynchronously(partition_key, cmd, reciprocal)
+                    .self_propose_and_respond_asynchronously(
+                        partition_key,
+                        cmd,
+                        reciprocal,
+                        success_response,
+                    )
                     .await;
             }
         }
