@@ -1011,7 +1011,7 @@ mod tests {
         const LOG_ID: LogId = LogId::new(0);
         let builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let bifrost_svc = BifrostService::new(builder.metadata_writer.clone())
-            .with_factory(memory_loglet::Factory::default());
+            .with_factory(memory_loglet::Factory);
         let bifrost = bifrost_svc.handle();
 
         let replica_set_states = PartitionReplicaSetStates::default();
@@ -1524,7 +1524,7 @@ mod tests {
         restate_types::config::set_current_config(config);
         let builder = TestCoreEnvBuilder::with_incoming_only_connector();
         let bifrost_svc = BifrostService::new(builder.metadata_writer.clone())
-            .with_factory(memory_loglet::Factory::default());
+            .with_factory(memory_loglet::Factory);
         let bifrost = bifrost_svc.handle();
 
         let mut server_builder = NetworkServerBuilder::default();

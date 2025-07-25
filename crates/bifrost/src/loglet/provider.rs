@@ -41,7 +41,7 @@ pub enum Improvement {
 #[async_trait]
 pub trait LogletProvider: Send + Sync {
     /// Create a loglet client for a given segment and configuration.
-    async fn get_loglet(
+    fn get_loglet(
         &self,
         log_id: LogId,
         segment_index: SegmentIndex,

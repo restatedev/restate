@@ -9,17 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, hash_map};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::task::ready;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
-use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, info};
 
 use restate_core::ShutdownError;
@@ -31,6 +28,8 @@ use restate_types::logs::{
     TailOffsetWatch, TailState,
 };
 
+type DashMap<K, V> = dashmap::DashMap<K, V, ahash::RandomState>;
+
 use crate::LogEntry;
 use crate::Result;
 use crate::loglet::{
@@ -39,18 +38,7 @@ use crate::loglet::{
 };
 
 #[derive(Default)]
-pub struct Factory {
-    init_delay: Option<Duration>,
-}
-
-impl Factory {
-    #[cfg(test)]
-    pub fn with_init_delay(init_delay: Duration) -> Self {
-        Self {
-            init_delay: Some(init_delay),
-        }
-    }
-}
+pub struct Factory;
 
 #[async_trait]
 impl LogletProviderFactory for Factory {
@@ -61,46 +49,35 @@ impl LogletProviderFactory for Factory {
     async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         Ok(Arc::new(MemoryLogletProvider {
             store: Default::default(),
-            init_delay: self.init_delay.unwrap_or_default(),
         }))
     }
 }
 
 #[derive(Default)]
 struct MemoryLogletProvider {
-    store: AsyncMutex<HashMap<(LogId, SegmentIndex), Arc<MemoryLoglet>>>,
-    init_delay: Duration,
+    store: DashMap<(LogId, SegmentIndex), Arc<MemoryLoglet>>,
 }
 
 #[async_trait]
 impl LogletProvider for MemoryLogletProvider {
-    async fn get_loglet(
+    fn get_loglet(
         &self,
         log_id: LogId,
         segment_index: SegmentIndex,
         params: &LogletParams,
     ) -> Result<Arc<dyn Loglet>> {
-        let mut guard = self.store.lock().await;
-
-        let loglet = match guard.entry((log_id, segment_index)) {
-            hash_map::Entry::Vacant(entry) => {
-                if !self.init_delay.is_zero() {
-                    // Artificial delay to simulate slow loglet creation
-                    info!(
-                        "Simulating slow loglet creation, delaying for {:?}",
-                        self.init_delay
-                    );
-                    tokio::time::sleep(self.init_delay).await;
-                }
-
+        let loglet = match self.store.entry((log_id, segment_index)) {
+            dashmap::Entry::Vacant(entry) => {
                 // Create loglet
                 let raw: u64 = params
                     .parse()
                     .expect("memory loglets are configured just with u64 loglet ids");
-                let loglet = entry.insert(MemoryLoglet::new(LogletId::new_unchecked(raw)));
-                Arc::clone(loglet)
+                entry
+                    .insert(MemoryLoglet::new(LogletId::new_unchecked(raw)))
+                    .value()
+                    .clone()
             }
-            hash_map::Entry::Occupied(entry) => entry.get().clone(),
+            dashmap::Entry::Occupied(entry) => entry.get().clone(),
         };
 
         Ok(loglet as Arc<dyn Loglet>)

@@ -309,15 +309,14 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         let request = request.into_inner();
         let log_id: LogId = request.log_id.into();
 
-        let writable_loglet = self
-            .bifrost
-            .admin()
-            .writeable_loglet(log_id)
-            .await
-            .map_err(|err| match err {
-                BiforstError::UnknownLogId(_) => Status::invalid_argument("Unknown log-id"),
-                err => Status::internal(err.to_string()),
-            })?;
+        let writable_loglet =
+            self.bifrost
+                .admin()
+                .tail_loglet(log_id)
+                .map_err(|err| match err {
+                    BiforstError::UnknownLogId(_) => Status::invalid_argument("Unknown log-id"),
+                    err => Status::internal(err.to_string()),
+                })?;
 
         let tail_state = writable_loglet
             .find_tail(FindTailOptions::default())
