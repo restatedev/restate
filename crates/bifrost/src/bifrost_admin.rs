@@ -15,7 +15,9 @@ use tracing::{debug, instrument, warn};
 use restate_core::{Metadata, MetadataKind};
 use restate_types::Version;
 use restate_types::config::Configuration;
-use restate_types::logs::metadata::{Chain, LogletParams, Logs, ProviderKind, SegmentIndex};
+use restate_types::logs::metadata::{
+    Chain, InternalKind, LogletParams, Logs, ProviderKind, SealMetadata, SegmentIndex,
+};
 use restate_types::logs::{LogId, Lsn, TailState};
 
 use crate::bifrost::BifrostInner;
@@ -31,9 +33,9 @@ pub struct BifrostAdmin<'a> {
 }
 
 #[derive(Debug)]
-pub struct SealedSegment {
+pub struct MaybeSealedSegment {
     pub segment_index: SegmentIndex,
-    pub provider: ProviderKind,
+    pub provider: InternalKind,
     pub params: LogletParams,
     pub tail: TailState,
 }
@@ -105,7 +107,7 @@ impl<'a> BifrostAdmin<'a> {
             .ok_or(Error::UnknownLogId(log_id))?;
 
         let sealed_segment = loop {
-            let sealed_segment = self.seal(log_id, segment_index).await?;
+            let sealed_segment = self.seal_inner(log_id, segment_index, None).await?;
             if sealed_segment.tail.is_sealed() {
                 break sealed_segment;
             }
@@ -144,7 +146,7 @@ impl<'a> BifrostAdmin<'a> {
         min_version: Version,
         provider: ProviderKind,
         params: LogletParams,
-    ) -> Result<SealedSegment> {
+    ) -> Result<MaybeSealedSegment> {
         self.inner.fail_if_shutting_down()?;
         let metadata = Metadata::current();
         let _ = metadata
@@ -156,7 +158,7 @@ impl<'a> BifrostAdmin<'a> {
             .ok_or(Error::UnknownLogId(log_id))?;
 
         let sealed_segment = loop {
-            let sealed_segment = self.seal(log_id, segment_index).await?;
+            let sealed_segment = self.seal_inner(log_id, segment_index, None).await?;
             if sealed_segment.tail.is_sealed() {
                 break sealed_segment;
             }
@@ -176,14 +178,18 @@ impl<'a> BifrostAdmin<'a> {
     }
 
     pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
-        self.inner.writeable_loglet(log_id).await
+        self.inner.tail_loglet(log_id).await
     }
 
-    #[instrument(level = "debug", skip(self))]
-    pub async fn seal(&self, log_id: LogId, segment_index: SegmentIndex) -> Result<SealedSegment> {
+    async fn seal_inner(
+        &self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
+        seal_metadata: Option<SealMetadata>,
+    ) -> Result<MaybeSealedSegment> {
         self.inner.fail_if_shutting_down()?;
         // first find the tail segment for this log.
-        let loglet = self.inner.writeable_loglet(log_id).await?;
+        let loglet = self.inner.tail_loglet(log_id).await?;
 
         if segment_index != loglet.segment_index() {
             // Not the same segment. Bail!
@@ -192,6 +198,16 @@ impl<'a> BifrostAdmin<'a> {
                 found: loglet.segment_index(),
             }
             .into());
+        }
+
+        // This loglet has already been sealed.
+        if let Some(tail_lsn) = loglet.tail_lsn {
+            return Ok(MaybeSealedSegment {
+                segment_index: loglet.segment_index(),
+                provider: loglet.config.kind,
+                params: loglet.config.params,
+                tail: TailState::Sealed(tail_lsn),
+            });
         }
 
         if let Err(err) = loglet.seal().await {
@@ -208,14 +224,49 @@ impl<'a> BifrostAdmin<'a> {
                 }
             }
         }
-        let tail = loglet.find_tail(FindTailOptions::default()).await?;
 
-        Ok(SealedSegment {
+        let tail = loglet.find_tail(FindTailOptions::ConsistentRead).await?;
+
+        if let Some(seal_metadata) = seal_metadata
+            && tail.is_sealed()
+            && Configuration::pinned().bifrost.experimental_chain_sealing
+        {
+            let tail_lsn = self
+                .inner
+                .seal_log_chain(log_id, segment_index, tail.offset(), seal_metadata)
+                .await?;
+
+            return Ok(MaybeSealedSegment {
+                segment_index: loglet.segment_index(),
+                provider: loglet.config.kind,
+                params: loglet.config.params,
+                tail: TailState::Sealed(tail_lsn),
+            });
+        }
+
+        Ok(MaybeSealedSegment {
             segment_index: loglet.segment_index(),
             provider: loglet.config.kind,
             params: loglet.config.params,
             tail,
         })
+    }
+
+    #[instrument(level = "debug", skip(self))]
+    pub async fn seal(
+        &self,
+        log_id: LogId,
+        segment_index: SegmentIndex,
+        metadata: SealMetadata,
+    ) -> Result<Lsn> {
+        let maybe_sealed = self
+            .seal_inner(log_id, segment_index, Some(metadata))
+            .await?;
+        if let TailState::Sealed(lsn) = maybe_sealed.tail {
+            Ok(lsn)
+        } else {
+            Err(AdminError::ChainSealIncomplete.into())
+        }
     }
 
     /// Adds a segment to the end of the chain

@@ -11,10 +11,12 @@
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use enum_map::EnumMap;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
+use tracing::debug;
 use tracing::{info, instrument, warn};
 
 #[cfg(all(any(test, feature = "test-util"), feature = "local-loglet"))]
@@ -22,6 +24,7 @@ use restate_types::live::LiveLoadExt;
 
 use restate_core::{Metadata, MetadataWriter, ShutdownError};
 use restate_types::config::Configuration;
+use restate_types::logs::metadata::SealMetadata;
 use restate_types::logs::metadata::{LogletParams, Logs, SegmentIndex};
 use restate_types::logs::metadata::{MaybeSegment, ProviderKind, Segment};
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber, TailState};
@@ -32,6 +35,7 @@ use crate::background_appender::BackgroundAppender;
 use crate::log_chain_extender::LogChainCommand;
 use crate::loglet::{FindTailOptions, LogletProvider, OperationError};
 use crate::loglet_wrapper::LogletWrapper;
+use crate::sealed_loglet::SealedLoglet;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
 
@@ -391,29 +395,74 @@ impl BifrostInner {
     }
 
     pub async fn find_tail(
-        &self,
+        self: &Arc<Self>,
         log_id: LogId,
         opts: FindTailOptions,
     ) -> Result<(LogletWrapper, TailState)> {
-        let loglet = self.writeable_loglet(log_id).await?;
         let start = Instant::now();
         // uses the same retry policy as reads to not add too many configuration keys
-        let mut logged = false;
+        let mut error_logged = false;
         let mut retry_iter = Configuration::pinned()
             .bifrost
             .read_retry_policy
             .clone()
             .into_iter();
+        // Design Notes:
+        // - If the loglet is being sealed (TailState::Sealed). We should not report this tail value
+        // unless (a) the chain is sealed at this tail value, or (b) higher segments exist.
+        // - If the segment is open and the loglet reports open. It's safe to return the tail
+        // value.
+        let mut metadata = Metadata::with_current(|m| m.updateable_logs_metadata());
+        let mut chain_seal_total_wait = Duration::ZERO;
         loop {
+            let logs = metadata.live_load();
+            let loglet = self.tail_loglet_from_metadata(logs, log_id).await?;
+
             match loglet.find_tail(opts).await {
                 Ok(tail) => {
-                    if logged {
+                    if error_logged {
                         info!(
                             %log_id,
                             "Found the log tail after {} attempts, time spent is {:?}",
                              retry_iter.attempts(),
                              start.elapsed()
                         );
+                    }
+
+                    if tail.is_sealed()
+                        && Configuration::pinned().bifrost.experimental_chain_sealing
+                        && !logs.chain(&log_id).expect("log must exist").is_sealed()
+                    {
+                        // We first give some time wait for the chain to be sealed.
+                        if chain_seal_total_wait.as_secs() < 3 {
+                            let start = Instant::now();
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            chain_seal_total_wait += start.elapsed();
+                            continue;
+                        }
+                        debug!(%log_id, "Loglet {} is sealed but the chain is not. Sealing the chain", loglet.debug_str());
+                        // loglet is sealed but chain is not sealed yet.
+                        // let's seal the chain.
+                        match BifrostAdmin::new(self)
+                            .seal(log_id, loglet.segment_index(), SealMetadata::default())
+                            .await
+                        {
+                            Ok(lsn) => {
+                                info!(%log_id, "Chain is sealed at lsn={lsn}, will attempt finding the tail again");
+                                continue;
+                            }
+                            Err(err) => {
+                                // retry with exponential backoff
+                                info!(%log_id, ?err, attempts = retry_iter.attempts(), "Failed to seal the chain");
+                                error_logged = true;
+                                let Some(sleep_dur) = retry_iter.next() else {
+                                    // retries exhausted
+                                    return Err(err);
+                                };
+                                tokio::time::sleep(sleep_dur).await;
+                                continue;
+                            }
+                        }
                     }
                     return Ok((loglet, tail));
                 }
@@ -438,7 +487,7 @@ impl BifrostInner {
                                 "Cannot find the tail of the log, will retry. err={}",
                             err
                         );
-                        logged = true;
+                        error_logged = true;
                     }
                     tokio::time::sleep(sleep_dur).await;
                 }
@@ -531,6 +580,26 @@ impl BifrostInner {
         response_rx.await.map_err(|_| ShutdownError)?
     }
 
+    /// Seals the given log chain by writing a sealed loglet marker as the last segment.
+    /// This only works if the current last segment has the same segment index as
+    /// `last_segment_index`. Otherwise, the operation will fail.
+    ///
+    /// Note that if the segment is already sealed, the `tail_lsn` will be ignored and the returned
+    /// tail_lsn should be the authoritative value.
+    pub async fn seal_log_chain(
+        &self,
+        log_id: LogId,
+        last_segment_index: SegmentIndex,
+        tail_lsn: Lsn,
+        metadata: SealMetadata,
+    ) -> std::result::Result<Lsn, Error> {
+        let (response_rx, cmd) =
+            LogChainCommand::seal_chain(log_id, last_segment_index, tail_lsn, metadata);
+        let _ = self.extend_log_chain_tx.send(cmd);
+
+        response_rx.await.map_err(|_| ShutdownError)?
+    }
+
     // --- Helper functions --- //
     /// Get the provider for a given kind. A provider must be enabled and BifrostService **must**
     /// be started before calling this.
@@ -552,12 +621,14 @@ impl BifrostInner {
         let chain = logs.chain(&log_id).ok_or(Error::UnknownLogId(log_id))?;
 
         let kind = chain.tail().config.kind;
-        let _ = self.provider_for(kind)?;
+        if !kind.is_seal_marker() {
+            let _ = self.provider_for(kind.try_into().unwrap())?;
+        }
 
         Ok(())
     }
 
-    pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
+    pub async fn tail_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
         let log_metadata = Metadata::with_current(|metadata| metadata.logs_ref());
         let tail_segment = log_metadata
             .chain(&log_id)
@@ -566,7 +637,7 @@ impl BifrostInner {
         self.get_loglet(log_id, tail_segment).await
     }
 
-    pub async fn writeable_loglet_from_metadata(
+    pub async fn tail_loglet_from_metadata(
         &self,
         log_metadata: &Logs,
         log_id: LogId,
@@ -597,10 +668,20 @@ impl BifrostInner {
         log_id: LogId,
         segment: Segment<'_>,
     ) -> Result<LogletWrapper, Error> {
-        let provider = self.provider_for(segment.config.kind)?;
-        let loglet = provider
-            .get_loglet(log_id, segment.index(), &segment.config.params)
-            .await?;
+        let loglet = if segment.config.kind.is_seal_marker() {
+            SealedLoglet::get()
+        } else {
+            let provider = self.provider_for(
+                segment
+                    .config
+                    .kind
+                    .try_into()
+                    .expect("non-special provider"),
+            )?;
+            provider
+                .get_loglet(log_id, segment.index(), &segment.config.params)
+                .await?
+        };
 
         Ok(LogletWrapper::new(
             segment.index(),
@@ -684,6 +765,7 @@ mod tests {
 
     use std::sync::atomic::AtomicUsize;
 
+    use futures::StreamExt;
     use googletest::prelude::*;
     use test_log::test;
     use tokio::time::Duration;
@@ -891,6 +973,11 @@ mod tests {
             ))
             .build()
             .await;
+        // disable seal-marker feature flag
+        let mut config = Configuration::pinned().clone();
+        config.bifrost.experimental_chain_sealing = false;
+        Configuration::set(config);
+
         let bifrost = Bifrost::init_in_memory(node_env.metadata_writer.clone()).await;
 
         let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
@@ -918,7 +1005,7 @@ mod tests {
         // seal the segment
         bifrost
             .admin()
-            .seal(LOG_ID, segment_1.segment_index())
+            .seal(LOG_ID, segment_1.segment_index(), SealMetadata::default())
             .await?;
 
         // sealed, tail is what we expect
@@ -1067,6 +1154,229 @@ mod tests {
     }
 
     #[restate_core::test(start_paused = true)]
+    async fn test_read_across_segments_with_seal_marker() -> googletest::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
+        // enable seal-marker feature flag
+        let mut config = Configuration::pinned().clone();
+        config.bifrost.experimental_chain_sealing = true;
+        Configuration::set(config);
+
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_partition_table(PartitionTable::with_equally_sized_partitions(
+                Version::MIN,
+                1,
+            ))
+            .build()
+            .await;
+
+        let bifrost = Bifrost::init_in_memory(node_env.metadata_writer.clone()).await;
+
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
+        // Lsns [1..5]
+        for i in 1..=5 {
+            // Append a record to memory
+            let lsn = appender.append(format!("segment-1-{i}")).await?;
+            assert_eq!(Lsn::from(i), lsn);
+        }
+
+        // not sealed, tail is what we expect
+        assert_that!(
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?,
+            pat!(TailState::Open(eq(Lsn::new(6))))
+        );
+
+        let segment_1 = bifrost
+            .inner
+            .find_loglet_for_lsn(LOG_ID, Lsn::OLDEST)
+            .await?
+            .unwrap();
+
+        // seal the segment (simulating partial seal where the loglet is sealed but the chain is
+        // not)
+        segment_1.seal().await?;
+
+        // loglet's tail is sealed
+        assert_that!(
+            segment_1.find_tail(FindTailOptions::default()).await?,
+            pat!(TailState::Sealed(_))
+        );
+
+        let read_one = async |log_id: LogId, from: Lsn, to: Lsn| {
+            let mut stream = bifrost.create_reader(log_id, KeyFilter::Any, from, to)?;
+            // stream dropped after delivering the next record
+            stream.next().await.transpose()
+        };
+
+        println!("attempting to read during reconfiguration");
+        // attempting to read from bifrost will result in a timeout since metadata sees this as an open
+        // segment but the loglet itself is sealed. This means reconfiguration is in-progress
+        // and we can't confidently read records.
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                read_one(LOG_ID, Lsn::new(2), Lsn::new(3))
+            )
+            .await
+            .is_err()
+        );
+
+        println!("finding tail to trigger chain sealing");
+        // sealed tail is what we expect
+        // finding the tail on bifrost will seal the chain since no reconfiguration is in progress.
+        assert_that!(
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?,
+            pat!(TailState::Sealed(eq(Lsn::new(6))))
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                read_one(LOG_ID, Lsn::new(4), Lsn::new(5))
+            )
+            .await
+            .is_ok()
+        );
+
+        let metadata = Metadata::current();
+        let old_version = metadata.logs_version();
+
+        let mut builder = metadata.logs_ref().clone().into_builder();
+        let mut chain_builder = builder.chain(LOG_ID).unwrap();
+        assert_eq!(2, chain_builder.num_segments());
+        let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
+
+        assert!(
+            // seal marker is at lsn=6, cannot append to any other tail
+            chain_builder
+                .append_segment(
+                    Lsn::new(5),
+                    ProviderKind::InMemory,
+                    new_segment_params.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            chain_builder
+                .append_segment(
+                    Lsn::new(7),
+                    ProviderKind::InMemory,
+                    new_segment_params.clone()
+                )
+                .is_err()
+        );
+
+        chain_builder.append_segment(Lsn::new(6), ProviderKind::InMemory, new_segment_params)?;
+
+        // chain is still 2 because the seal marker has been replaced with the new segment.
+        assert_eq!(2, chain_builder.num_segments());
+
+        let new_metadata = builder.build();
+        let new_version = new_metadata.version();
+        assert_eq!(new_version, old_version.next());
+        node_env
+            .metadata_writer
+            .global_metadata()
+            .put(
+                new_metadata.into(),
+                Precondition::MatchesVersion(old_version),
+            )
+            .await?;
+
+        assert_eq!(new_version, metadata.logs_version());
+
+        {
+            // validate that the stored metadata matches our expectations.
+            let new_metadata = metadata.logs_ref().clone();
+            let chain_builder = new_metadata.chain(&LOG_ID).unwrap();
+            assert_eq!(2, chain_builder.num_segments());
+        }
+
+        assert_that!(
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?,
+            pat!(TailState::Open(eq(Lsn::new(6))))
+        );
+
+        // appends should go to the new segment
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
+        // Lsns [6..8]
+        for i in 6..=8 {
+            // Append a record to memory
+            let lsn = appender.append(format!("segment-2-{i}")).await?;
+            assert_eq!(Lsn::from(i), lsn);
+        }
+
+        // tail is now 9 and open.
+        assert_that!(
+            bifrost
+                .find_tail(LOG_ID, FindTailOptions::default())
+                .await?,
+            pat!(TailState::Open(eq(Lsn::new(9))))
+        );
+
+        let segment_2 = bifrost
+            .inner
+            .find_loglet_for_lsn(LOG_ID, Lsn::new(6))
+            .await?
+            .unwrap();
+
+        assert_ne!(segment_1, segment_2);
+
+        // Reading the log. (OLDEST)
+        let record = bifrost.read(LOG_ID, Lsn::OLDEST).await?.unwrap();
+        assert_that!(record.sequence_number(), eq(Lsn::new(1)));
+        assert!(record.is_data_record());
+        assert_that!(
+            record.decode_unchecked::<String>(),
+            eq("segment-1-1".to_owned())
+        );
+
+        let record = bifrost.read(LOG_ID, Lsn::new(2)).await?.unwrap();
+        assert_that!(record.sequence_number(), eq(Lsn::new(2)));
+        assert!(record.is_data_record());
+        assert_that!(
+            record.decode_unchecked::<String>(),
+            eq("segment-1-2".to_owned())
+        );
+
+        // border of segment 1
+        let record = bifrost.read(LOG_ID, Lsn::new(5)).await?.unwrap();
+        assert_that!(record.sequence_number(), eq(Lsn::new(5)));
+        assert!(record.is_data_record());
+        assert_that!(
+            record.decode_unchecked::<String>(),
+            eq("segment-1-5".to_owned())
+        );
+
+        // start of segment 2
+        let record = bifrost.read(LOG_ID, Lsn::new(6)).await?.unwrap();
+        assert_that!(record.sequence_number(), eq(Lsn::new(6)));
+        assert!(record.is_data_record());
+        assert_that!(
+            record.decode_unchecked::<String>(),
+            eq("segment-2-6".to_owned())
+        );
+
+        // last record
+        let record = bifrost.read(LOG_ID, Lsn::new(8)).await?.unwrap();
+        assert_that!(record.sequence_number(), eq(Lsn::new(8)));
+        assert!(record.is_data_record());
+        assert_that!(
+            record.decode_unchecked::<String>(),
+            eq("segment-2-8".to_owned())
+        );
+
+        // 9 doesn't exist yet.
+        assert!(bifrost.read(LOG_ID, Lsn::new(9)).await?.is_none());
+
+        Ok(())
+    }
+
+    #[restate_core::test(start_paused = true)]
     #[traced_test]
     async fn test_appends_correctly_handle_reconfiguration() -> googletest::Result<()> {
         const LOG_ID: LogId = LogId::new(0);
@@ -1125,7 +1435,10 @@ mod tests {
         }
 
         // seal and don't extend the chain.
-        let _ = bifrost.admin().seal(LOG_ID, SegmentIndex::from(0)).await?;
+        let _ = bifrost
+            .admin()
+            .seal(LOG_ID, SegmentIndex::from(0), SealMetadata::default())
+            .await?;
 
         // appends should stall!
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1138,11 +1451,7 @@ mod tests {
         }
 
         for i in 1..=5 {
-            let last_segment = bifrost
-                .inner
-                .writeable_loglet(LOG_ID)
-                .await?
-                .segment_index();
+            let last_segment = bifrost.inner.tail_loglet(LOG_ID).await?.segment_index();
             // allow appender to run a little.
             tokio::time::sleep(Duration::from_millis(500)).await;
             // seal the loglet and extend with an in-memory one
@@ -1159,11 +1468,7 @@ mod tests {
                 .await?;
             println!("Seal {i}");
             assert_that!(
-                bifrost
-                    .inner
-                    .writeable_loglet(LOG_ID)
-                    .await?
-                    .segment_index(),
+                bifrost.inner.tail_loglet(LOG_ID).await?.segment_index(),
                 gt(last_segment)
             );
         }

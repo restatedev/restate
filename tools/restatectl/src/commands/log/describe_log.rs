@@ -10,7 +10,7 @@
 
 use anyhow::Context;
 use cling::prelude::*;
-use itertools::Itertools;
+use itertools::{Itertools, Position};
 use log::render_loglet_params;
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
@@ -19,7 +19,7 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_core::protobuf::cluster_ctrl_svc::{DescribeLogRequest, new_cluster_ctrl_client};
 use restate_types::Versioned;
 use restate_types::logs::LogId;
-use restate_types::logs::metadata::{Logs, ProviderKind, Segment, SegmentIndex};
+use restate_types::logs::metadata::{InternalKind, Logs, SealMetadata, Segment, SegmentIndex};
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 
@@ -135,11 +135,10 @@ async fn describe_log(
     if opts.extra {
         header_row.push("PARAMS");
     }
+    // for notes
+    header_row.push("");
     chain_table.set_styled_header(header_row);
 
-    let last_segment = chain.tail_index();
-
-    let mut first_segment_rendered = None;
     let mut last_segment_rendered = None;
 
     let segments: Box<dyn Iterator<Item = Segment>> = match (opts.skip, opts.from_segment_id) {
@@ -163,22 +162,22 @@ async fn describe_log(
         Box::new(segments.tail(opts.tail.unwrap()))
     };
 
-    for segment in segments {
-        if first_segment_rendered.is_none() {
-            first_segment_rendered = Some(segment.index());
-        }
-
+    for (position, segment) in segments.with_position() {
         // For the purpose of this display, "is-tail" boils down to simply "is this the last known segment?"
-        let is_tail_segment = segment.index() == last_segment;
+        // Note: We check the tail_index because we might be displaying only a subset of segments
+        // (--head, --tail, etc.). In that case, the last segment in `segments` is not necessarily
+        // the actual tail segment of the chain.
+        let is_tail_segment = [Position::Last, Position::Only].contains(&position)
+            && segment.index() == chain.tail_index();
 
         match segment.config.kind {
-            ProviderKind::Replicated => {
+            InternalKind::Replicated => {
                 let params = log::deserialize_replicated_log_params(&segment);
                 let mut segment_row = vec![
                     render_tail_segment_marker(is_tail_segment),
                     Cell::new(format!("{}", segment.index())),
                     Cell::new(format!("{}", segment.base_lsn)),
-                    Cell::new(format!("{:?}", segment.config.kind)),
+                    Cell::new(format!("{}", segment.config.kind)),
                     render_loglet_params(&params, |p| Cell::new(p.loglet_id)),
                     render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
                     render_loglet_params(&params, |p| {
@@ -199,13 +198,21 @@ async fn describe_log(
                 chain_table.add_row(segment_row);
             }
             _ => {
-                chain_table.add_row(vec![
+                let mut row = vec![
                     render_tail_segment_marker(is_tail_segment),
                     Cell::new(format!("{}", segment.index())),
                     Cell::new(format!("{}", segment.base_lsn)),
-                    Cell::new(format!("{:?}", segment.config.kind)),
-                    // other loglets types don't have all the columns that replicated loglets do
-                ]);
+                    Cell::new(format!("{}", segment.config.kind)),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                    Cell::new(""),
+                ];
+                if opts.extra {
+                    row.push(Cell::new(segment.config.params.to_string()))
+                }
+                row.push(render_loglet_notes(&segment));
+                chain_table.add_row(row);
             }
         }
 
@@ -272,5 +279,22 @@ fn render_sequencer(
         cell.fg(color)
     } else {
         cell
+    }
+}
+
+pub fn render_loglet_notes(segment: &Segment<'_>) -> Cell {
+    if segment.config.kind.is_seal_marker() {
+        match SealMetadata::deserialize_from(segment.config.params.as_bytes()) {
+            Ok(metadata) => {
+                let mut cell = Cell::new(format!("At {}", metadata.sealed_at.into_timestamp()));
+                if metadata.permanent_seal {
+                    cell = cell.fg(Color::Green);
+                }
+                cell
+            }
+            Err(e) => Cell::new(format!("Cannot deserialize SealMetadata: {e}")).fg(Color::Red),
+        }
+    } else {
+        Cell::new("")
     }
 }

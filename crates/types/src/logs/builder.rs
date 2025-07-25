@@ -13,7 +13,7 @@ use std::ops::Deref;
 
 use super::metadata::{
     Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, LookupIndex, MaybeSegment,
-    ProviderKind, SegmentIndex,
+    ProviderKind, SealMetadata, SegmentIndex,
 };
 use super::{LogId, Lsn};
 use crate::Version;
@@ -48,9 +48,7 @@ impl LogsBuilder {
             return Err(BuilderError::LogAlreadyExists(log_id));
         }
         for loglet_config in chain.chain.values() {
-            // needed if other loglets than the replicated one are enabled
-            #[allow(irrefutable_let_patterns)]
-            if let ProviderKind::Replicated = loglet_config.kind {
+            if ProviderKind::Replicated == loglet_config.kind {
                 let params =
                     ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())?;
                 self.inner.lookup_index.add_replicated_loglet(
@@ -159,9 +157,7 @@ impl ChainBuilder<'_> {
             *self.modified = true;
 
             for loglet_config in self.inner.chain.values() {
-                // needed if other loglets than the replicated one are enabled
-                #[allow(irrefutable_let_patterns)]
-                if let ProviderKind::Replicated = loglet_config.kind {
+                if ProviderKind::Replicated == loglet_config.kind {
                     // if it was inserted correctly before, we shouldn't fail to deserialize it.
                     // validation happens at original insert time.
                     let params =
@@ -189,23 +185,31 @@ impl ChainBuilder<'_> {
         provider: ProviderKind,
         params: LogletParams,
     ) -> Result<SegmentIndex, BuilderError> {
-        if self.inner.state.is_sealed() {
-            return Err(BuilderError::ChainPermanentlySealed(self.log_id));
-        }
-
         let mut last_entry = self
             .inner
             .chain
             .last_entry()
             .expect("chain have at least one segment");
 
+        if last_entry.get().kind.is_seal_marker() {
+            let seal_metadata = SealMetadata::deserialize_from(last_entry.get().params.as_bytes())?;
+            if seal_metadata.permanent_seal {
+                return Err(BuilderError::ChainPermanentlySealed(self.log_id));
+            }
+
+            // When the last entry is a seal marker, the only thing allowed is to replace the
+            // marker with the new segment, therefore, the base_lsn of the new segment must match
+            // the sealed tail.
+            if base_lsn != *last_entry.key() {
+                return Err(BuilderError::SegmentConflict(*last_entry.key()));
+            }
+        }
+
         match *last_entry.key() {
             key if key < base_lsn => {
                 // append
                 let new_index = SegmentIndex(last_entry.get().index().0 + 1);
-                // needed if other loglets than the replicated one are enabled
-                #[allow(irrefutable_let_patterns)]
-                if let ProviderKind::Replicated = provider {
+                if ProviderKind::Replicated == provider {
                     let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
                     self.lookup_index
                         .add_replicated_loglet(self.log_id, new_index, params);
@@ -221,9 +225,7 @@ impl ChainBuilder<'_> {
                 {
                     // Let's remove the loglet from the index if it's a replicated loglet
                     let old = last_entry.get();
-                    // needed if other loglets than the replicated one are enabled
-                    #[allow(irrefutable_let_patterns)]
-                    if let ProviderKind::Replicated = old.kind {
+                    if ProviderKind::Replicated == old.kind {
                         let params =
                             ReplicatedLogletParams::deserialize_from(old.params.as_bytes())?;
                         self.lookup_index.rm_replicated_loglet_reference(
@@ -234,9 +236,8 @@ impl ChainBuilder<'_> {
                     }
                 }
                 let new_index = SegmentIndex(last_entry.get().index().0 + 1);
-                // needed if other loglets than the replicated one are enabled
-                #[allow(irrefutable_let_patterns)]
-                if let ProviderKind::Replicated = provider {
+
+                if ProviderKind::Replicated == provider {
                     let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
                     self.lookup_index
                         .add_replicated_loglet(self.log_id, new_index, params);
@@ -244,6 +245,65 @@ impl ChainBuilder<'_> {
                 last_entry.insert(LogletConfig::new(new_index, provider, params));
                 *self.modified = true;
                 Ok(new_index)
+            }
+            _ => {
+                // can't add to the back.
+                Err(BuilderError::SegmentConflict(*last_entry.key()))
+            }
+        }
+    }
+
+    pub fn seal(&mut self, tail_lsn: Lsn, metadata: &SealMetadata) -> Result<Lsn, BuilderError> {
+        let mut last_entry = self
+            .inner
+            .chain
+            .last_entry()
+            .expect("chain have at least one segment");
+
+        if last_entry.get().kind.is_seal_marker() {
+            // todo: Support for overriding the permanent seal flag if the new metadata asks for a
+            // permanent seal but the current is not.
+
+            // chain is already sealed, regardless of the input `tail_lsn` we simply
+            // return the existing sealed tail.
+            *self.modified = false;
+            return Ok(*last_entry.key());
+        }
+
+        // chain is open
+        match *last_entry.key() {
+            key if key < tail_lsn => {
+                // NOTE: The seal marker shares the same segment index as the
+                // segment it seals. This is to enable re-entrant sealing on either segments
+                // and still passing the check of segment_index equality in the case of conditional
+                // sealing.
+                let new_index = SegmentIndex(last_entry.get().index().0);
+                self.inner
+                    .chain
+                    .insert(tail_lsn, LogletConfig::new_sealed(new_index, metadata)?);
+                *self.modified = true;
+                Ok(tail_lsn)
+            }
+            key if key == tail_lsn => {
+                // Replace the last segment (empty segment)
+                {
+                    // Let's remove the loglet from the index if it's a replicated loglet
+                    let old = last_entry.get();
+                    if ProviderKind::Replicated == old.kind {
+                        let params =
+                            ReplicatedLogletParams::deserialize_from(old.params.as_bytes())?;
+                        self.lookup_index.rm_replicated_loglet_reference(
+                            self.log_id,
+                            old.index(),
+                            params.loglet_id,
+                        );
+                    }
+                }
+                // we inherit the index from the previous segment
+                let new_index = SegmentIndex(last_entry.get().index().0);
+                last_entry.insert(LogletConfig::new_sealed(new_index, metadata)?);
+                *self.modified = true;
+                Ok(tail_lsn)
             }
             _ => {
                 // can't add to the back.
@@ -423,6 +483,12 @@ mod tests {
             elements_are![eq(Lsn::OLDEST), eq(Lsn::from(10)), eq(Lsn::from(20))]
         );
 
+        // validate tail-lsns are correct for all segments
+        assert_that!(
+            chain.iter().map(|s| s.tail_lsn).collect::<Vec<_>>(),
+            elements_are![eq(Some(Lsn::from(10))), eq(Some(Lsn::from(20))), eq(None)]
+        );
+
         // can't in the middle
         assert_that!(
             chain.append_segment(
@@ -581,6 +647,7 @@ mod tests {
 
         assert_eq!(1, chain.num_segments());
         assert_eq!(Lsn::from(500), chain.head().base_lsn);
+        assert_eq!(None, chain.head().tail_lsn);
         // let's add 5 segments, 10 lsns apart after 500
         //  510, 520, 530, 540, 550
         for i in 1..=5 {
@@ -603,6 +670,22 @@ mod tests {
         assert_eq!(6, chain.num_segments());
         assert_eq!(Lsn::from(500), chain.head().base_lsn);
         assert_eq!(Lsn::from(550), chain.tail().base_lsn);
+        {
+            let MaybeSegment::Some(segment) = chain.find_segment_for_lsn(Lsn::from(501)) else {
+                panic!("should have found segment");
+            };
+
+            assert_eq!(
+                Lsn::from(500),
+                // head segment has a base of 500 [500 -> 510]
+                segment.base_lsn
+            );
+            assert_eq!(
+                Some(Lsn::from(510)),
+                // head segment has a tail of 510 [500 -> 510]
+                segment.tail_lsn
+            );
+        }
 
         // no segments behind 500 point, nothing changed (validates exclusive trim)
         chain.trim_prefix(Lsn::new(500));
@@ -640,6 +723,58 @@ mod tests {
         assert_eq!(Lsn::from(550), chain.tail().base_lsn);
 
         assert_eq!(SegmentIndex(5), chain.tail_index());
+
+        // sealing the chain at 560
+        assert_eq!(
+            Lsn(560),
+            chain.seal(Lsn::from(560), &SealMetadata::default())?,
+        );
+        assert_eq!(2, chain.num_segments());
+        // checking that both segments share the same segment index
+        {
+            let mut iter = chain.iter();
+            let segment = iter.next().unwrap();
+            assert_eq!(Lsn(550), segment.base_lsn);
+            assert_eq!(Some(Lsn(560)), segment.tail_lsn);
+            assert_eq!(SegmentIndex(5), segment.config.index());
+            let segment = iter.next().unwrap();
+            assert_eq!(Lsn(560), segment.base_lsn);
+            assert_eq!(None, segment.tail_lsn);
+            assert_eq!(SegmentIndex(5), segment.config.index());
+        }
+
+        // try sealing again the chain at 561
+        assert_eq!(
+            // we still get the same tail_lsn
+            Lsn(560),
+            chain.seal(Lsn::from(561), &SealMetadata::default())?,
+        );
+
+        assert_eq!(2, chain.num_segments());
+
+        assert_eq!(Lsn::from(550), chain.head().base_lsn);
+        assert_eq!(Some(Lsn::from(560)), chain.head().tail_lsn);
+
+        // the tail segment is the seal marker
+        assert_eq!(Lsn::from(560), chain.tail().base_lsn);
+        assert_eq!(None, chain.tail().tail_lsn);
+
+        // let's trim up to MAX, we should only have the seal marker remaining
+        chain.trim_prefix(Lsn::new(600));
+
+        assert_eq!(1, chain.num_segments());
+
+        assert_eq!(Lsn::from(560), chain.head().base_lsn);
+        assert_eq!(None, chain.head().tail_lsn);
+
+        // make sure we see the correct tail-lsn for the sealed segment when finding by lsn
+        {
+            let MaybeSegment::Some(segment) = chain.find_segment_for_lsn(Lsn::from(560)) else {
+                panic!("should have found segment");
+            };
+            assert_eq!(Lsn::from(560), segment.base_lsn);
+            assert_eq!(None, segment.tail_lsn);
+        }
 
         Ok(())
     }
@@ -723,12 +858,11 @@ mod tests {
         // add a loglet of another type at the end to allow the replicated loglet to be trimmed
         // later
         //
-        // log-1 -> [replicated-loglet-1, replicated-loglet-2, in-memory-loglet]
-        builder.chain(LogId::new(1)).unwrap().append_segment(
-            Lsn::from(100),
-            ProviderKind::InMemory,
-            LogletParams::from("test".to_string()),
-        )?;
+        // log-1 -> [replicated-loglet-1, replicated-loglet-2, sealed-loglet]
+        builder
+            .chain(LogId::new(1))
+            .unwrap()
+            .seal(Lsn::from(100), &SealMetadata::default())?;
 
         let found2 = builder
             .inner

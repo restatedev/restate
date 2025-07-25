@@ -19,6 +19,7 @@ mod loglet_wrapper;
 pub mod providers;
 mod read_stream;
 mod record;
+mod sealed_loglet;
 mod service;
 mod types;
 mod watchdog;
@@ -26,18 +27,20 @@ mod watchdog;
 pub use appender::Appender;
 pub use background_appender::{AppenderHandle, BackgroundAppender, CommitToken, LogSender};
 pub use bifrost::{Bifrost, ErrorRecoveryStrategy};
-pub use bifrost_admin::{BifrostAdmin, SealedSegment};
+pub use bifrost_admin::{BifrostAdmin, MaybeSealedSegment};
 pub use error::{Error, Result};
 pub use read_stream::LogReadStream;
 pub use record::{InputRecord, LogEntry};
+pub use service::BifrostService;
+pub use types::*;
+
+use std::sync::Arc;
+
 use restate_core::{Metadata, ShutdownError};
 use restate_types::Version;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::logs::{LogId, Lsn};
 use restate_types::partition_table::{FindPartition, PartitionTableError};
-pub use service::BifrostService;
-use std::sync::Arc;
-pub use types::*;
 
 pub const SMALL_BATCH_THRESHOLD_COUNT: usize = 4;
 

@@ -58,6 +58,13 @@ impl MillisSinceEpoch {
         self.0
     }
 
+    /// Note, this doesn't fail if the timestamp is higher than Timestamp::MAX instead
+    /// it returns the default value (now). There are no practical cases where this can happen
+    /// so it's decided to do this for API convenience.
+    pub fn into_timestamp(self) -> jiff::Timestamp {
+        jiff::Timestamp::from_millisecond(self.0 as i64).unwrap_or_default()
+    }
+
     /// Returns zero duration if self is in the future. Should not be used where monotonic
     /// clock/duration is expected.
     pub fn elapsed(&self) -> Duration {
