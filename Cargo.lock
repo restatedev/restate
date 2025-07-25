@@ -4792,7 +4792,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "prost",
- "restate-service-protocol",
+ "restate-service-protocol-v4",
  "restate-types",
  "restate-workspace-hack",
  "serde",

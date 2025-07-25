@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
-restate-service-protocol = { workspace = true, features = ["message", "codec"] }
+restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }
 restate-types = { workspace = true }
 
 assert2 = { workspace = true }
