@@ -150,6 +150,8 @@ impl SpawnPartitionProcessorTask {
                         Err(e) => Err(ProcessorError::from(e)),
                     }?;
 
+                    partition_store.verify_deprecations(partition.key_range);
+
                     // invoker needs to outlive the partition processor when shutdown signal is
                     // received. This is why it's not spawned as a "child".
                     TaskCenter::spawn(
