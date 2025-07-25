@@ -26,7 +26,7 @@ use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::trace;
+use tracing::{error, trace};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{CfName, IoMode, IterAction, Priority, RocksDb, RocksError};
@@ -34,13 +34,16 @@ use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::config::Configuration;
-use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
+use restate_types::identifiers::{
+    InvocationId, PartitionId, PartitionKey, SnapshotId, WithPartitionKey,
+};
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
 
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::fsm_table::get_locally_durable_lsn;
+use crate::invocation_status_table::InvocationStatusKeyV1;
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
 use crate::partition_db::PartitionDb;
@@ -605,6 +608,33 @@ impl PartitionStore {
 
     pub fn partition(&self) -> &Arc<Partition> {
         self.db.partition()
+    }
+
+    pub fn verify_deprecations(&self, key_range: RangeInclusive<PartitionKey>) {
+        // Verify invocation status v1 is unused
+        let Ok(iter) = self.iterator_from::<InvocationStatusKeyV1>(
+            TableScan::FullScanPartitionKeyRange(key_range),
+        ) else {
+            return;
+        };
+
+        if iter.valid() {
+            // Something is here!
+            if let Some(invocation_id) = iter
+                .key()
+                .and_then(|mut k| InvocationStatusKeyV1::deserialize_from(&mut k).ok())
+                .and_then(|k| k.into_inner_ok_or().ok())
+                .map(|(pk, uuid)| InvocationId::from_parts(pk, uuid))
+            {
+                error!(
+                    "Detected an invocation with id {invocation_id} stored using the deprecated format. Cancel or kill the invocation.\nTHIS WILL BECOME AN HARD ERROR IN 1.6"
+                )
+            } else {
+                error!(
+                    "Detected an invocation stored using the deprecated format. Could not read the invocation id, this indicates storage corruption.\nTHIS WILL BECOME AN HARD ERROR IN 1.6"
+                )
+            }
+        }
     }
 }
 
