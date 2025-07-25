@@ -15,7 +15,6 @@ use serde::Deserialize;
 use serde::Serialize;
 use tracing::warn;
 
-use super::Schema;
 use crate::config::IngressOptions;
 use crate::errors::GenericError;
 use crate::identifiers::SubscriptionId;
@@ -179,27 +178,6 @@ pub trait SubscriptionResolver {
     fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription>;
 
     fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription>;
-}
-
-impl SubscriptionResolver for Schema {
-    fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
-        self.subscriptions.get(&id).cloned()
-    }
-
-    fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
-        self.subscriptions
-            .values()
-            .filter(|sub| {
-                for f in filters {
-                    if !f.matches(sub) {
-                        return false;
-                    }
-                }
-                true
-            })
-            .cloned()
-            .collect()
-    }
 }
 
 pub trait SubscriptionValidator {
