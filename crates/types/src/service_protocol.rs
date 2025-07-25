@@ -15,6 +15,8 @@ use std::ops::RangeInclusive;
 
 // Range of supported service protocol versions by this server
 pub const MIN_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V1;
+pub const MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
+    ServiceProtocolVersion::V5;
 pub const MAX_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V5;
 
 pub const MAX_SERVICE_PROTOCOL_VERSION_VALUE: i32 = i32::MAX;
@@ -26,7 +28,12 @@ impl ServiceProtocolVersion {
         i32::from(*self)
     }
 
-    pub fn is_compatible(min_version: i32, max_version: i32) -> bool {
+    pub fn is_acceptable_for_discovery(min_version: i32, max_version: i32) -> bool {
+        min_version <= i32::from(MAX_SERVICE_PROTOCOL_VERSION)
+            && max_version >= i32::from(MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION)
+    }
+
+    fn is_compatible(min_version: i32, max_version: i32) -> bool {
         min_version <= i32::from(MAX_SERVICE_PROTOCOL_VERSION)
             && max_version >= i32::from(MIN_SERVICE_PROTOCOL_VERSION)
     }

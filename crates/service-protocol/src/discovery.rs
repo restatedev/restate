@@ -39,8 +39,8 @@ use restate_types::service_discovery::{
     ServiceDiscoveryProtocolVersion,
 };
 use restate_types::service_protocol::{
-    MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE, MIN_SERVICE_PROTOCOL_VERSION,
-    ServiceProtocolVersion,
+    MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+    MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, ServiceProtocolVersion,
 };
 
 // TODO(slinkydeveloper) move this code somewhere else!
@@ -160,8 +160,8 @@ pub enum DiscoveryError {
     #[error("cannot read body: {0}")]
     BodyError(GenericError),
     #[error(
-        "unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]",
-        i32::from(MIN_SERVICE_PROTOCOL_VERSION),
+        "unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]. Please upgrade the SDK and try registering again.",
+        i32::from(MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION),
         i32::from(MAX_SERVICE_PROTOCOL_VERSION)
     )]
     UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
@@ -403,7 +403,7 @@ impl ServiceDiscovery {
             }
         }
 
-        if !ServiceProtocolVersion::is_compatible(min_version, max_version) {
+        if !ServiceProtocolVersion::is_acceptable_for_discovery(min_version, max_version) {
             return Err(DiscoveryError::UnsupportedServiceProtocol {
                 min_version,
                 max_version,
