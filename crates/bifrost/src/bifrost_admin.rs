@@ -177,8 +177,8 @@ impl<'a> BifrostAdmin<'a> {
         Ok(sealed_segment)
     }
 
-    pub async fn writeable_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
-        self.inner.tail_loglet(log_id).await
+    pub fn tail_loglet(&self, log_id: LogId) -> Result<LogletWrapper> {
+        self.inner.tail_loglet(log_id)
     }
 
     async fn seal_inner(
@@ -189,7 +189,7 @@ impl<'a> BifrostAdmin<'a> {
     ) -> Result<MaybeSealedSegment> {
         self.inner.fail_if_shutting_down()?;
         // first find the tail segment for this log.
-        let loglet = self.inner.tail_loglet(log_id).await?;
+        let loglet = self.tail_loglet(log_id)?;
 
         if segment_index != loglet.segment_index() {
             // Not the same segment. Bail!

@@ -126,7 +126,7 @@ impl Appender {
             let loglet = match self.loglet_cache.as_mut() {
                 None => self
                     .loglet_cache
-                    .insert(self.bifrost_inner.tail_loglet(self.log_id).await?),
+                    .insert(self.bifrost_inner.tail_loglet(self.log_id)?),
                 Some(wrapper) => wrapper,
             };
             match loglet.append_batch(batch.clone()).await {
@@ -254,9 +254,7 @@ impl Appender {
                 .auto_recovery_interval
                 .into();
 
-            let loglet = bifrost_inner
-                .tail_loglet_from_metadata(log_metadata, log_id)
-                .await?;
+            let loglet = bifrost_inner.tail_loglet_from_metadata(log_metadata, log_id)?;
             // Do we think that the last tail loglet is different and unsealed?
             if loglet.tail_lsn.is_none() && loglet.segment_index() > current_segment {
                 return Ok(loglet);
@@ -324,9 +322,7 @@ impl Appender {
                 .auto_recovery_interval
                 .into();
 
-            let loglet = bifrost_inner
-                .tail_loglet_from_metadata(log_metadata, log_id)
-                .await?;
+            let loglet = bifrost_inner.tail_loglet_from_metadata(log_metadata, log_id)?;
             let tone_escalated = start.elapsed() > auto_recovery_threshold;
             // Do we think that the last tail loglet is different and unsealed?
             if loglet.tail_lsn.is_none() && loglet.segment_index() > sealed_segment {

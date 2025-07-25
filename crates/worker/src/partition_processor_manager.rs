@@ -1437,7 +1437,7 @@ mod tests {
         RocksDbManager::init(Constant::new(CommonOptions::default()));
 
         let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
-            .with_factory(memory_loglet::Factory::default());
+            .with_factory(memory_loglet::Factory);
         let bifrost = bifrost_svc.handle();
 
         let replica_set_states = PartitionReplicaSetStates::default();
