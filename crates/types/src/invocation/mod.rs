@@ -1465,6 +1465,30 @@ mod mocks {
             }
         }
     }
+
+    impl InvocationRequest {
+        pub fn mock() -> Self {
+            Self {
+                header: InvocationRequestHeader::mock(),
+                body: Default::default(),
+            }
+        }
+    }
+
+    impl InvocationRequestHeader {
+        pub fn mock() -> Self {
+            Self {
+                id: InvocationId::mock_random(),
+                target: InvocationTarget::mock_service(),
+                headers: vec![],
+                span_context: Default::default(),
+                idempotency_key: None,
+                execution_time: None,
+                completion_retention_duration: Default::default(),
+                journal_retention_duration: Default::default(),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

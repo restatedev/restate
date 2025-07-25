@@ -160,6 +160,12 @@ impl From<CancelInvocationResponse> for CancelInvocationRpcResponse {
     }
 }
 
+impl From<CancelInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: CancelInvocationRpcResponse) -> Self {
+        Self::CancelInvocation(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KillInvocationRpcResponse {
     Ok,
@@ -187,6 +193,12 @@ impl From<KillInvocationResponse> for KillInvocationRpcResponse {
     }
 }
 
+impl From<KillInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: KillInvocationRpcResponse) -> Self {
+        Self::KillInvocation(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PurgeInvocationRpcResponse {
     Ok,
@@ -211,6 +223,12 @@ impl From<PurgeInvocationResponse> for PurgeInvocationRpcResponse {
             PurgeInvocationResponse::NotFound => Self::NotFound,
             PurgeInvocationResponse::NotCompleted => Self::NotCompleted,
         }
+    }
+}
+
+impl From<PurgeInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: PurgeInvocationRpcResponse) -> Self {
+        Self::PurgeInvocation(value)
     }
 }
 
