@@ -29,6 +29,10 @@ securityContext:
 logging:
   env_filter: info
 
+nodeName: $(POD_NAME)
+# Use the stable network identifier (dns resolvable) provided by the stateful set
+advertisedAddress: http://$(POD_NAME).$(SERVICE_NAME):5122
+
 env:
   - name: RESTATE_LOG_FORMAT
     value: json
