@@ -52,6 +52,7 @@ where
                 idempotency_key,
                 journal_metadata,
                 pinned_deployment,
+                timestamps,
                 ..
             }) => {
                 let should_remove_journal_table_v2 =
@@ -91,6 +92,7 @@ where
                         invocation_id,
                         journal_metadata.length,
                         should_remove_journal_table_v2,
+                        timestamps.completed_transition_time(),
                     )
                     .await?;
                 }
