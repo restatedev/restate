@@ -192,7 +192,7 @@ fn main() {
             // We need to apply this first to log correctly
             let tracing_guard =
                 init_tracing_and_logging(&Configuration::pinned().common, "restate-server")
-                    .expect("failed to configure logging and tracing!");
+                    .expect("failed to configure logging and tracing");
             // spawn checking latest release
             let _ = TaskCenter::spawn_unmanaged(
                 TaskKind::Background,

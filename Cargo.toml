@@ -169,6 +169,7 @@ num-traits = { version = "0.2.17" }
 object_store = { version = "0.12.2", features = ["aws"] }
 opentelemetry = { version = "0.27" }
 opentelemetry-contrib = { version = "0.19" }
+opentelemetry-http = { version = "0.27" }
 opentelemetry-otlp = { version = "0.27" }
 opentelemetry-semantic-conventions = { version = "0.27" }
 opentelemetry_sdk = { version = "0.27" }

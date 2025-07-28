@@ -355,15 +355,10 @@ impl<T: TransportConnect> Scheduler<T> {
                 let partition_configuration_update = Self::complete_reconfiguration(
                     self.metadata_writer.raw_metadata_store_client(),
                     partition_id,
-                    occupied_entry.get().current.version(),
-                    occupied_entry
-                        .get()
-                        .next
-                        .as_ref()
-                        .expect("to be present")
-                        .version(),
+                    occupied_entry.get(),
                 )
                 .await?;
+
                 if occupied_entry.get_mut().update_configuration(
                     partition_configuration_update.current,
                     partition_configuration_update.next,
@@ -520,14 +515,20 @@ impl<T: TransportConnect> Scheduler<T> {
     async fn complete_reconfiguration(
         metadata_store_client: &MetadataStoreClient,
         partition_id: PartitionId,
-        current_version: Version,
-        next_version: Version,
+        partition_state: &PartitionState,
     ) -> Result<PartitionConfigurationUpdate, Error> {
+        let current_version = partition_state.current.version();
+        let expected_next_version = partition_state
+            .next
+            .as_ref()
+            .expect("next should be present")
+            .version();
+
         match metadata_store_client.read_modify_write(partition_processor_epoch_key(partition_id), |epoch_metadata: Option<EpochMetadata>| {
             match epoch_metadata {
                 None => panic!("Did not find epoch metadata which should be present. This indicates a corruption of the metadata store."),
                 Some(epoch_metadata) => {
-                    let Some(next_version) = epoch_metadata.next().map(|config| config.version()) else {
+                    let Some(actual_next_version) = epoch_metadata.next().map(|config| config.version()) else {
                         // if there is no next configuration, then a concurrent modification has happened
                         let (_, _, current, next) = epoch_metadata.into_inner();
                         return Err(PartitionConfigurationUpdate {
@@ -536,7 +537,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         });
                     };
 
-                    match next_version.cmp(&next_version) {
+                    match actual_next_version.cmp(&expected_next_version) {
                         Ordering::Less => unreachable!("we should not know about a newer next configuration than the metadata store"),
                         Ordering::Equal => Ok(epoch_metadata.complete_reconfiguration()),
                         Ordering::Greater => {
@@ -553,9 +554,9 @@ impl<T: TransportConnect> Scheduler<T> {
             Ok(epoch_metadata) => {
                 info!(
                     %partition_id,
-                    replica_set = %epoch_metadata.current().replica_set(),
-                    "Transitioned from partition configuration {current_version} to {next_version}"
-                );
+                    old_replica_set = %partition_state.current.replica_set(),
+                    new_replica_set = %epoch_metadata.current().replica_set(),
+                    "Transitioned from partition configuration {current_version} to {expected_next_version}");
                 let (_, _, current, next) = epoch_metadata.into_inner();
                 Ok(PartitionConfigurationUpdate {
                     current,
