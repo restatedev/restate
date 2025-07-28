@@ -499,6 +499,14 @@ impl StorageState {
     pub fn can_write_to(&self) -> bool {
         use StorageState::*;
         match self {
+            Provisioning | Disabled | Gone | DataLoss => false,
+            ReadWrite | ReadOnly => true,
+        }
+    }
+
+    pub fn should_write_to(&self) -> bool {
+        use StorageState::*;
+        match self {
             Provisioning | Disabled | ReadOnly | Gone | DataLoss => false,
             ReadWrite => true,
         }
