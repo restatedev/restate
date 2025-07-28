@@ -17,6 +17,7 @@ pub const INVOKER_INVOCATION_TASKS: &str = "restate.invoker.invocation_tasks.tot
 pub const INVOKER_AVAILABLE_SLOTS: &str = "restate.invoker.available_slots";
 pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
+pub const USAGE_INVOCATION_COUNT: &str = "restate.usage_invocation_count.total";
 
 pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
@@ -52,5 +53,11 @@ pub(crate) fn describe_metrics() {
         INVOKER_TASK_DURATION,
         Unit::Seconds,
         "Time taken to complete an invoker task"
+    );
+
+    describe_counter!(
+        USAGE_INVOCATION_COUNT,
+        Unit::Count,
+        "Total number of invocations started"
     );
 }

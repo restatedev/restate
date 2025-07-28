@@ -54,7 +54,7 @@ use tracing::{error, instrument};
 use crate::error::SdkInvocationErrorV2;
 use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
-    TASK_OP_SUSPENDED,
+    TASK_OP_SUSPENDED, USAGE_INVOCATION_COUNT,
 };
 use error::InvokerError;
 pub use input_command::ChannelStatusReader;
@@ -1331,6 +1331,9 @@ where
             ism.invocation_state_debug()
         );
         counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_STARTED).increment(1);
+        counter!(USAGE_INVOCATION_COUNT,
+            "attempt" => if ism.start_message_retry_count_since_last_stored_command == 0 { "first" } else { "retry" },
+        ).increment(1);
         self.invocation_state_machine_manager
             .register_invocation(partition, invocation_id, ism);
     }
