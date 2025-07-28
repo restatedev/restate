@@ -43,6 +43,14 @@ spec:
       {{- end }}
       containers:
         - name: {{ include "restate.fullname" . }}
+          {{- with .Values.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end}}
           image: {{ .Values.image.repository }}:{{ include "restate.tag" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:

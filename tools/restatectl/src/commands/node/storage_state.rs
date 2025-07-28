@@ -120,7 +120,7 @@ async fn set_storage_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyho
     }
 
     // run safety checks
-    if !opts.force && !opts.storage_state.can_write_to() {
+    if !opts.force && !opts.storage_state.should_write_to() {
         let logs = connection.get_logs().await?;
         let provider = &logs.configuration().default_provider;
         if let ProviderKind::Replicated = provider.kind() {
