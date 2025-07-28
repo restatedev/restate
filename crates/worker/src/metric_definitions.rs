@@ -18,6 +18,9 @@ pub const PARTITION_BLOCKED_FLARE: &str = "restate.partition.blocked_flare";
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command_duration.seconds";
 pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_leader_action.total";
+pub const USAGE_LEADER_ACTION_COUNT: &str = "restate.usage.leader_action_count.total";
+pub const USAGE_LEADER_INFLIGHT_BYTE_MS: &str = "restate.usage.leader_inflight_byte_ms.total";
+pub const USAGE_LEADER_RETAINED_BYTE_MS: &str = "restate.usage.leader_retained_byte_ms.total";
 
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
@@ -41,16 +44,50 @@ pub(crate) fn describe_metrics() {
         Unit::Count,
         "A partition requires a higher restate-server version and is blocked from starting on this node"
     );
+
     describe_histogram!(
         PARTITION_APPLY_COMMAND,
         Unit::Seconds,
         "Time spent applying partition processor command"
     );
+
     describe_histogram!(
         PARTITION_HANDLE_LEADER_ACTIONS,
         Unit::Count,
         "Number of actions the leader has performed"
     );
+
+    describe_counter!(
+        USAGE_LEADER_ACTION_COUNT,
+        Unit::Count,
+        "Count of invocation actions processed by partition leaders"
+    );
+
+    // Given
+    //
+    //   t1: invocation created, initial size S1
+    //   t2: entry added, size S2
+    //   t3: entry added, size S3
+    //   t4: invocation completed
+    //   t5: invocation purged
+    //
+    // Then
+    //
+    //   inflight_byte_ms = (t2-t1)*(S1) + (t3-t2)*(S1+S2) + (t4-t3)*(S1+S2+S3)
+    //   retained_byte_ms = (t5-t4)*(S1+S2+S3)
+
+    describe_counter!(
+        USAGE_LEADER_INFLIGHT_BYTE_MS,
+        Unit::Count,
+        "Total journal entry size during active invocations, over time, by partition, via partition leader"
+    );
+
+    describe_counter!(
+        USAGE_LEADER_RETAINED_BYTE_MS,
+        Unit::Count,
+        "Total journal entry size for finished invocations, over time, by partition, via partition leader"
+    );
+
     describe_histogram!(
         PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
         Unit::Seconds,

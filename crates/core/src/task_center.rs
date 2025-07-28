@@ -351,6 +351,9 @@ impl TaskCenterInner {
         #[cfg(any(test, feature = "test-util"))] pause_time: bool,
     ) -> Self {
         metric_definitions::describe_metrics();
+
+        let start_time = Instant::now();
+
         let root_task_context = TaskContext {
             id: TaskId::ROOT,
             name: "::".into(),
@@ -360,7 +363,7 @@ impl TaskCenterInner {
         };
         Self {
             id: rand::random(),
-            start_time: Instant::now(),
+            start_time,
             default_runtime_handle,
             default_runtime,
             global_cancel_token: CancellationToken::new(),

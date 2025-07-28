@@ -141,6 +141,7 @@ impl Node {
         prometheus: Prometheus,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
+        restate_core::metric_definitions::describe_metrics();
         let mut server_builder = NetworkServerBuilder::default();
         let config = updateable_config.pinned();
 

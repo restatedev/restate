@@ -48,6 +48,7 @@ where
                         invocation_id,
                         completed.journal_metadata.length,
                         should_remove_journal_table_v2,
+                        completed.timestamps.completed_transition_time(),
                     )
                     .await?;
                 }
