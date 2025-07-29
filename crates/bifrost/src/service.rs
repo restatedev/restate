@@ -39,10 +39,7 @@ pub struct BifrostService {
 impl BifrostService {
     pub fn new(metadata_writer: MetadataWriter) -> Self {
         let (watchdog_tx, watchdog_rx) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(
-            watchdog_tx.clone(),
-            metadata_writer.clone(),
-        ));
+        let inner = Arc::new(BifrostInner::new(watchdog_tx.clone()));
 
         Self {
             inner,

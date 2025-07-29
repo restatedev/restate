@@ -13,7 +13,7 @@ mod background_appender;
 mod bifrost;
 mod bifrost_admin;
 mod error;
-mod log_chain_extender;
+mod log_chain_writer;
 pub mod loglet;
 mod loglet_wrapper;
 pub mod providers;
