@@ -21,7 +21,9 @@ use tracing::{info, instrument, warn};
 #[cfg(all(any(test, feature = "test-util"), feature = "local-loglet"))]
 use restate_types::live::LiveLoadExt;
 
-use restate_core::{Metadata, MetadataWriter, ShutdownError};
+use restate_core::MetadataWriter;
+use restate_core::my_node_id;
+use restate_core::{Metadata, ShutdownError};
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SealMetadata;
 use restate_types::logs::metadata::{LogletParams, Logs, SegmentIndex};
@@ -436,7 +438,11 @@ impl BifrostInner {
                         // loglet is sealed but chain is not sealed yet.
                         // let's seal the chain.
                         match BifrostAdmin::new(self)
-                            .seal(log_id, loglet.segment_index(), SealMetadata::default())
+                            .seal(
+                                log_id,
+                                loglet.segment_index(),
+                                SealMetadata::new("find-tail", my_node_id()),
+                            )
                             .await
                         {
                             Ok(lsn) => {

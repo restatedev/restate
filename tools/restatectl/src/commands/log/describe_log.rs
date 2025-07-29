@@ -286,7 +286,15 @@ pub fn render_loglet_notes(segment: &Segment<'_>) -> Cell {
     if segment.config.kind.is_seal_marker() {
         match SealMetadata::deserialize_from(segment.config.params.as_bytes()) {
             Ok(metadata) => {
-                let mut cell = Cell::new(format!("At {}", metadata.sealed_at.into_timestamp()));
+                let seal_ctx = metadata
+                    .context
+                    .into_iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .join(", ");
+                let mut cell = Cell::new(format!(
+                    "At {} {seal_ctx}",
+                    metadata.sealed_at.into_timestamp()
+                ));
                 if metadata.permanent_seal {
                     cell = cell.fg(Color::Green);
                 }
