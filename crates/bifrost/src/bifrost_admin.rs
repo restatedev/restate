@@ -8,15 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use tracing::{debug, instrument, warn};
 
 use restate_core::{Metadata, MetadataKind};
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{
-    Chain, InternalKind, LogletParams, Logs, ProviderKind, SealMetadata, SegmentIndex,
+    InternalKind, LogletParams, ProviderKind, SealMetadata, SegmentIndex,
 };
 use restate_types::logs::{LogId, Lsn, TailState};
 
@@ -299,29 +297,8 @@ impl<'a> BifrostAdmin<'a> {
         params: LogletParams,
     ) -> Result<()> {
         self.inner.fail_if_shutting_down()?;
-        let res = self
-            .inner
-            .metadata_writer
-            .global_metadata()
-            .read_modify_write::<_, _, Error>(|logs: Option<Arc<Logs>>| {
-                // We assume that we'll always see a value set in metadata for BIFROST_CONFIG_KEY,
-                // provisioning the empty logs metadata is not our responsibility.
-                let logs = logs.ok_or(Error::LogsMetadataNotProvisioned)?;
+        self.inner.add_log(log_id, provider, params).await?;
 
-                let mut builder = logs.as_ref().clone().into_builder();
-                builder
-                    .add_log(log_id, Chain::new(provider, params.clone()))
-                    .map_err(AdminError::from)?;
-                Ok(builder.build())
-            })
-            .await
-            .map_err(|e| e.transpose());
-
-        match res {
-            Ok(_) => Ok(()),
-            // If the log already exists, it's okay to ignore the error.
-            Err(Error::AdminError(AdminError::LogAlreadyExists(_))) => Ok(()),
-            Err(other) => Err(other),
-        }
+        Ok(())
     }
 }
