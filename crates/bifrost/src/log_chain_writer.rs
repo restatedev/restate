@@ -11,18 +11,20 @@
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
-use tracing::trace;
+use tracing::{debug, trace};
 
 use restate_core::{MetadataWriter, TaskCenter, TaskHandle, TaskKind, cancellation_token};
 use restate_metadata_store::ReadModifyWriteError;
-use restate_types::logs::builder::LogsBuilder;
-use restate_types::logs::metadata::{LogletParams, Logs, ProviderKind, SealMetadata, SegmentIndex};
-use restate_types::logs::{LogId, Lsn};
+use restate_types::logs::builder::{BuilderError, LogsBuilder};
+use restate_types::logs::metadata::{
+    Chain, LogletParams, Logs, ProviderKind, SealMetadata, SegmentIndex,
+};
+use restate_types::logs::{LogId, Lsn, SequenceNumber};
 
 use crate::Error;
 use crate::error::AdminError;
 
-const MAX_BATCH_SIZE_LOG_CHAIN_EXTENSIONS: usize = 128;
+const MAX_BATCH_SIZE: usize = 1024;
 
 struct OpOutput<T> {
     tx: oneshot::Sender<Result<T, Error>>,
@@ -51,11 +53,30 @@ impl<T> OpOutput<T> {
 #[derive(Debug)]
 pub(super) struct LogChainCommand {
     log_id: LogId,
-    last_segment_index: SegmentIndex,
     op: ChainOp,
 }
 
 impl LogChainCommand {
+    pub fn add_log(
+        log_id: LogId,
+        provider: ProviderKind,
+        params: LogletParams,
+    ) -> (oneshot::Receiver<Result<(), Error>>, Self) {
+        let (tx, rx) = oneshot::channel();
+        let cmd = Self {
+            log_id,
+            op: ChainOp::AddLog {
+                provider,
+                params,
+                response: OpOutput {
+                    tx,
+                    staged_result: None,
+                },
+            },
+        };
+        (rx, cmd)
+    }
+
     pub fn extend(
         log_id: LogId,
         last_segment_index: SegmentIndex,
@@ -66,8 +87,8 @@ impl LogChainCommand {
         let (tx, rx) = oneshot::channel();
         let cmd = Self {
             log_id,
-            last_segment_index,
             op: ChainOp::Extend {
+                last_segment_index,
                 base_lsn,
                 provider,
                 params,
@@ -89,8 +110,8 @@ impl LogChainCommand {
         let (tx, rx) = oneshot::channel();
         let cmd = Self {
             log_id,
-            last_segment_index,
             op: ChainOp::SealChain {
+                last_segment_index,
                 tail_lsn,
                 metadata,
                 response: OpOutput {
@@ -102,10 +123,19 @@ impl LogChainCommand {
         (rx, cmd)
     }
 
+    pub fn trim_prefix(log_id: LogId, trim_point: Lsn) -> Self {
+        Self {
+            log_id,
+            op: ChainOp::TrimPrefix { trim_point },
+        }
+    }
+
     fn fail(self, err: Error) {
         match self.op {
             ChainOp::Extend { response, .. } => response.fail(err),
             ChainOp::SealChain { response, .. } => response.fail(err),
+            ChainOp::AddLog { response, .. } => response.fail(err),
+            ChainOp::TrimPrefix { .. } => { /* do nothing */ }
         }
     }
 
@@ -113,6 +143,13 @@ impl LogChainCommand {
         match self.op {
             ChainOp::Extend { response, .. } => response.complete(),
             ChainOp::SealChain { response, .. } => response.complete(),
+            ChainOp::AddLog { response, .. } => response.complete(),
+            ChainOp::TrimPrefix { trim_point } => {
+                debug!(
+                    "Log {} chain has been trimmed to trim-point {}",
+                    self.log_id, trim_point,
+                );
+            }
         }
     }
 }
@@ -120,6 +157,7 @@ impl LogChainCommand {
 #[derive(derive_more::Debug)]
 enum ChainOp {
     Extend {
+        last_segment_index: SegmentIndex,
         base_lsn: Lsn,
         provider: ProviderKind,
         #[debug(skip)]
@@ -128,43 +166,53 @@ enum ChainOp {
         response: OpOutput<()>,
     },
     SealChain {
+        last_segment_index: SegmentIndex,
         tail_lsn: Lsn,
         metadata: SealMetadata,
         #[debug(skip)]
         response: OpOutput<Lsn>,
     },
+    AddLog {
+        provider: ProviderKind,
+        #[debug(skip)]
+        params: LogletParams,
+        #[debug(skip)]
+        response: OpOutput<()>,
+    },
+    TrimPrefix {
+        trim_point: Lsn,
+    },
 }
 
 /// Component which coalesces multiple log-chain updates into a single [`Logs`] update. It works
 /// by draining all available [`LogChainCommand`] commands and applying them to the current logs
-/// configuration using a read-modify-write metadata operation. A log chain can only be extended if
-/// the last segment index equals the value specified by the [`LogChainCommand`] command.
-pub struct LogChainExtender {
+/// configuration using a read-modify-write metadata operation.
+pub struct LogChainWriter {
     metadata_writer: MetadataWriter,
     rx: mpsc::UnboundedReceiver<LogChainCommand>,
 }
 
-impl LogChainExtender {
+impl LogChainWriter {
     pub fn start(
         metadata_writer: MetadataWriter,
     ) -> anyhow::Result<(mpsc::UnboundedSender<LogChainCommand>, TaskHandle<()>)> {
         let (tx, rx) = mpsc::unbounded_channel();
 
-        let log_chain_extender = Self {
+        let writer = Self {
             metadata_writer,
             rx,
         };
         let handle = TaskCenter::spawn_unmanaged(
             TaskKind::BifrostBackgroundHighPriority,
-            "log-chain-extender",
-            log_chain_extender.run(),
+            "log-chain-writer",
+            writer.run(),
         )?;
 
         Ok((tx, handle))
     }
 
     pub async fn run(self) {
-        trace!("Bifrost log chain extender started");
+        trace!("Bifrost log chain writer started");
 
         cancellation_token()
             .run_until_cancelled(self.run_inner())
@@ -176,10 +224,7 @@ impl LogChainExtender {
 
         // await the first log chain command
         loop {
-            let received = self
-                .rx
-                .recv_many(&mut buffer, MAX_BATCH_SIZE_LOG_CHAIN_EXTENSIONS)
-                .await;
+            let received = self.rx.recv_many(&mut buffer, MAX_BATCH_SIZE).await;
 
             if received == 0 {
                 break;
@@ -196,7 +241,20 @@ impl LogChainExtender {
 
                     for cmd in &mut buffer {
                         match cmd.op {
+                            ChainOp::AddLog {
+                                provider,
+                                ref params,
+                                ref mut response,
+                            } => {
+                                response.stage_output(Self::add_log(
+                                    &mut builder,
+                                    cmd.log_id,
+                                    provider,
+                                    params,
+                                ));
+                            }
                             ChainOp::Extend {
+                                last_segment_index,
                                 base_lsn,
                                 provider,
                                 ref params,
@@ -205,13 +263,14 @@ impl LogChainExtender {
                                 response.stage_output(Self::extend_log_chain(
                                     &mut builder,
                                     cmd.log_id,
-                                    cmd.last_segment_index,
+                                    last_segment_index,
                                     base_lsn,
                                     provider,
                                     params,
                                 ));
                             }
                             ChainOp::SealChain {
+                                last_segment_index,
                                 tail_lsn,
                                 ref metadata,
                                 ref mut response,
@@ -219,10 +278,14 @@ impl LogChainExtender {
                                 response.stage_output(Self::seal_log_chain(
                                     &mut builder,
                                     cmd.log_id,
-                                    cmd.last_segment_index,
+                                    last_segment_index,
                                     tail_lsn,
                                     metadata,
                                 ));
+                            }
+                            ChainOp::TrimPrefix { trim_point } => {
+                                // ignores the error if the log is unknown.
+                                let _ = Self::trim_prefix(&mut builder, cmd.log_id, trim_point);
                             }
                         }
                     }
@@ -244,6 +307,23 @@ impl LogChainExtender {
                 }
             }
         }
+    }
+
+    fn add_log(
+        builder: &mut LogsBuilder,
+        log_id: LogId,
+        provider_kind: ProviderKind,
+        params: &LogletParams,
+    ) -> Result<(), Error> {
+        match builder.add_log(log_id, Chain::new(provider_kind, params.clone())) {
+            Ok(_) => Ok(()),
+            // If the log already exists, it's okay to ignore the error.
+            Err(BuilderError::LogAlreadyExists(_)) => Ok(()),
+            Err(other) => Err(other),
+        }
+        .map_err(AdminError::from)?;
+
+        Ok(())
     }
 
     fn extend_log_chain(
@@ -293,5 +373,14 @@ impl LogChainExtender {
             .map_err(AdminError::from)?;
 
         Ok(lsn)
+    }
+
+    fn trim_prefix(builder: &mut LogsBuilder, log_id: LogId, trim_point: Lsn) -> Result<(), Error> {
+        let mut chain_builder = builder.chain(log_id).ok_or(Error::UnknownLogId(log_id))?;
+
+        // trim_prefix's lsn is exclusive. Trim-point is inclusive of the last trimmed lsn,
+        // therefore, we need to trim _including_ the trim point.
+        chain_builder.trim_prefix(trim_point.next());
+        Ok(())
     }
 }
