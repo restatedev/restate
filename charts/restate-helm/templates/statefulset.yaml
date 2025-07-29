@@ -134,7 +134,8 @@ spec:
     - metadata:
         name: storage
         labels:
-          {{- include "restate.labels" . | nindent 10 }}
+          app: {{ include "restate.name" . }}
+          app.kubernetes.io/name: {{ include "restate.name" . }}
       spec:
         {{- with .Values.storage.storageClassName }}
         storageClassName: {{ if (eq "-" .) }}""{{ else }}{{ . }}{{ end }}
