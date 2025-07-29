@@ -269,15 +269,22 @@ impl Member {
 
         let mut storage = self.raw_node.raft.r.raft_log.store;
 
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, nodes_config.live_load());
+
         // Set our raft server state to standby and store the latest nodes configuration so that we
         // don't start as a member and don't try to join again when restarting.
         let mut txn = storage.txn();
         txn.delete_raft_server_state()?;
-        txn.store_nodes_configuration(Self::latest_nodes_configuration(
-            &self.kv_storage,
-            nodes_config.live_load(),
-        ))?;
+        txn.store_nodes_configuration(nodes_config)?;
         txn.commit().await?;
+
+        // Make sure that the latest nodes configuration has been updated by the metadata manager.
+        // This is necessary if the asynchronous operation to update the NodesConfiguration,
+        // issued by the KvMemoryStorage, has not been processed yet.
+        Metadata::current()
+            .wait_for_version(MetadataKind::NodesConfiguration, nodes_config.version())
+            .await?;
 
         // todo if I am the leader, then tell others to immediately start campaigning to avoid the leader election timeout
         Ok(Standby::new(
