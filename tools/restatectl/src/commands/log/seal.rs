@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+
 use cling::prelude::*;
 use tracing::error;
 
@@ -28,6 +30,9 @@ pub struct SealOpts {
     /// The log id or range to seal and extend, e.g. "0", "1-4".
     #[clap(required = true)]
     log_id: Vec<RangeParam>,
+    /// Reason for sealing the log chain. This will appear as metadata on the chain.
+    #[clap(long)]
+    reason: Option<String>,
 }
 
 async fn seal(connection: &ConnectionInfo, opts: &SealOpts) -> anyhow::Result<()> {
@@ -46,14 +51,22 @@ async fn inner_seal(
     opts: &SealOpts,
     log_id: LogId,
 ) -> anyhow::Result<()> {
+    let mut context = HashMap::default();
+    context.insert("source".to_owned(), "restatectl".to_owned());
+    if let Some(reason) = &opts.reason {
+        context.insert("reason".to_owned(), reason.to_owned());
+    }
     let request = SealChainRequest {
         log_id: log_id.into(),
         segment_index: opts.segment_index,
+        context,
     };
 
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel).seal_chain(request).await
+            new_cluster_ctrl_client(channel)
+                .seal_chain(request.clone())
+                .await
         })
         .await?
         .into_inner();

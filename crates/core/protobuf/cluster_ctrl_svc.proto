@@ -156,7 +156,7 @@ message SealChainRequest {
   // segment_index will be automatically selected (to the index of last segment)
   // if not set.
   optional uint32 segment_index = 2;
-  // todo: allow user to pass human context
+  map<string, string> context = 3;
   // todo: option for permanently sealing the chain when this is fully supported
 }
 

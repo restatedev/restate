@@ -27,12 +27,12 @@ use tokio::time::{Instant, Interval, MissedTickBehavior};
 use tracing::{debug, info, warn};
 
 use restate_bifrost::{Bifrost, MaybeSealedSegment};
-use restate_core::cancellation_token;
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
     NetworkSender, NetworkServerBuilder, Networking, Swimlane, TransportConnect,
 };
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{cancellation_token, my_node_id};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_storage_query_datafusion::BuildError;
 use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
@@ -199,6 +199,8 @@ enum ClusterControllerCommand {
     SealChain {
         log_id: LogId,
         segment_index: Option<SegmentIndex>,
+        permanent_seal: bool,
+        context: std::collections::HashMap<String, String>,
         response_tx: oneshot::Sender<anyhow::Result<Lsn>>,
     },
 }
@@ -299,6 +301,8 @@ impl ClusterControllerHandle {
         &self,
         log_id: LogId,
         segment_index: Option<SegmentIndex>,
+        permanent_seal: bool,
+        context: std::collections::HashMap<String, String>,
     ) -> Result<anyhow::Result<Lsn>, ShutdownError> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -307,6 +311,8 @@ impl ClusterControllerHandle {
             .send(ClusterControllerCommand::SealChain {
                 log_id,
                 segment_index,
+                permanent_seal,
+                context,
                 response_tx,
             })
             .await;
@@ -526,15 +532,21 @@ impl<T: TransportConnect> Service<T> {
             ClusterControllerCommand::SealChain {
                 log_id,
                 segment_index,
+                permanent_seal,
+                mut context,
                 response_tx,
             } => {
                 let bifrost = self.bifrost.clone();
 
                 // receiver will get error if response_tx is dropped
                 _ = TaskCenter::spawn(TaskKind::Disposable, "seal-chain", async move {
+                    context.insert("node".to_owned(), my_node_id().to_string());
+
                     let result = SealChainTask {
                         log_id,
                         segment_index,
+                        permanent_seal,
+                        context,
                         bifrost,
                     }
                     .run()
@@ -720,6 +732,8 @@ where
 struct SealChainTask {
     log_id: LogId,
     segment_index: Option<SegmentIndex>,
+    permanent_seal: bool,
+    context: std::collections::HashMap<String, String>,
     bifrost: Bifrost,
 }
 
@@ -733,11 +747,12 @@ impl SealChainTask {
             .index();
 
         let segment_index = self.segment_index.unwrap_or(actual_tail_segment);
+        let seal_metadata = SealMetadata::with_context(self.permanent_seal, self.context);
 
         let tail_lsn = self
             .bifrost
             .admin()
-            .seal(self.log_id, segment_index, SealMetadata::default())
+            .seal(self.log_id, segment_index, seal_metadata)
             .await?;
 
         Ok(tail_lsn)

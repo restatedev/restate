@@ -223,6 +223,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .seal_chain(
                 request.log_id.into(),
                 request.segment_index.map(SegmentIndex::from),
+                false, /* permanent_seal */
+                request.context,
             )
             .await
             .map_err(|_| Status::aborted("Node is shutting down"))?
