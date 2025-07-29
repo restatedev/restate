@@ -862,7 +862,7 @@ impl Member {
             Ok(node_config) => node_config,
             Err(_err) => {
                 warn!(
-                    "NodesConfiguration no longer contains node {}. This indicates that this node \
+                    "Nodes configuration no longer contains node {}. This indicates that this node \
                     was removed from the cluster without removing it first from the metadata \
                     cluster. Leaving the metadata cluster now.",
                     self.my_member_id.node_id
@@ -877,14 +877,14 @@ impl Member {
 
                 if is_member {
                     info!(
-                        "Asked to leave the metadata store cluster as of NodesConfiguration '{}' while \
+                        "Asked to leave the metadata store cluster as of nodes configuration {} while \
                         still being a member of the configuration. This indicates that I missed the \
                         configuration change to remove me. Leaving metadata store cluster now.",
                         nodes_config.version()
                     );
                 } else {
                     info!(
-                        "Leaving metadata store cluster as of NodesConfiguration '{}'",
+                        "Leaving metadata store cluster as of nodes configuration {}",
                         nodes_config.version()
                     );
                 }
@@ -1423,7 +1423,7 @@ impl Member {
                 new_configuration.version
             );
 
-            info!(configuration = %self.configuration, "Applied new configuration");
+            info!(old_configuration = %self.configuration, %new_configuration, "Applied new configuration");
 
             self.update_configuration(new_configuration);
 
@@ -2027,7 +2027,7 @@ impl Standby {
                         }
 
                         if join_cluster.is_terminated() && matches!(node_config.metadata_server_config.metadata_server_state, MetadataServerState::Member | MetadataServerState::Provisioning) {
-                            debug!("Node's metadata server state: {}. Trying to join the raft cluster.", node_config.metadata_server_config.metadata_server_state);
+                            debug!("Node's metadata server state as of nodes configuration {}: {}. Trying to join the raft cluster.", nodes_config.version(), node_config.metadata_server_config.metadata_server_state);
 
                             // Persist the latest NodesConfiguration so that we know about the MetadataServerState at least
                             // as of now when restarting.
