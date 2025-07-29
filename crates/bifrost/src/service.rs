@@ -8,15 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use enum_map::EnumMap;
+use ahash::{HashMap, HashMapExt};
+use enum_map::{Enum, EnumMap};
+use tokio::sync::mpsc;
 use tracing::{debug, error, trace};
 
-use restate_core::{
-    MetadataWriter, TaskCenter, TaskCenterFutureExt, TaskKind, cancellation_watcher,
-};
+use restate_core::{MetadataWriter, TaskCenterFutureExt, TaskKind, cancellation_watcher};
 #[cfg(feature = "local-loglet")]
 use restate_types::config::LocalLogletOptions;
 #[cfg(feature = "local-loglet")]
@@ -24,7 +23,6 @@ use restate_types::live::BoxLiveLoad;
 use restate_types::logs::metadata::ProviderKind;
 
 use crate::bifrost::BifrostInner;
-use crate::log_chain_extender::LogChainExtender;
 #[cfg(any(test, feature = "memory-loglet"))]
 use crate::providers::memory_loglet;
 use crate::watchdog::{Watchdog, WatchdogCommand};
@@ -32,30 +30,26 @@ use crate::{Bifrost, loglet::LogletProviderFactory};
 
 pub struct BifrostService {
     inner: Arc<BifrostInner>,
-    bifrost: Bifrost,
-    watchdog: Watchdog,
-    log_chain_extender: LogChainExtender,
+    watchdog_tx: mpsc::UnboundedSender<WatchdogCommand>,
+    watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
+    metadata_writer: MetadataWriter,
     factories: HashMap<ProviderKind, Box<dyn LogletProviderFactory>>,
 }
 
 impl BifrostService {
     pub fn new(metadata_writer: MetadataWriter) -> Self {
-        let (watchdog_sender, watchdog_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let (extend_log_chain_tx, extend_log_chain_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (watchdog_tx, watchdog_rx) = tokio::sync::mpsc::unbounded_channel();
         let inner = Arc::new(BifrostInner::new(
-            watchdog_sender.clone(),
-            extend_log_chain_tx,
-            metadata_writer,
+            watchdog_tx.clone(),
+            metadata_writer.clone(),
         ));
-        let bifrost = Bifrost::new(inner.clone());
-        let watchdog = Watchdog::new(inner.clone(), watchdog_sender, watchdog_receiver);
-        let log_chain_extender = LogChainExtender::new(inner.clone(), extend_log_chain_rx);
+
         Self {
             inner,
-            bifrost,
-            watchdog,
-            log_chain_extender,
-            factories: HashMap::new(),
+            watchdog_tx,
+            watchdog_rx,
+            metadata_writer,
+            factories: HashMap::with_capacity(ProviderKind::LENGTH),
         }
     }
 
@@ -79,7 +73,7 @@ impl BifrostService {
     }
 
     pub fn handle(&self) -> Bifrost {
-        self.bifrost.clone()
+        Bifrost::new(self.inner.clone())
     }
 
     /// Runs initialization phase. In this phase the system should wait until this is completed
@@ -97,7 +91,7 @@ impl BifrostService {
         let mut tasks = tokio::task::JoinSet::new();
         // Start all enabled providers.
         for (kind, factory) in self.factories {
-            let watchdog = self.watchdog.sender();
+            let watchdog = self.watchdog_tx.clone();
             tasks
                 .build_task()
                 .name(&format!("start-provider-{kind}"))
@@ -159,17 +153,7 @@ impl BifrostService {
             .map_err(|_| anyhow::anyhow!("bifrost must be initialized only once"))?;
 
         // We spawn the watchdog as a background long-running task
-        TaskCenter::spawn(
-            TaskKind::BifrostWatchdog,
-            "bifrost-watchdog",
-            self.watchdog.run(),
-        )?;
-
-        TaskCenter::spawn(
-            TaskKind::BifrostBackgroundHighPriority,
-            "log-chain-extender",
-            self.log_chain_extender.run(),
-        )?;
+        Watchdog::start(self.inner, self.watchdog_rx, self.metadata_writer)?;
 
         // Bifrost started!
         Ok(())
