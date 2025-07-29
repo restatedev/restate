@@ -10,17 +10,16 @@
 
 use std::sync::Arc;
 
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tracing::trace;
 
-use restate_core::{ShutdownError, cancellation_token};
+use restate_core::{MetadataWriter, TaskCenter, TaskHandle, TaskKind, cancellation_token};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{LogletParams, Logs, ProviderKind, SealMetadata, SegmentIndex};
 use restate_types::logs::{LogId, Lsn};
 
 use crate::Error;
-use crate::bifrost::{BifrostInner, ExtendLogChainReceiver};
 use crate::error::AdminError;
 
 const MAX_BATCH_SIZE_LOG_CHAIN_EXTENSIONS: usize = 128;
@@ -49,6 +48,7 @@ impl<T> OpOutput<T> {
     }
 }
 
+#[derive(Debug)]
 pub(super) struct LogChainCommand {
     log_id: LogId,
     last_segment_index: SegmentIndex,
@@ -117,16 +117,20 @@ impl LogChainCommand {
     }
 }
 
+#[derive(derive_more::Debug)]
 enum ChainOp {
     Extend {
         base_lsn: Lsn,
         provider: ProviderKind,
+        #[debug(skip)]
         params: LogletParams,
+        #[debug(skip)]
         response: OpOutput<()>,
     },
     SealChain {
         tail_lsn: Lsn,
         metadata: SealMetadata,
+        #[debug(skip)]
         response: OpOutput<Lsn>,
     },
 }
@@ -136,27 +140,35 @@ enum ChainOp {
 /// configuration using a read-modify-write metadata operation. A log chain can only be extended if
 /// the last segment index equals the value specified by the [`LogChainCommand`] command.
 pub struct LogChainExtender {
-    inner: Arc<BifrostInner>,
-    extend_log_chain_rx: ExtendLogChainReceiver,
+    metadata_writer: MetadataWriter,
+    rx: mpsc::UnboundedReceiver<LogChainCommand>,
 }
 
 impl LogChainExtender {
-    pub fn new(inner: Arc<BifrostInner>, extend_log_chain_rx: ExtendLogChainReceiver) -> Self {
-        Self {
-            inner,
-            extend_log_chain_rx,
-        }
+    pub fn start(
+        metadata_writer: MetadataWriter,
+    ) -> anyhow::Result<(mpsc::UnboundedSender<LogChainCommand>, TaskHandle<()>)> {
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let log_chain_extender = Self {
+            metadata_writer,
+            rx,
+        };
+        let handle = TaskCenter::spawn_unmanaged(
+            TaskKind::BifrostBackgroundHighPriority,
+            "log-chain-extender",
+            log_chain_extender.run(),
+        )?;
+
+        Ok((tx, handle))
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
+    pub async fn run(self) {
         trace!("Bifrost log chain extender started");
 
         cancellation_token()
             .run_until_cancelled(self.run_inner())
-            .await
-            .ok_or(ShutdownError)?;
-
-        Ok(())
+            .await;
     }
 
     pub async fn run_inner(mut self) {
@@ -165,7 +177,7 @@ impl LogChainExtender {
         // await the first log chain command
         loop {
             let received = self
-                .extend_log_chain_rx
+                .rx
                 .recv_many(&mut buffer, MAX_BATCH_SIZE_LOG_CHAIN_EXTENSIONS)
                 .await;
 
@@ -175,7 +187,6 @@ impl LogChainExtender {
 
             // batch-apply all collected log chain commands
             match self
-                .inner
                 .metadata_writer
                 .global_metadata()
                 .read_modify_write(|logs: Option<Arc<Logs>>| {
