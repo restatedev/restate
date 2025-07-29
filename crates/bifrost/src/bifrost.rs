@@ -13,7 +13,6 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use enum_map::EnumMap;
-use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
 use tracing::{info, instrument, warn};
@@ -39,9 +38,6 @@ use crate::loglet_wrapper::LogletWrapper;
 use crate::sealed_loglet::SealedLoglet;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
-
-pub(super) type ExtendLogChainSender = mpsc::UnboundedSender<LogChainCommand>;
-pub(super) type ExtendLogChainReceiver = mpsc::UnboundedReceiver<LogChainCommand>;
 
 /// The strategy to use when bifrost fails to append or when it observes
 /// a sealed loglet while it's tailing a log.
@@ -316,9 +312,7 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // Locks in this data-structure are held for very short time and should never be
 // held across an async boundary.
 pub struct BifrostInner {
-    #[allow(unused)]
     watchdog: WatchdogSender,
-    extend_log_chain_tx: ExtendLogChainSender,
     pub(crate) metadata_writer: MetadataWriter,
     // Initialized after BifrostService::start completes.
     pub(crate) providers: OnceLock<EnumMap<ProviderKind, Option<Arc<dyn LogletProvider>>>>,
@@ -326,14 +320,9 @@ pub struct BifrostInner {
 }
 
 impl BifrostInner {
-    pub fn new(
-        watchdog: WatchdogSender,
-        extend_log_chain_tx: ExtendLogChainSender,
-        metadata_writer: MetadataWriter,
-    ) -> Self {
+    pub fn new(watchdog: WatchdogSender, metadata_writer: MetadataWriter) -> Self {
         Self {
             watchdog,
-            extend_log_chain_tx,
             metadata_writer,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
@@ -573,7 +562,7 @@ impl BifrostInner {
     ) -> std::result::Result<(), Error> {
         let (response_rx, cmd) =
             LogChainCommand::extend(log_id, last_segment_index, base_lsn, provider, params);
-        let _ = self.extend_log_chain_tx.send(cmd);
+        let _ = self.watchdog.send(WatchdogCommand::ChainCommand(cmd));
 
         response_rx.await.map_err(|_| ShutdownError)?
     }
@@ -593,7 +582,7 @@ impl BifrostInner {
     ) -> std::result::Result<Lsn, Error> {
         let (response_rx, cmd) =
             LogChainCommand::seal_chain(log_id, last_segment_index, tail_lsn, metadata);
-        let _ = self.extend_log_chain_tx.send(cmd);
+        let _ = self.watchdog.send(WatchdogCommand::ChainCommand(cmd));
 
         response_rx.await.map_err(|_| ShutdownError)?
     }
