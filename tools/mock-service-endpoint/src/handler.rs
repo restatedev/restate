@@ -12,25 +12,25 @@ use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
-use assert2::let_assert;
 use async_stream::{stream, try_stream};
 use bytes::Bytes;
 use futures::{Stream, StreamExt, pin_mut};
 use http_body_util::{BodyStream, Either, Empty, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::{Request, Response};
-use prost::Message;
-use tracing::{debug, error};
-
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
-use restate_service_protocol::message::{Decoder, Encoder, EncodingError, ProtocolMessage};
-use restate_types::errors::codes;
-use restate_types::journal::raw::{EntryHeader, PlainRawEntry, RawEntryCodecError};
-use restate_types::journal::{Entry, EntryType, InputEntry};
-use restate_types::service_protocol::start_message::StateEntry;
-use restate_types::service_protocol::{
-    self, ServiceProtocolVersion, StartMessage, get_state_entry_message, output_entry_message,
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_service_protocol_v4::message_codec::Message;
+use restate_service_protocol_v4::message_codec::proto::start_message::StateEntry;
+use restate_service_protocol_v4::message_codec::proto::{
+    EndMessage, ErrorMessage, GetEagerStateCommandMessage, OutputCommandMessage,
+    SetStateCommandMessage, StartMessage, get_eager_state_command_message, output_command_message,
 };
+use restate_service_protocol_v4::message_codec::{Decoder, Encoder, EncodingError, proto};
+use restate_types::errors::codes;
+use restate_types::journal_v2::raw::{RawCommand, RawEntryError};
+use restate_types::journal_v2::{CommandType, InputCommand, SetStateCommand};
+use restate_types::service_protocol::ServiceProtocolVersion;
+use tracing::{debug, error};
 
 #[derive(Debug, thiserror::Error)]
 enum FrameError {
@@ -43,7 +43,7 @@ enum FrameError {
     #[error("Journal does not contain expected messages")]
     InvalidJournal,
     #[error(transparent)]
-    RawEntryCodecError(#[from] RawEntryCodecError),
+    RawEntryError(#[from] RawEntryError),
     #[error(transparent)]
     Serde(#[from] serde_json::Error),
 }
@@ -82,8 +82,8 @@ pub async fn serve(
     };
 
     let req_body = BodyStream::new(req_body);
-    let mut decoder = Decoder::new(ServiceProtocolVersion::V1, usize::MAX, None);
-    let encoder = Encoder::new(ServiceProtocolVersion::V1);
+    let mut decoder = Decoder::new(ServiceProtocolVersion::V5, usize::MAX, None);
+    let encoder = Encoder::new(ServiceProtocolVersion::V5);
 
     let incoming = stream! {
         for await frame in req_body {
@@ -127,7 +127,7 @@ pub async fn serve(
 
     Ok(Response::builder()
         .status(200)
-        .header("content-type", "application/vnd.restate.invocation.v1")
+        .header("content-type", "application/vnd.restate.invocation.v5")
         .body(Either::Right(StreamBody::new(outgoing)))
         .unwrap())
 }
@@ -165,17 +165,13 @@ impl Display for Handler {
 impl Handler {
     fn handle(
         self,
-        incoming: impl Stream<Item = Result<ProtocolMessage, FrameError>>,
-    ) -> impl Stream<Item = Result<ProtocolMessage, FrameError>> {
+        incoming: impl Stream<Item = Result<Message, FrameError>>,
+    ) -> impl Stream<Item = Result<Message, FrameError>> {
         try_stream! {
             pin_mut!(incoming);
             match (incoming.next().await, incoming.next().await) {
-                (Some(Ok(ProtocolMessage::Start(start_message))), Some(Ok(ProtocolMessage::UnparsedEntry(input)))) if input.ty() == EntryType::Input => {
-                    let input = input.deserialize_entry_ref::<ProtobufRawEntryCodec>()?;
-                    let_assert!(
-                        Entry::Input(input) = input
-                    );
-
+                (Some(Ok(Message::Start(start_message))), Some(Ok(Message::InputCommand(input_command_bytes)))) => {
+                    let input = RawCommand::new(CommandType::Input, input_command_bytes).decode::<ServiceProtocolV4Codec, InputCommand>()?;
                     let replay_count =  start_message.known_entries as usize - 1;
                     let mut replayed = Vec::with_capacity(replay_count);
                     for _ in 0..replay_count {
@@ -205,10 +201,10 @@ impl Handler {
 
     fn handle_get(
         start_message: StartMessage,
-        _input: InputEntry,
-        replayed: Vec<ProtocolMessage>,
-        _incoming: impl Stream<Item = Result<ProtocolMessage, FrameError>>,
-    ) -> impl Stream<Item = Result<ProtocolMessage, FrameError>> {
+        _input: InputCommand,
+        replayed: Vec<Message>,
+        _incoming: impl Stream<Item = Result<Message, FrameError>>,
+    ) -> impl Stream<Item = Result<Message, FrameError>> {
         try_stream! {
             let counter = read_counter(&start_message.state_map);
             match replayed.len() {
@@ -231,10 +227,10 @@ impl Handler {
 
     fn handle_add(
         start_message: StartMessage,
-        input: InputEntry,
-        replayed: Vec<ProtocolMessage>,
-        _incoming: impl Stream<Item = Result<ProtocolMessage, FrameError>>,
-    ) -> impl Stream<Item = Result<ProtocolMessage, FrameError>> {
+        input: InputCommand,
+        replayed: Vec<Message>,
+        _incoming: impl Stream<Item = Result<Message, FrameError>>,
+    ) -> impl Stream<Item = Result<Message, FrameError>> {
         try_stream! {
                 let counter = read_counter(&start_message.state_map);
                 match replayed.len() {
@@ -243,12 +239,12 @@ impl Handler {
 
                         let next_value = match counter {
                             Some(ref counter) => {
-                                let to_add: i32 = serde_json::from_slice(input.value.as_ref())?;
+                                let to_add: i32 = serde_json::from_slice(input.payload.as_ref())?;
                                 let current: i32 = serde_json::from_slice(counter.as_ref())?;
 
                                 serde_json::to_vec(&(to_add + current))?.into()
                             }
-                            None => input.value,
+                            None => input.payload,
                         };
 
                         yield set_state(next_value.clone());
@@ -258,12 +254,12 @@ impl Handler {
                     1 => {
                         let next_value = match counter {
                             Some(ref counter) => {
-                                let to_add: i32 = serde_json::from_slice(input.value.as_ref())?;
+                                let to_add: i32 = serde_json::from_slice(input.payload.as_ref())?;
                                 let current: i32 = serde_json::from_slice(counter.as_ref())?;
 
                                 serde_json::to_vec(&(to_add + current))?.into()
                             }
-                            None => input.value,
+                            None => input.payload,
                         };
 
                         yield set_state(next_value.clone());
@@ -272,12 +268,9 @@ impl Handler {
                     }
                     2 => {
                         let set_value = match &replayed[1] {
-                            ProtocolMessage::UnparsedEntry(set) if set.ty() == EntryType::SetState => {
-                                let set = set.deserialize_entry_ref::<ProtobufRawEntryCodec>()?;
-                                let_assert!(
-                                  Entry::SetState(set) = set
-                                );
-                                set.value.clone()
+                            Message::SetStateCommand(set_state_bytes) => {
+                                let set = RawCommand::new(CommandType::SetState, set_state_bytes.clone()).decode::<ServiceProtocolV4Codec, SetStateCommand>()?;
+                                set.value
                             },
                              _ => {Err(FrameError::InvalidJournal)?; return},
                         };
@@ -300,85 +293,81 @@ fn read_counter(state_map: &[StateEntry]) -> Option<Bytes> {
     Some(entry.value.clone())
 }
 
-fn get_state(counter: Option<Bytes>) -> ProtocolMessage {
+fn get_state(counter: Option<Bytes>) -> Message {
     debug!(
         "Yielding GetStateEntryMessage with value {}",
         LossyDisplay(counter.as_deref())
     );
 
-    ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
-        EntryHeader::GetState { is_completed: true },
-        service_protocol::GetStateEntryMessage {
-            name: String::new(),
+    Message::GetEagerStateCommand(
+        prost::Message::encode_to_vec(&GetEagerStateCommandMessage {
             key: "counter".into(),
             result: Some(match counter {
-                Some(ref counter) => get_state_entry_message::Result::Value(counter.clone()),
-                None => get_state_entry_message::Result::Empty(service_protocol::Empty {}),
+                Some(ref counter) => get_eager_state_command_message::Result::Value(proto::Value {
+                    content: counter.clone(),
+                }),
+                None => get_eager_state_command_message::Result::Void(proto::Void {}),
             }),
-        }
-        .encode_to_vec()
+            name: Default::default(),
+        })
         .into(),
-    ))
+    )
 }
 
-fn set_state(value: Bytes) -> ProtocolMessage {
+fn set_state(value: Bytes) -> Message {
     debug!(
         "Yielding SetStateEntryMessage with value {}",
         LossyDisplay(Some(&value))
     );
 
-    ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
-        EntryHeader::SetState,
-        service_protocol::SetStateEntryMessage {
+    Message::SetStateCommand(
+        prost::Message::encode_to_vec(&SetStateCommandMessage {
             name: String::new(),
             key: "counter".into(),
-            value: value.clone(),
-        }
-        .encode_to_vec()
+            value: Some(proto::Value {
+                content: value.clone(),
+            }),
+        })
         .into(),
-    ))
+    )
 }
 
-fn output(value: Bytes) -> ProtocolMessage {
+fn output(value: Bytes) -> Message {
     debug!(
         "Yielding OutputEntryMessage with result {}",
         LossyDisplay(Some(&value))
     );
 
-    ProtocolMessage::UnparsedEntry(PlainRawEntry::new(
-        EntryHeader::Output,
-        service_protocol::OutputEntryMessage {
+    Message::OutputCommand(
+        prost::Message::encode_to_vec(&OutputCommandMessage {
             name: String::new(),
-            result: Some(output_entry_message::Result::Value(value)),
-        }
-        .encode_to_vec()
+            result: Some(output_command_message::Result::Value(proto::Value {
+                content: value,
+            })),
+        })
         .into(),
-    ))
+    )
 }
 
-fn end() -> ProtocolMessage {
+fn end() -> Message {
     debug!("Yielding EndMessage");
 
-    ProtocolMessage::End(service_protocol::EndMessage {})
+    Message::End(EndMessage {})
 }
 
-fn error(err: FrameError) -> ProtocolMessage {
+fn error(err: FrameError) -> Message {
     let code = match err {
         FrameError::EncodingError(_) => codes::PROTOCOL_VIOLATION,
         FrameError::Hyper(_) => codes::INTERNAL,
         FrameError::UnexpectedEOF => codes::PROTOCOL_VIOLATION,
         FrameError::InvalidJournal => codes::JOURNAL_MISMATCH,
-        FrameError::RawEntryCodecError(_) => codes::PROTOCOL_VIOLATION,
+        FrameError::RawEntryError(_) => codes::PROTOCOL_VIOLATION,
         FrameError::Serde(_) => codes::INTERNAL,
     };
-    ProtocolMessage::Error(service_protocol::ErrorMessage {
+    Message::Error(ErrorMessage {
         code: code.into(),
-        description: err.to_string(),
-        message: String::new(),
-        related_entry_index: None,
-        related_entry_name: None,
-        related_entry_type: None,
-        next_retry_delay: None,
+        message: err.to_string(),
+        ..ErrorMessage::default()
     })
 }
 

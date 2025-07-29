@@ -65,20 +65,26 @@ spec:
             - containerPort: 5122
               name: node
           env:
-            - name: RESTATE_NODE_NAME
+            - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: "metadata.name"
+            - name: SERVICE_NAME
+              value: {{ include "restate.fullname" . }}-cluster
+            {{- if .Values.nodeName }}
+            - name: RESTATE_NODE_NAME
+              value: {{ .Values.nodeName }}
+            {{- end}}
             {{- if .Values.identityPrivateKey.enabled }}
             - name: RESTATE_REQUEST_IDENTITY_PRIVATE_KEY_PEM_FILE
               value: /opt/private.pem
             {{- end }}
             - name: RESTATE_LOG_FILTER
               value: {{ .Values.logging.env_filter }}
+            {{- if .Values.advertisedAddress }}
             - name: RESTATE_ADVERTISED_ADDRESS
-              # Use the stable network identifier (dns resolvable) provided by the stateful set. The second part is the
-              # serviceName of the stateful set.
-              value: http://$(RESTATE_NODE_NAME).{{ include "restate.fullname" . }}-cluster:5122
+              value: {{ .Values.advertisedAddress }}
+            {{- end}}
             {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -128,7 +134,8 @@ spec:
     - metadata:
         name: storage
         labels:
-          {{- include "restate.labels" . | nindent 10 }}
+          app: {{ include "restate.name" . }}
+          app.kubernetes.io/name: {{ include "restate.name" . }}
       spec:
         {{- with .Values.storage.storageClassName }}
         storageClassName: {{ if (eq "-" .) }}""{{ else }}{{ . }}{{ end }}
