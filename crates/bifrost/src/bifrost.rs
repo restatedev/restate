@@ -13,7 +13,6 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use enum_map::EnumMap;
-use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::debug;
 use tracing::{info, instrument, warn};
@@ -21,6 +20,7 @@ use tracing::{info, instrument, warn};
 #[cfg(all(any(test, feature = "test-util"), feature = "local-loglet"))]
 use restate_types::live::LiveLoadExt;
 
+#[cfg(any(test, feature = "test-util"))]
 use restate_core::MetadataWriter;
 use restate_core::my_node_id;
 use restate_core::{Metadata, ShutdownError};
@@ -33,15 +33,12 @@ use restate_types::storage::StorageEncode;
 
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
-use crate::log_chain_extender::LogChainCommand;
+use crate::log_chain_writer::LogChainCommand;
 use crate::loglet::{FindTailOptions, LogletProvider, OperationError};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::sealed_loglet::SealedLoglet;
 use crate::watchdog::{WatchdogCommand, WatchdogSender};
 use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
-
-pub(super) type ExtendLogChainSender = mpsc::UnboundedSender<LogChainCommand>;
-pub(super) type ExtendLogChainReceiver = mpsc::UnboundedReceiver<LogChainCommand>;
 
 /// The strategy to use when bifrost fails to append or when it observes
 /// a sealed loglet while it's tailing a log.
@@ -316,25 +313,16 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // Locks in this data-structure are held for very short time and should never be
 // held across an async boundary.
 pub struct BifrostInner {
-    #[allow(unused)]
     watchdog: WatchdogSender,
-    extend_log_chain_tx: ExtendLogChainSender,
-    pub(crate) metadata_writer: MetadataWriter,
     // Initialized after BifrostService::start completes.
     pub(crate) providers: OnceLock<EnumMap<ProviderKind, Option<Arc<dyn LogletProvider>>>>,
     shutting_down: AtomicBool,
 }
 
 impl BifrostInner {
-    pub fn new(
-        watchdog: WatchdogSender,
-        extend_log_chain_tx: ExtendLogChainSender,
-        metadata_writer: MetadataWriter,
-    ) -> Self {
+    pub fn new(watchdog: WatchdogSender) -> Self {
         Self {
             watchdog,
-            extend_log_chain_tx,
-            metadata_writer,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
         }
@@ -560,6 +548,21 @@ impl BifrostInner {
         PreferenceToken::new(self.watchdog.clone(), log_id)
     }
 
+    /// Adds a new log if it doesn't exist.
+    ///
+    /// Idempotent operation; ignores the input provider/params if the log already exists.
+    pub async fn add_log(
+        &self,
+        log_id: LogId,
+        provider: ProviderKind,
+        params: LogletParams,
+    ) -> std::result::Result<(), Error> {
+        let (response_rx, cmd) = LogChainCommand::add_log(log_id, provider, params);
+        let _ = self.watchdog.send(WatchdogCommand::ChainCommand(cmd));
+
+        response_rx.await.map_err(|_| ShutdownError)?
+    }
+
     /// Extend the given log chain with the provided segment definition (provider, params, base_lsn).
     /// This only works if the current last segment has the same segment index as
     /// `last_segment_index`. Otherwise, the operation will fail.
@@ -573,7 +576,7 @@ impl BifrostInner {
     ) -> std::result::Result<(), Error> {
         let (response_rx, cmd) =
             LogChainCommand::extend(log_id, last_segment_index, base_lsn, provider, params);
-        let _ = self.extend_log_chain_tx.send(cmd);
+        let _ = self.watchdog.send(WatchdogCommand::ChainCommand(cmd));
 
         response_rx.await.map_err(|_| ShutdownError)?
     }
@@ -593,7 +596,7 @@ impl BifrostInner {
     ) -> std::result::Result<Lsn, Error> {
         let (response_rx, cmd) =
             LogChainCommand::seal_chain(log_id, last_segment_index, tail_lsn, metadata);
-        let _ = self.extend_log_chain_tx.send(cmd);
+        let _ = self.watchdog.send(WatchdogCommand::ChainCommand(cmd));
 
         response_rx.await.map_err(|_| ShutdownError)?
     }

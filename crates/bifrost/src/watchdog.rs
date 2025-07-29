@@ -14,17 +14,15 @@ use std::time::Duration;
 use ahash::{HashMap, HashMapExt};
 use enum_map::Enum;
 use futures::future::OptionFuture;
-use futures::stream::FuturesUnordered;
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
-use tokio_stream::StreamExt;
 use tracing::{debug, info, trace, warn};
 
 use restate_core::{
-    Metadata, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
+    Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
     cancellation_watcher,
 };
-use restate_metadata_store::{ReadModifyWriteError, ReadWriteError, retry_on_retryable_error};
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{Logs, ProviderKind, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -32,14 +30,30 @@ use restate_types::retries::with_jitter;
 
 use crate::BifrostAdmin;
 use crate::bifrost::BifrostInner;
+use crate::log_chain_writer::{LogChainCommand, LogChainWriter};
 use crate::loglet::{Improvement, LogletProvider};
 
-pub type WatchdogSender = tokio::sync::mpsc::UnboundedSender<WatchdogCommand>;
-type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;
+pub type WatchdogSender = mpsc::UnboundedSender<WatchdogCommand>;
+type WatchdogReceiver = mpsc::UnboundedReceiver<WatchdogCommand>;
 
 const IMPROVEMENT_ROUND_INTERVAL: Duration = Duration::from_secs(1);
 // this duration is jitter-ed with +/- 50% to splay updates
 const IMPROVEMENT_ACTION_AFTER: Duration = Duration::from_secs(5);
+
+pub enum WatchdogCommand {
+    WatchProvider(Arc<dyn LogletProvider>),
+    /// A log appender running on this node has indicated that it's the preferred writer
+    PreferenceAcquire(LogId),
+    /// Indicating that a preference token has been dropped
+    PreferenceRelease(LogId),
+    ChainCommand(LogChainCommand),
+    LogTrimmed {
+        log_id: LogId,
+        /// NOTE: This is **not** the actual trim point, this could easily be Lsn::MAX (legal)
+        /// Only used for logging, never use this value as an authoritative trim-point.
+        requested_trim_point: Lsn,
+    },
+}
 
 /// The watchdog is a task manager for background jobs that needs to run on bifrost.
 /// tasks managed by the watchdogs are cooperative and should not be terminated abruptly.
@@ -48,7 +62,8 @@ const IMPROVEMENT_ACTION_AFTER: Duration = Duration::from_secs(5);
 /// work before termination.
 pub struct Watchdog {
     inner: Arc<BifrostInner>,
-    sender: WatchdogSender,
+    chain_writer_tx: mpsc::UnboundedSender<LogChainCommand>,
+    chain_writer_task: TaskHandle<()>,
     inbound: WatchdogReceiver,
     live_providers: Vec<Arc<dyn LogletProvider>>,
     in_flight_trim: Option<restate_core::task_center::TaskHandle<()>>,
@@ -77,24 +92,43 @@ impl Default for PreferredLog {
 type TrimRequests = HashMap<LogId, Lsn>;
 
 impl Watchdog {
-    pub fn new(
+    pub fn start(
         inner: Arc<BifrostInner>,
-        sender: WatchdogSender,
         inbound: WatchdogReceiver,
-    ) -> Self {
-        Self {
+        metadata_writer: MetadataWriter,
+    ) -> anyhow::Result<()> {
+        let (chain_writer_tx, chain_writer_task) = LogChainWriter::start(metadata_writer)?;
+
+        let watchdog = Self {
             inner,
-            sender,
+            chain_writer_tx,
+            chain_writer_task,
             inbound,
             live_providers: Vec::with_capacity(ProviderKind::LENGTH),
             in_flight_trim: None,
             pending_trims: HashMap::with_capacity(128),
             my_preferred_logs: HashMap::default(),
-        }
+        };
+
+        TaskCenter::spawn(
+            TaskKind::BifrostWatchdog,
+            "bifrost-watchdog",
+            watchdog.run(),
+        )?;
+        Ok(())
     }
 
     fn handle_command(&mut self, cmd: WatchdogCommand) {
         match cmd {
+            WatchdogCommand::ChainCommand(cmd) => {
+                if let Err(e) = self.chain_writer_tx.send(cmd) {
+                    let cmd = e.0;
+                    warn!(
+                        ?cmd,
+                        "Failed to send command to log-chain writer after it has stopped"
+                    );
+                }
+            }
             WatchdogCommand::PreferenceAcquire(log_id) => {
                 self.my_preferred_logs
                     .entry(log_id)
@@ -135,6 +169,7 @@ impl Watchdog {
 
     fn spawn_trim(&self, mut trim_requests: TrimRequests) -> Result<TaskHandle<()>, ShutdownError> {
         let bifrost = self.inner.clone();
+        let weak_writer_tx = self.chain_writer_tx.downgrade();
         TaskCenter::spawn_unmanaged(
             TaskKind::BifrostBackgroundLowPriority,
             "trim-chains",
@@ -144,63 +179,40 @@ impl Watchdog {
                 }
 
                 // Concurrently look up the trim points of all the requests
-                let trim_point_futures: FuturesUnordered<_> = trim_requests
+                let trim_point_futures: JoinSet<_> = trim_requests
                     .drain()
                     .map(|(log_id, requested_trim_point)| {
                         let bifrost = bifrost.clone();
-                        // NOTE: this is a workaround until rustc's bug https://github.com/rust-lang/rust/issues/141466 is shipped in stable rust.
-                        // This is expected to be fixed in 1.89.
-                        //
-                        // After the fix, the map can go back to use async closure instead.
+                        let weak_writer_tx = weak_writer_tx.clone();
                         async move {
                             match bifrost.get_trim_point(log_id).await {
                                 // an invalid lsn means that the log has never been trimmed
-                                Ok(actual_trim_point) if actual_trim_point == Lsn::INVALID => None,
-                                Ok(actual_trim_point) => Some(TrimPoint {
-                                    log_id,
-                                    requested_trim_point,
-                                    actual_trim_point,
-                                }),
+                                Ok(actual_trim_point) if actual_trim_point != Lsn::INVALID => {
+                                    debug!(
+                                        "Log {} chain has been trimmed to trim-point {} after requesting trim to {}",
+                                        log_id,
+                                        actual_trim_point,
+                                        requested_trim_point,
+                                    );
+                                    if let Some(tx) =  weak_writer_tx.upgrade() {
+                                        let _ = tx.send(LogChainCommand::trim_prefix(log_id, actual_trim_point));
+                                    }
+                                },
+                                Ok(_) => {},
                                 Err(err) => {
                                     warn!(
                                         "Bifrost watchdog failed to find a trim point for {log_id}; will \
                                         not be able to process the request to trim chain to {requested_trim_point}: {err}"
                                     );
-                                    None
                                 },
                             }
-                        }
+                        }.in_current_tc()
                     })
                     .collect();
 
-                let trim_points: Vec<TrimPoint> = trim_point_futures
-                    .filter_map(|trim_point| trim_point)
-                    .collect()
-                    .await;
-
-                if trim_points.is_empty() {
-                    return;
-                }
-
-                let retry_policy = Configuration::pinned()
-                    .common
-                    .network_error_retry_policy
-                    .clone();
-
-                // todo(asoli): Notify providers about trimmed loglets for pruning.
-                if let Err(err) = retry_on_retryable_error(retry_policy, || {
-                    trim_chains_if_needed(&bifrost, &trim_points)
-                })
-                .await
-                {
-                    warn!("Bifrost watchdog trim chains failed: {err}",);
-                }
+                trim_point_futures.join_all().await;
             },
         )
-    }
-
-    pub fn sender(&self) -> WatchdogSender {
-        self.sender.clone()
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -213,13 +225,17 @@ impl Watchdog {
         let mut config = Configuration::live();
 
         loop {
-            if self.in_flight_trim.is_none() && !self.pending_trims.is_empty() {
+            if self.in_flight_trim.is_none()
+                && !self.pending_trims.is_empty()
+                && !TaskCenter::is_shutdown_requested()
+            {
                 let trims = self.pending_trims.drain().collect();
                 match self.spawn_trim(trims) {
                     Ok(task_handle) => self.in_flight_trim = Some(task_handle),
                     Err(ShutdownError) => {
-                        self.shutdown().await;
-                        break;
+                        // ignore in-flight trims if task-center is shutting down.
+                        // we don't want to prematurely shutdown the watchdog as we
+                        // might need it to continue running "during" shutdown.
                     }
                 }
             }
@@ -234,10 +250,12 @@ impl Watchdog {
                     self.handle_command(cmd)
                 }
                 _tick = improvement_interval.tick() => {
-                    if !config.live_load().bifrost.disable_auto_improvement && TaskCenter::is_my_node_alive() {
-                        // check if we have logs to improve
-                        let logs = logs.live_load();
-                        self.improve_logs(logs);
+                    if !config.live_load().bifrost.disable_auto_improvement
+                        && TaskCenter::is_my_node_alive()
+                        && !TaskCenter::is_shutdown_requested() {
+                            // check if we have logs to improve
+                            let logs = logs.live_load();
+                            self.improve_logs(logs);
                     }
                 }
                 Some(_) = OptionFuture::from(self.in_flight_trim.as_mut()) => {
@@ -424,77 +442,10 @@ impl Watchdog {
             );
             providers.shutdown().await;
         }
+        drop(self.chain_writer_tx);
+
+        debug!("Waiting for log-chain writer to shutdown");
+        let _ = self.chain_writer_task.await;
         debug!("Bifrost watchdog shutdown complete");
     }
-}
-
-struct TrimPoint {
-    log_id: LogId,
-    requested_trim_point: Lsn,
-    actual_trim_point: Lsn,
-}
-
-#[derive(Debug)]
-struct AlreadyTrimmed;
-
-async fn trim_chains_if_needed(
-    bifrost: &BifrostInner,
-    trim_points: &[TrimPoint],
-) -> Result<(), ReadWriteError> {
-    let new_logs = bifrost
-        .metadata_writer
-        .global_metadata()
-        .read_modify_write(|current: Option<Arc<Logs>>| {
-            let logs = current.expect("logs should be initialized by BifrostService");
-            let mut logs_builder = logs.as_ref().clone().into_builder();
-
-            for trim_point in trim_points {
-                let mut chain_builder = logs_builder
-                    .chain(trim_point.log_id)
-                    .expect("log id exists");
-
-                // trim_prefix's lsn is exclusive. Trim-point is inclusive of the last trimmed lsn,
-                // therefore, we need to trim _including_ the trim point.
-                chain_builder.trim_prefix(trim_point.actual_trim_point.next());
-            }
-
-            let Some(logs) = logs_builder.build_if_modified() else {
-                // already trimmed, nothing to be done.
-                return Err(AlreadyTrimmed);
-            };
-
-            Ok(logs)
-        })
-        .await;
-    match new_logs {
-        Ok(_) => {
-            for trim_point in trim_points {
-                debug!(
-                    "Log {} chain has been trimmed to trim-point {} after requesting trim to {}",
-                    trim_point.log_id,
-                    trim_point.actual_trim_point,
-                    trim_point.requested_trim_point,
-                );
-            }
-        }
-        Err(ReadModifyWriteError::FailedOperation(AlreadyTrimmed)) => {
-            // nothing to do
-        }
-        Err(ReadModifyWriteError::ReadWrite(err)) => return Err(err),
-    };
-    Ok(())
-}
-
-pub enum WatchdogCommand {
-    WatchProvider(Arc<dyn LogletProvider>),
-    /// A log appender running on this node has indicated that it's the preferred writer
-    PreferenceAcquire(LogId),
-    /// Indicating that a preference token has been dropped
-    PreferenceRelease(LogId),
-    LogTrimmed {
-        log_id: LogId,
-        /// NOTE: This is **not** the actual trim point, this could easily be Lsn::MAX (legal)
-        /// Only used for logging, never use this value as an authoritative trim-point.
-        requested_trim_point: Lsn,
-    },
 }
