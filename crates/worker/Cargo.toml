@@ -15,7 +15,6 @@ options_schema = [
   "restate-ingress-kafka/options_schema",
   "restate-invoker-impl/options_schema",
   "restate-storage-query-datafusion/options_schema",
-  "restate-storage-query-postgres/options_schema",
   "restate-timer/options_schema",
 ]
 
@@ -38,7 +37,6 @@ restate-service-protocol = { workspace = true, features = ["codec", "message"] }
 restate-storage-api = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }
-restate-storage-query-postgres = { workspace = true }
 restate-timer = { workspace = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
