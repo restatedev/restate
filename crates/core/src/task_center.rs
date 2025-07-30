@@ -169,6 +169,9 @@ impl TaskCenter {
         Self::with_current(|tc| tc.spawn_child(kind, name, future))
     }
 
+    /// An unmanaged task is one that is not automatically cancelled by the task center on
+    /// shutdown. Moreover, the task ID will not be registered with task center and therefore
+    /// cannot be "taken" by calling [`TaskCenter::take_task`].
     #[track_caller]
     pub fn spawn_unmanaged<F, T>(
         kind: TaskKind,
@@ -180,6 +183,23 @@ impl TaskCenter {
         T: Send + 'static,
     {
         Self::with_current(|tc| tc.spawn_unmanaged(kind, name, future))
+    }
+
+    /// Spawns a new task that is automatically cancelled when the returned [`TaskGuard`] is dropped.
+    ///
+    /// The task guard can be converted back to a normal task handle by calling [`TaskGuard::into_handle`]
+    /// and it can be used to wait for the results.
+    #[track_caller]
+    pub fn spawn_and_guard<F, T>(
+        kind: TaskKind,
+        name: impl Into<SharedString>,
+        future: F,
+    ) -> Result<TaskGuard<T>, ShutdownError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        Self::with_current(|tc| tc.spawn_and_guard(kind, name, future))
     }
 
     /// Must be called within a Localset-scoped task, not from a normal spawned task.
