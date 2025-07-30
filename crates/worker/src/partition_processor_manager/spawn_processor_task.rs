@@ -12,10 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
+use tracing::info;
 use tracing::{instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind};
+use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
 use restate_invoker_impl::Service as InvokerService;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -125,46 +126,61 @@ impl SpawnPartitionProcessorTask {
             Some(partition.partition_id),
             {
                 move || async move {
-                    if let Some(delay) = delay {
-                        tokio::time::sleep(delay).await;
-                    }
 
-                    let partition_store = match partition_store_manager
-                        .open(&partition, fast_forward_lsn)
-                        .await
-                    {
-                        Ok(partition_store) => Ok(partition_store),
-                        Err(
-                            e @ restate_partition_store::OpenError::SnapshotRepositoryRequired
-                            | e @ restate_partition_store::OpenError::SnapshotRequired
-                            | e @ restate_partition_store::OpenError::SnapshotUnsuitable,
-                        ) => {
-                            // We expect the processor startup attempt will fail, avoid spinning too fast.
-                            // todo(pavel): replace this with RetryPolicy
-                            tokio::time::sleep(Duration::from_millis(
-                                10_000 + rand::random::<u64>() % 10_000,
-                            ))
-                            .await;
-                            Err(ProcessorError::from(e))
+                    let open_partition_store = async {
+                        if let Some(delay) = delay {
+                                tokio::time::sleep(delay)
+                                .await;
+                            }
+
+                        match partition_store_manager
+                            .open(&partition, fast_forward_lsn)
+                            .await
+                        {
+                            Ok(partition_store) => Ok(partition_store),
+                            Err(
+                                e @ restate_partition_store::OpenError::SnapshotRepositoryRequired
+                                | e @ restate_partition_store::OpenError::SnapshotRequired
+                                | e @ restate_partition_store::OpenError::SnapshotUnsuitable,
+                            ) => {
+                                // We expect the processor startup attempt will fail, avoid spinning too fast.
+                                // todo(pavel): replace this with RetryPolicy
+                                    tokio::time::sleep(Duration::from_millis(
+                                        10_000 + rand::random::<u64>() % 10_000,
+                                    )).await;
+                                Err(ProcessorError::from(e))
+                            }
+                            Err(e) => Err(ProcessorError::from(e)),
                         }
-                        Err(e) => Err(ProcessorError::from(e)),
-                    }?;
+                    };
 
-                    // invoker needs to outlive the partition processor when shutdown signal is
+                    let partition_store = cancellation_token()
+                            .run_until_cancelled(open_partition_store).await;
+                    let Some(partition_store) = partition_store else {
+                        info!(partition_id = %partition.partition_id, "Partition processor stopped due to cancellation signal");
+                        return Ok(());
+                    };
+
+                    let pp = pp_builder
+                        .build(bifrost, partition_store?, replica_set_states)
+                        .await
+                        .map_err(ProcessorError::from)?;
+
+                    // Invoker needs to outlive the partition processor when shutdown signal is
                     // received. This is why it's not spawned as a "child".
-                    TaskCenter::spawn(
+                    let invoker = TaskCenter::spawn_unmanaged(
                         TaskKind::SystemService,
                         invoker_name,
                         invoker.run(invoker_config),
                     )
-                    .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))?;
+                    .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))? .into_guard();
 
-                    pp_builder
-                        .build(bifrost, partition_store, replica_set_states)
-                        .await
-                        .map_err(ProcessorError::from)?
-                        .run()
-                        .await
+                    let result = pp.run().await;
+
+                    // Terminating the invoker after the processor has exited
+                    let _ = invoker.cancel_and_wait().await;
+                    info!(partition_id = %partition.partition_id, "Partition processor stopped");
+                    result
                 }
             },
         )?;

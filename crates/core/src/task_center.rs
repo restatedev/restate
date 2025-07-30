@@ -169,6 +169,9 @@ impl TaskCenter {
         Self::with_current(|tc| tc.spawn_child(kind, name, future))
     }
 
+    /// An unmanaged task is one that is not automatically cancelled by the task center on
+    /// shutdown. Moreover, the task ID will not be registered with task center and therefore
+    /// cannot be "taken" by calling [`TaskCenter::take_task`].
     #[track_caller]
     pub fn spawn_unmanaged<F, T>(
         kind: TaskKind,
