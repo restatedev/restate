@@ -29,7 +29,7 @@ use crate::{Error, Result};
 /// Bifrost's Admin API
 #[derive(Clone, Copy)]
 pub struct BifrostAdmin<'a> {
-    inner: &'a Arc<BifrostInner>,
+    inner: &'a BifrostInner,
 }
 
 #[derive(Debug)]
@@ -41,7 +41,7 @@ pub struct MaybeSealedSegment {
 }
 
 impl<'a> BifrostAdmin<'a> {
-    pub(crate) fn new(inner: &'a Arc<BifrostInner>) -> Self {
+    pub(crate) fn new(inner: &'a BifrostInner) -> Self {
         Self { inner }
     }
     /// Trim the log prefix up to and including the `trim_point`.
