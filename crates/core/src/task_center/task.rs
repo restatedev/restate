@@ -13,7 +13,7 @@ use std::task::{Poll, ready};
 
 use futures::FutureExt;
 use parking_lot::Mutex;
-use tokio_util::sync::CancellationToken;
+use tokio_util::sync::{CancellationToken, DropGuard};
 
 use restate_types::SharedString;
 use restate_types::identifiers::PartitionId;
@@ -123,6 +123,14 @@ pub struct TaskHandle<T> {
 }
 
 impl<T> TaskHandle<T> {
+    /// Returns a [`TaskGuard`] guard that will automatically cancel the task when dropped.
+    pub fn into_guard(self) -> TaskGuard<T> {
+        TaskGuard {
+            drop_guard: self.cancellation_token.drop_guard(),
+            inner_handle: self.inner_handle,
+        }
+    }
+
     /// Abort the task immediately. This will abort the task at the next yielding point. If the
     /// task is running a blocking call, it'll not be aborted until it can yield to the runtime.
     pub fn abort(&self) {
@@ -145,9 +153,55 @@ impl<T> TaskHandle<T> {
     pub fn is_finished(&self) -> bool {
         self.inner_handle.is_finished()
     }
+
+    /// Cancels the task and waits for it to complete gracefully.
+    pub async fn cancel_and_wait(self) -> Result<T, ShutdownError> {
+        self.cancel();
+        self.await
+    }
 }
 
 impl<T> std::future::Future for TaskHandle<T> {
+    type Output = Result<T, ShutdownError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        match ready!(self.inner_handle.poll_unpin(cx)) {
+            Ok(v) => Poll::Ready(Ok(v)),
+            Err(_) => Poll::Ready(Err(ShutdownError)),
+        }
+    }
+}
+
+/// Like [`TaskHandle`] but with a guard that will automatically cancel() the task when dropped.
+///
+/// You can convert this back to a handle by calling [`TaskGuard::into_handle`] which will disarm
+/// the guard. Additionally, you call [`TaskGuard::cancel_and_wait`] to cancel the task and wait
+/// for it to complete.
+///
+/// Like TaskHandle, awaiting this future waits for the task to complete.
+#[must_use = "task is cancelled when guard is dropped"]
+pub struct TaskGuard<T> {
+    pub(crate) drop_guard: DropGuard,
+    pub(crate) inner_handle: tokio::task::JoinHandle<T>,
+}
+
+impl<T> TaskGuard<T> {
+    /// Disarms the guard and returns a handle to the task.
+    pub fn into_handle(self) -> TaskHandle<T> {
+        TaskHandle {
+            cancellation_token: self.drop_guard.disarm(),
+            inner_handle: self.inner_handle,
+        }
+    }
+
+    /// Cancels the task and waits for it to complete gracefully.
+    pub async fn cancel_and_wait(self) -> Result<T, ShutdownError> {
+        let handle = self.into_handle();
+        handle.cancel_and_wait().await
+    }
+}
+
+impl<T> std::future::Future for TaskGuard<T> {
     type Output = Result<T, ShutdownError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
