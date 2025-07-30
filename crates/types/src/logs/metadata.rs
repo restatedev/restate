@@ -32,7 +32,7 @@ use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::replicated_loglet::ReplicatedLogletParams;
 use crate::replication::ReplicationProperty;
 use crate::time::MillisSinceEpoch;
-use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
+use crate::{GenerationalNodeId, Version, Versioned, flexbuffers_storage_encode_decode};
 
 // Starts with 0 being the oldest loglet in the chain.
 #[derive(
@@ -435,10 +435,31 @@ pub struct SealMetadata {
     pub permanent_seal: bool,
     pub sealed_at: MillisSinceEpoch,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub context: HashMap<String, String>,
+    pub context: std::collections::HashMap<String, String>,
 }
 
 impl SealMetadata {
+    pub fn new(source: impl Into<String>, node_id: GenerationalNodeId) -> Self {
+        Self {
+            context: std::collections::HashMap::from_iter([
+                ("node".to_owned(), node_id.to_string()),
+                ("source".to_owned(), source.into()),
+            ]),
+            ..Default::default()
+        }
+    }
+
+    pub fn with_context(
+        permanent_seal: bool,
+        context: std::collections::HashMap<String, String>,
+    ) -> Self {
+        Self {
+            permanent_seal,
+            context,
+            ..Default::default()
+        }
+    }
+
     pub fn deserialize_from(slice: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(slice)
     }
@@ -453,7 +474,7 @@ impl Default for SealMetadata {
         Self {
             permanent_seal: false,
             sealed_at: MillisSinceEpoch::now(),
-            context: HashMap::new(),
+            context: Default::default(),
         }
     }
 }
