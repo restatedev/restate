@@ -22,6 +22,8 @@ mod subscription_integration;
 use codederror::CodedError;
 
 use restate_bifrost::Bifrost;
+use restate_core::MetadataKind;
+use restate_core::cancellation_watcher;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
@@ -40,12 +42,14 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::{
 };
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_storage_query_postgres::service::PostgresQueryService;
+use restate_types::Version;
+use restate_types::Versioned;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
-use restate_types::live::Live;
-use restate_types::live::LiveLoadExt;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
+use restate_types::schema::subscriptions::SubscriptionResolver;
+use tracing::info;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
@@ -97,7 +101,6 @@ pub enum Error {
 }
 
 pub struct Worker {
-    live_config: Live<Configuration>,
     storage_query_context: QueryContext,
     storage_query_postgres: Option<PostgresQueryService>,
     datafusion_remote_scanner: RemoteQueryScannerServer,
@@ -107,12 +110,8 @@ pub struct Worker {
 }
 
 impl Worker {
-    #[allow(clippy::too_many_arguments)]
     pub async fn create<T: TransportConnect>(
-        mut live_config: Live<Configuration>,
         health_status: HealthStatus<WorkerStatus>,
-        metadata: Metadata,
-        partition_routing: PartitionRouting,
         replica_set_states: PartitionReplicaSetStates,
         networking: Networking<T>,
         bifrost: Bifrost,
@@ -122,10 +121,13 @@ impl Worker {
         metric_definitions::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
 
+        let partition_routing =
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current());
+
         let partition_store_manager = PartitionStoreManager::create().await?;
 
-        let live_config_clone = live_config.clone();
-        let config = live_config.live_load();
+        let config = Configuration::pinned();
+        let metadata = Metadata::current();
 
         let schema = metadata.updateable_schema();
 
@@ -147,7 +149,7 @@ impl Worker {
 
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
-            live_config_clone,
+            Configuration::live(),
             metadata_writer,
             partition_store_manager.clone(),
             replica_set_states,
@@ -164,7 +166,7 @@ impl Worker {
 
         let remote_scanner_manager = RemoteScannerManager::new(
             create_remote_scanner_service(networking),
-            create_partition_locator(partition_routing, metadata.clone()),
+            create_partition_locator(partition_routing, metadata),
         );
         let storage_query_context = QueryContext::with_user_tables(
             &config.admin.query_engine,
@@ -190,7 +192,6 @@ impl Worker {
             RemoteQueryScannerServer::new(remote_scanner_manager, router_builder);
 
         Ok(Self {
-            live_config,
             storage_query_context,
             storage_query_postgres,
             datafusion_remote_scanner,
@@ -198,10 +199,6 @@ impl Worker {
             subscription_controller_handle,
             partition_processor_manager,
         })
-    }
-
-    pub fn subscription_controller_handle(&self) -> SubscriptionControllerHandle {
-        self.subscription_controller_handle.clone()
     }
 
     pub fn storage_query_context(&self) -> &QueryContext {
@@ -213,6 +210,12 @@ impl Worker {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
+        TaskCenter::spawn_child(
+            TaskKind::MetadataBackgroundSync,
+            "subscription_controller",
+            Self::watch_subscriptions(self.subscription_controller_handle.clone()),
+        )?;
+
         // Postgres external server
         if let Some(postgres) = self.storage_query_postgres {
             TaskCenter::spawn_child(
@@ -234,14 +237,41 @@ impl Worker {
             TaskKind::SystemService,
             "kafka-ingress",
             self.ingress_kafka
-                .run(self.live_config.clone().map(|c| &c.ingress)),
+                .run(Configuration::map_live(|c| &c.ingress)),
         )?;
 
-        TaskCenter::spawn_child(
-            TaskKind::PartitionProcessorManager,
-            "partition-processor-manager",
-            self.partition_processor_manager.run(),
-        )?;
+        self.partition_processor_manager.run().await?;
+        info!("Worker role has stopped");
+
+        Ok(())
+    }
+
+    async fn watch_subscriptions<SC>(subscription_controller: SC) -> anyhow::Result<()>
+    where
+        SC: SubscriptionController + Clone + Send + Sync,
+    {
+        let metadata = Metadata::current();
+        let mut updateable_schema = metadata.updateable_schema();
+        let mut next_version = Version::MIN;
+        let mut cancellation_watcher = std::pin::pin!(cancellation_watcher());
+
+        loop {
+            tokio::select! {
+                _ = &mut cancellation_watcher => {
+                    break;
+                },
+                version = metadata.wait_for_version(MetadataKind::Schema, next_version) => {
+                    let _ = version?;
+                    let schema = updateable_schema.live_load();
+                    let subscriptions = schema.list_subscriptions(&[]);
+                    subscription_controller
+                        .update_subscriptions(subscriptions)
+                        .await?;
+
+                    next_version = schema.version().next();
+                }
+            }
+        }
 
         Ok(())
     }
