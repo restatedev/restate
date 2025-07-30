@@ -126,7 +126,7 @@ impl PartitionStoreManager {
                 .num_partitions_to_share_memory_budget() as usize;
 
         let state = Arc::new(SharedState::default());
-        let event_listener = DurableLsnEventListener::new(state.clone());
+        let event_listener = DurableLsnEventListener::new(&state);
 
         let mut db_opts = rocksdb::Options::default();
         db_opts.add_event_listener(event_listener);
@@ -157,7 +157,7 @@ impl PartitionStoreManager {
         Ok(Self {
             state,
             snapshots,
-            rocksdb: rocksdb.clone(),
+            rocksdb,
         })
     }
 
