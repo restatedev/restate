@@ -20,6 +20,7 @@ use tracing::{info, instrument, warn};
 #[cfg(all(any(test, feature = "test-util"), feature = "local-loglet"))]
 use restate_types::live::LiveLoadExt;
 
+#[cfg(any(test, feature = "test-util"))]
 use restate_core::MetadataWriter;
 use restate_core::my_node_id;
 use restate_core::{Metadata, ShutdownError};
@@ -32,7 +33,7 @@ use restate_types::storage::StorageEncode;
 
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
-use crate::log_chain_extender::LogChainCommand;
+use crate::log_chain_writer::LogChainCommand;
 use crate::loglet::{FindTailOptions, LogletProvider, OperationError};
 use crate::loglet_wrapper::LogletWrapper;
 use crate::sealed_loglet::SealedLoglet;
@@ -313,17 +314,15 @@ static_assertions::assert_impl_all!(Bifrost: Send, Sync, Clone);
 // held across an async boundary.
 pub struct BifrostInner {
     watchdog: WatchdogSender,
-    pub(crate) metadata_writer: MetadataWriter,
     // Initialized after BifrostService::start completes.
     pub(crate) providers: OnceLock<EnumMap<ProviderKind, Option<Arc<dyn LogletProvider>>>>,
     shutting_down: AtomicBool,
 }
 
 impl BifrostInner {
-    pub fn new(watchdog: WatchdogSender, metadata_writer: MetadataWriter) -> Self {
+    pub fn new(watchdog: WatchdogSender) -> Self {
         Self {
             watchdog,
-            metadata_writer,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
         }
@@ -547,6 +546,21 @@ impl BifrostInner {
     /// taken for the same log. Preference is only lost after the last token is dropped.
     pub fn acquire_preference_token(&self, log_id: LogId) -> PreferenceToken {
         PreferenceToken::new(self.watchdog.clone(), log_id)
+    }
+
+    /// Adds a new log if it doesn't exist.
+    ///
+    /// Idempotent operation; ignores the input provider/params if the log already exists.
+    pub async fn add_log(
+        &self,
+        log_id: LogId,
+        provider: ProviderKind,
+        params: LogletParams,
+    ) -> std::result::Result<(), Error> {
+        let (response_rx, cmd) = LogChainCommand::add_log(log_id, provider, params);
+        let _ = self.watchdog.send(WatchdogCommand::ChainCommand(cmd));
+
+        response_rx.await.map_err(|_| ShutdownError)?
     }
 
     /// Extend the given log chain with the provided segment definition (provider, params, base_lsn).
