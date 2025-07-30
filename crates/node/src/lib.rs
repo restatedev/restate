@@ -504,7 +504,11 @@ impl Node {
         }
 
         if let Some(ingress_role) = self.ingress_role {
-            TaskCenter::spawn(TaskKind::IngressServer, "ingress-http", ingress_role.run())?;
+            TaskCenter::spawn(
+                TaskKind::HttpIngressRole,
+                "ingress-http",
+                ingress_role.run(),
+            )?;
         }
 
         if let Some(worker_role) = self.worker_role {
