@@ -15,13 +15,14 @@ use ahash::{HashMap, HashMapExt};
 use enum_map::Enum;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
 use tracing::{debug, info, trace, warn};
 
 use restate_core::{
-    Metadata, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
+    Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind,
     cancellation_watcher,
 };
 use restate_metadata_store::{ReadModifyWriteError, ReadWriteError, retry_on_retryable_error};
@@ -32,14 +33,30 @@ use restate_types::retries::with_jitter;
 
 use crate::BifrostAdmin;
 use crate::bifrost::BifrostInner;
+use crate::log_chain_extender::{LogChainCommand, LogChainExtender};
 use crate::loglet::{Improvement, LogletProvider};
 
-pub type WatchdogSender = tokio::sync::mpsc::UnboundedSender<WatchdogCommand>;
-type WatchdogReceiver = tokio::sync::mpsc::UnboundedReceiver<WatchdogCommand>;
+pub type WatchdogSender = mpsc::UnboundedSender<WatchdogCommand>;
+type WatchdogReceiver = mpsc::UnboundedReceiver<WatchdogCommand>;
 
 const IMPROVEMENT_ROUND_INTERVAL: Duration = Duration::from_secs(1);
 // this duration is jitter-ed with +/- 50% to splay updates
 const IMPROVEMENT_ACTION_AFTER: Duration = Duration::from_secs(5);
+
+pub enum WatchdogCommand {
+    WatchProvider(Arc<dyn LogletProvider>),
+    /// A log appender running on this node has indicated that it's the preferred writer
+    PreferenceAcquire(LogId),
+    /// Indicating that a preference token has been dropped
+    PreferenceRelease(LogId),
+    ChainCommand(LogChainCommand),
+    LogTrimmed {
+        log_id: LogId,
+        /// NOTE: This is **not** the actual trim point, this could easily be Lsn::MAX (legal)
+        /// Only used for logging, never use this value as an authoritative trim-point.
+        requested_trim_point: Lsn,
+    },
+}
 
 /// The watchdog is a task manager for background jobs that needs to run on bifrost.
 /// tasks managed by the watchdogs are cooperative and should not be terminated abruptly.
@@ -48,7 +65,8 @@ const IMPROVEMENT_ACTION_AFTER: Duration = Duration::from_secs(5);
 /// work before termination.
 pub struct Watchdog {
     inner: Arc<BifrostInner>,
-    sender: WatchdogSender,
+    extender_tx: mpsc::UnboundedSender<LogChainCommand>,
+    extender_task: TaskHandle<()>,
     inbound: WatchdogReceiver,
     live_providers: Vec<Arc<dyn LogletProvider>>,
     in_flight_trim: Option<restate_core::task_center::TaskHandle<()>>,
@@ -77,24 +95,43 @@ impl Default for PreferredLog {
 type TrimRequests = HashMap<LogId, Lsn>;
 
 impl Watchdog {
-    pub fn new(
+    pub fn start(
         inner: Arc<BifrostInner>,
-        sender: WatchdogSender,
         inbound: WatchdogReceiver,
-    ) -> Self {
-        Self {
+        metadata_writer: MetadataWriter,
+    ) -> anyhow::Result<()> {
+        let (extender_tx, extender_task) = LogChainExtender::start(metadata_writer)?;
+
+        let watchdog = Self {
             inner,
-            sender,
+            extender_tx,
+            extender_task,
             inbound,
             live_providers: Vec::with_capacity(ProviderKind::LENGTH),
             in_flight_trim: None,
             pending_trims: HashMap::with_capacity(128),
             my_preferred_logs: HashMap::default(),
-        }
+        };
+
+        TaskCenter::spawn(
+            TaskKind::BifrostWatchdog,
+            "bifrost-watchdog",
+            watchdog.run(),
+        )?;
+        Ok(())
     }
 
     fn handle_command(&mut self, cmd: WatchdogCommand) {
         match cmd {
+            WatchdogCommand::ChainCommand(cmd) => {
+                if let Err(e) = self.extender_tx.send(cmd) {
+                    let cmd = e.0;
+                    warn!(
+                        ?cmd,
+                        "Failed to send command to log-chain extender after it has stopped"
+                    );
+                }
+            }
             WatchdogCommand::PreferenceAcquire(log_id) => {
                 self.my_preferred_logs
                     .entry(log_id)
@@ -199,10 +236,6 @@ impl Watchdog {
         )
     }
 
-    pub fn sender(&self) -> WatchdogSender {
-        self.sender.clone()
-    }
-
     pub async fn run(mut self) -> anyhow::Result<()> {
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
@@ -213,13 +246,17 @@ impl Watchdog {
         let mut config = Configuration::live();
 
         loop {
-            if self.in_flight_trim.is_none() && !self.pending_trims.is_empty() {
+            if self.in_flight_trim.is_none()
+                && !self.pending_trims.is_empty()
+                && !TaskCenter::is_shutdown_requested()
+            {
                 let trims = self.pending_trims.drain().collect();
                 match self.spawn_trim(trims) {
                     Ok(task_handle) => self.in_flight_trim = Some(task_handle),
                     Err(ShutdownError) => {
-                        self.shutdown().await;
-                        break;
+                        // ignore in-flight trims if task-center is shutting down.
+                        // we don't want to prematurely shutdown the watchdog as we
+                        // might need it to continue running "during" shutdown.
                     }
                 }
             }
@@ -234,10 +271,12 @@ impl Watchdog {
                     self.handle_command(cmd)
                 }
                 _tick = improvement_interval.tick() => {
-                    if !config.live_load().bifrost.disable_auto_improvement && TaskCenter::is_my_node_alive() {
-                        // check if we have logs to improve
-                        let logs = logs.live_load();
-                        self.improve_logs(logs);
+                    if !config.live_load().bifrost.disable_auto_improvement
+                        && TaskCenter::is_my_node_alive()
+                        && !TaskCenter::is_shutdown_requested() {
+                            // check if we have logs to improve
+                            let logs = logs.live_load();
+                            self.improve_logs(logs);
                     }
                 }
                 Some(_) = OptionFuture::from(self.in_flight_trim.as_mut()) => {
@@ -424,6 +463,10 @@ impl Watchdog {
             );
             providers.shutdown().await;
         }
+        drop(self.extender_tx);
+
+        debug!("Waiting for log-chain extender to shutdown");
+        let _ = self.extender_task.await;
         debug!("Bifrost watchdog shutdown complete");
     }
 }
@@ -483,18 +526,4 @@ async fn trim_chains_if_needed(
         Err(ReadModifyWriteError::ReadWrite(err)) => return Err(err),
     };
     Ok(())
-}
-
-pub enum WatchdogCommand {
-    WatchProvider(Arc<dyn LogletProvider>),
-    /// A log appender running on this node has indicated that it's the preferred writer
-    PreferenceAcquire(LogId),
-    /// Indicating that a preference token has been dropped
-    PreferenceRelease(LogId),
-    LogTrimmed {
-        log_id: LogId,
-        /// NOTE: This is **not** the actual trim point, this could easily be Lsn::MAX (legal)
-        /// Only used for logging, never use this value as an authoritative trim-point.
-        requested_trim_point: Lsn,
-    },
 }
