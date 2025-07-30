@@ -72,7 +72,6 @@ where
 
     let task_center = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
-        .ingress_runtime_handle(tokio::runtime::Handle::current())
         .options(config.common.clone())
         .build()
         .expect("task_center builds")

@@ -20,8 +20,6 @@ use super::Handle;
 pub trait TaskCenterMonitoring {
     fn default_runtime_metrics(&self) -> RuntimeMetrics;
 
-    fn ingress_runtime_metrics(&self) -> RuntimeMetrics;
-
     fn managed_runtime_metrics(&self) -> Vec<(SharedString, RuntimeMetrics)>;
 
     /// How long has the task-center been running?
@@ -34,10 +32,6 @@ pub trait TaskCenterMonitoring {
 impl TaskCenterMonitoring for Handle {
     fn default_runtime_metrics(&self) -> RuntimeMetrics {
         self.inner.default_runtime_handle.metrics()
-    }
-
-    fn ingress_runtime_metrics(&self) -> RuntimeMetrics {
-        self.inner.ingress_runtime_handle.metrics()
     }
 
     fn managed_runtime_metrics(&self) -> Vec<(SharedString, RuntimeMetrics)> {
@@ -56,7 +50,6 @@ impl TaskCenterMonitoring for Handle {
     /// Submit telemetry for all runtimes to metrics recorder
     fn submit_metrics(&self) {
         submit_runtime_metrics("default", self.default_runtime_metrics());
-        submit_runtime_metrics("ingress", self.ingress_runtime_metrics());
 
         // Partition processor runtimes
         let processor_runtimes = self.managed_runtime_metrics();

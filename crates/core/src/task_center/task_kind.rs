@@ -87,8 +87,8 @@ pub enum TaskKind {
     H2ClientStream,
     /// A type for ingress until we start enforcing timeouts for inflight requests. This enables us
     /// to shut down cleanly without waiting indefinitely.
-    #[strum(props(OnCancel = "abort", runtime = "ingress"))]
-    IngressServer,
+    #[strum(props(OnCancel = "abort"))]
+    HttpIngressRole,
     WorkerRole,
     RoleRunner,
     /// Cluster controller is the first thing that gets stopped when the server is shut down
@@ -96,7 +96,7 @@ pub enum TaskKind {
     #[strum(props(runtime = "default"))]
     FailureDetector,
     SystemService,
-    #[strum(props(OnCancel = "abort", runtime = "ingress"))]
+    #[strum(props(OnCancel = "abort"))]
     Ingress,
     /// Kafka ingestion related task
     Kafka,
@@ -183,7 +183,6 @@ impl TaskKind {
         match self.get_str("runtime").unwrap_or("inherit") {
             "inherit" => AsyncRuntime::Inherit,
             "default" => AsyncRuntime::Default,
-            "ingress" => AsyncRuntime::Ingress,
             _ => panic!("Invalid runtime for task kind: {self}"),
         }
     }
@@ -199,6 +198,4 @@ pub enum AsyncRuntime {
     Inherit,
     /// Run on the default runtime
     Default,
-    /// Run on ingress runtime
-    Ingress,
 }
