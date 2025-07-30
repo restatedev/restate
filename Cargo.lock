@@ -7291,6 +7291,7 @@ dependencies = [
  "restate-workspace-hack",
  "serde",
  "serde_json",
+ "strum 0.27.1",
  "test-log",
  "thiserror 2.0.12",
  "tokio",
