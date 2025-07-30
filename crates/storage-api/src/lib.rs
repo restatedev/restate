@@ -17,13 +17,13 @@ pub enum StorageError {
     Generic(#[from] anyhow::Error),
     #[error("failed to convert Rust objects to/from protobuf: {0}")]
     Conversion(anyhow::Error),
-    #[error("Integrity constraint is violated")]
+    #[error("integrity constraint is violated")]
     DataIntegrityError,
-    #[error("Operational error that can be caused during a graceful shutdown")]
+    #[error("operational error that can be caused during a graceful shutdown")]
     OperationalError,
-    #[error("Snapshot export failed: {0}")]
+    #[error("snapshot export failed: {0}")]
     SnapshotExport(anyhow::Error),
-    #[error("Precondition failed: {0}")]
+    #[error("precondition failed: {0}")]
     PreconditionFailed(anyhow::Error),
 }
 
