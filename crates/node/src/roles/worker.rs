@@ -17,7 +17,6 @@ use restate_core::network::TransportConnect;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_core::{ShutdownError, TaskKind};
-use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
@@ -84,10 +83,6 @@ impl WorkerRole {
 
     pub fn partition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
         self.worker.partition_processor_manager_handle()
-    }
-
-    pub fn storage_query_context(&self) -> &QueryContext {
-        self.worker.storage_query_context()
     }
 
     pub fn start(self) -> anyhow::Result<()> {
