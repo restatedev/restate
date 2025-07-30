@@ -31,9 +31,6 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::{
 use restate_types::config::Configuration;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
-use restate_types::live::Live;
-use restate_types::live::LiveLoadExt;
-use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::retries::RetryPolicy;
@@ -55,28 +52,24 @@ pub enum AdminRoleBuildError {
 }
 
 pub struct AdminRole<T> {
-    updateable_config: Live<Configuration>,
     controller: Option<cluster_controller::Service<T>>,
     admin: AdminService<IngressOptions, PartitionProcessorInvocationClient<T>>,
 }
 
 impl<T: TransportConnect> AdminRole<T> {
-    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         health_status: HealthStatus<AdminStatus>,
         bifrost: Bifrost,
-        updateable_config: Live<Configuration>,
-        partition_routing: PartitionRouting,
-        partition_table: Live<PartitionTable>,
         replica_set_states: PartitionReplicaSetStates,
         networking: Networking<T>,
-        metadata: Metadata,
         metadata_writer: MetadataWriter,
         server_builder: &mut NetworkServerBuilder,
-        local_query_context: Option<QueryContext>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
-        let config = updateable_config.pinned();
+        let config = Configuration::pinned();
+        let metadata = Metadata::current();
+        let partition_routing =
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current());
 
         // Total duration roughly 1s
         let retry_policy = RetryPolicy::exponential(Duration::from_millis(100), 2.0, Some(4), None);
@@ -84,12 +77,10 @@ impl<T: TransportConnect> AdminRole<T> {
             ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
         let service_discovery = ServiceDiscovery::new(retry_policy, client);
 
-        let query_context = if let Some(query_context) = local_query_context {
-            query_context
-        } else {
+        let query_context = {
             let remote_scanner_manager = RemoteScannerManager::new(
                 create_remote_scanner_service(networking.clone()),
-                create_partition_locator(partition_routing.clone(), metadata.clone()),
+                create_partition_locator(partition_routing.clone()),
             );
 
             // need to create a remote query context since we are not co-located with a worker role
@@ -109,7 +100,7 @@ impl<T: TransportConnect> AdminRole<T> {
             bifrost.clone(),
             PartitionProcessorInvocationClient::new(
                 networking.clone(),
-                partition_table,
+                metadata.updateable_partition_table(),
                 partition_routing,
             ),
             config.ingress.clone(),
@@ -120,7 +111,6 @@ impl<T: TransportConnect> AdminRole<T> {
         let controller = if config.admin.is_cluster_controller_enabled() {
             Some(
                 cluster_controller::Service::create(
-                    updateable_config.clone(),
                     health_status,
                     replica_set_states,
                     bifrost,
@@ -134,11 +124,7 @@ impl<T: TransportConnect> AdminRole<T> {
             None
         };
 
-        Ok(AdminRole {
-            updateable_config,
-            controller,
-            admin,
-        })
+        Ok(AdminRole { controller, admin })
     }
 
     pub async fn start(self) -> Result<(), anyhow::Error> {
@@ -153,7 +139,7 @@ impl<T: TransportConnect> AdminRole<T> {
         TaskCenter::spawn_child(
             TaskKind::RpcServer,
             "admin-rpc-server",
-            self.admin.run(self.updateable_config.map(|c| &c.admin)),
+            self.admin.run(Configuration::map_live(|c| &c.admin)),
         )?;
 
         Ok(())

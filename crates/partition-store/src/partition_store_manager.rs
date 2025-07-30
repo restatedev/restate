@@ -103,6 +103,7 @@ impl SharedState {
     }
 }
 
+/// PartitionStoreManager is owned exclusively by the worker role.
 #[derive(Clone)]
 pub struct PartitionStoreManager {
     state: Arc<SharedState>,

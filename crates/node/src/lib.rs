@@ -292,17 +292,10 @@ impl Node {
                 AdminRole::create(
                     tc.health().admin_status(),
                     bifrost.clone(),
-                    updateable_config.clone(),
-                    PartitionRouting::new(replica_set_states.clone(), tc),
-                    metadata.updateable_partition_table(),
                     replica_set_states.clone(),
                     networking.clone(),
-                    metadata,
                     metadata_manager.writer(),
                     &mut server_builder,
-                    worker_role
-                        .as_ref()
-                        .map(|worker_role| worker_role.storage_query_context().clone()),
                 )
                 .await?,
             )
