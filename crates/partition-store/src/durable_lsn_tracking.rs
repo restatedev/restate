@@ -1,5 +1,5 @@
 use std::ffi::{CStr, CString};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use ahash::HashMap;
 use rocksdb::event_listener::{EventListener, FlushJobInfo};
@@ -102,17 +102,25 @@ impl TablePropertiesCollectorFactory for AppliedLsnCollectorFactory {
 /// partitions for which there are already entries in the [`shared_state`].
 #[derive(Default)]
 pub(crate) struct DurableLsnEventListener {
-    shared_state: Arc<SharedState>,
+    shared_state: Weak<SharedState>,
 }
 
 impl DurableLsnEventListener {
-    pub fn new(shared_state: Arc<SharedState>) -> Self {
-        Self { shared_state }
+    pub fn new(shared_state: &Arc<SharedState>) -> Self {
+        Self {
+            shared_state: Arc::downgrade(shared_state),
+        }
     }
 }
 
 impl EventListener for DurableLsnEventListener {
     fn on_flush_completed(&self, flush_job_info: FlushJobInfo) {
+        let Some(shared_state) = self.shared_state.upgrade() else {
+            // we have dropped all references to the database, we are not interested in monitoring
+            // flushes anymore.
+            return;
+        };
+
         for key in flush_job_info.get_user_collected_property_keys(APPLIED_LSNS_PROPERTY_PREFIX) {
             let partition_id = key[APPLIED_LSNS_PROPERTY_PREFIX.len()..]
                 .to_string_lossy()
@@ -125,7 +133,7 @@ impl EventListener for DurableLsnEventListener {
                 .transpose();
 
             if let (Ok(ref partition_id), Ok(Some(ref lsn))) = (partition_id, lsn) {
-                self.shared_state.note_durable_lsn(*partition_id, *lsn);
+                shared_state.note_durable_lsn(*partition_id, *lsn);
             } else {
                 warn!(
                     cf_name = flush_job_info.cf_name,
