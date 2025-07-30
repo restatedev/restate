@@ -884,9 +884,8 @@ impl TaskCenterInner {
             .await;
         // stop accepting ingress
         self.cancel_tasks(Some(TaskKind::IngressServer), None).await;
-        // PPM will shutdown running processors
-        self.cancel_tasks(Some(TaskKind::PartitionProcessorManager), None)
-            .await;
+        // Worker will shutdown running processors
+        self.cancel_tasks(Some(TaskKind::WorkerRole), None).await;
         self.initiate_managed_runtimes_shutdown();
         // Ask bifrost to shutdown providers and loglets
         self.cancel_tasks(Some(TaskKind::BifrostWatchdog), None)
