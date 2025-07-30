@@ -11,7 +11,6 @@
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use enum_map::EnumMap;
 use tokio::sync::mpsc;
@@ -413,7 +412,6 @@ impl BifrostInner {
         // - If the segment is open and the loglet reports open. It's safe to return the tail
         // value.
         let mut metadata = Metadata::with_current(|m| m.updateable_logs_metadata());
-        let mut chain_seal_total_wait = Duration::ZERO;
         loop {
             let logs = metadata.live_load();
             let loglet = self.tail_loglet_from_metadata(logs, log_id).await?;
@@ -430,16 +428,10 @@ impl BifrostInner {
                     }
 
                     if tail.is_sealed()
+                        && matches!(opts, FindTailOptions::ConsistentRead)
                         && Configuration::pinned().bifrost.experimental_chain_sealing
                         && !logs.chain(&log_id).expect("log must exist").is_sealed()
                     {
-                        // We first give some time wait for the chain to be sealed.
-                        if chain_seal_total_wait.as_secs() < 3 {
-                            let start = Instant::now();
-                            tokio::time::sleep(Duration::from_millis(500)).await;
-                            chain_seal_total_wait += start.elapsed();
-                            continue;
-                        }
                         debug!(%log_id, "Loglet {} is sealed but the chain is not. Sealing the chain", loglet.debug_str());
                         // loglet is sealed but chain is not sealed yet.
                         // let's seal the chain.
