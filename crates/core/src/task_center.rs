@@ -169,6 +169,9 @@ impl TaskCenter {
         Self::with_current(|tc| tc.spawn_child(kind, name, future))
     }
 
+    /// An unmanaged task is one that is not automatically cancelled by the task center on
+    /// shutdown. Moreover, the task ID will not be registered with task center and therefore
+    /// cannot be "taken" by calling [`TaskCenter::take_task`].
     #[track_caller]
     pub fn spawn_unmanaged<F, T>(
         kind: TaskKind,
@@ -881,9 +884,8 @@ impl TaskCenterInner {
             .await;
         // stop accepting ingress
         self.cancel_tasks(Some(TaskKind::IngressServer), None).await;
-        // PPM will shutdown running processors
-        self.cancel_tasks(Some(TaskKind::PartitionProcessorManager), None)
-            .await;
+        // Worker will shutdown running processors
+        self.cancel_tasks(Some(TaskKind::WorkerRole), None).await;
         self.initiate_managed_runtimes_shutdown();
         // Ask bifrost to shutdown providers and loglets
         self.cancel_tasks(Some(TaskKind::BifrostWatchdog), None)
