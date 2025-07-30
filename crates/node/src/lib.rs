@@ -250,10 +250,7 @@ impl Node {
             Some(
                 WorkerRole::create(
                     tc.health().worker_status(),
-                    metadata.clone(),
-                    PartitionRouting::new(replica_set_states.clone(), tc.clone()),
                     replica_set_states.clone(),
-                    updateable_config.clone(),
                     &mut router_builder,
                     networking.clone(),
                     bifrost_svc.handle(),
@@ -511,7 +508,7 @@ impl Node {
         }
 
         if let Some(worker_role) = self.worker_role {
-            TaskCenter::spawn(TaskKind::SystemBoot, "worker-init", worker_role.start())?;
+            worker_role.start()?;
         }
 
         if let Some(admin_role) = self.admin_role {

@@ -268,10 +268,7 @@ where
         ChannelStatusReader(self.status_tx.clone())
     }
 
-    pub async fn run(
-        self,
-        mut updateable_options: impl LiveLoad<Live = InvokerOptions>,
-    ) -> anyhow::Result<()> {
+    pub async fn run(self, mut updateable_options: impl LiveLoad<Live = InvokerOptions>) {
         debug!("Starting the invoker");
         let Service {
             tmp_dir,
@@ -302,7 +299,6 @@ where
 
         // Wait for all the tasks to shutdown
         service.invocation_tasks.shutdown().await;
-        Ok(())
     }
 }
 
@@ -1657,12 +1653,13 @@ mod tests {
 
         let mut handle = service.handle();
 
-        let invoker_task_id = TaskCenter::spawn(
+        let invoker_task = TaskCenter::spawn_unmanaged(
             TaskKind::SystemService,
             "invoker",
             service.run(Constant::new(invoker_options)),
         )
-        .unwrap();
+        .unwrap()
+        .into_guard();
 
         let partition_leader_epoch = (PartitionId::from(0), LeaderEpoch::INITIAL);
         let invocation_target = InvocationTarget::mock_service();
@@ -1695,10 +1692,7 @@ mod tests {
         // the invocation and we won't see a result for the invocation (failure because the deployment cannot be resolved).
         check!(let Some(_) = output_rx.recv().await);
 
-        TaskCenter::cancel_task(invoker_task_id)
-            .unwrap()
-            .await
-            .unwrap();
+        invoker_task.cancel_and_wait().await.unwrap();
     }
 
     #[test(restate_core::test)]
