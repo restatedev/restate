@@ -157,6 +157,10 @@ impl TaskCenter {
     /// Spawn a new task that is a child of the current task. The child task will be cancelled if the parent
     /// task is cancelled. At the moment, the parent task will not automatically wait for children tasks to
     /// finish before completion, but this might change in the future if the need for that arises.
+    ///
+    /// If the parent task is being cancelled at the time of spawning, this call will fail.
+    /// Existing children tasks will receive cancellation signal but it's up to the task to react
+    /// to the `cancellation_token()` in a cooperative manner.
     #[track_caller]
     pub fn spawn_child<F>(
         kind: TaskKind,
@@ -167,6 +171,26 @@ impl TaskCenter {
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         Self::with_current(|tc| tc.spawn_child(kind, name, future))
+    }
+
+    /// An unmanaged task is one that is not automatically cancelled by the task center on
+    /// shutdown. Moreover, the task ID will not be registered with task center and therefore
+    /// cannot be "taken" by calling [`TaskCenter::take_task`].
+    ///
+    /// This task is spawned as a child of the current task. If the current task is being cancelled,
+    /// this will fail to spawn, but already spawned tasks will continue to run unless they are
+    /// manually cancelled (hence the name "unmanaged").
+    #[track_caller]
+    pub fn spawn_unmanaged_child<F, T>(
+        kind: TaskKind,
+        name: impl Into<SharedString>,
+        future: F,
+    ) -> Result<TaskHandle<T>, ShutdownError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        Self::with_current(|tc| tc.spawn_unmanaged_child(kind, name, future))
     }
 
     /// An unmanaged task is one that is not automatically cancelled by the task center on
@@ -396,7 +420,7 @@ impl TaskCenterInner {
     pub fn spawn<F>(
         self: &Arc<Self>,
         kind: TaskKind,
-        name: &SharedString,
+        name: impl Into<SharedString>,
         future: F,
     ) -> Result<TaskId, ShutdownError>
     where
@@ -405,13 +429,33 @@ impl TaskCenterInner {
         if self.shutdown_requested.load(Ordering::Relaxed) {
             return Err(ShutdownError);
         }
+        let name = name.into();
 
         // spawned tasks get their own unlinked cancellation tokens
         let cancel = CancellationToken::new();
         let (parent_id, parent_name, parent_partition) =
             self.with_task_context(|ctx| (ctx.id, ctx.name.clone(), ctx.partition_id));
 
-        let result = self.spawn_inner(kind, name, parent_id, parent_partition, cancel, future);
+        if self.root_task_context.cancellation_token.is_cancelled() {
+            debug!(
+                kind = ?kind,
+                name = %name,
+                parent_task = %parent_id,
+                parent_name = %parent_name,
+                "Cannot start new task \"{}\" because task-center is shutting down.",
+                name,
+            );
+            return Err(ShutdownError);
+        }
+
+        let result = self.spawn_inner(
+            kind,
+            name.clone(),
+            parent_id,
+            parent_partition,
+            cancel,
+            future,
+        );
 
         trace!(
             kind = ?kind,
@@ -438,6 +482,7 @@ impl TaskCenterInner {
         if self.shutdown_requested.load(Ordering::Relaxed) {
             return Err(ShutdownError);
         }
+        let name = name.into();
 
         let (parent_id, parent_name, parent_kind, parent_partition, cancel) = self
             .with_task_context(|ctx| {
@@ -450,8 +495,26 @@ impl TaskCenterInner {
                 )
             });
 
-        let name = name.into();
-        let result = self.spawn_inner(kind, &name, parent_id, parent_partition, cancel, future);
+        if cancel.is_cancelled() {
+            debug!(
+                kind = ?kind,
+                name = %name,
+                parent_task = %parent_id,
+                parent_name = %parent_name,
+                "Cannot start new task {} in \"{}\" {} because parent has been cancelled.",
+                name, parent_name, parent_id,
+            );
+            return Err(ShutdownError);
+        }
+
+        let result = self.spawn_inner(
+            kind,
+            name.clone(),
+            parent_id,
+            parent_partition,
+            cancel,
+            future,
+        );
 
         trace!(
             kind = ?parent_kind,
@@ -476,7 +539,67 @@ impl TaskCenterInner {
         if self.shutdown_requested.load(Ordering::Relaxed) {
             return Err(ShutdownError);
         }
-        let parent_partition = self.with_task_context(|ctx| (ctx.partition_id));
+        let (parent_id, parent_name, parent_partition) =
+            self.with_task_context(|ctx| (ctx.id, ctx.name.clone(), ctx.partition_id));
+
+        if self.root_task_context.cancellation_token.is_cancelled() {
+            debug!(
+                kind = ?kind,
+                name = %name,
+                parent_task = %parent_id,
+                parent_name = %parent_name,
+                "Cannot start new task \"{}\" because task-center is shutting down.",
+                name,
+            );
+            return Err(ShutdownError);
+        }
+
+        let cancel = CancellationToken::new();
+        let id = TaskId::default();
+        let context = TaskContext {
+            id,
+            name: name.clone(),
+            kind,
+            partition_id: parent_partition,
+            cancellation_token: cancel.clone(),
+        };
+
+        let fut = unmanaged_wrapper(Arc::clone(self), context, future);
+
+        Ok(self.spawn_on_runtime(kind, name, cancel, fut))
+    }
+
+    pub fn spawn_unmanaged_child<F, T>(
+        self: &Arc<Self>,
+        kind: TaskKind,
+        name: &SharedString,
+        future: F,
+    ) -> Result<TaskHandle<T>, ShutdownError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (parent_id, parent_name, parent_partition, is_parent_cancelled) = self
+            .with_task_context(|ctx| {
+                (
+                    ctx.id,
+                    ctx.name.clone(),
+                    ctx.partition_id,
+                    ctx.cancellation_token.is_cancelled(),
+                )
+            });
+
+        if is_parent_cancelled {
+            debug!(
+                kind = ?kind,
+                name = %name,
+                parent_task = %parent_id,
+                parent_name = %parent_name,
+                "Cannot start new task {} in \"{}\" {} because parent has been cancelled.",
+                name, parent_name, parent_id,
+            );
+            return Err(ShutdownError);
+        }
 
         let cancel = CancellationToken::new();
         let id = TaskId::default();
@@ -719,7 +842,7 @@ impl TaskCenterInner {
     fn spawn_inner<F>(
         self: &Arc<Self>,
         kind: TaskKind,
-        name: &SharedString,
+        name: SharedString,
         _parent_id: TaskId,
         partition_id: Option<PartitionId>,
         cancel: CancellationToken,
@@ -747,7 +870,7 @@ impl TaskCenterInner {
         let mut handle_mut = task.handle.lock();
 
         let fut = wrapper(inner, context, future);
-        *handle_mut = Some(self.spawn_on_runtime(kind, name, cancel, fut));
+        *handle_mut = Some(self.spawn_on_runtime(kind, &name, cancel, fut));
         // drop the lock
         drop(handle_mut);
         // Task is ready
@@ -888,6 +1011,7 @@ impl TaskCenterInner {
             .await;
         self.shutdown_managed_runtimes();
         // global shutdown trigger
+        self.root_task_context.cancel();
         self.cancel_tasks(None, None).await;
         // notify outer components that we have completed the shutdown.
         info!("Task center has stopped");
