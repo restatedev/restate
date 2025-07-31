@@ -30,8 +30,6 @@ pub enum TaskCenterBuildError {
 pub struct TaskCenterBuilder {
     default_runtime_handle: Option<tokio::runtime::Handle>,
     default_runtime: Option<tokio::runtime::Runtime>,
-    ingress_runtime_handle: Option<tokio::runtime::Handle>,
-    ingress_runtime: Option<tokio::runtime::Runtime>,
     options: Option<CommonOptions>,
     pause_time: bool,
 }
@@ -40,12 +38,6 @@ impl TaskCenterBuilder {
     pub fn default_runtime_handle(mut self, handle: tokio::runtime::Handle) -> Self {
         self.default_runtime_handle = Some(handle);
         self.default_runtime = None;
-        self
-    }
-
-    pub fn ingress_runtime_handle(mut self, handle: tokio::runtime::Handle) -> Self {
-        self.ingress_runtime_handle = Some(handle);
-        self.ingress_runtime = None;
         self
     }
 
@@ -60,12 +52,6 @@ impl TaskCenterBuilder {
         self
     }
 
-    pub fn ingress_runtime(mut self, runtime: tokio::runtime::Runtime) -> Self {
-        self.ingress_runtime_handle = Some(runtime.handle().clone());
-        self.ingress_runtime = Some(runtime);
-        self
-    }
-
     pub fn pause_time(mut self, pause_time: bool) -> Self {
         self.pause_time = pause_time;
         self
@@ -73,7 +59,6 @@ impl TaskCenterBuilder {
 
     pub fn default_for_tests() -> Self {
         Self::default()
-            .ingress_runtime_handle(tokio::runtime::Handle::current())
             .default_runtime_handle(tokio::runtime::Handle::current())
             .pause_time(true)
     }
@@ -87,21 +72,12 @@ impl TaskCenterBuilder {
             self.default_runtime = Some(default_runtime);
         }
 
-        if self.ingress_runtime_handle.is_none() {
-            let mut ingress_runtime_builder = tokio_builder("ingress", &options);
-            let ingress_runtime = ingress_runtime_builder.build()?;
-            self.ingress_runtime_handle = Some(ingress_runtime.handle().clone());
-            self.ingress_runtime = Some(ingress_runtime);
-        }
-
         if cfg!(any(test, feature = "test-util")) {
             eprintln!("!!!! Running with test-util enabled !!!!");
         }
         Ok(OwnedHandle::new(TaskCenterInner::new(
             self.default_runtime_handle.unwrap(),
-            self.ingress_runtime_handle.unwrap(),
             self.default_runtime,
-            self.ingress_runtime,
             self.pause_time,
         )))
     }

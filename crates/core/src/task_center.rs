@@ -288,7 +288,6 @@ struct TaskCenterInner {
     #[allow(dead_code)]
     pause_time: bool,
     default_runtime_handle: tokio::runtime::Handle,
-    ingress_runtime_handle: tokio::runtime::Handle,
     managed_runtimes: Mutex<HashMap<SharedString, OwnedRuntimeHandle>>,
     start_time: Instant,
     /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
@@ -296,8 +295,6 @@ struct TaskCenterInner {
     /// tokio's runtime after dropping the task center.
     #[allow(dead_code)]
     default_runtime: Option<tokio::runtime::Runtime>,
-    #[allow(dead_code)]
-    ingress_runtime: Option<tokio::runtime::Runtime>,
     global_cancel_token: CancellationToken,
     shutdown_requested: AtomicBool,
     current_exit_code: AtomicI32,
@@ -311,9 +308,7 @@ struct TaskCenterInner {
 impl TaskCenterInner {
     fn new(
         default_runtime_handle: tokio::runtime::Handle,
-        ingress_runtime_handle: tokio::runtime::Handle,
         default_runtime: Option<tokio::runtime::Runtime>,
-        ingress_runtime: Option<tokio::runtime::Runtime>,
         // used in tests to start all runtimes with clock paused. Note that this only impacts
         // partition processor runtimes
         pause_time: bool,
@@ -331,8 +326,6 @@ impl TaskCenterInner {
             start_time: Instant::now(),
             default_runtime_handle,
             default_runtime,
-            ingress_runtime_handle,
-            ingress_runtime,
             global_cancel_token: CancellationToken::new(),
             shutdown_requested: AtomicBool::new(false),
             current_exit_code: AtomicI32::new(0),
@@ -709,7 +702,6 @@ impl TaskCenterInner {
         };
 
         dump("default", &self.default_runtime_handle).await;
-        dump("ingress", &self.ingress_runtime_handle).await;
         for (name, handle) in managed_runtimes {
             dump(&name, &handle).await;
         }
@@ -780,7 +772,6 @@ impl TaskCenterInner {
         let runtime = match kind.runtime() {
             crate::AsyncRuntime::Inherit => &tokio::runtime::Handle::current(),
             crate::AsyncRuntime::Default => &self.default_runtime_handle,
-            crate::AsyncRuntime::Ingress => &self.ingress_runtime_handle,
         };
         let inner_handle = tokio_task
             .spawn_on(fut, runtime)
@@ -883,7 +874,8 @@ impl TaskCenterInner {
         self.cancel_tasks(Some(TaskKind::ClusterController), None)
             .await;
         // stop accepting ingress
-        self.cancel_tasks(Some(TaskKind::IngressServer), None).await;
+        self.cancel_tasks(Some(TaskKind::HttpIngressRole), None)
+            .await;
         // Worker will shutdown running processors
         self.cancel_tasks(Some(TaskKind::WorkerRole), None).await;
         self.initiate_managed_runtimes_shutdown();
@@ -1132,7 +1124,6 @@ mod tests {
         let tc = TaskCenterBuilder::default()
             .options(common_opts)
             .default_runtime_handle(tokio::runtime::Handle::current())
-            .ingress_runtime_handle(tokio::runtime::Handle::current())
             .build()?
             .into_handle();
         let start = tokio::time::Instant::now();
