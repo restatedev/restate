@@ -17,7 +17,6 @@ use anyhow::{anyhow, bail};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 
-use restate_core::Metadata;
 use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
 use restate_types::identifiers::{PartitionId, PartitionKey};
@@ -80,17 +79,10 @@ pub trait PartitionLocator: Send + Sync + 'static {
 #[derive(Clone)]
 struct MetadataAwarePartitionLocator {
     partition_routing: PartitionRouting,
-    metadata: Metadata,
 }
 
-pub fn create_partition_locator(
-    partition_routing: PartitionRouting,
-    metadata: Metadata,
-) -> Arc<dyn PartitionLocator> {
-    Arc::new(MetadataAwarePartitionLocator {
-        partition_routing,
-        metadata,
-    })
+pub fn create_partition_locator(partition_routing: PartitionRouting) -> Arc<dyn PartitionLocator> {
+    Arc::new(MetadataAwarePartitionLocator { partition_routing })
 }
 
 impl PartitionLocator for MetadataAwarePartitionLocator {
@@ -98,12 +90,10 @@ impl PartitionLocator for MetadataAwarePartitionLocator {
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<PartitionLocation> {
-        let my_node_id = self.metadata.my_node_id();
         match self.partition_routing.get_node_by_partition(partition_id) {
             None => {
                 bail!("node lookup for partition {} failed", partition_id)
             }
-            Some(node_id) if node_id == my_node_id => Ok(PartitionLocation::Local),
             Some(node_id) => Ok(PartitionLocation::Remote {
                 node_id: NodeId::from(node_id),
             }),
