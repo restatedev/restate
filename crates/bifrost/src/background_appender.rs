@@ -60,7 +60,7 @@ where
     pub fn start(self, name: &'static str) -> Result<AppenderHandle<T>, ShutdownError> {
         let (tx, rx) = tokio::sync::mpsc::channel(self.queue_capacity);
 
-        let handle = TaskCenter::spawn_unmanaged(
+        let handle = TaskCenter::spawn_unmanaged_child(
             restate_core::TaskKind::BifrostAppender,
             name,
             self.run(rx),

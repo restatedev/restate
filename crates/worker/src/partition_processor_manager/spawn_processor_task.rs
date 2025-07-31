@@ -168,12 +168,12 @@ impl SpawnPartitionProcessorTask {
 
                     // Invoker needs to outlive the partition processor when shutdown signal is
                     // received. This is why it's not spawned as a "child".
-                    let invoker = TaskCenter::spawn_unmanaged(
+                    let invoker = TaskCenter::spawn_unmanaged_child(
                         TaskKind::SystemService,
                         invoker_name,
                         invoker.run(invoker_config),
                     )
-                    .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))? .into_guard();
+                    .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))?.into_guard();
 
                     let result = pp.run().await;
 

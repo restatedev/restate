@@ -426,9 +426,6 @@ impl TaskCenterInner {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        if self.shutdown_requested.load(Ordering::Relaxed) {
-            return Err(ShutdownError);
-        }
         let name = name.into();
 
         // spawned tasks get their own unlinked cancellation tokens
@@ -479,9 +476,6 @@ impl TaskCenterInner {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        if self.shutdown_requested.load(Ordering::Relaxed) {
-            return Err(ShutdownError);
-        }
         let name = name.into();
 
         let (parent_id, parent_name, parent_kind, parent_partition, cancel) = self
@@ -536,9 +530,6 @@ impl TaskCenterInner {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        if self.shutdown_requested.load(Ordering::Relaxed) {
-            return Err(ShutdownError);
-        }
         let (parent_id, parent_name, parent_partition) =
             self.with_task_context(|ctx| (ctx.id, ctx.name.clone(), ctx.partition_id));
 

@@ -164,6 +164,7 @@ impl ConnectionReactor {
                     tokio::select! {
                         biased;
                         () = &mut cancellation => {
+                            info!("Requesting connection drain");
                             if TaskCenter::is_shutdown_requested() {
                                 // We want to make the distinction between whether we are terminating the
                                 // connection, or whether the node is shutting down.
