@@ -144,7 +144,7 @@ impl Handle {
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let name = name.into();
-        self.inner.spawn(kind, &name, future)
+        self.inner.spawn(kind, name, future)
     }
 
     /// Spawn a new task that is a child of the current task. The child task will be cancelled if the parent
@@ -177,6 +177,27 @@ impl Handle {
     {
         let name = name.into();
         self.inner.spawn_unmanaged(kind, &name, future)
+    }
+
+    /// An unmanaged task is one that is not automatically cancelled by the task center on
+    /// shutdown. Moreover, the task ID will not be registered with task center and therefore
+    /// cannot be "taken" by calling [`TaskCenter::take_task`].
+    ///
+    /// This task is spawned as a child of the current task. Therefore, if the parent task is
+    /// cancelled, the child task will also be cancelled. New child tasks will fail if the current
+    /// task is already being cancelled.
+    pub fn spawn_unmanaged_child<F, T>(
+        &self,
+        kind: TaskKind,
+        name: impl Into<SharedString>,
+        future: F,
+    ) -> Result<TaskHandle<T>, ShutdownError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let name = name.into();
+        self.inner.spawn_unmanaged_child(kind, &name, future)
     }
 
     /// Must be called within a Localset-scoped task, not from a normal spawned task.
