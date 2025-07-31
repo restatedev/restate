@@ -426,7 +426,6 @@ fn parse_knobs(mut input: ItemFn, config: FinalConfig) -> TokenStream {
 
     let mut tc_builder = quote_spanned! {last_stmt_start_span=>
         #crate_path::TaskCenterBuilder::default()
-            .ingress_runtime_handle(rt.handle().clone())
             .default_runtime_handle(rt.handle().clone())
     };
     let mut rt = match config.flavor {

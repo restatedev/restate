@@ -444,7 +444,7 @@ impl Default for CommonOptions {
             advertised_address: AdvertisedAddress::from_str(DEFAULT_ADVERTISED_ADDRESS).unwrap(),
             default_num_partitions: 24,
             default_replication: ReplicationProperty::new_unchecked(1),
-            histogram_inactivity_timeout: Some(Duration::from_secs(3 * 60).into()),
+            histogram_inactivity_timeout: None,
             disable_prometheus: false,
             service_client: Default::default(),
             shutdown_timeout: Duration::from_secs(60).into(),
