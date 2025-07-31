@@ -72,10 +72,12 @@ pub enum SnapshotErrorKind {
     InvalidState,
     #[error("Snapshot repository is not configured")]
     RepositoryNotConfigured,
-    #[error("Snapshot export failed for partition")]
+    #[error("export error: {0}")]
     Export(#[source] anyhow::Error),
-    #[error("Snapshot repository IO error")]
+    #[error("snapshot repository IO error: {0}")]
     RepositoryIo(#[source] anyhow::Error),
-    #[error("Internal error")]
+    #[error("Internal error: {0}")]
     Internal(#[source] anyhow::Error),
+    #[error(transparent)]
+    Shutdown(#[from] ShutdownError),
 }

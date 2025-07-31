@@ -13,6 +13,7 @@ use std::time::SystemTime;
 
 use tracing::{debug, info, instrument, warn};
 
+use restate_core::cancellation_token;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
 use restate_types::nodes_config::ClusterFingerprint;
@@ -45,14 +46,23 @@ impl SnapshotPartitionTask {
     )]
     pub async fn run(self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
         debug!("Creating partition snapshot");
-        self.create_snapshot_inner()
+        if let Some(result) = cancellation_token()
+            .run_until_cancelled(self.create_snapshot_inner())
             .await
-            .inspect(|metadata| {
-                info!(archived_lsn = %metadata.min_applied_lsn, "Created partition snapshot");
+        {
+            result
+                .inspect(|metadata| {
+                    info!(archived_lsn = %metadata.min_applied_lsn, "Created partition snapshot");
+                })
+                .inspect_err(|err| {
+                    warn!("Create snapshot failed: {}", err);
+                })
+        } else {
+            Err(SnapshotError {
+                partition_id: self.partition_id,
+                kind: SnapshotErrorKind::Shutdown(restate_core::ShutdownError),
             })
-            .inspect_err(|err| {
-                warn!("Create snapshot failed: {}", err);
-            })
+        }
     }
 
     async fn create_snapshot_inner(&self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
