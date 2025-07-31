@@ -1029,7 +1029,7 @@ impl PartitionProcessorManager {
                 } else {
                     Duration::from_millis(rand::rng().random_range(0..10_000))
                 };
-                let spawn_task_result = TaskCenter::spawn_unmanaged(
+                let spawn_task_result = TaskCenter::spawn_unmanaged_child(
                     TaskKind::PartitionSnapshotProducer,
                     "create-snapshot",
                     async move {
