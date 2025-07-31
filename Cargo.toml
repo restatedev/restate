@@ -257,16 +257,14 @@ path = "workspace-hack"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-# Let's be defensive and abort on every panic
-panic = "abort"
+panic = "unwind"
 
 [profile.release-debug]
 inherits = "release"
 debug = true
 
 [profile.dev]
-# Let's be defensive and abort on every panic
-panic = "abort"
+panic = "unwind"
 
 [profile.release.package.service-protocol-wireshark-dissector]
 opt-level = "z" # Optimize for size.
