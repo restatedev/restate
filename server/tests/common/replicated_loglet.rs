@@ -118,6 +118,8 @@ where
         log_server_count,
         true,
     );
+    // tests rely on manual control over the chain.
+    base_config.bifrost.disable_auto_improvement = true;
 
     // ensure base dir lives longer than the node, otherwise it sees shutdown errors
     // this will still respect LOCAL_CLUSTER_RUNNER_RETAIN_TEMPDIR=true
