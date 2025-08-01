@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, OnceLock, Weak};
+use std::time::Duration;
 
 use parking_lot::RwLock;
 use rocksdb::{BlockBasedOptions, Cache, LogLevel, WriteBufferManager};
@@ -299,6 +300,37 @@ impl RocksDbManager {
         self.close_db_tasks.wait().await;
         self.env.clone().join_all_threads();
         info!("Rocksdb manager shutdown completed");
+    }
+
+    /// Emergency shutdown is ongoing, this will ensure rocksdb's wal is fsynced.
+    pub fn on_ungraceful_shutdown(&'static self) {
+        let Some(guard) = self.dbs.try_read_for(Duration::from_secs(1)) else {
+            eprintln!("[rocksdb] couldn't acquire rwlock to flush in time");
+            return;
+        };
+        // WAL first
+        for (name, db) in guard.iter() {
+            let Some(db) = db.upgrade() else {
+                continue;
+            };
+            if let Err(e) = db.db.flush_wal(true) {
+                eprintln!("[rocksdb] failed to flush WAL of {name}: {e}");
+            } else {
+                eprintln!("[rocksdb] flushed WAL of {name}");
+            }
+        }
+
+        // Best effort normal shutdown
+        for (_, db) in guard.iter() {
+            let Some(db) = db.upgrade() else {
+                continue;
+            };
+            db.db.shutdown();
+        }
+
+        if !guard.is_empty() {
+            eprintln!("[rocksdb] flushed all!");
+        }
     }
 
     fn amend_db_options(&self, db_options: &mut rocksdb::Options, opts: &RocksDbOptions) {
