@@ -8,34 +8,237 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schema_registry::error::{
-    DeploymentError, SchemaError, ServiceError, SubscriptionError,
-};
-use crate::schema_registry::{ModifyServiceChange, ServiceName};
-use http::{HeaderValue, Uri};
-use restate_types::endpoint_manifest;
-use restate_types::identifiers::{DeploymentId, SubscriptionId};
-use restate_types::invocation::{
+use super::{ActiveServiceRevision, Deployment, Handler, Schema, ServiceRevision};
+
+use crate::endpoint_manifest;
+use crate::endpoint_manifest::HandlerType;
+use crate::errors::GenericError;
+use crate::identifiers::{DeploymentId, SubscriptionId};
+use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
-use restate_types::schema::Schema;
-use restate_types::schema::deployment::DeploymentMetadata;
-use restate_types::schema::deployment::DeploymentSchemas;
-use restate_types::schema::invocation_target::{
-    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InputRules,
-    InputValidationRule, InvocationTargetMetadata, OutputContentTypeRule, OutputRules,
+use crate::schema::deployment::{DeploymentMetadata, DeploymentType};
+use crate::schema::invocation_target::{
+    BadInputContentType, DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
+    InputRules, InputValidationRule, OutputContentTypeRule, OutputRules,
 };
-use restate_types::schema::service::{HandlerSchemas, ServiceLocation, ServiceSchemas};
-use restate_types::schema::subscriptions::{
+use crate::schema::subscriptions::{
     EventInvocationTargetTemplate, Sink, Source, Subscription, SubscriptionValidator,
 };
+use http::{HeaderValue, Uri};
 use serde_json::Value;
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::error::Error;
-use std::ops::Not;
+use std::ops::{Not, RangeInclusive};
+use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+/// Whether to force the registration of an existing endpoint or not
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Force {
+    Yes,
+    No,
+}
+
+impl Force {
+    pub fn force_enabled(&self) -> bool {
+        *self == Self::Yes
+    }
+}
+
+/// Whether to apply the changes or not
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub enum ApplyMode {
+    DryRun,
+    #[default]
+    Apply,
+}
+
+impl ApplyMode {
+    pub fn should_apply(&self) -> bool {
+        *self == Self::Apply
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ModifyServiceChange {
+    Public(bool),
+    IdempotencyRetention(Duration),
+    WorkflowCompletionRetention(Duration),
+    InactivityTimeout(Duration),
+    AbortTimeout(Duration),
+}
+
+/// Newtype for service names
+#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
+#[display("{}", _0)]
+struct ServiceName(String);
+
+impl TryFrom<String> for ServiceName {
+    type Error = ServiceError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.to_lowercase().starts_with("restate")
+            || value.to_lowercase().eq_ignore_ascii_case("openapi")
+        {
+            Err(ServiceError::ReservedName(value))
+        } else {
+            Ok(ServiceName(value))
+        }
+    }
+}
+
+impl AsRef<str> for ServiceName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl ServiceName {
+    fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl Borrow<String> for ServiceName {
+    fn borrow(&self) -> &String {
+        &self.0
+    }
+}
+
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+pub enum SchemaError {
+    // Those are generic and used by all schema resources
+    #[error("not found in the schema registry: {0}")]
+    #[code(unknown)]
+    NotFound(String),
+    #[error("already exists in the schema registry: {0}")]
+    #[code(unknown)]
+    Override(String),
+
+    // Specific resources errors
+    #[error(transparent)]
+    Service(
+        #[from]
+        #[code]
+        ServiceError,
+    ),
+    #[error(transparent)]
+    Deployment(
+        #[from]
+        #[code]
+        DeploymentError,
+    ),
+    #[error(transparent)]
+    Subscription(
+        #[from]
+        #[code]
+        SubscriptionError,
+    ),
+}
+
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+pub enum ServiceError {
+    #[error("cannot insert/modify service '{0}' as it contains a reserved name")]
+    #[code(restate_errors::META0005)]
+    ReservedName(String),
+    #[error(
+        "detected a new service '{0}' revision with a service type different from the previous revision. Service type cannot be changed across revisions"
+    )]
+    #[code(restate_errors::META0006)]
+    DifferentType(String),
+    #[error("the service '{0}' already exists but the new revision removed the handlers {1:?}")]
+    #[code(restate_errors::META0006)]
+    RemovedHandlers(String, Vec<String>),
+    #[error("the handler '{0}' input content-type is not valid: {1}")]
+    #[code(unknown)]
+    BadInputContentType(String, BadInputContentType),
+    #[error("the handler '{0}' output content-type is not valid: {1}")]
+    #[code(unknown)]
+    BadOutputContentType(String, http::header::InvalidHeaderValue),
+    #[error("invalid combination of service type and handler type '({0}, {1:?})'")]
+    #[code(unknown)]
+    BadServiceAndHandlerType(ServiceType, Option<endpoint_manifest::HandlerType>),
+    #[error(
+        "{0} sets the workflow_completion_retention, but it's not a {t} handler",
+        t = HandlerType::Workflow
+    )]
+    #[code(unknown)]
+    UnexpectedWorkflowCompletionRetention(String),
+    #[error(
+        "{0} sets the idempotency_retention, but it's a {t} handler",
+        t = HandlerType::Workflow
+    )]
+    #[code(unknown)]
+    UnexpectedIdempotencyRetention(String),
+    #[error(
+        "The service {service} is private, but the {handler} is explicitly set as public. This is not supported. Please make the service public, and hide the individual handlers"
+    )]
+    #[code(unknown)]
+    BadHandlerVisibility { service: String, handler: String },
+    #[error("the json schema for {service}/{handler} {position} is invalid: {error}")]
+    #[code(unknown)]
+    BadJsonSchema {
+        service: String,
+        handler: String,
+        position: &'static str,
+        #[source]
+        error: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+    #[error("modifying retention time for service type {0} is unsupported")]
+    #[code(unknown)]
+    CannotModifyRetentionTime(ServiceType),
+}
+
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+#[code(restate_errors::META0009)]
+pub enum SubscriptionError {
+    #[error(
+        "invalid source URI '{0}': must have a scheme segment, with supported schemes: [kafka]."
+    )]
+    InvalidSourceScheme(Uri),
+    #[error(
+        "invalid source URI '{0}': source URI of Kafka type must have a authority segment containing the cluster name."
+    )]
+    InvalidKafkaSourceAuthority(Uri),
+
+    #[error(
+        "invalid sink URI '{0}': must have a scheme segment, with supported schemes: [service]."
+    )]
+    InvalidSinkScheme(Uri),
+    #[error(
+        "invalid sink URI '{0}': sink URI of service type must have a authority segment containing the service name."
+    )]
+    InvalidServiceSinkAuthority(Uri),
+    #[error("invalid sink URI '{0}': cannot find service/handler specified in the sink URI.")]
+    SinkServiceNotFound(Uri),
+
+    #[error(transparent)]
+    #[code(unknown)]
+    Validation(GenericError),
+}
+
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+pub enum DeploymentError {
+    #[error(
+        "an update deployment operation must provide an endpoint with the same services and handlers. The update tried to remove the services {0:?}"
+    )]
+    #[code(restate_errors::META0016)]
+    RemovedServices(Vec<String>),
+    #[error(
+        "multiple deployments ({0:?}) were found that reference the discovered endpoint. A deployment can only be force updated when it uniquely owns its endpoint. First delete one or more of the deployments"
+    )]
+    #[code(restate_errors::META0017)]
+    MultipleExistingDeployments(Vec<DeploymentId>),
+    #[error(
+        "an update deployment operation must provide an endpoint with the same services and handlers. The update tried to change the supported protocol versions from {0:?} to {1:?}"
+    )]
+    #[code(restate_errors::META0016)]
+    DifferentSupportedProtocolVersions(RangeInclusive<i32>, RangeInclusive<i32>),
+}
 
 /// Behavior when a handler is removed during service update
 enum RemovedHandlerBehavior {
@@ -73,26 +276,24 @@ impl ServiceLevelSettingsBehavior {
 /// is incremented on changes.
 #[derive(Debug, Default)]
 pub struct SchemaUpdater {
-    schema_information: Schema,
+    schema: Schema,
     modified: bool,
 }
 
 impl SchemaUpdater {
-    pub(crate) fn new(schema_information: Schema) -> Self {
+    pub fn new(schema: Schema) -> Self {
         Self {
-            schema_information,
+            schema,
             modified: false,
         }
     }
-}
 
-impl SchemaUpdater {
     pub fn into_inner(mut self) -> Schema {
         if self.modified {
-            self.schema_information.increment_version()
+            self.schema.version = self.schema.version.next()
         }
 
-        self.schema_information
+        self.schema
     }
 
     pub fn add_deployment(
@@ -107,9 +308,10 @@ impl SchemaUpdater {
             .collect::<Result<HashMap<_, _>, _>>()?;
 
         // Did we find an existing deployment with a conflicting endpoint url?
-        let mut existing_deployments = self
-            .schema_information
-            .find_existing_deployments_by_endpoint(&deployment_metadata.ty);
+        let mut existing_deployments = self.schema.deployments.iter().filter(|(_, schemas)| {
+            schemas.ty.protocol_type() == deployment_metadata.ty.protocol_type()
+                && schemas.ty.normalized_address() == deployment_metadata.ty.normalized_address()
+        });
 
         let mut services_to_remove = Vec::default();
 
@@ -134,7 +336,7 @@ impl SchemaUpdater {
                     if !proposed_services.contains_key(&service.name) {
                         warn!(
                             restate.deployment.id = %existing_deployment_id,
-                            restate.deployment.address = %existing_deployment.metadata.address_display(),
+                            restate.deployment.address = %existing_deployment.ty.address_display(),
                             "Going to remove service {} due to a forced deployment update",
                             service.name
                         );
@@ -152,13 +354,13 @@ impl SchemaUpdater {
             DeploymentId::new()
         };
 
-        let mut services_to_add = HashMap::with_capacity(proposed_services.len());
+        let mut computed_services = HashMap::with_capacity(proposed_services.len());
 
         // Compute service schemas
         for (service_name, service) in proposed_services {
-            let service_schema = self.create_or_update_service_schemas(
-                &deployment_metadata,
+            let new_service_revision = self.create_service_revision(
                 deployment_id,
+                &deployment_metadata.ty,
                 &service_name,
                 service,
                 if force {
@@ -173,32 +375,38 @@ impl SchemaUpdater {
                 },
                 ServiceLevelSettingsBehavior::Preserve,
             )?;
-
-            services_to_add.insert(service_name, service_schema);
+            computed_services.insert(service_name.to_string(), Arc::new(new_service_revision));
         }
 
         drop(existing_deployments);
 
+        // Update the active_service_revision index
+        // TODO do we even need this?!
+        for service_revision in computed_services.values() {
+            self.schema.active_service_revisions.insert(
+                service_revision.name.clone(),
+                ActiveServiceRevision {
+                    deployment_id,
+                    service_revision: Arc::clone(service_revision),
+                },
+            );
+        }
         for service_to_remove in services_to_remove {
-            self.schema_information.services.remove(&service_to_remove);
+            self.schema
+                .active_service_revisions
+                .remove(&service_to_remove);
         }
 
-        let services_metadata = services_to_add
-            .into_iter()
-            .map(|(name, schema)| {
-                let metadata = schema.as_service_metadata(name.clone().into_inner());
-                self.schema_information
-                    .services
-                    .insert(name.clone().into_inner(), schema);
-                (name.into_inner(), metadata)
-            })
-            .collect();
-
-        self.schema_information.deployments.insert(
+        self.schema.deployments.insert(
             deployment_id,
-            DeploymentSchemas {
-                services: services_metadata,
-                metadata: deployment_metadata,
+            Deployment {
+                id: deployment_id,
+                ty: deployment_metadata.ty,
+                delivery_options: deployment_metadata.delivery_options,
+                supported_protocol_versions: deployment_metadata.supported_protocol_versions,
+                sdk_version: deployment_metadata.sdk_version,
+                created_at: deployment_metadata.created_at,
+                services: computed_services,
             },
         );
 
@@ -219,24 +427,18 @@ impl SchemaUpdater {
             .collect::<Result<HashMap<_, _>, _>>()?;
 
         // Look for an existing deployment with this ID
-        let Some((_, existing_deployment)) = self
-            .schema_information
-            .find_existing_deployment_by_id(&deployment_id)
-        else {
+        let Some(existing_deployment) = self.schema.deployments.get(&deployment_id) else {
             return Err(SchemaError::NotFound(format!(
                 "deployment with id '{deployment_id}'"
             )));
         };
 
-        if existing_deployment.metadata.supported_protocol_versions
+        if existing_deployment.supported_protocol_versions
             != deployment_metadata.supported_protocol_versions
         {
             return Err(SchemaError::Deployment(
                 DeploymentError::DifferentSupportedProtocolVersions(
-                    existing_deployment
-                        .metadata
-                        .supported_protocol_versions
-                        .clone(),
+                    existing_deployment.supported_protocol_versions.clone(),
                     deployment_metadata.supported_protocol_versions.clone(),
                 ),
             ));
@@ -257,13 +459,13 @@ impl SchemaUpdater {
             )));
         }
 
-        let mut services_to_add = HashMap::with_capacity(proposed_services.len());
+        let mut computed_services = HashMap::with_capacity(proposed_services.len());
 
         // Compute service schemas
         for (service_name, service) in proposed_services {
-            let service_schema = self.create_or_update_service_schemas(
-                &deployment_metadata,
+            let service_revision = self.create_service_revision(
                 deployment_id,
+                &deployment_metadata.ty,
                 &service_name,
                 service,
                 RemovedHandlerBehavior::Fail,
@@ -271,26 +473,28 @@ impl SchemaUpdater {
                 ServiceLevelSettingsBehavior::Preserve,
             )?;
 
-            services_to_add.insert(service_name, service_schema);
+            computed_services.insert(service_name, Arc::new(service_revision));
         }
 
-        let services_metadata = services_to_add
+        let services_metadata = computed_services
             .into_iter()
             .map(|(name, schema)| {
-                let metadata = schema.as_service_metadata(name.clone().into_inner());
-                match self.schema_information.services.get(name.as_ref()) {
-                    Some(ServiceSchemas {
-                        location: ServiceLocation { latest_deployment, .. },
-                        ..
-                    }) if latest_deployment == &deployment_id => {
+                match self.schema.active_service_revisions.get(name.as_ref()) {
+                    Some(ActiveServiceRevision {
+                             deployment_id: latest_deployment,
+                             ..
+                         }) if latest_deployment == &deployment_id => {
                         // This deployment is the latest for this service, so we should update the service schema
                         info!(
                             rpc.service = %name,
                             "Overwriting existing service schemas"
                         );
-                        self.schema_information
-                            .services
-                            .insert(name.clone().into_inner(), schema);
+                        self.schema
+                            .active_service_revisions
+                            .insert(name.clone().into_inner(), ActiveServiceRevision {
+                                deployment_id,
+                                service_revision: Arc::clone(&schema),
+                            });
                     },
                     Some(_) => {
                         debug!(
@@ -300,21 +504,29 @@ impl SchemaUpdater {
                     },
                     None => {
                         // we have a new service, it deserves a schema as normal
-                        self.schema_information
-                            .services
-                            .insert(name.clone().into_inner(), schema);
+                        self.schema
+                            .active_service_revisions
+                            .insert(name.clone().into_inner(), ActiveServiceRevision {
+                                deployment_id,
+                                service_revision: Arc::clone(&schema),
+                            });
                     }
                 }
 
-                (name.into_inner(), metadata)
+                (name.into_inner(), schema)
             })
             .collect();
 
-        self.schema_information.deployments.insert(
+        self.schema.deployments.insert(
             deployment_id,
-            DeploymentSchemas {
+            Deployment {
+                id: deployment_id,
+                ty: deployment_metadata.ty,
+                delivery_options: deployment_metadata.delivery_options,
+                supported_protocol_versions: deployment_metadata.supported_protocol_versions,
+                sdk_version: deployment_metadata.sdk_version,
+                created_at: deployment_metadata.created_at,
                 services: services_metadata,
-                metadata: deployment_metadata,
             },
         );
 
@@ -324,227 +536,214 @@ impl SchemaUpdater {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn create_or_update_service_schemas(
+    fn validate_existing_service_revision_constraints(
         &self,
-        deployment_metadata: &DeploymentMetadata,
         deployment_id: DeploymentId,
+        deployment_ty: &DeploymentType,
+        service_name: &ServiceName,
+        service: &endpoint_manifest::Service,
+        removed_handler_behavior: RemovedHandlerBehavior,
+        service_type_mismatch_behavior: ServiceTypeMismatchBehavior,
+    ) -> Result<(), SchemaError> {
+        let Some(ActiveServiceRevision {
+            service_revision: existing_service,
+            ..
+        }) = self
+            .schema
+            .active_service_revisions
+            .get(service_name.as_ref())
+        else {
+            // New service, nothing to validate
+            return Ok(());
+        };
+
+        let service_type = ServiceType::from(service.ty);
+        if existing_service.ty != service_type {
+            if matches!(
+                service_type_mismatch_behavior,
+                ServiceTypeMismatchBehavior::Fail
+            ) {
+                return Err(SchemaError::Service(ServiceError::DifferentType(
+                    service_name.clone().into_inner(),
+                )));
+            } else {
+                warn!(
+                    restate.deployment.id = %deployment_id,
+                    restate.deployment.address = %deployment_ty.address_display(),
+                    "Going to overwrite service type {} due to a forced deployment update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
+                    service_name,
+                    existing_service.ty,
+                    service_type
+                );
+            }
+        }
+
+        let removed_handlers: Vec<String> = existing_service
+            .handlers
+            .keys()
+            .filter(|name| {
+                !service
+                    .handlers
+                    .iter()
+                    .any(|new_handler| (*new_handler.name).eq(*name))
+            })
+            .map(|name| name.to_string())
+            .collect();
+
+        if !removed_handlers.is_empty() {
+            if matches!(removed_handler_behavior, RemovedHandlerBehavior::Fail) {
+                return Err(SchemaError::Service(ServiceError::RemovedHandlers(
+                    service_name.clone().into_inner(),
+                    removed_handlers,
+                )));
+            } else {
+                warn!(
+                    restate.deployment.id = %deployment_id,
+                    restate.deployment.address = %deployment_ty.address_display(),
+                    "Going to remove the following methods from service type {} due to a forced deployment update: {:?}.",
+                    service.name.as_str(),
+                    removed_handlers
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_service_revision(
+        &self,
+        deployment_id: DeploymentId,
+        deployment_ty: &DeploymentType,
         service_name: &ServiceName,
         service: endpoint_manifest::Service,
         removed_handler_behavior: RemovedHandlerBehavior,
         service_type_mismatch_behavior: ServiceTypeMismatchBehavior,
         service_level_settings_behavior: ServiceLevelSettingsBehavior,
-    ) -> Result<ServiceSchemas, SchemaError> {
+    ) -> Result<ServiceRevision, SchemaError> {
+        self.validate_existing_service_revision_constraints(
+            deployment_id,
+            deployment_ty,
+            service_name,
+            &service,
+            removed_handler_behavior,
+            service_type_mismatch_behavior,
+        )?;
+
+        let active_revision = self
+            .schema
+            .active_service_revisions
+            .get(service_name.as_ref())
+            .map(|revision| revision.service_revision.as_ref());
+
         let service_type = ServiceType::from(service.ty);
 
-        // For the time being when updating we overwrite existing data
-        let service_schema = if let Some(existing_service) =
-            self.schema_information.services.get(service_name.as_ref())
-        {
-            // Little problem here that can lead to some surprising stuff.
-            //
-            // When updating a service, and setting the service/handler options (e.g. the idempotency retention, private, etc)
-            // in the manifest, I override whatever was stored before. Makes sense.
-            //
-            // But when not setting these values, we keep whatever was configured before (either from manifest, or from Admin REST API).
-            // This makes little sense now that we have these settings in the manifest, but it preserves the old behavior.
-            // At some point we should "break" this behavior, and on service updates simply apply defaults when nothing is configured in the manifest,
-            // in order to favour people using annotations, rather than the clunky Admin REST API.
-            let public = service.ingress_private.map(bool::not).unwrap_or(
-                if service_level_settings_behavior.preserve() {
-                    existing_service.location.public
-                } else {
-                    true
-                },
-            );
-            let idempotency_retention = service.idempotency_retention_duration().or(
-                if service_level_settings_behavior.preserve() {
-                    existing_service.idempotency_retention
-                } else {
-                    // TODO(slinydeveloper) Remove this in Restate 1.5, no need for this defaulting anymore!
-                    Some(DEFAULT_IDEMPOTENCY_RETENTION)
-                },
-            );
-            let journal_retention = service.journal_retention_duration().or(
-                if service_level_settings_behavior.preserve() {
-                    existing_service.journal_retention
-                } else {
-                    None
-                },
-            );
-            let workflow_completion_retention = if service_level_settings_behavior.preserve()
-                // Retain previous value only if new service and old one are both workflows
-                && service_type == ServiceType::Workflow
-                && existing_service.ty == ServiceType::Workflow
-            {
-                existing_service.workflow_completion_retention
-            } else if service_type == ServiceType::Workflow {
-                Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+        // --- Figure out service options
+
+        // Little problem here that can lead to some surprising stuff.
+        //
+        // When updating a service, and setting the service/handler options (e.g. the idempotency retention, private, etc)
+        // in the manifest, I override whatever was stored before. Makes sense.
+        //
+        // But when not setting these values, we keep whatever was configured before (either from manifest, or from Admin REST API).
+        // This makes little sense now that we have these settings in the manifest, but it preserves the old behavior.
+        // At some point we should "break" this behavior, and on service updates simply apply defaults when nothing is configured in the manifest,
+        // in order to favour people using annotations, rather than the clunky Admin REST API.
+        let public = service
+            .ingress_private
+            .map(bool::not)
+            .or(if service_level_settings_behavior.preserve() {
+                active_revision.map(|old_svc| old_svc.public)
             } else {
                 None
-            };
-            let inactivity_timeout = service.inactivity_timeout_duration().or(
-                if service_level_settings_behavior.preserve() {
-                    existing_service.inactivity_timeout
-                } else {
-                    None
-                },
-            );
-            let abort_timeout = service.abort_timeout_duration().or(
-                if service_level_settings_behavior.preserve() {
-                    existing_service.abort_timeout
-                } else {
-                    None
-                },
-            );
-
-            let handlers = DiscoveredHandlerMetadata::compute_handlers(
-                service
-                    .handlers
-                    .into_iter()
-                    .map(|h| {
-                        DiscoveredHandlerMetadata::from_schema(
-                            service_name.as_ref(),
-                            service_type,
-                            public,
-                            h,
-                        )
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-                public,
-                idempotency_retention,
-                workflow_completion_retention,
-                journal_retention,
-            );
-
-            let removed_handlers: Vec<String> = existing_service
-                .handlers
-                .keys()
-                .filter(|name| !handlers.contains_key(*name))
-                .map(|name| name.to_string())
-                .collect();
-
-            if !removed_handlers.is_empty() {
-                if matches!(removed_handler_behavior, RemovedHandlerBehavior::Fail) {
-                    return Err(SchemaError::Service(ServiceError::RemovedHandlers(
-                        service_name.clone(),
-                        removed_handlers,
-                    )));
-                } else {
-                    warn!(
-                        restate.deployment.id = %deployment_id,
-                        restate.deployment.address = %deployment_metadata.address_display(),
-                        "Going to remove the following methods from service type {} due to a forced deployment update: {:?}.",
-                        service.name.as_str(),
-                        removed_handlers
-                    );
-                }
-            }
-
-            if existing_service.ty != service_type {
-                if matches!(
-                    service_type_mismatch_behavior,
-                    ServiceTypeMismatchBehavior::Fail
-                ) {
-                    return Err(SchemaError::Service(ServiceError::DifferentType(
-                        service_name.clone(),
-                    )));
-                } else {
-                    warn!(
-                        restate.deployment.id = %deployment_id,
-                        restate.deployment.address = %deployment_metadata.address_display(),
-                        "Going to overwrite service type {} due to a forced deployment update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
-                        service_name,
-                        existing_service.ty,
-                        service_type
-                    );
-                }
-            }
-
-            info!(
-                rpc.service = %service_name,
-                "Overwriting existing service schemas"
-            );
-            let mut service_schemas = existing_service.clone();
-            service_schemas.revision = existing_service.revision.wrapping_add(1);
-            service_schemas.ty = service_type;
-            service_schemas.handlers = handlers;
-            service_schemas.location.latest_deployment = deployment_id;
-            service_schemas.location.public = public;
-            service_schemas.service_openapi_cache = Default::default();
-            service_schemas.documentation = service.documentation;
-            service_schemas.metadata = service.metadata;
-            service_schemas.journal_retention = journal_retention;
-            service_schemas.workflow_completion_retention = workflow_completion_retention;
-            service_schemas.idempotency_retention = idempotency_retention;
-            service_schemas.inactivity_timeout = inactivity_timeout;
-            service_schemas.abort_timeout = abort_timeout;
-            service_schemas.enable_lazy_state = service.enable_lazy_state;
-            service_schemas
-        } else {
-            let public = service.ingress_private.map(bool::not).unwrap_or(true);
-            let idempotency_retention = service
-                .idempotency_retention_duration()
+            })
+            .unwrap_or(true);
+        let idempotency_retention = service.idempotency_retention_duration().or(
+            if service_level_settings_behavior.preserve() {
+                active_revision.and_then(|old_svc| old_svc.idempotency_retention)
+            } else {
                 // TODO(slinydeveloper) Remove this in Restate 1.5, no need for this defaulting anymore!
-                .or(Some(DEFAULT_IDEMPOTENCY_RETENTION));
-            let journal_retention = service.journal_retention_duration();
-            let workflow_completion_retention = if service_type == ServiceType::Workflow {
-                Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+                Some(DEFAULT_IDEMPOTENCY_RETENTION)
+            },
+        );
+        let journal_retention = service.journal_retention_duration().or(
+            if service_level_settings_behavior.preserve() {
+                active_revision.and_then(|old_svc| old_svc.journal_retention)
             } else {
                 None
-            };
-            let inactivity_timeout = service.inactivity_timeout_duration();
-            let abort_timeout = service.abort_timeout_duration();
-
-            ServiceSchemas {
-                revision: 1,
-                handlers: DiscoveredHandlerMetadata::compute_handlers(
-                    service
-                        .handlers
-                        .into_iter()
-                        .map(|h| {
-                            DiscoveredHandlerMetadata::from_schema(
-                                service_name.as_ref(),
-                                service_type,
-                                public,
-                                h,
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                    public,
-                    idempotency_retention,
-                    workflow_completion_retention,
-                    journal_retention,
-                ),
-                ty: service_type,
-                location: ServiceLocation {
-                    latest_deployment: deployment_id,
-                    public,
-                },
-                idempotency_retention,
-                workflow_completion_retention,
-                journal_retention,
-                inactivity_timeout,
-                abort_timeout,
-                service_openapi_cache: Default::default(),
-                documentation: service.documentation,
-                metadata: service.metadata,
-                enable_lazy_state: service.enable_lazy_state,
-            }
+            },
+        );
+        let workflow_completion_retention = if service_level_settings_behavior.preserve()
+            // Retain previous value only if new service and old one are both workflows
+            && service_type == ServiceType::Workflow
+            && active_revision.map(|old_svc| old_svc.ty == ServiceType::Workflow).unwrap_or(false)
+        {
+            active_revision.and_then(|old_svc| old_svc.workflow_completion_retention)
+        } else if service_type == ServiceType::Workflow {
+            Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
+        } else {
+            None
         };
-        Ok(service_schema)
+        let inactivity_timeout = service.inactivity_timeout_duration().or(
+            if service_level_settings_behavior.preserve() {
+                active_revision.and_then(|old_svc| old_svc.inactivity_timeout)
+            } else {
+                None
+            },
+        );
+        let abort_timeout =
+            service
+                .abort_timeout_duration()
+                .or(if service_level_settings_behavior.preserve() {
+                    active_revision.and_then(|old_svc| old_svc.abort_timeout)
+                } else {
+                    None
+                });
+
+        let handlers = service
+            .handlers
+            .into_iter()
+            .map(|h| {
+                Ok((
+                    h.name.to_string(),
+                    Handler::from_schema(service_name.as_ref(), service_type, public, h)?,
+                ))
+            })
+            .collect::<Result<HashMap<_, _>, SchemaError>>()?;
+
+        Ok(ServiceRevision {
+            name: service_name.to_string(),
+            handlers,
+            ty: service_type,
+            documentation: service.documentation,
+            metadata: service.metadata,
+            revision: active_revision
+                .map(|old_svc| old_svc.revision.wrapping_add(1))
+                .unwrap_or(1),
+            public,
+            idempotency_retention,
+            workflow_completion_retention,
+            journal_retention,
+            inactivity_timeout,
+            abort_timeout,
+            enable_lazy_state: service.enable_lazy_state,
+            service_openapi_cache: Default::default(),
+        })
     }
 
     pub fn remove_deployment(&mut self, deployment_id: DeploymentId) {
-        if let Some(deployment) = self.schema_information.deployments.remove(&deployment_id) {
+        if let Some(deployment) = self.schema.deployments.remove(&deployment_id) {
             for (_, service_metadata) in deployment.services {
                 match self
-                    .schema_information
-                    .services
-                    .entry(service_metadata.name)
+                    .schema
+                    .active_service_revisions
+                    .entry(service_metadata.name.clone())
                 {
                     // we need to check for the right revision in the service has been overwritten
                     // by a different deployment.
-                    Entry::Occupied(entry) if entry.get().revision == service_metadata.revision => {
+                    Entry::Occupied(entry)
+                        if entry.get().service_revision.revision == service_metadata.revision =>
+                    {
                         entry.remove();
                     }
                     _ => {}
@@ -565,7 +764,7 @@ impl SchemaUpdater {
         // generate id if not provided
         let id = id.unwrap_or_default();
 
-        if self.schema_information.subscriptions.contains_key(&id) {
+        if self.schema.subscriptions.contains_key(&id) {
             return Err(SchemaError::Override(format!(
                 "subscription with id '{id}'"
             )));
@@ -613,23 +812,26 @@ impl SchemaUpdater {
 
                 // Retrieve service and handler in the schema registry
                 let service_schemas = self
-                    .schema_information
-                    .services
+                    .schema
+                    .active_service_revisions
                     .get(service_name)
                     .ok_or_else(|| {
                         SchemaError::Subscription(SubscriptionError::SinkServiceNotFound(
                             sink.clone(),
                         ))
                     })?;
-                let handler_schemas =
-                    service_schemas.handlers.get(handler_name).ok_or_else(|| {
+                let handler_schemas = service_schemas
+                    .service_revision
+                    .handlers
+                    .get(handler_name)
+                    .ok_or_else(|| {
                         SchemaError::Subscription(SubscriptionError::SinkServiceNotFound(
                             sink.clone(),
                         ))
                     })?;
 
                 Sink::Invocation {
-                    event_invocation_target_template: match handler_schemas.target_meta.target_ty {
+                    event_invocation_target_template: match handler_schemas.target_ty {
                         InvocationTargetType::Service => EventInvocationTargetTemplate::Service {
                             name: service_name.to_owned(),
                             handler: handler_name.to_owned(),
@@ -667,21 +869,14 @@ impl SchemaUpdater {
             ))
             .map_err(|e| SchemaError::Subscription(SubscriptionError::Validation(e.into())))?;
 
-        self.schema_information
-            .subscriptions
-            .insert(id, subscription);
+        self.schema.subscriptions.insert(id, subscription);
         self.modified = true;
 
         Ok(id)
     }
 
     pub fn remove_subscription(&mut self, subscription_id: SubscriptionId) {
-        if self
-            .schema_information
-            .subscriptions
-            .remove(&subscription_id)
-            .is_some()
-        {
+        if self.schema.subscriptions.remove(&subscription_id).is_some() {
             self.modified = true;
         }
     }
@@ -691,79 +886,80 @@ impl SchemaUpdater {
         name: String,
         changes: Vec<ModifyServiceChange>,
     ) -> Result<(), SchemaError> {
-        if let Some(schemas) = self.schema_information.services.get_mut(&name) {
+        self.apply_change_to_active_service_revision(&name, |svc| {
             for command in changes {
                 match command {
                     ModifyServiceChange::Public(new_public_value) => {
-                        schemas.location.public = new_public_value;
-                        for h in schemas.handlers.values_mut() {
-                            h.target_meta.public = new_public_value;
-                        }
+                        svc.public = new_public_value;
                         // Cleanup generated OpenAPI
-                        schemas.service_openapi_cache = Default::default();
+                        svc.service_openapi_cache = Default::default();
                     }
                     ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
-                        schemas.idempotency_retention = Some(new_idempotency_retention);
-                        for h in schemas.handlers.values_mut().filter(|w| {
-                            // idempotency retention doesn't apply to workflow handlers
-                            w.target_meta.target_ty
-                                != InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                        }) {
-                            h.target_meta.completion_retention = new_idempotency_retention;
-                        }
+                        svc.idempotency_retention = Some(new_idempotency_retention);
                     }
                     ModifyServiceChange::WorkflowCompletionRetention(
                         new_workflow_completion_retention,
                     ) => {
                         // This applies only to workflow services
-                        if schemas.ty != ServiceType::Workflow {
+                        if svc.ty != ServiceType::Workflow {
                             return Err(SchemaError::Service(
-                                ServiceError::CannotModifyRetentionTime(schemas.ty),
+                                ServiceError::CannotModifyRetentionTime(svc.ty),
                             ));
                         }
-                        schemas.workflow_completion_retention =
-                            Some(new_workflow_completion_retention);
-                        for h in schemas.handlers.values_mut().filter(|w| {
-                            w.target_meta.target_ty
-                                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                        }) {
-                            h.target_meta.completion_retention = new_workflow_completion_retention;
-                        }
+                        svc.workflow_completion_retention = Some(new_workflow_completion_retention);
                     }
                     ModifyServiceChange::InactivityTimeout(inactivity_timeout) => {
-                        schemas.inactivity_timeout = Some(inactivity_timeout);
+                        svc.inactivity_timeout = Some(inactivity_timeout);
                     }
                     ModifyServiceChange::AbortTimeout(abort_timeout) => {
-                        schemas.abort_timeout = Some(abort_timeout);
+                        svc.abort_timeout = Some(abort_timeout);
                     }
                 }
             }
-        }
+            Ok(())
+        })?;
 
         self.modified = true;
 
         Ok(())
     }
+
+    fn apply_change_to_active_service_revision(
+        &mut self,
+        svc_name: &str,
+        mutate: impl FnOnce(&mut ServiceRevision) -> Result<(), SchemaError>,
+    ) -> Result<(), SchemaError> {
+        // Find related deployment
+        let Some(active_service_revision) = self.schema.active_service_revisions.get_mut(svc_name)
+        else {
+            return Ok(());
+        };
+        let deployment_id = active_service_revision.deployment_id;
+        let Some(deployment) = self.schema.deployments.get_mut(&deployment_id) else {
+            return Ok(());
+        };
+        let Some(old_svc) = deployment.services.remove(svc_name) else {
+            return Ok(());
+        };
+
+        // Create new ServiceRevision instance, copying from the existing one, and mutate it
+        let mut new_svc = Arc::unwrap_or_clone(old_svc);
+        mutate(&mut new_svc)?;
+        let new_svc_arc = Arc::new(new_svc);
+
+        // Update the related deployment
+        deployment
+            .services
+            .insert(svc_name.to_owned(), Arc::clone(&new_svc_arc));
+
+        // Update index
+        active_service_revision.service_revision = Arc::clone(&new_svc_arc);
+
+        Ok(())
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DiscoveredHandlerMetadata {
-    name: String,
-    ty: InvocationTargetType,
-    documentation: Option<String>,
-    metadata: HashMap<String, String>,
-    journal_retention: Option<Duration>,
-    idempotency_retention: Option<Duration>,
-    workflow_completion_retention: Option<Duration>,
-    inactivity_timeout: Option<Duration>,
-    abort_timeout: Option<Duration>,
-    enable_lazy_state: Option<bool>,
-    ingress_private: Option<bool>,
-    input: InputRules,
-    output: OutputRules,
-}
-
-impl DiscoveredHandlerMetadata {
+impl Handler {
     fn from_schema(
         service_name: &str,
         service_type: ServiceType,
@@ -825,7 +1021,21 @@ impl DiscoveredHandlerMetadata {
 
         Ok(Self {
             name: handler.name.to_string(),
-            ty,
+            target_ty: ty,
+            input_rules: handler
+                .input
+                .map(|input_payload| {
+                    Self::input_rules_from_schema(service_name, &handler.name, input_payload)
+                })
+                .transpose()?
+                .unwrap_or_default(),
+            output_rules: handler
+                .output
+                .map(|output_payload| {
+                    Self::output_rules_from_schema(service_name, &handler.name, output_payload)
+                })
+                .transpose()?
+                .unwrap_or_default(),
             documentation: handler.documentation,
             metadata: handler.metadata,
             journal_retention,
@@ -834,29 +1044,7 @@ impl DiscoveredHandlerMetadata {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: handler.enable_lazy_state,
-            ingress_private: handler.ingress_private,
-            input: handler
-                .input
-                .map(|input_payload| {
-                    DiscoveredHandlerMetadata::input_rules_from_schema(
-                        service_name,
-                        &handler.name,
-                        input_payload,
-                    )
-                })
-                .transpose()?
-                .unwrap_or_default(),
-            output: handler
-                .output
-                .map(|output_payload| {
-                    DiscoveredHandlerMetadata::output_rules_from_schema(
-                        service_name,
-                        &handler.name,
-                        output_payload,
-                    )
-                })
-                .transpose()?
-                .unwrap_or_default(),
+            public: handler.ingress_private.map(bool::not),
         })
     }
 
@@ -947,75 +1135,6 @@ impl DiscoveredHandlerMetadata {
             }
         })
     }
-
-    fn compute_handlers(
-        handlers: Vec<DiscoveredHandlerMetadata>,
-        service_level_public: bool,
-        service_level_idempotency_retention: Option<Duration>,
-        service_level_workflow_completion_retention: Option<Duration>,
-        service_level_journal_retention: Option<Duration>,
-    ) -> HashMap<String, HandlerSchemas> {
-        handlers
-            .into_iter()
-            .map(|handler| {
-                // Defaulting and overriding
-                let completion_retention = if handler.ty
-                    == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                {
-                    handler
-                        .workflow_completion_retention
-                        .or(service_level_workflow_completion_retention)
-                        .unwrap_or(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
-                } else {
-                    handler
-                        .idempotency_retention
-                        .or(service_level_idempotency_retention)
-                        .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION)
-                };
-                // TODO enable this in Restate 1.4
-                // let journal_retention =
-                //     handler.journal_retention.or(service_level_journal_retention).unwrap_or(
-                //      if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
-                //         DEFAULT_WORKFLOW_COMPLETION_RETENTION
-                //      } else {
-                //         Duration::ZERO
-                //      }
-                //     );
-                let journal_retention = handler
-                    .journal_retention
-                    .or(service_level_journal_retention)
-                    .unwrap_or(Duration::ZERO);
-
-                let public = if let Some(ingress_private) = handler.ingress_private {
-                    !ingress_private
-                } else {
-                    service_level_public
-                };
-
-                (
-                    handler.name,
-                    HandlerSchemas {
-                        target_meta: InvocationTargetMetadata {
-                            public,
-                            completion_retention,
-                            journal_retention,
-                            target_ty: handler.ty,
-                            input_rules: handler.input,
-                            output_rules: handler.output,
-                        },
-                        idempotency_retention: handler.idempotency_retention,
-                        workflow_completion_retention: handler.workflow_completion_retention,
-                        journal_retention: handler.journal_retention,
-                        inactivity_timeout: handler.inactivity_timeout,
-                        abort_timeout: handler.abort_timeout,
-                        enable_lazy_state: handler.enable_lazy_state,
-                        documentation: handler.documentation,
-                        metadata: handler.metadata,
-                    },
-                )
-            })
-            .collect()
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1038,11 +1157,12 @@ mod tests {
 
     use http::HeaderName;
     use restate_test_util::{assert, assert_eq};
-    use restate_types::schema::deployment::{Deployment, DeploymentResolver};
-    use restate_types::schema::service::ServiceMetadataResolver;
-
-    use restate_types::Versioned;
     use test_log::test;
+
+    use crate::Versioned;
+    use crate::schema::deployment::Deployment;
+    use crate::schema::deployment::DeploymentResolver;
+    use crate::schema::service::ServiceMetadataResolver;
 
     const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
     const GREET_HANDLER_NAME: &str = "greet";
@@ -1582,7 +1702,7 @@ mod tests {
                 SchemaError::Service(ServiceError::RemovedHandlers(service, missing_methods)) =
                     rejection
             );
-            check!(service.as_ref() == GREETER_SERVICE_NAME);
+            check!(service == GREETER_SERVICE_NAME);
             check!(missing_methods == &["doSomething"]);
         }
     }
@@ -1661,9 +1781,7 @@ mod tests {
         schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
 
-        let (_, updated_deployment) = schemas
-            .find_existing_deployment_by_id(&deployment_1.id)
-            .unwrap();
+        let updated_deployment = schemas.get_deployment(&deployment_1.id).unwrap();
 
         assert!(
             updated_deployment
@@ -1719,9 +1837,7 @@ mod tests {
         schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
 
-        let (_, updated_deployment) = schemas
-            .find_existing_deployment_by_id(&deployment_1.id)
-            .unwrap();
+        let updated_deployment = schemas.get_deployment(&deployment_1.id).unwrap();
 
         assert!(
             updated_deployment
@@ -1785,21 +1901,15 @@ mod tests {
         ).unwrap_err());
 
         updater
-            .schema_information
+            .schema
             .assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
         updater
-            .schema_information
+            .schema
             .assert_service_revision(GREETER_SERVICE_NAME, 2);
 
-        let (_, updated_deployment_1) = updater
-            .schema_information
-            .find_existing_deployment_by_id(&deployment_1.id)
-            .unwrap();
+        let updated_deployment_1 = updater.schema.get_deployment(&deployment_1.id).unwrap();
 
-        let (_, updated_deployment_2) = updater
-            .schema_information
-            .find_existing_deployment_by_id(&deployment_2.id)
-            .unwrap();
+        let updated_deployment_2 = updater.schema.get_deployment(&deployment_2.id).unwrap();
 
         assert_eq!(
             updated_deployment_1.metadata.ty,
@@ -1863,21 +1973,21 @@ mod tests {
             .unwrap();
 
         updater
-            .schema_information
+            .schema
             .assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
         updater
-            .schema_information
+            .schema
             .assert_service_revision(GREETER_SERVICE_NAME, 2);
 
-        let (_, updated_deployment_1) = updater
-            .schema_information
-            .find_existing_deployment_by_id(&deployment_1.id)
+        let (_, services) = updater
+            .schema
+            .get_deployment_and_services(&deployment_1.id)
             .unwrap();
 
         assert_eq!(
-            updated_deployment_1
-                .services
-                .get(GREETER_SERVICE_NAME)
+            services
+                .iter()
+                .find(|s| s.name == GREETER_SERVICE_NAME)
                 .unwrap()
                 .handlers
                 .len(),
@@ -1936,36 +2046,36 @@ mod tests {
             .unwrap();
 
         updater
-            .schema_information
+            .schema
             .assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
         updater
-            .schema_information
+            .schema
             .assert_service_revision(GREETER_SERVICE_NAME, 2);
 
-        let (_, updated_deployment_1) = updater
-            .schema_information
-            .find_existing_deployment_by_id(&deployment_1.id)
-            .unwrap();
-
-        let (_, updated_deployment_2) = updater
-            .schema_information
-            .find_existing_deployment_by_id(&deployment_2.id)
+        let (_, updated_deployment_1_services) = updater
+            .schema
+            .get_deployment_and_services(&deployment_1.id)
             .unwrap();
 
         assert_eq!(
-            updated_deployment_1
-                .services
-                .get(GREETER_SERVICE_NAME)
+            updated_deployment_1_services
+                .iter()
+                .find(|s| s.name == GREETER_SERVICE_NAME)
                 .unwrap()
                 .handlers
                 .len(),
             2
         );
 
+        let (_, updated_deployment_2_services) = updater
+            .schema
+            .get_deployment_and_services(&deployment_2.id)
+            .unwrap();
+
         assert_eq!(
-            updated_deployment_2
-                .services
-                .get(GREETER_SERVICE_NAME)
+            updated_deployment_2_services
+                .iter()
+                .find(|s| s.name == GREETER_SERVICE_NAME)
                 .unwrap()
                 .handlers
                 .len(),
@@ -1996,16 +2106,16 @@ mod tests {
             .unwrap();
 
         updater
-            .schema_information
+            .schema
             .assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
         updater
-            .schema_information
+            .schema
             .assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id);
         updater
-            .schema_information
+            .schema
             .assert_service_revision(GREETER_SERVICE_NAME, 2);
         updater
-            .schema_information
+            .schema
             .assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
     }
 
@@ -2041,16 +2151,16 @@ mod tests {
             .unwrap();
 
         updater
-            .schema_information
+            .schema
             .assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
         updater
-            .schema_information
+            .schema
             .assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id);
         updater
-            .schema_information
+            .schema
             .assert_service_revision(GREETER_SERVICE_NAME, 2);
         updater
-            .schema_information
+            .schema
             .assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
     }
 
@@ -2110,10 +2220,12 @@ mod tests {
     mod endpoint_manifest_options_propagation {
         use super::*;
 
+        use crate::config::Configuration;
+        use crate::invocation::InvocationRetention;
+        use crate::schema::deployment::Deployment;
+        use crate::schema::invocation_target::InvocationTargetMetadata;
+        use crate::schema::service::InvocationAttemptOptions;
         use googletest::prelude::*;
-        use restate_types::config::Configuration;
-        use restate_types::invocation::InvocationRetention;
-        use restate_types::schema::service::InvocationAttemptOptions;
         use std::time::Duration;
         use test_log::test;
 
@@ -2375,7 +2487,7 @@ mod tests {
             let mut config = Configuration::default();
             config.admin.experimental_feature_force_journal_retention =
                 Some(Duration::from_secs(300));
-            restate_types::config::set_current_config(config);
+            crate::config::set_current_config(config);
 
             let target = init_discover_and_resolve_target(
                 greeter_service(),
