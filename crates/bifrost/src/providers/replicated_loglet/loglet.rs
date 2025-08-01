@@ -406,10 +406,14 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         }
 
         debug!("Attempting to seal loglet");
-        let _ = SealTask::run(&self.my_params, &self.known_global_tail, &self.networking).await?;
         // If we are the sequencer, we need to wait until the sequencer is drained.
         if let SequencerAccess::Local { handle } = &self.sequencer {
             handle.drain().await;
+        };
+        let _ = SealTask::run(&self.my_params, &self.known_global_tail, &self.networking).await?;
+        // The seal task is complete, whatever value we have in known_global_tail is a safe global
+        // tail.
+        if self.sequencer.is_local() {
             self.known_global_tail.notify_seal();
         };
         // Primarily useful for remote sequencer to enforce seal check on the next find_tail() call

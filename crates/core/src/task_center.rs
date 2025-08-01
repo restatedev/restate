@@ -430,9 +430,6 @@ impl TaskCenterInner {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        if self.shutdown_requested.load(Ordering::Relaxed) {
-            return Err(ShutdownError);
-        }
         let name = name.into();
 
         // spawned tasks get their own unlinked cancellation tokens
@@ -483,9 +480,6 @@ impl TaskCenterInner {
     where
         F: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        if self.shutdown_requested.load(Ordering::Relaxed) {
-            return Err(ShutdownError);
-        }
         let name = name.into();
 
         let (parent_id, parent_name, parent_kind, parent_partition, cancel) = self
@@ -540,9 +534,6 @@ impl TaskCenterInner {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        if self.shutdown_requested.load(Ordering::Relaxed) {
-            return Err(ShutdownError);
-        }
         let (parent_id, parent_name, parent_partition) =
             self.with_task_context(|ctx| (ctx.id, ctx.name.clone(), ctx.partition_id));
 
@@ -1007,12 +998,26 @@ impl TaskCenterInner {
         // stop accepting ingress
         self.cancel_tasks(Some(TaskKind::HttpIngressRole), None)
             .await;
+        // stop admin server and in-flight query-server requests
+        self.cancel_tasks(Some(TaskKind::AdminApiServer), None)
+            .await;
         // Worker will shutdown running processors
         self.cancel_tasks(Some(TaskKind::WorkerRole), None).await;
+
         self.initiate_managed_runtimes_shutdown();
         // Ask bifrost to shutdown providers and loglets
+        self.cancel_tasks(Some(TaskKind::BifrostBackgroundLowPriority), None)
+            .await;
         self.cancel_tasks(Some(TaskKind::BifrostWatchdog), None)
             .await;
+
+        // Stop log-server role
+        self.cancel_tasks(Some(TaskKind::LogServerRole), None).await;
+
+        // stop metadata server
+        self.cancel_tasks(Some(TaskKind::MetadataServer), None)
+            .await;
+
         self.shutdown_managed_runtimes();
         // global shutdown trigger
         self.root_task_context.cancel();
