@@ -116,7 +116,7 @@ impl Client {
 
 #[async_trait::async_trait]
 impl ProvisionedMetadataStore for Client {
-    #[instrument(level = "trace", skip_all, err)]
+    #[instrument(level = "trace", skip_all, err(level = "trace"))]
     async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {
         trace!(%key, "client sending Get");
 
@@ -129,7 +129,7 @@ impl ProvisionedMetadataStore for Client {
         rx.await.map_err(|_| ReadError::terminal(ShutdownError))?
     }
 
-    #[instrument(level = "trace", skip_all, err)]
+    #[instrument(level = "trace", skip_all, err(level = "trace"))]
     async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
         trace!(%key, "client sending GetVersion");
 
@@ -142,7 +142,7 @@ impl ProvisionedMetadataStore for Client {
         rx.await.map_err(|_| ReadError::terminal(ShutdownError))?
     }
 
-    #[instrument(level = "trace", skip_all, err)]
+    #[instrument(level = "trace", skip_all, err(level = "trace"))]
     async fn put(
         &self,
         key: ByteString,
@@ -165,7 +165,7 @@ impl ProvisionedMetadataStore for Client {
         rx.await.map_err(|_| WriteError::terminal(ShutdownError))?
     }
 
-    #[instrument(level = "trace", skip_all, err)]
+    #[instrument(level = "trace", skip_all, err(level = "trace"))]
     async fn delete(&self, key: ByteString, precondition: Precondition) -> Result<(), WriteError> {
         trace!(%key, %precondition, "client sending Delete");
 
