@@ -77,7 +77,7 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort"))]
     MetadataBackgroundSync,
     RpcServer,
-    #[strum(props(runtime = "default"))]
+    #[strum(props(OnError = "log", runtime = "default"))]
     SocketHandler,
     /// An http2 stream handler created by the server-side of the connection.
     #[strum(props(OnError = "log", runtime = "default"))]
