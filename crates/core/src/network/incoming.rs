@@ -693,3 +693,25 @@ impl<O: WatchResponse + WireEncode> Reciprocal<Updates<O>> {
         });
     }
 }
+
+#[cfg(feature = "test-util")]
+mod test_util {
+    use super::*;
+
+    impl<O: RpcResponse + WireEncode> Reciprocal<Oneshot<O>> {
+        pub fn mock() -> (Self, oneshot::Receiver<ReplyEnvelope>) {
+            let (tx, rx) = RpcReplyPort::new();
+            (
+                Reciprocal {
+                    protocol_version: Default::default(),
+                    reply_port: Oneshot {
+                        inner: tx,
+                        _phantom: PhantomData,
+                    },
+                    _phantom: PhantomData,
+                },
+                rx,
+            )
+        }
+    }
+}
