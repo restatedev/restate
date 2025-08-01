@@ -61,7 +61,7 @@ struct SaltedVersionedValue {
     value: VersionedValue,
 }
 
-#[instrument(level = "trace", skip(tagged_value), err)]
+#[instrument(level = "trace", skip(tagged_value), err(level = "debug"))]
 fn tagged_value_to_versioned_value(
     tagged_value: TaggedValue,
 ) -> anyhow::Result<(Tag, VersionedValue)> {
@@ -125,7 +125,7 @@ impl OptimisticLockingMetadataStore {
         }
     }
 
-    #[instrument(level = "trace", skip(self, versioned_value), err)]
+    #[instrument(level = "trace", skip(self, versioned_value), err(level = "debug"))]
     fn serialize_versioned_value(
         &mut self,
         encoding: ValueEncoding,

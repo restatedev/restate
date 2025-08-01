@@ -87,7 +87,7 @@ const DELETED_HEADER: Bytes = Bytes::from_static(b"d");
 
 #[async_trait::async_trait]
 impl VersionRepository for ObjectStoreVersionRepository {
-    #[instrument(level = "debug", skip(self, content), err)]
+    #[instrument(level = "debug", skip(self, content), err(level = "debug"))]
     async fn create(
         &self,
         key: ByteString,
@@ -143,7 +143,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
-    #[instrument(level = "debug", skip(self), err)]
+    #[instrument(level = "debug", skip(self), err(level = "debug"))]
     async fn get(&self, key: ByteString) -> Result<TaggedValue, VersionRepositoryError> {
         let path = self.path(&key);
 
@@ -183,7 +183,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
-    #[instrument(level = "debug", skip(self, new_content), err)]
+    #[instrument(level = "debug", skip(self, new_content), err(level = "debug"))]
     async fn put_if_tag_matches(
         &self,
         key: ByteString,
@@ -231,7 +231,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
-    #[instrument(level = "debug", skip(self, new_content), err)]
+    #[instrument(level = "debug", skip(self, new_content), err(level = "debug"))]
     async fn put(
         &self,
         key: ByteString,
@@ -265,7 +265,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
-    #[instrument(level = "debug", skip(self), err)]
+    #[instrument(level = "debug", skip(self), err(level = "debug"))]
     async fn delete(&self, key: ByteString) -> Result<(), VersionRepositoryError> {
         let path = self.path(&key);
 
@@ -281,7 +281,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         }
     }
 
-    #[instrument(level = "debug", skip(self), err)]
+    #[instrument(level = "debug", skip(self), err(level = "debug"))]
     async fn delete_if_tag_matches(
         &self,
         key: ByteString,

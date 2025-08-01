@@ -45,7 +45,7 @@ impl Default for InMemoryVersionRepository {
 
 #[async_trait::async_trait]
 impl VersionRepository for InMemoryVersionRepository {
-    #[instrument(level = "trace", skip(self, content), err)]
+    #[instrument(level = "trace", skip(self, content), err(level = "debug"))]
     async fn create(
         &self,
         key: ByteString,
@@ -63,7 +63,7 @@ impl VersionRepository for InMemoryVersionRepository {
         Ok(tag)
     }
 
-    #[instrument(level = "trace", skip(self), err)]
+    #[instrument(level = "trace", skip(self), err(level = "debug"))]
     async fn get(&self, key: ByteString) -> Result<TaggedValue, VersionRepositoryError> {
         debug!(%key, "get");
 
@@ -77,7 +77,7 @@ impl VersionRepository for InMemoryVersionRepository {
         }
     }
 
-    #[instrument(level = "trace", skip(self, content), err)]
+    #[instrument(level = "trace", skip(self, content), err(level = "debug"))]
     async fn put_if_tag_matches(
         &self,
         key: ByteString,
@@ -99,7 +99,7 @@ impl VersionRepository for InMemoryVersionRepository {
         }
     }
 
-    #[instrument(level = "trace", skip(self, content), err)]
+    #[instrument(level = "trace", skip(self, content), err(level = "debug"))]
     async fn put(&self, key: ByteString, content: Content) -> Result<Tag, VersionRepositoryError> {
         debug!(%key, size = content.bytes.len(), "put");
 
@@ -110,7 +110,7 @@ impl VersionRepository for InMemoryVersionRepository {
         Ok(tag)
     }
 
-    #[instrument(level = "trace", skip(self), err)]
+    #[instrument(level = "trace", skip(self), err(level = "debug"))]
     async fn delete(&self, key: ByteString) -> Result<(), VersionRepositoryError> {
         debug!(%key, "delete");
 
@@ -122,7 +122,7 @@ impl VersionRepository for InMemoryVersionRepository {
         }
     }
 
-    #[instrument(level = "trace", skip(self), err)]
+    #[instrument(level = "trace", skip(self), err(level = "debug"))]
     async fn delete_if_tag_matches(
         &self,
         key: ByteString,
