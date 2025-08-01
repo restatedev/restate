@@ -212,6 +212,6 @@ pub struct CsNode {
 
 impl NodeState {
     pub fn is_alive(self) -> bool {
-        matches!(self, Self::Alive | Self::FailingOver)
+        matches!(self, Self::Alive)
     }
 }
