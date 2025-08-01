@@ -10,7 +10,6 @@
 
 use super::create_envelope_header;
 use super::error::*;
-use crate::schema_registry::ModifyServiceChange;
 use crate::state::AdminServiceState;
 use std::sync::Arc;
 
@@ -26,6 +25,7 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::schema::service::ServiceMetadata;
+use restate_types::schema::updater::ModifyServiceChange;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{Command, Envelope};
 use tracing::{debug, warn};
@@ -131,6 +131,7 @@ pub async fn modify_service<V, IC>(
         public,
         idempotency_retention,
         workflow_completion_retention,
+        journal_retention,
         inactivity_timeout,
         abort_timeout,
     }): Json<ModifyServiceRequest>,
@@ -148,6 +149,9 @@ pub async fn modify_service<V, IC>(
         modify_request.push(ModifyServiceChange::WorkflowCompletionRetention(
             new_workflow_completion_retention,
         ));
+    }
+    if let Some(new_journal_retention) = journal_retention {
+        modify_request.push(ModifyServiceChange::JournalRetention(new_journal_retention));
     }
     if let Some(inactivity_timeout) = inactivity_timeout {
         modify_request.push(ModifyServiceChange::InactivityTimeout(inactivity_timeout));

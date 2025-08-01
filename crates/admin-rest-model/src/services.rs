@@ -41,7 +41,10 @@ pub struct ModifyServiceRequest {
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
     pub idempotency_retention: Option<Duration>,
 
     /// # Workflow completion retention
@@ -53,8 +56,29 @@ pub struct ModifyServiceRequest {
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
     pub workflow_completion_retention: Option<Duration>,
+
+    /// # Journal retention
+    ///
+    /// Modify the journal retention for this service. When set, this applies to all requests to all handlers of this service.
+    ///
+    /// In case the request has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
+    /// In case the request targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
+    ///
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
+    pub journal_retention: Option<Duration>,
 
     /// # Inactivity timeout
     ///
@@ -72,7 +96,10 @@ pub struct ModifyServiceRequest {
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
     pub inactivity_timeout: Option<Duration>,
 
     /// # Abort timeout
@@ -92,7 +119,10 @@ pub struct ModifyServiceRequest {
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
     pub abort_timeout: Option<Duration>,
 }
 

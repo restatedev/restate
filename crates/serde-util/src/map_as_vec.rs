@@ -10,8 +10,10 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{DeserializeAs, SerializeAs};
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::sync::Arc;
 
 /// Transformation to use with serde_as to serialize a map into a vec, and vice versa deserialize a vec into a map.
 ///
@@ -24,6 +26,17 @@ pub trait MapAsVecItem {
 
     /// Item's key, to transform a `Vec<Self>` into `HashMap<Self::Key, Self>`.
     fn key(&self) -> Self::Key;
+}
+
+impl<T> MapAsVecItem for Arc<T>
+where
+    T: MapAsVecItem,
+{
+    type Key = T::Key;
+
+    fn key(&self) -> Self::Key {
+        <Arc<T> as Borrow<T>>::borrow(self).key()
+    }
 }
 
 impl<'de, T: MapAsVecItem + Deserialize<'de>> DeserializeAs<'de, HashMap<T::Key, T>> for MapAsVec {
