@@ -307,7 +307,7 @@ impl PartitionProcessorManager {
                     }
                 }
                 Some(event) = self.asynchronous_operations.join_next() => {
-                    self.on_asynchronous_event(event.expect("asynchronous operations must not panic"));
+                    self.on_asynchronous_event(event.context("asynchronous operations must not panic")?);
                 }
                 Some(partition_processor_rpc) = pp_rpc_rx.next() => {
                     self.on_partition_processor_rpc(partition_processor_rpc);

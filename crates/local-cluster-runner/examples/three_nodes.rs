@@ -8,7 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::pin::pin;
+use std::time::Duration;
+
 use futures::never::Never;
+use tracing::{error, info};
+
 use restate_core::TaskCenterBuilder;
 use restate_local_cluster_runner::cluster::StartedCluster;
 use restate_local_cluster_runner::{
@@ -19,9 +24,6 @@ use restate_local_cluster_runner::{
 use restate_types::config::{Configuration, LogFormat};
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::logs::metadata::ProviderKind::Replicated;
-use std::pin::pin;
-use std::time::Duration;
-use tracing::{error, info};
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
@@ -85,6 +87,7 @@ fn main() -> anyhow::Result<()> {
 
         Ok(())
     })
+    .expect("panicked!")
 }
 
 async fn run_cluster(cluster: &StartedCluster) -> anyhow::Result<Never> {
