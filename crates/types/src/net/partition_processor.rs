@@ -15,7 +15,7 @@ use crate::identifiers::{
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PurgeInvocationResponse,
-    SubmittedInvocationNotification,
+    RestartAsNewInvocationResponse, SubmittedInvocationNotification,
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
@@ -74,6 +74,7 @@ pub enum PartitionProcessorRpcRequestInner {
     KillInvocation { invocation_id: InvocationId },
     PurgeInvocation { invocation_id: InvocationId },
     PurgeJournal { invocation_id: InvocationId },
+    RestartAsNewInvocation { invocation_id: InvocationId },
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
@@ -93,6 +94,9 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
                 invocation_id.partition_key()
             }
             PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id } => {
                 invocation_id.partition_key()
             }
         }
@@ -160,6 +164,12 @@ impl From<CancelInvocationResponse> for CancelInvocationRpcResponse {
     }
 }
 
+impl From<CancelInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: CancelInvocationRpcResponse) -> Self {
+        Self::CancelInvocation(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KillInvocationRpcResponse {
     Ok,
@@ -184,6 +194,12 @@ impl From<KillInvocationResponse> for KillInvocationRpcResponse {
             KillInvocationResponse::NotFound => Self::NotFound,
             KillInvocationResponse::AlreadyCompleted => Self::AlreadyCompleted,
         }
+    }
+}
+
+impl From<KillInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: KillInvocationRpcResponse) -> Self {
+        Self::KillInvocation(value)
     }
 }
 
@@ -214,6 +230,74 @@ impl From<PurgeInvocationResponse> for PurgeInvocationRpcResponse {
     }
 }
 
+impl From<PurgeInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: PurgeInvocationRpcResponse) -> Self {
+        Self::PurgeInvocation(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RestartAsNewInvocationRpcResponse {
+    Ok { new_invocation_id: InvocationId },
+    NotFound,
+    StillRunning,
+    Unsupported,
+    MissingInput,
+    NotStarted,
+}
+
+impl From<RestartAsNewInvocationRpcResponse> for RestartAsNewInvocationResponse {
+    fn from(value: RestartAsNewInvocationRpcResponse) -> Self {
+        match value {
+            RestartAsNewInvocationRpcResponse::Ok { new_invocation_id } => {
+                RestartAsNewInvocationResponse::Ok { new_invocation_id }
+            }
+            RestartAsNewInvocationRpcResponse::NotFound => RestartAsNewInvocationResponse::NotFound,
+            RestartAsNewInvocationRpcResponse::StillRunning => {
+                RestartAsNewInvocationResponse::StillRunning
+            }
+            RestartAsNewInvocationRpcResponse::Unsupported => {
+                RestartAsNewInvocationResponse::Unsupported
+            }
+            RestartAsNewInvocationRpcResponse::MissingInput => {
+                RestartAsNewInvocationResponse::MissingInput
+            }
+            RestartAsNewInvocationRpcResponse::NotStarted => {
+                RestartAsNewInvocationResponse::NotStarted
+            }
+        }
+    }
+}
+
+impl From<RestartAsNewInvocationResponse> for RestartAsNewInvocationRpcResponse {
+    fn from(value: RestartAsNewInvocationResponse) -> Self {
+        match value {
+            RestartAsNewInvocationResponse::Ok { new_invocation_id } => {
+                RestartAsNewInvocationRpcResponse::Ok { new_invocation_id }
+            }
+            RestartAsNewInvocationResponse::NotFound => RestartAsNewInvocationRpcResponse::NotFound,
+            RestartAsNewInvocationResponse::StillRunning => {
+                RestartAsNewInvocationRpcResponse::StillRunning
+            }
+            RestartAsNewInvocationResponse::Unsupported => {
+                RestartAsNewInvocationRpcResponse::Unsupported
+            }
+            RestartAsNewInvocationResponse::MissingInput => {
+                RestartAsNewInvocationRpcResponse::MissingInput
+            }
+            RestartAsNewInvocationResponse::NotStarted => {
+                RestartAsNewInvocationRpcResponse::NotStarted
+            }
+        }
+    }
+}
+
+impl From<RestartAsNewInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: RestartAsNewInvocationRpcResponse) -> Self {
+        Self::RestartAsNewInvocation(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
     Appended,
@@ -226,4 +310,5 @@ pub enum PartitionProcessorRpcResponse {
     KillInvocation(KillInvocationRpcResponse),
     PurgeInvocation(PurgeInvocationRpcResponse),
     PurgeJournal(PurgeInvocationRpcResponse),
+    RestartAsNewInvocation(RestartAsNewInvocationRpcResponse),
 }

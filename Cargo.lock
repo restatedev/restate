@@ -7806,10 +7806,13 @@ name = "restate-test-util"
 version = "1.4.4-dev"
 dependencies = [
  "assert2",
+ "bytes",
+ "bytestring",
  "googletest",
  "pretty_assertions",
  "prost",
  "prost-types",
+ "rand 0.9.1",
  "restate-workspace-hack",
 ]
 
@@ -8024,6 +8027,7 @@ dependencies = [
  "itertools 0.14.0",
  "jiff",
  "metrics",
+ "mockall",
  "opentelemetry",
  "parking_lot",
  "pin-project",

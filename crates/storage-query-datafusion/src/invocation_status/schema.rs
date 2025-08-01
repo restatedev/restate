@@ -54,6 +54,7 @@ define_table!(sys_invocation_status(
     /// * `ingress` if the invocation was created externally.
     /// * `service` if the invocation was created by another Restate service.
     /// * `subscription` if the invocation was created by a subscription (e.g. Kafka).
+    /// * `restart_as_new` if the invocation was created by restarting an old invocation as new.
     invoked_by: DataType::LargeUtf8,
 
     /// The caller [Invocation ID](/operate/invocation#invocation-identifier) if `invoked_by = 'service'`.
@@ -67,6 +68,9 @@ define_table!(sys_invocation_status(
 
     /// The caller invocation target if `invoked_by = 'service'`.
     invoked_by_target: DataType::LargeUtf8,
+
+    /// The original invocation id if `invoked_by = 'restart_as_new'`.
+    restarted_from: DataType::LargeUtf8,
 
     /// The ID of the service deployment that started processing this invocation, and will continue
     /// to do so (e.g. for retries). This gets set after the first journal entry has been stored for

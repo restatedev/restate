@@ -55,7 +55,7 @@ restate-core = { workspace = true, features = ["test-util"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
-mockall = "0.13.0"
+mockall = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
 hyper-util = { workspace = true, features = ["full"] }
 tracing-test = { workspace = true }

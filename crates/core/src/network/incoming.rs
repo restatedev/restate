@@ -693,3 +693,41 @@ impl<O: WatchResponse + WireEncode> Reciprocal<Updates<O>> {
         });
     }
 }
+
+#[cfg(feature = "test-util")]
+pub mod test_util {
+    use super::*;
+
+    use assert2::let_assert;
+
+    pub struct OneshotRxMock<O>(oneshot::Receiver<ReplyEnvelope>, PhantomData<O>);
+
+    impl<O: WireDecode> OneshotRxMock<O> {
+        pub async fn recv(self) -> O {
+            let_assert!(
+                Ok(ReplyEnvelope {
+                    body: rpc_reply::Body::Payload(buf),
+                    ..
+                }) = self.0.await
+            );
+            O::decode(buf, ProtocolVersion::V2)
+        }
+    }
+
+    impl<O: RpcResponse + WireEncode + WireDecode> Reciprocal<Oneshot<O>> {
+        pub fn mock() -> (Self, OneshotRxMock<O>) {
+            let (tx, rx) = RpcReplyPort::new();
+            (
+                Reciprocal {
+                    protocol_version: Default::default(),
+                    reply_port: Oneshot {
+                        inner: tx,
+                        _phantom: PhantomData,
+                    },
+                    _phantom: PhantomData,
+                },
+                OneshotRxMock(rx, PhantomData),
+            )
+        }
+    }
+}
