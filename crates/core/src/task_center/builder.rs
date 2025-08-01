@@ -31,6 +31,7 @@ pub struct TaskCenterBuilder {
     default_runtime_handle: Option<tokio::runtime::Handle>,
     default_runtime: Option<tokio::runtime::Runtime>,
     options: Option<CommonOptions>,
+    #[cfg(any(test, feature = "test-util"))]
     pause_time: bool,
 }
 
@@ -52,11 +53,13 @@ impl TaskCenterBuilder {
         self
     }
 
+    #[cfg(any(test, feature = "test-util"))]
     pub fn pause_time(mut self, pause_time: bool) -> Self {
         self.pause_time = pause_time;
         self
     }
 
+    #[cfg(any(test, feature = "test-util"))]
     pub fn default_for_tests() -> Self {
         Self::default()
             .default_runtime_handle(tokio::runtime::Handle::current())
@@ -78,6 +81,7 @@ impl TaskCenterBuilder {
         Ok(OwnedHandle::new(TaskCenterInner::new(
             self.default_runtime_handle.unwrap(),
             self.default_runtime,
+            #[cfg(any(test, feature = "test-util"))]
             self.pause_time,
         )))
     }

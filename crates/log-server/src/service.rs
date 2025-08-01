@@ -111,8 +111,8 @@ impl LogServerService {
         let storage_state =
             Self::provision_node(&metadata, &mut log_store, &mut metadata_writer).await?;
 
-        let _ = TaskCenter::spawn_child(
-            TaskKind::SystemService,
+        let _ = TaskCenter::spawn(
+            TaskKind::LogServerRole,
             "log-server",
             request_pump.run(health_status, log_store, state_map, storage_state),
         )?;

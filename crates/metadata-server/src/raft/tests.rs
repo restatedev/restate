@@ -118,7 +118,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     )
     .await?;
 
-    TaskCenter::spawn_child(TaskKind::RpcServer, "node-rpc-server", async move {
+    TaskCenter::spawn_child(TaskKind::NodeRpcServer, "node-rpc-server", async move {
         server_builder
             .run(health.node_rpc_status(), &bind_address)
             .await
