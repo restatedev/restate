@@ -8,11 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::any::Any;
 use std::fmt::Debug;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use futures::FutureExt;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
@@ -268,11 +271,14 @@ impl OwnedHandle {
 
     /// Sets the current task_center but doesn't create a task. Use this when you need to run a
     /// future within task_center scope.
-    pub fn block_on<F, O>(&self, future: F) -> O
+    pub fn block_on<F, O>(&self, future: F) -> Result<O, Box<dyn Any + Send + 'static>>
     where
         F: Future<Output = O>,
     {
-        self.inner.block_on(future)
+        // We use AssertUnwindSafe here so that the wrapped function
+        // doesn't need to be UnwindSafe. We should not do anything after
+        // unwinding that'd risk us being in unwind-unsafe behavior.
+        self.inner.block_on(AssertUnwindSafe(future).catch_unwind())
     }
 
     /// The exit code that the process should exit with.

@@ -101,7 +101,6 @@ pub enum Error {
 }
 
 pub struct Worker {
-    storage_query_context: QueryContext,
     storage_query_postgres: Option<PostgresQueryService>,
     datafusion_remote_scanner: RemoteQueryScannerServer,
     ingress_kafka: IngressKafkaService,
@@ -166,8 +165,9 @@ impl Worker {
 
         let remote_scanner_manager = RemoteScannerManager::new(
             create_remote_scanner_service(networking),
-            create_partition_locator(partition_routing, metadata),
+            create_partition_locator(partition_routing),
         );
+
         let storage_query_context = QueryContext::with_user_tables(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,
@@ -182,7 +182,7 @@ impl Worker {
         let storage_query_postgres = match config.admin.query_engine.pgsql_bind_address {
             Some(bind_address) => {
                 let storage_query_postgres =
-                    PostgresQueryService::from_options(bind_address, storage_query_context.clone());
+                    PostgresQueryService::from_options(bind_address, storage_query_context);
                 Some(storage_query_postgres)
             }
             None => None,
@@ -192,17 +192,12 @@ impl Worker {
             RemoteQueryScannerServer::new(remote_scanner_manager, router_builder);
 
         Ok(Self {
-            storage_query_context,
             storage_query_postgres,
             datafusion_remote_scanner,
             ingress_kafka,
             subscription_controller_handle,
             partition_processor_manager,
         })
-    }
-
-    pub fn storage_query_context(&self) -> &QueryContext {
-        &self.storage_query_context
     }
 
     pub fn partition_processor_manager_handle(&self) -> ProcessorsManagerHandle {

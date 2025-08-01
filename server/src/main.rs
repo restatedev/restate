@@ -186,7 +186,7 @@ fn main() {
         .options(Configuration::pinned().common.clone())
         .build()
         .expect("task_center builds");
-    tc.block_on({
+    let res = tc.block_on({
         async move {
             // Apply tracing config globally
             // We need to apply this first to log correctly
@@ -205,6 +205,10 @@ fn main() {
             // Log panics as tracing errors if possible
             let prev_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |panic_info| {
+                let thread = std::thread::current();
+                let thread_name = thread.name();
+                // Make sure we also print on stderr in case tracing is borked!
+                eprintln!("\n[{thread_name:?}]  PANIC!!!\n{panic_info}\n");
                 tracing_panic::panic_hook(panic_info);
                 // run original hook if any.
                 prev_hook(panic_info);
@@ -242,8 +246,8 @@ fn main() {
             // the TaskCenter.
             let _ = TaskCenter::spawn(TaskKind::SystemBoot, "init", node.unwrap().start());
 
-            let task_center_watch = TaskCenter::current().shutdown_token();
-            tokio::pin!(task_center_watch);
+            let tc_cancel_token = TaskCenter::current().shutdown_token();
+            let mut tc_cancelled = std::pin::pin!(tc_cancel_token.cancelled());
 
             let config_update_watcher = Configuration::watcher();
             tokio::pin!(config_update_watcher);
@@ -267,6 +271,12 @@ fn main() {
                         let shutdown_result = shutdown_with_timeout.await;
 
                         if shutdown_result.is_err() {
+                            warn!("Timeout waiting for system shutdown, will focus on flushing rocksdb!");
+                            // ensure we flush the WAL first
+                            rocksdb_manager.on_ungraceful_shutdown();
+                            // attempt a normal rocksdb shutdown if we can. This is safe to run
+                            // even if rocksdb has finished shutdown before.
+                            rocksdb_manager.shutdown().await;
                             warn!("Could not gracefully shutdown Restate, shutdown took {:?}",
                                 start.elapsed());
                         } else {
@@ -279,9 +289,9 @@ fn main() {
                     _ = signal::sighup_compact() => {},
                     _ = signal::sigusr1_dump_config() => {},
                     _ = signal::sigusr2_tokio_dump() => {},
-                    _ = task_center_watch.cancelled() => {
-                        shutdown = true;
+                    _ = &mut tc_cancelled => {
                         // Shutdown was requested by task center and it has completed.
+                        break;
                     },
                 };
             }
@@ -296,7 +306,12 @@ fn main() {
             .await;
         }
     });
+
     let exit_code = tc.exit_code();
+    if let Err(err) = res {
+        eprintln!("!!! Restate panicked during shutdown! {err:?}");
+        RocksDbManager::get().on_ungraceful_shutdown();
+    }
     if exit_code != 0 {
         error!("Restate terminated with exit code {}!", exit_code);
     }
@@ -322,5 +337,6 @@ fn handle_error<E: Error + CodedError>(err: E) -> ! {
     // We terminate the main here in order to avoid the destruction of the Tokio
     // runtime. If we did this, potentially running Tokio tasks might otherwise cause panics
     // which adds noise.
+    RocksDbManager::get().on_ungraceful_shutdown();
     std::process::exit(EXIT_CODE_FAILURE);
 }

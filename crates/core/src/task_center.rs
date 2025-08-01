@@ -847,7 +847,11 @@ impl TaskCenterInner {
             // Note that the task itself has been already removed from the task map, so shutdown
             // will not wait for its completion.
             self.shutdown_node(
-                &format!("task {} failed and requested a shutdown", task.name()),
+                &format!(
+                    "task {}({}) failed and requested a shutdown",
+                    task.name(),
+                    task.id()
+                ),
                 EXIT_CODE_FAILURE,
             )
             .await;
@@ -886,6 +890,7 @@ impl TaskCenterInner {
         // global shutdown trigger
         self.cancel_tasks(None, None).await;
         // notify outer components that we have completed the shutdown.
+        info!("Task center has stopped");
         self.global_cancel_token.cancel();
     }
 
