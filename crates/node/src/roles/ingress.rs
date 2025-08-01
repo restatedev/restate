@@ -11,6 +11,7 @@
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::PartitionProcessorInvocationClient;
+use restate_core::{TaskCenter, TaskKind};
 use restate_ingress_http::{HyperServerIngress, InvocationClientRequestDispatcher};
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
@@ -50,7 +51,13 @@ impl<T: TransportConnect> IngressRole<T> {
         Self { ingress_http }
     }
 
-    pub async fn run(self) -> anyhow::Result<()> {
-        self.ingress_http.run().await
+    pub fn start(self) -> Result<(), anyhow::Error> {
+        TaskCenter::spawn(
+            TaskKind::HttpIngressRole,
+            "ingress-http",
+            self.ingress_http.run(),
+        )?;
+
+        Ok(())
     }
 }

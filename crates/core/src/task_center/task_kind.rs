@@ -76,7 +76,9 @@ pub enum TaskKind {
     SystemBoot,
     #[strum(props(OnCancel = "abort"))]
     MetadataBackgroundSync,
-    RpcServer,
+    NodeRpcServer,
+    AdminApiServer,
+    LogServerRole,
     #[strum(props(OnError = "log", runtime = "default"))]
     SocketHandler,
     /// An http2 stream handler created by the server-side of the connection.

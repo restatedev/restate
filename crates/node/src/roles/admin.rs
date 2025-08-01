@@ -141,18 +141,18 @@ impl<T: TransportConnect> AdminRole<T> {
         })
     }
 
-    pub async fn start(self) -> Result<(), anyhow::Error> {
+    pub fn start(self) -> Result<(), anyhow::Error> {
         if let Some(cluster_controller) = self.controller {
-            TaskCenter::spawn_child(
+            TaskCenter::spawn(
                 TaskKind::ClusterController,
                 "cluster-controller-service",
                 cluster_controller.run(),
             )?;
         }
 
-        TaskCenter::spawn_child(
-            TaskKind::RpcServer,
-            "admin-rpc-server",
+        TaskCenter::spawn(
+            TaskKind::AdminApiServer,
+            "admin-api-server",
             self.admin.run(self.updateable_config.map(|c| &c.admin)),
         )?;
 
