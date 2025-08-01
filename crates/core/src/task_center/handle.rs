@@ -8,11 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::any::Any;
 use std::fmt::Debug;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use futures::FutureExt;
+use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
@@ -244,6 +248,11 @@ impl Handle {
     pub fn shutdown_token(&self) -> CancellationToken {
         self.inner.global_cancel_token.clone()
     }
+
+    /// Set a future callback to be executed after task center finishes shutdown.
+    pub fn set_on_shutdown(&self, on_shutdown: BoxFuture<'static, ()>) {
+        self.inner.set_on_shutdown(on_shutdown)
+    }
 }
 
 // Shutsdown
@@ -268,15 +277,22 @@ impl OwnedHandle {
 
     /// Sets the current task_center but doesn't create a task. Use this when you need to run a
     /// future within task_center scope.
-    pub fn block_on<F, O>(&self, future: F) -> O
+    pub fn block_on<F, O>(&self, future: F) -> Result<O, Box<dyn Any + Send + 'static>>
     where
         F: Future<Output = O>,
     {
-        self.inner.block_on(future)
+        // We use AssertUnwindSafe here so that the wrapped function
+        // doesn't need to be UnwindSafe. We should not do anything after
+        // unwinding that'd risk us being in unwind-unsafe behavior.
+        self.inner.block_on(AssertUnwindSafe(future).catch_unwind())
     }
 
     /// The exit code that the process should exit with.
     pub fn exit_code(&self) -> i32 {
         self.inner.current_exit_code.load(Ordering::Relaxed)
+    }
+
+    pub fn is_shutdown_callback_set(&self) -> bool {
+        self.inner.on_shutdown.lock().is_some()
     }
 }

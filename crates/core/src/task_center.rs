@@ -29,14 +29,16 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use metrics::counter;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 use tokio::task::LocalSet;
 use tokio::task_local;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
@@ -44,6 +46,7 @@ use crate::metric_definitions::{self, STATUS_COMPLETED, STATUS_FAILED, TC_FINISH
 use crate::{Metadata, ShutdownError, ShutdownSourceErr};
 use restate_types::SharedString;
 use restate_types::cluster_state::ClusterState;
+use restate_types::config::Configuration;
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
 use restate_types::{GenerationalNodeId, NodeId};
@@ -120,6 +123,11 @@ impl TaskCenter {
     /// at the startup of the node.
     pub fn try_set_global_metadata(metadata: Metadata) -> bool {
         Self::with_current(|tc| tc.try_set_global_metadata(metadata))
+    }
+
+    /// Set a future callback to be executed after task center finishes shutdown.
+    pub fn set_on_shutdown(on_shutdown: BoxFuture<'static, ()>) {
+        Self::with_current(|tc| tc.set_on_shutdown(on_shutdown))
     }
 
     /// Returns true if the task center was requested to shutdown
@@ -303,6 +311,8 @@ struct TaskCenterInner {
     health: Health,
     cluster_state: ClusterState,
     root_task_context: TaskContext,
+    // A callback to be executed after task center finishes shutdown.
+    on_shutdown: Mutex<Option<BoxFuture<'static, ()>>>,
 }
 
 impl TaskCenterInner {
@@ -336,6 +346,7 @@ impl TaskCenterInner {
             pause_time,
             cluster_state: Default::default(),
             health: Health::default(),
+            on_shutdown: Mutex::default(),
         }
     }
 
@@ -343,6 +354,11 @@ impl TaskCenterInner {
     /// at the startup of the node.
     pub fn try_set_global_metadata(self: &Arc<Self>, metadata: Metadata) -> bool {
         self.global_metadata.set(metadata).is_ok()
+    }
+
+    pub fn set_on_shutdown(&self, on_shutdown: BoxFuture<'static, ()>) {
+        let mut guard = self.on_shutdown.lock();
+        guard.replace(on_shutdown);
     }
 
     pub fn global_metadata(self: &Arc<Self>) -> Option<&Metadata> {
@@ -847,7 +863,11 @@ impl TaskCenterInner {
             // Note that the task itself has been already removed from the task map, so shutdown
             // will not wait for its completion.
             self.shutdown_node(
-                &format!("task {} failed and requested a shutdown", task.name()),
+                &format!(
+                    "task {}({}) failed and requested a shutdown",
+                    task.name(),
+                    task.id()
+                ),
                 EXIT_CODE_FAILURE,
             )
             .await;
@@ -863,6 +883,27 @@ impl TaskCenterInner {
             // already shutting down....
             return;
         }
+
+        let start = Instant::now();
+        let shutdown_result = tokio::time::timeout(
+            Configuration::pinned().common.shutdown_grace_period(),
+            self.shutdown_node_inner(reason, exit_code),
+        )
+        .await;
+
+        if shutdown_result.is_err() {
+            warn!(
+                "Timeout waiting for graceful shutdown. Shutdown took {:?}",
+                start.elapsed()
+            );
+        } else {
+            info!("Restate has gracefully shutdown in {:?}", start.elapsed());
+        };
+        self.root_task_context.cancel();
+        self.global_cancel_token.cancel();
+    }
+
+    async fn shutdown_node_inner(self: &Arc<Self>, reason: &str, exit_code: i32) {
         self.health.node_status().merge(NodeStatus::ShuttingDown);
         self.current_exit_code.store(exit_code, Ordering::Relaxed);
 
@@ -886,6 +927,11 @@ impl TaskCenterInner {
         // global shutdown trigger
         self.cancel_tasks(None, None).await;
         // notify outer components that we have completed the shutdown.
+        let on_shutdown = self.on_shutdown.lock().take();
+        if let Some(on_shutdown) = on_shutdown {
+            on_shutdown.await;
+        }
+        info!("Task center has stopped");
         self.global_cancel_token.cancel();
     }
 
