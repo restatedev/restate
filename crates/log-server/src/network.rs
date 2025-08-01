@@ -20,7 +20,7 @@ use tokio::task::JoinSet;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::trace;
 
-use restate_core::cancellation_watcher;
+use restate_core::cancellation_token;
 use restate_core::network::{BackPressureMode, MessageRouterBuilder, ServiceReceiver};
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
@@ -81,7 +81,7 @@ impl RequestPump {
             ..
         } = self;
 
-        let mut shutdown = std::pin::pin!(cancellation_watcher());
+        let cancel_token = cancellation_token();
 
         let mut loglet_workers = HashMap::with_capacity(DEFAULT_WRITERS_CAPACITY);
 
@@ -97,16 +97,12 @@ impl RequestPump {
         loop {
             // Ordered by priority of message types
             tokio::select! {
-                _ = &mut shutdown => {
-                    health_status.update(LogServerStatus::Stopping);
+                _ = cancel_token.cancelled() => {
                     // stop accepting messages
-                    // todo: consider graceful drain
                     drop(data_svc_rx);
                     drop(info_svc_rx);
-                    // shutdown all workers.
-                    Self::shutdown(loglet_workers).await;
-                    health_status.update(LogServerStatus::Unknown);
-                    return Ok(());
+                    health_status.update(LogServerStatus::Stopping);
+                    break;
                 }
                 Some(op) = info_svc_rx.next() => {
                     // all requests are sorted by sort-code (V2 fabric)
@@ -146,13 +142,18 @@ impl RequestPump {
                 }
             }
         }
+
+        // shutdown all workers.
+        Self::shutdown(loglet_workers).await;
+        health_status.update(LogServerStatus::Unknown);
+        Ok(())
     }
 
     pub async fn shutdown(loglet_workers: LogletWorkerMap) {
         // stop all writers
         let mut tasks = JoinSet::new();
         for (_, task) in loglet_workers {
-            tasks.spawn(task.cancel());
+            tasks.spawn(task.drain());
         }
         // await all tasks to shutdown
         let _ = tasks.join_all().await;

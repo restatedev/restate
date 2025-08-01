@@ -154,7 +154,7 @@ where
         address: AdvertisedAddress,
         networking_options: &NetworkingOptions,
     ) -> Result<TaskHandle<anyhow::Result<()>>, ShutdownError> {
-        TaskCenter::spawn_unmanaged(
+        TaskCenter::spawn_unmanaged_child(
             TaskKind::SocketHandler,
             "metadata-store-network-connection-attempt",
             {

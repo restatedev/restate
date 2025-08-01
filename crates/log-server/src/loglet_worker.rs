@@ -16,7 +16,8 @@ use tokio::task::JoinSet;
 use tracing::{Instrument, debug, error, instrument, trace, trace_span, warn};
 
 use restate_core::network::{Incoming, Rpc, ServiceMessage, Verdict};
-use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher};
+use restate_core::task_center::TaskGuard;
+use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::{RpcRequest, UnaryMessage, log_server::*};
@@ -36,13 +37,12 @@ pub struct LogletWorkerHandle {
     data_svc_tx: mpsc::UnboundedSender<ServiceMessage<LogServerDataService>>,
     info_svc_tx: mpsc::UnboundedSender<ServiceMessage<LogServerMetaService>>,
 
-    tc_handle: TaskHandle<()>,
+    loglet_guard: TaskGuard<()>,
 }
 
 impl LogletWorkerHandle {
-    pub fn cancel(self) -> TaskHandle<()> {
-        self.tc_handle.cancel();
-        self.tc_handle
+    pub async fn drain(self) -> Result<(), ShutdownError> {
+        self.loglet_guard.cancel_and_wait().await
     }
 
     pub fn enqueue_data_msg(&self, op: ServiceMessage<LogServerDataService>) {
@@ -75,19 +75,19 @@ impl<S: LogStore> LogletWorker<S> {
         let (data_svc_tx, data_svc_rx) = mpsc::unbounded_channel();
         let (info_svc_tx, info_svc_rx) = mpsc::unbounded_channel();
 
-        let tc_handle = TaskCenter::spawn_unmanaged(
+        let loglet_guard = TaskCenter::spawn_unmanaged(
             TaskKind::LogletWriter,
             "loglet-worker",
             writer.run(data_svc_rx, info_svc_rx),
-        )?;
+        )?
+        .into_guard();
         Ok(LogletWorkerHandle {
             data_svc_tx,
             info_svc_tx,
-            tc_handle,
+            loglet_guard,
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn run(
         mut self,
         mut data_svc_rx: mpsc::UnboundedReceiver<ServiceMessage<LogServerDataService>>,
@@ -101,19 +101,22 @@ impl<S: LogStore> LogletWorker<S> {
         let mut in_flight_stores = JoinSet::new();
         let mut waiting_for_seal = JoinSet::new();
         let mut in_flight_seal = std::pin::pin!(OptionFuture::default());
-        let mut shutdown = std::pin::pin!(cancellation_watcher());
+        let cancel_token = cancellation_token();
+        let mut draining = false;
 
         loop {
             tokio::select! {
                 // todo(asoli): Benchmark on diverse workload to determine if biased causes
                 // starvation.
                 biased;
-                _ = &mut shutdown => {
-                    // todo: consider a draining shutdown if needed
-                    // this might include sending notifications of shutdown to allow graceful
-                    // handoff
+                    // Draining flag ensures that this branch is disabled after draining
+                    // is started. If we don't do this, the loop will be stuck in this branch
+                    // since cancelled() will always be `Poll::Ready`.
+                _ = cancel_token.cancelled(), if !draining => {
+                    draining = true;
+                    data_svc_rx.close();
+                    info_svc_rx.close();
                     trace!(loglet_id = %self.loglet_id, "Loglet worker shutting down");
-                    break;
                 }
                 // The in-flight seal (if any)
                 Some(res) = &mut in_flight_seal => {
@@ -138,6 +141,9 @@ impl<S: LogStore> LogletWorker<S> {
                 // LogServiceDataService
                 Some(msg) = data_svc_rx.recv() => {
                     self.process_data_svc_op(msg, &sealing_in_progress, &mut staging_local_tail, &mut in_flight_stores).await;
+                }
+                else =>  {
+                    break;
                 }
             }
         }
@@ -537,7 +543,7 @@ impl<S: LogStore> LogletWorker<S> {
 
         // fails on shutdown, in this case, we ignore the request
         let log_store = self.log_store.clone();
-        let _ = TaskCenter::spawn(TaskKind::Disposable, "logserver-trim", async move {
+        let _ = TaskCenter::spawn_child(TaskKind::Disposable, "logserver-trim", async move {
             // The trim point cannot be at or exceed the local_tail, we clip to the
             // local_tail-1 if that's the case.
             msg.trim_point = msg.trim_point.min(local_tail.offset().prev());
