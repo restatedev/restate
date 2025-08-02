@@ -47,7 +47,7 @@ pub struct LogServerService {
 impl LogServerService {
     pub async fn create(
         health_status: HealthStatus<LogServerStatus>,
-        updateable_config: Live<Configuration>,
+        mut updateable_config: Live<Configuration>,
         metadata: Metadata,
         record_cache: RecordCache,
         router_builder: &mut MessageRouterBuilder,
@@ -81,7 +81,7 @@ impl LogServerService {
         server_builder.register_grpc_service(
             TonicServiceFilter::new(
                 LogServerSvcHandler::new(log_store.clone(), state_map.clone(), record_cache)
-                    .into_server(),
+                    .into_server(&updateable_config.live_load().networking),
                 WaitForReady::new(health_status.clone(), LogServerStatus::Ready),
             ),
             crate::protobuf::FILE_DESCRIPTOR_SET,

@@ -34,7 +34,7 @@ use restate_core::{Identification, MetadataWriter};
 use restate_core::{Metadata, MetadataKind};
 use restate_metadata_store::{MetadataStoreClient, WriteError};
 use restate_types::Version;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::ConversionError;
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::metadata::VersionedValue;
@@ -54,16 +54,21 @@ impl NodeCtlSvcHandler {
         Self { metadata_writer }
     }
 
-    pub fn into_server(self) -> NodeCtlSvcServer<Self> {
-        NodeCtlSvcServer::new(self)
+    pub fn into_server(self, config: &NetworkingOptions) -> NodeCtlSvcServer<Self> {
+        let server = NodeCtlSvcServer::new(self)
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
-            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Gzip);
+        if config.disable_compression {
+            server
+        } else {
             // note: the order of those calls defines the priority
             // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
             // so we prefer zstd over gzip.
-            .send_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Gzip)
+            server
+                .send_compressed(CompressionEncoding::Zstd)
+                .send_compressed(CompressionEncoding::Gzip)
+        }
     }
 
     fn resolve_cluster_configuration(
@@ -261,16 +266,21 @@ impl MetadataProxySvcHandler {
         }
     }
 
-    pub fn into_server(self) -> MetadataProxySvcServer<Self> {
-        MetadataProxySvcServer::new(self)
+    pub fn into_server(self, config: &NetworkingOptions) -> MetadataProxySvcServer<Self> {
+        let server = MetadataProxySvcServer::new(self)
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
-            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Gzip);
+        if config.disable_compression {
+            server
+        } else {
             // note: the order of those calls defines the priority
             // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
             // so we prefer zstd over gzip.
-            .send_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Gzip)
+            server
+                .send_compressed(CompressionEncoding::Zstd)
+                .send_compressed(CompressionEncoding::Gzip)
+        }
     }
 }
 
