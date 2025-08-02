@@ -507,7 +507,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::{Constant, LiveLoadExt};
-    use restate_types::logs::{LogletId, LogletOffset, Record, RecordCache, SequenceNumber};
+    use restate_types::logs::{LogletId, LogletOffset, Record, SequenceNumber};
     use restate_types::net::log_server::{
         DigestEntry, GetDigest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
     };
@@ -523,11 +523,7 @@ mod tests {
         let common_rocks_opts = config.clone().map(|c| &c.common);
         RocksDbManager::init(common_rocks_opts);
         // create logstore.
-        let builder = RocksDbLogStoreBuilder::create(
-            config.map(|c| &c.log_server),
-            RecordCache::new(1_000_000),
-        )
-        .await?;
+        let builder = RocksDbLogStoreBuilder::create(config.map(|c| &c.log_server)).await?;
         Ok(builder.start(Default::default()).await?)
     }
 

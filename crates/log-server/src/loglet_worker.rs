@@ -614,7 +614,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::{Constant, LiveLoadExt};
-    use restate_types::logs::{KeyFilter, Keys, Record, RecordCache};
+    use restate_types::logs::{KeyFilter, Keys, Record};
 
     use crate::metadata::LogletStateMap;
     use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
@@ -630,11 +630,8 @@ mod tests {
             metadata_builder.to_metadata()
         ));
         // create logstore.
-        let builder = RocksDbLogStoreBuilder::create(
-            config.map(|config| &config.log_server),
-            RecordCache::new(1_000_000),
-        )
-        .await?;
+        let builder =
+            RocksDbLogStoreBuilder::create(config.map(|config| &config.log_server)).await?;
         Ok(builder.start(Default::default()).await?)
     }
 
