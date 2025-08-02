@@ -8,21 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::str::FromStr;
+use std::sync::Arc;
+
+use arc_swap::ArcSwapOption;
+use arc_swap::access::Access;
+use tonic::codec::CompressionEncoding;
+use tonic::codegen::BoxStream;
+use tonic::{Request, Response, Status, Streaming};
+
+use restate_types::PlainNodeId;
+use restate_types::config::NetworkingOptions;
+
+use super::MetadataServerNetworkSvcServer;
 use crate::raft::network::connection_manager::ConnectionError;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
 use crate::raft::network::grpc_svc::{JoinClusterRequest, JoinClusterResponse};
 use crate::raft::network::{ConnectionManager, NetworkMessage, PEER_METADATA_KEY, grpc_svc};
 use crate::{JoinClusterError, JoinClusterHandle, MemberId};
-use arc_swap::ArcSwapOption;
-use arc_swap::access::Access;
-use restate_types::PlainNodeId;
-use std::str::FromStr;
-use std::sync::Arc;
-use tonic::codec::CompressionEncoding;
-use tonic::codegen::BoxStream;
-use tonic::{Request, Response, Status, Streaming};
-
-use super::MetadataServerNetworkSvcServer;
 
 #[derive(Debug)]
 pub struct MetadataServerNetworkHandler<M> {
@@ -41,16 +44,21 @@ impl<M> MetadataServerNetworkHandler<M> {
         }
     }
 
-    pub fn into_server(self) -> MetadataServerNetworkSvcServer<Self> {
-        MetadataServerNetworkSvcServer::new(self)
+    pub fn into_server(self, config: &NetworkingOptions) -> MetadataServerNetworkSvcServer<Self> {
+        let server = MetadataServerNetworkSvcServer::new(self)
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
-            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Gzip);
+        if config.disable_compression {
+            server
+        } else {
             // note: the order of those calls defines the priority
             // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
             // so we prefer zstd over gzip.
-            .send_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Gzip)
+            server
+                .send_compressed(CompressionEncoding::Zstd)
+                .send_compressed(CompressionEncoding::Gzip)
+        }
     }
 }
 
