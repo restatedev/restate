@@ -481,7 +481,6 @@ mod tests {
             HealthStatus::default(),
             config.clone(),
             node_env.metadata.clone(),
-            record_cache.clone(),
             &mut node_env.router_builder,
             &mut server_builder,
         )
