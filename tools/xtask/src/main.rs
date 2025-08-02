@@ -299,7 +299,8 @@ Tasks:
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let tc = TaskCenterBuilder::default_for_tests()
+    let tc = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
         .build()
         .expect("building task-center should not fail")
         .into_handle();

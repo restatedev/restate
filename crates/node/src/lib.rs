@@ -354,15 +354,13 @@ impl Node {
         spawn_metadata_manager(self.metadata_manager)?;
 
         // spawn the node rpc server first to enable connecting to the metadata store
-        TaskCenter::spawn(TaskKind::RpcServer, "node-rpc-server", {
-            let common_options = config.common.clone();
+        TaskCenter::spawn(TaskKind::NodeRpcServer, "node-rpc-server", {
             let connection_manager = self.networking.connection_manager().clone();
             let metadata_writer = metadata_writer.clone();
             async move {
                 NetworkServer::run(
                     connection_manager,
                     self.server_builder,
-                    common_options,
                     metadata_writer,
                     self.prometheus,
                 )
@@ -504,11 +502,7 @@ impl Node {
         }
 
         if let Some(ingress_role) = self.ingress_role {
-            TaskCenter::spawn(
-                TaskKind::HttpIngressRole,
-                "ingress-http",
-                ingress_role.run(),
-            )?;
+            ingress_role.start()?;
         }
 
         if let Some(worker_role) = self.worker_role {
@@ -516,7 +510,7 @@ impl Node {
         }
 
         if let Some(admin_role) = self.admin_role {
-            TaskCenter::spawn(TaskKind::SystemBoot, "admin-init", admin_role.start())?;
+            admin_role.start()?;
         }
 
         let my_roles = my_node_config.roles;
