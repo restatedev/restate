@@ -129,7 +129,7 @@ where
                     cluster_query_context,
                     replica_set_states.clone(),
                 )
-                .into_server(),
+                .into_server(&configuration.live_load().networking),
                 WaitForReady::new(health_status.clone(), AdminStatus::Ready),
             ),
             restate_core::protobuf::cluster_ctrl_svc::FILE_DESCRIPTOR_SET,

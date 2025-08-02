@@ -170,7 +170,7 @@ impl Watchdog {
     fn spawn_trim(&self, mut trim_requests: TrimRequests) -> Result<TaskHandle<()>, ShutdownError> {
         let bifrost = self.inner.clone();
         let weak_writer_tx = self.chain_writer_tx.downgrade();
-        TaskCenter::spawn_unmanaged(
+        TaskCenter::spawn_unmanaged_child(
             TaskKind::BifrostBackgroundLowPriority,
             "trim-chains",
             async move {

@@ -10,16 +10,15 @@
 
 use std::sync::Arc;
 
-use restate_types::health::HealthStatus;
-use restate_types::logs::RecordCache;
-use restate_types::protobuf::common::LogServerStatus;
 use rocksdb::{DBCompressionType, SliceTransform};
 use static_assertions::const_assert;
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
 use restate_types::config::LogServerOptions;
+use restate_types::health::HealthStatus;
 use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
+use restate_types::protobuf::common::LogServerStatus;
 
 use super::writer::LogStoreWriter;
 use super::{DATA_CF, DB_NAME, METADATA_CF};
@@ -34,13 +33,11 @@ const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 pub struct RocksDbLogStoreBuilder {
     rocksdb: Arc<RocksDb>,
     updateable_options: BoxLiveLoad<LogServerOptions>,
-    record_cache: RecordCache,
 }
 
 impl RocksDbLogStoreBuilder {
     pub async fn create(
         mut updateable_options: impl LiveLoad<Live = LogServerOptions> + Clone + 'static,
-        record_cache: RecordCache,
     ) -> Result<Self, RocksDbLogStoreError> {
         let options = updateable_options.live_load();
         let data_dir = options.data_dir();
@@ -74,7 +71,6 @@ impl RocksDbLogStoreBuilder {
         Ok(Self {
             rocksdb,
             updateable_options: updateable_options.boxed(),
-            record_cache,
         })
     }
 
@@ -85,13 +81,11 @@ impl RocksDbLogStoreBuilder {
         let RocksDbLogStoreBuilder {
             rocksdb,
             updateable_options,
-            record_cache,
         } = self;
         // todo (asoli) load up our loglet metadata cache.
         let writer_handle = LogStoreWriter::new(
             rocksdb.clone(),
             updateable_options.clone(),
-            record_cache,
             health_status.clone(),
         )
         .start()?;

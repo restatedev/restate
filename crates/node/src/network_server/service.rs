@@ -16,7 +16,7 @@ use restate_core::network::grpc::CoreNodeSvcHandler;
 use restate_core::network::{ConnectionManager, NetworkServerBuilder};
 use restate_core::{Identification, MetadataWriter};
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
-use restate_types::config::CommonOptions;
+use restate_types::config::Configuration;
 
 use super::grpc_svc_handler::{MetadataProxySvcHandler, NodeCtlSvcHandler};
 use super::pprof;
@@ -29,7 +29,6 @@ impl NetworkServer {
     pub async fn run(
         connection_manager: ConnectionManager,
         mut server_builder: NetworkServerBuilder,
-        options: CommonOptions,
         metadata_writer: MetadataWriter,
         prometheus: Prometheus,
     ) -> Result<(), anyhow::Error> {
@@ -64,22 +63,31 @@ impl NetworkServer {
 
         server_builder.register_grpc_service(
             MetadataProxySvcHandler::new(metadata_writer.raw_metadata_store_client().clone())
-                .into_server(),
+                .into_server(&Configuration::pinned().networking),
             restate_metadata_store::protobuf::metadata_proxy_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder.register_grpc_service(
-            NodeCtlSvcHandler::new(metadata_writer).into_server(),
+            NodeCtlSvcHandler::new(metadata_writer)
+                .into_server(&Configuration::pinned().networking),
             restate_core::protobuf::node_ctl_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder.register_grpc_service(
-            CoreNodeSvcHandler::new(connection_manager).into_server(),
+            CoreNodeSvcHandler::new(connection_manager)
+                .into_server(&Configuration::pinned().networking),
             restate_core::network::protobuf::core_node_svc::FILE_DESCRIPTOR_SET,
         );
 
         server_builder
-            .run(node_rpc_health, &options.bind_address.unwrap())
+            .run(
+                node_rpc_health,
+                Configuration::pinned()
+                    .common
+                    .bind_address
+                    .as_ref()
+                    .unwrap(),
+            )
             .await?;
 
         Ok(())

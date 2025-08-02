@@ -26,7 +26,7 @@ use restate_metadata_server_grpc::grpc::{
 };
 use restate_metadata_store::serialize_value;
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::ConversionError;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -69,16 +69,21 @@ impl MetadataServerHandler {
         }
     }
 
-    pub fn into_server(self) -> MetadataServerSvcServer<Self> {
-        MetadataServerSvcServer::new(self)
+    pub fn into_server(self, config: &NetworkingOptions) -> MetadataServerSvcServer<Self> {
+        let server = MetadataServerSvcServer::new(self)
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
-            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Gzip);
+        if config.disable_compression {
+            server
+        } else {
             // note: the order of those calls defines the priority
             // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
             // so we prefer zstd over gzip.
-            .send_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Gzip)
+            server
+                .send_compressed(CompressionEncoding::Zstd)
+                .send_compressed(CompressionEncoding::Gzip)
+        }
     }
 }
 

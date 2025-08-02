@@ -26,7 +26,7 @@ use restate_types::GenerationalNodeId;
 use restate_types::config::LogServerOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::{BoxLiveLoad, LiveLoad};
-use restate_types::logs::{LogletId, LogletOffset, RecordCache, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{Seal, Store, Trim};
 use restate_types::protobuf::common::LogServerStatus;
 
@@ -63,7 +63,6 @@ pub(crate) struct LogStoreWriter {
     batch_acks_buf: Vec<Ack>,
     buffer: BytesMut,
     updateable_options: BoxLiveLoad<LogServerOptions>,
-    record_cache: RecordCache,
     health_status: HealthStatus<LogServerStatus>,
 }
 
@@ -71,7 +70,6 @@ impl LogStoreWriter {
     pub(crate) fn new(
         rocksdb: Arc<RocksDb>,
         updateable_options: BoxLiveLoad<LogServerOptions>,
-        record_cache: RecordCache,
         health_status: HealthStatus<LogServerStatus>,
     ) -> Self {
         Self {
@@ -79,7 +77,6 @@ impl LogStoreWriter {
             batch_acks_buf: Vec::default(),
             buffer: BytesMut::with_capacity(INITIAL_SERDE_BUFFER_SIZE),
             updateable_options,
-            record_cache,
             health_status,
         }
     }
@@ -144,7 +141,6 @@ impl LogStoreWriter {
                         &data_cf,
                         &mut write_batch,
                         buffer,
-                        &self.record_cache,
                     ),
                     Some(DataUpdate::TrimLogRecords { trim_point }) => Self::trim_log_records(
                         &data_cf,
@@ -181,14 +177,12 @@ impl LogStoreWriter {
         data_cf: &Arc<BoundColumnFamily>,
         write_batch: &mut WriteBatch,
         buffer: &mut BytesMut,
-        record_cache: &RecordCache,
     ) {
         buffer.reserve(store_message.estimated_encode_size());
         let mut offset = store_message.first_offset;
         for payload in store_message.payloads.iter() {
             let key_bytes =
                 DataRecordKey::new(store_message.header.loglet_id, offset).encode_and_split(buffer);
-            record_cache.add(store_message.header.loglet_id, offset, payload);
             let value_bytes = DataRecordEncoder::from(payload).encode_to_disk_format(buffer);
             write_batch.put_cf(data_cf, key_bytes, value_bytes);
             // advance the offset for the next record

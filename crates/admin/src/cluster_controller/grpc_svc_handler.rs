@@ -30,6 +30,7 @@ use restate_core::protobuf::cluster_ctrl_svc::{
 };
 use restate_core::{Metadata, MetadataWriter};
 use restate_storage_query_datafusion::context::QueryContext;
+use restate_types::config::NetworkingOptions;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -71,16 +72,21 @@ impl ClusterCtrlSvcHandler {
         }
     }
 
-    pub fn into_server(self) -> ClusterCtrlSvcServer<Self> {
-        ClusterCtrlSvcServer::new(self)
+    pub fn into_server(self, config: &NetworkingOptions) -> ClusterCtrlSvcServer<Self> {
+        let server = ClusterCtrlSvcServer::new(self)
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
-            .accept_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Gzip);
+        if config.disable_compression {
+            server
+        } else {
             // note: the order of those calls defines the priority
             // deflate/gzip has significantly higher CPU overhead according to our CPU profiling,
             // so we prefer zstd over gzip.
-            .send_compressed(CompressionEncoding::Zstd)
-            .send_compressed(CompressionEncoding::Gzip)
+            server
+                .send_compressed(CompressionEncoding::Zstd)
+                .send_compressed(CompressionEncoding::Gzip)
+        }
     }
 }
 

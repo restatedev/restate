@@ -179,12 +179,12 @@ impl RaftMetadataServer {
                 Arc::clone(&connection_manager),
                 Some(JoinClusterHandle::new(join_cluster_tx)),
             )
-            .into_server(),
+            .into_server(&Configuration::pinned().networking),
             network::FILE_DESCRIPTOR_SET,
         );
         server_builder.register_grpc_service(
             MetadataServerHandler::new(request_tx, Some(provision_tx), Some(status_rx), command_tx)
-                .into_server(),
+                .into_server(&Configuration::pinned().networking),
             restate_metadata_server_grpc::grpc::FILE_DESCRIPTOR_SET,
         );
 

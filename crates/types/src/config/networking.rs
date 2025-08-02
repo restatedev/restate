@@ -60,6 +60,11 @@ pub struct NetworkingOptions {
     /// # HTTP/2 Adaptive Window
     pub http2_adaptive_window: bool,
 
+    /// # Disable Compression
+    ///
+    /// Disables Zstd compression for internal gRPC network connections
+    pub disable_compression: bool,
+
     /// # Data Stream Window Size
     ///
     /// Controls the number of bytes the can be sent on every data stream before inducing
@@ -103,6 +108,7 @@ impl Default for NetworkingOptions {
             http2_keep_alive_interval: Duration::from_secs(1).into(),
             http2_keep_alive_timeout: Duration::from_secs(3).into(),
             http2_adaptive_window: true,
+            disable_compression: false,
             // 2MiB
             data_stream_window_size: NonZeroByteCount::new(
                 NonZeroUsize::new(2 * 1024 * 1024).expect("Non zero number"),
