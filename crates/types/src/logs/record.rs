@@ -47,14 +47,7 @@ impl Record {
     }
 
     pub fn estimated_encode_size(&self) -> usize {
-        let body_size = match &self.body {
-            PolyBytes::Bytes(slice) => slice.len(),
-            PolyBytes::Typed(_) => {
-                // constant, assumption based on base envelope size of ~600 bytes.
-                2_048 // 2KiB
-            }
-        };
-        size_of::<Keys>() + size_of::<NanosSinceEpoch>() + body_size
+        size_of::<Keys>() + size_of::<NanosSinceEpoch>() + self.body.estimated_encode_size()
     }
 
     pub fn to_encoded(&self, buf: &mut BytesMut) -> Self {

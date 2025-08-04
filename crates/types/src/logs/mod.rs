@@ -10,7 +10,7 @@
 
 use std::ops::{Add, RangeInclusive};
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
 
 use restate_encoding::{BilrostAs, BilrostNewType, NetSerde};
@@ -352,18 +352,19 @@ impl LogletOffset {
         Self(data.get_u32())
     }
 
-    pub const fn estimated_encode_size() -> usize {
-        size_of::<Self>()
+    /// Encodes this value into its binary representation on the stack
+    pub fn to_binary_array(self) -> [u8; Self::size()] {
+        self.0.to_be_bytes()
     }
 
-    pub fn encode(&self, buf: &mut BytesMut) {
-        buf.reserve(Self::estimated_encode_size());
+    /// Encodes this value into its binary representation and advances the underlying buffer
+    pub fn encode<B: BufMut>(&self, buf: &mut B) {
         buf.put_u32(self.0);
     }
 
-    pub fn encode_and_split(&self, buf: &mut BytesMut) -> BytesMut {
-        self.encode(buf);
-        buf.split()
+    /// The number of bytes required for the binary representation of this value
+    pub const fn size() -> usize {
+        size_of::<Self>()
     }
 
     // allows going back to INVALID
