@@ -40,7 +40,6 @@ use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::PartitionId;
-use restate_types::live::Live;
 use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
     ReplicatedLogletConfig, SealMetadata, SegmentIndex,
@@ -75,7 +74,6 @@ pub struct Service<T> {
     bifrost: Bifrost,
     cluster_state_refresher: ClusterStateRefresher<T>,
     replica_set_states: PartitionReplicaSetStates,
-    configuration: Live<Configuration>,
     metadata_writer: MetadataWriter,
 
     processor_manager_client: PartitionProcessorManagerClient<Networking<T>>,
@@ -89,9 +87,7 @@ impl<T> Service<T>
 where
     T: TransportConnect,
 {
-    #[allow(clippy::too_many_arguments)]
     pub async fn create(
-        mut configuration: Live<Configuration>,
         health_status: HealthStatus<AdminStatus>,
         replica_set_states: PartitionReplicaSetStates,
         bifrost: Bifrost,
@@ -105,7 +101,7 @@ where
 
         let processor_manager_client = PartitionProcessorManagerClient::new(networking.clone());
 
-        let options = configuration.live_load();
+        let options = Configuration::pinned();
         let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
 
         let cluster_query_context = QueryContext::create(
@@ -136,7 +132,6 @@ where
         );
 
         Ok(Service {
-            configuration,
             health_status,
             networking,
             bifrost,
@@ -372,6 +367,7 @@ impl<T: TransportConnect> Service<T> {
 
         // initialize the state based on the initial cluster state
         state.update(&self, nodes_config.live_load(), &cs).await;
+        let mut configuration = Configuration::live();
 
         loop {
             tokio::select! {
@@ -392,7 +388,7 @@ impl<T: TransportConnect> Service<T> {
                 }
                 _ = config_watcher.changed() => {
                     debug!("Updating the cluster controller settings.");
-                    let configuration = self.configuration.live_load();
+                    let configuration = configuration.live_load();
                     self.heartbeat_interval = Self::create_heartbeat_interval(&configuration.admin);
                 }
             }
@@ -1012,7 +1008,6 @@ mod tests {
     use restate_types::config::{AdminOptionsBuilder, BifrostOptions, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
-    use restate_types::live::Live;
     use restate_types::logs::metadata::ProviderKind;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::net::AdvertisedAddress;
@@ -1032,7 +1027,6 @@ mod tests {
         let replica_set_states = PartitionReplicaSetStates::default();
 
         let svc = Service::create(
-            Live::from_value(Configuration::default()),
             HealthStatus::default(),
             replica_set_states,
             bifrost.clone(),
@@ -1546,7 +1540,6 @@ mod tests {
         let replica_set_states = PartitionReplicaSetStates::default();
 
         let svc = Service::create(
-            Configuration::live(),
             HealthStatus::default(),
             replica_set_states,
             bifrost.clone(),
