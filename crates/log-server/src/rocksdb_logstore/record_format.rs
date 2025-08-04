@@ -121,6 +121,27 @@ impl DataRecordEncoder<'_> {
 
         buf.split()
     }
+
+    pub fn estimated_encode_size(&self) -> usize {
+        let (body, keys) = (self.0.body(), self.0.keys());
+
+        // key style and keys
+        let keys_size = match keys {
+            Keys::None => size_of::<u8>(),
+            Keys::Single(_) => size_of::<u8>() + size_of::<u64>(),
+            Keys::Pair(..) => size_of::<u8>() + size_of::<u64>() + size_of::<u64>(),
+            Keys::RangeInclusive(_) => size_of::<u8>() + size_of::<u64>() + size_of::<u64>(),
+        };
+
+        // version
+        size_of::<u8>() +
+        // key style and keys
+        keys_size +
+        // flags
+        size_of::<u16>() +
+        // created_at
+        size_of::<u64>() + body.estimated_encode_size()
+    }
 }
 
 // Reads KeyStyle and extract the keys from the buffer

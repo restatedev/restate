@@ -10,7 +10,7 @@
 
 use std::str::FromStr;
 
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
 use restate_encoding::{BilrostNewType, NetSerde};
 
 /// A generational node identifier. Nodes with the same ID but different generations
@@ -117,15 +117,23 @@ impl GenerationalNodeId {
         Self(PlainNodeId(plain_id), generation)
     }
 
-    pub fn encode(&self, buf: &mut BytesMut) {
-        buf.reserve(2 * size_of::<u32>());
+    /// Encodes this value into its binary representation and advances the underlying buffer
+    pub fn encode<B: BufMut>(&self, buf: &mut B) {
+        debug_assert!(buf.remaining_mut() >= Self::size());
         buf.put_u32(self.0.0);
         buf.put_u32(self.1);
     }
 
-    pub fn encode_and_split(&self, buf: &mut BytesMut) -> BytesMut {
-        self.encode(buf);
-        buf.split()
+    /// Encodes this value into its binary representation on the stack
+    pub fn to_binary_array(self) -> [u8; Self::size()] {
+        let mut buf = [0u8; Self::size()];
+        self.encode(&mut &mut buf[..]);
+        buf
+    }
+
+    /// The number of bytes required for the binary representation of this value
+    pub const fn size() -> usize {
+        size_of::<Self>()
     }
 
     /// Same plain node-id but not the same generation

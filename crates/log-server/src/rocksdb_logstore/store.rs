@@ -105,9 +105,9 @@ impl LogStore for RocksDbLogStore {
         let data_cf = self.data_cf();
         let keys = [
             // keep byte-wise sorted
-            &MetadataKey::new(KeyPrefixKind::Sequencer, loglet_id).to_bytes(),
-            &MetadataKey::new(KeyPrefixKind::TrimPoint, loglet_id).to_bytes(),
-            &MetadataKey::new(KeyPrefixKind::Seal, loglet_id).to_bytes(),
+            &MetadataKey::new(KeyPrefixKind::Sequencer, loglet_id).to_binary_array(),
+            &MetadataKey::new(KeyPrefixKind::TrimPoint, loglet_id).to_binary_array(),
+            &MetadataKey::new(KeyPrefixKind::Seal, loglet_id).to_binary_array(),
         ];
         let mut readopts = ReadOptions::default();
         // no need to cache those metadata records since we won't read them again.
@@ -144,7 +144,7 @@ impl LogStore for RocksDbLogStore {
         readopts.fill_cache(false);
         readopts.set_total_order_seek(false);
         readopts.set_prefix_same_as_start(true);
-        readopts.set_iterate_lower_bound(oldest_key.to_bytes());
+        readopts.set_iterate_lower_bound(oldest_key.to_binary_array());
         // upper bound is exclusive
         readopts.set_iterate_upper_bound(upper_bound);
         let mut iterator = self
@@ -153,7 +153,7 @@ impl LogStore for RocksDbLogStore {
             .as_raw_db()
             .raw_iterator_cf_opt(&data_cf, readopts);
         // see to the max key that exists
-        iterator.seek_for_prev(max_legal_record.to_bytes());
+        iterator.seek_for_prev(max_legal_record.to_binary_array());
         let mut local_tail = if iterator.valid() {
             let decoded_key = DataRecordKey::from_slice(iterator.key().unwrap());
             trace!(
@@ -274,8 +274,8 @@ impl LogStore for RocksDbLogStore {
         // case we'd still want to favor the most recent data.
         readopts.fill_cache(false);
         readopts.set_async_io(true);
-        let oldest_key_bytes = oldest_key.to_bytes();
-        readopts.set_iterate_lower_bound(oldest_key_bytes.clone());
+        let oldest_key_bytes = oldest_key.to_binary_array();
+        readopts.set_iterate_lower_bound(oldest_key_bytes);
         readopts.set_iterate_upper_bound(upper_bound);
         let mut iterator = self
             .rocksdb
@@ -312,7 +312,7 @@ impl LogStore for RocksDbLogStore {
                         }),
                     ));
                     read_pointer = potentially_different_trim_point.next();
-                    iterator.seek(DataRecordKey::new(loglet_id, read_pointer).to_bytes());
+                    iterator.seek(DataRecordKey::new(loglet_id, read_pointer).to_binary_array());
                     continue;
                 }
                 // Another possibility is that we don't have a copy of that offset. In this case,
@@ -398,7 +398,7 @@ impl LogStore for RocksDbLogStore {
         let upper_bound_bytes = if read_to == LogletOffset::MAX {
             DataRecordKey::exclusive_upper_bound(loglet_id)
         } else {
-            DataRecordKey::new(loglet_id, read_to.next()).to_bytes()
+            DataRecordKey::new(loglet_id, read_to.next()).to_binary_array()
         };
         readopts.set_tailing(false);
         // In some cases, the underlying ForwardIterator will fail if it hits a `RangeDelete` tombstone.
@@ -414,8 +414,8 @@ impl LogStore for RocksDbLogStore {
         // we don't want to evict more important records from the cache.
         readopts.fill_cache(false);
         readopts.set_async_io(true);
-        let oldest_key_bytes = oldest_key.to_bytes();
-        readopts.set_iterate_lower_bound(oldest_key_bytes.clone());
+        let oldest_key_bytes = oldest_key.to_binary_array();
+        readopts.set_iterate_lower_bound(oldest_key_bytes);
         readopts.set_iterate_upper_bound(upper_bound_bytes);
         let mut iterator = self
             .rocksdb
@@ -430,7 +430,8 @@ impl LogStore for RocksDbLogStore {
         let mut current_open_entry: Option<DigestEntry> = None;
 
         while iterator.valid() && iterator.key().is_some() && read_pointer <= read_to {
-            let loaded_key = DataRecordKey::from_slice(iterator.key().expect("log record exists"));
+            let loaded_key =
+                DataRecordKey::from_slice(&mut iterator.key().expect("log record exists"));
             let offset = loaded_key.offset();
             match offset.cmp(&read_pointer) {
                 Ordering::Greater => {

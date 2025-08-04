@@ -223,6 +223,18 @@ impl PolyBytes {
     pub fn is_encoded(&self) -> bool {
         matches!(self, PolyBytes::Bytes(_))
     }
+
+    pub fn estimated_encode_size(&self) -> usize {
+        match self {
+            PolyBytes::Bytes(bytes) => bytes.len(),
+            PolyBytes::Typed(_) => {
+                // constant, assumption based on base envelope size of ~600 bytes.
+                // todo: use StorageEncode trait to get an actual estimate based
+                // on the underlying type
+                2_048 // 2KiB
+            }
+        }
+    }
 }
 
 impl StorageEncode for PolyBytes {
