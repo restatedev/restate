@@ -55,13 +55,21 @@ impl TransportConnect for GrpcConnector {
         let channel = create_channel(address, swimlane, &Configuration::pinned().networking);
 
         // Establish the connection
-        let mut client = CoreNodeSvcClient::new(channel)
+        let client = CoreNodeSvcClient::new(channel)
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
-            .accept_compressed(CompressionEncoding::Gzip)
-            .send_compressed(DEFAULT_GRPC_COMPRESSION);
+            .accept_compressed(CompressionEncoding::Gzip);
+        // Apply send compression only if compression is enabled. Note that this doesn't impact the
+        // "receive" compression. The receive compression is always applied if the peer compresses
+        // its send stream.
+        let mut client = if Configuration::pinned().networking.disable_compression {
+            client
+        } else {
+            client.send_compressed(DEFAULT_GRPC_COMPRESSION)
+        };
+
         let incoming = client.create_connection(output_stream).await?.into_inner();
         Ok(incoming.map_while(|x| x.ok()))
     }

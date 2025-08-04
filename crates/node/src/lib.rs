@@ -355,14 +355,12 @@ impl Node {
 
         // spawn the node rpc server first to enable connecting to the metadata store
         TaskCenter::spawn(TaskKind::NodeRpcServer, "node-rpc-server", {
-            let common_options = config.common.clone();
             let connection_manager = self.networking.connection_manager().clone();
             let metadata_writer = metadata_writer.clone();
             async move {
                 NetworkServer::run(
                     connection_manager,
                     self.server_builder,
-                    common_options,
                     metadata_writer,
                     self.prometheus,
                 )
