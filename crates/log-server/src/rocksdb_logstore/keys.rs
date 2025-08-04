@@ -10,7 +10,7 @@
 
 use std::mem::size_of;
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut};
 
 use restate_types::logs::{LogletId, LogletOffset};
 
@@ -43,11 +43,11 @@ pub(super) struct KeyPrefix {
 }
 
 impl KeyPrefix {
-    pub fn new(kind: KeyPrefixKind, loglet_id: LogletId) -> Self {
+    pub const fn new(kind: KeyPrefixKind, loglet_id: LogletId) -> Self {
         Self { kind, loglet_id }
     }
 
-    pub fn encode_exclusive_upper_bound(&self, buf: &mut BytesMut) {
+    pub fn encode_exclusive_upper_bound<B: BufMut>(&self, buf: &mut B) {
         // key is [prefix][loglet_id]
         // the upper exclusive prefix is:
         // if loglet_id == loglet_id::MAX. Then it's:
@@ -64,7 +64,15 @@ impl KeyPrefix {
         }
     }
 
-    fn encode(self, buf: &mut BytesMut) {
+    /// Encodes this value into its binary representation on the stack
+    fn to_binary_array(self) -> [u8; Self::size()] {
+        let mut buf = [0u8; Self::size()];
+        self.encode(&mut &mut buf[..]);
+        buf
+    }
+
+    /// Encodes this value into its binary representation and advances the underlying buffer
+    fn encode<B: BufMut>(self, buf: &mut B) {
         buf.put_u8(self.kind as u8);
         // note: this is big-endian and must remain like this
         buf.put_u64(*self.loglet_id);
@@ -76,6 +84,7 @@ impl KeyPrefix {
         Self { kind, loglet_id }
     }
 
+    /// The number of bytes required for the binary representation of this value
     pub(super) const fn size() -> usize {
         size_of::<KeyPrefixKind>() + size_of::<LogletId>()
     }
@@ -103,26 +112,23 @@ impl DataRecordKey {
         self.offset
     }
 
-    pub fn exclusive_upper_bound(loglet_id: LogletId) -> BytesMut {
-        let mut buf = BytesMut::with_capacity(Self::size());
-        KeyPrefix::new(KeyPrefixKind::DataRecord, loglet_id).encode_exclusive_upper_bound(&mut buf);
-        buf.put_u64(0);
+    pub fn exclusive_upper_bound(loglet_id: LogletId) -> [u8; Self::size()] {
+        let mut buf = [0u8; Self::size()];
+        let mut b = &mut buf[..];
+        KeyPrefix::new(KeyPrefixKind::DataRecord, loglet_id).encode_exclusive_upper_bound(&mut b);
+        (&mut b).put_u64(0);
         buf
     }
 
-    pub fn to_bytes(self) -> BytesMut {
-        let mut buf = BytesMut::with_capacity(Self::size());
-        self.encode(&mut buf);
+    /// Encodes this value into its binary representation on the stack
+    pub fn to_binary_array(self) -> [u8; Self::size()] {
+        let mut buf = [0u8; Self::size()];
+        self.encode(&mut &mut buf[..]);
         buf
     }
 
-    pub fn encode_and_split(self, buf: &mut BytesMut) -> BytesMut {
-        self.encode(buf);
-        buf.split()
-    }
-
-    pub fn encode(self, buf: &mut BytesMut) {
-        buf.reserve(Self::size());
+    /// Encodes this value into its binary representation and advances the underlying buffer
+    pub fn encode<B: BufMut>(self, buf: &mut B) {
         self.prefix.encode(buf);
         // despite offset being 32bit, for backward compatibility and future-proofing, we keep the
         // storage layer as u64 but we assert that the actual value fits u32 on read.
@@ -130,7 +136,7 @@ impl DataRecordKey {
     }
 
     /// panics if the prefix is not a data record
-    pub fn from_slice(mut data: &[u8]) -> Self {
+    pub fn from_slice<B: Buf>(mut data: B) -> Self {
         let prefix = KeyPrefix::decode(&mut data);
         debug_assert_eq!(prefix.kind, KeyPrefixKind::DataRecord);
         let offset =
@@ -138,6 +144,7 @@ impl DataRecordKey {
         Self { prefix, offset }
     }
 
+    /// The number of bytes required for the binary representation of this value
     pub const fn size() -> usize {
         // We store the offset as u64 rather than the actual u32
         KeyPrefix::size() + size_of::<u64>()
@@ -167,29 +174,18 @@ impl MetadataKey {
         self.prefix.kind
     }
 
+    /// The number of bytes required for the binary representation of this value
     pub const fn size() -> usize {
         KeyPrefix::size()
     }
 
-    pub fn to_bytes(self) -> BytesMut {
-        let mut buf = BytesMut::with_capacity(Self::size());
-        self.encode(&mut buf);
-        buf
+    /// Encodes this value into its binary representation on the stack
+    pub fn to_binary_array(self) -> [u8; Self::size()] {
+        self.prefix.to_binary_array()
     }
 
-    pub fn encode_and_split(&self, buf: &mut BytesMut) -> BytesMut {
-        self.encode(buf);
-        buf.split()
-    }
-
-    pub fn encode(self, buf: &mut BytesMut) {
-        buf.reserve(Self::size());
-        self.prefix.encode(buf);
-    }
-
-    pub fn from_slice(data: &[u8]) -> Self {
-        let mut data = Bytes::copy_from_slice(data);
-        let prefix = KeyPrefix::decode(&mut data);
+    pub fn from_slice<B: Buf>(data: &mut B) -> Self {
+        let prefix = KeyPrefix::decode(data);
         debug_assert_ne!(prefix.kind, KeyPrefixKind::DataRecord);
         Self { prefix }
     }
@@ -202,10 +198,8 @@ mod tests {
     #[test]
     fn test_data_record_key() {
         let key = DataRecordKey::new(1.into(), LogletOffset::new(2));
-        let mut buf = BytesMut::new();
-        key.encode(&mut buf);
-        let bytes = buf.freeze();
-        let key2 = DataRecordKey::from_slice(&bytes);
+        let bytes = key.to_binary_array();
+        let key2 = DataRecordKey::from_slice(&mut bytes.as_slice());
         assert_eq!(key, key2);
     }
 
@@ -214,10 +208,8 @@ mod tests {
         let key = MetadataKey::new(KeyPrefixKind::Seal, 1.into());
         assert_eq!(*key.loglet_id(), 1);
         assert_eq!(key.kind(), KeyPrefixKind::Seal);
-        let mut buf = BytesMut::new();
-        key.encode(&mut buf);
-        let bytes = buf.freeze();
-        let key2 = MetadataKey::from_slice(&bytes);
+        let bytes = key.to_binary_array();
+        let key2 = MetadataKey::from_slice(&mut bytes.as_slice());
         assert_eq!(key, key2);
     }
 
@@ -227,10 +219,10 @@ mod tests {
         let my_key = DataRecordKey::new(10.into(), 10.into());
         let upper_bound_bytes = DataRecordKey::exclusive_upper_bound(10.into());
         // byte-wise comparator
-        assert!(upper_bound_bytes > my_key.to_bytes());
+        assert!(upper_bound_bytes > my_key.to_binary_array());
         let my_key = DataRecordKey::new(u64::MAX.into(), 10.into());
         let last_legal_loglet_id = DataRecordKey::exclusive_upper_bound(u64::MAX.into());
         // byte-wise comparator
-        assert!(last_legal_loglet_id > my_key.to_bytes());
+        assert!(last_legal_loglet_id > my_key.to_binary_array());
     }
 }
