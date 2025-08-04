@@ -236,7 +236,6 @@ impl Node {
                     tc.health().log_server_status(),
                     updateable_config.clone(),
                     metadata.clone(),
-                    record_cache,
                     &mut router_builder,
                     &mut server_builder,
                 )

@@ -14,7 +14,7 @@ use tonic::{Request, Response, Status};
 
 use restate_core::network::grpc::MAX_MESSAGE_SIZE;
 use restate_types::config::NetworkingOptions;
-use restate_types::logs::{LogletId, LogletOffset, RecordCache, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{GetDigest, LogServerResponseHeader, LogletInfo};
 
 use crate::logstore::LogStore;
@@ -27,18 +27,16 @@ use crate::protobuf::{
 pub struct LogServerSvcHandler<S> {
     log_store: S,
     state_map: LogletStateMap,
-    _record_cache: RecordCache,
 }
 
 impl<S> LogServerSvcHandler<S>
 where
     S: LogStore + Clone + Sync + Send + 'static,
 {
-    pub fn new(log_store: S, state_map: LogletStateMap, _record_cache: RecordCache) -> Self {
+    pub fn new(log_store: S, state_map: LogletStateMap) -> Self {
         Self {
             log_store,
             state_map,
-            _record_cache,
         }
     }
 
