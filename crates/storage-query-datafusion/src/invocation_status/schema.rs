@@ -112,4 +112,10 @@ define_table!(sys_invocation_status(
 
     /// Timestamp indicating when the invocation was completed, if ever.
     completed_at: TimestampMillisecond,
+
+    /// For how long the metadata of this invocation, including its result, is retained after completion.
+    completion_retention: DataType::Duration,
+
+    /// For how long the journal is retained after completion.
+    journal_retention: DataType::Duration,
 ));

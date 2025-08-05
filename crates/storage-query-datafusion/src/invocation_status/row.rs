@@ -76,6 +76,10 @@ pub(crate) fn append_invocation_status_row(
             if let Some(execution_time) = scheduled.metadata.execution_time {
                 row.scheduled_start_at(execution_time.as_u64() as i64)
             }
+            row.completion_retention(
+                scheduled.metadata.completion_retention_duration.as_millis() as i64
+            );
+            row.journal_retention(scheduled.metadata.journal_retention_duration.as_millis() as i64);
         }
         InvocationStatus::Inboxed(inboxed) => {
             row.status("inboxed");
@@ -86,6 +90,10 @@ pub(crate) fn append_invocation_status_row(
             if let Some(execution_time) = inboxed.metadata.execution_time {
                 row.scheduled_start_at(execution_time.as_u64() as i64)
             }
+            row.completion_retention(
+                inboxed.metadata.completion_retention_duration.as_millis() as i64
+            );
+            row.journal_retention(inboxed.metadata.journal_retention_duration.as_millis() as i64);
         }
         InvocationStatus::Invoked(metadata) => {
             row.status("invoked");
@@ -102,6 +110,8 @@ pub(crate) fn append_invocation_status_row(
             if let Some(execution_time) = completed.execution_time {
                 row.scheduled_start_at(execution_time.as_u64() as i64)
             }
+            row.completion_retention(completed.completion_retention_duration.as_millis() as i64);
+            row.journal_retention(completed.journal_retention_duration.as_millis() as i64);
 
             match completed.response_result {
                 ResponseResult::Success(_) => {
@@ -139,6 +149,8 @@ fn fill_in_flight_invocation_metadata(
     if let Some(execution_time) = meta.execution_time {
         row.scheduled_start_at(execution_time.as_u64() as i64)
     }
+    row.completion_retention(meta.completion_retention_duration.as_millis() as i64);
+    row.journal_retention(meta.journal_retention_duration.as_millis() as i64);
 }
 
 #[inline]

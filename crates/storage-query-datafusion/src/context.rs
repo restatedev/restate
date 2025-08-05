@@ -68,6 +68,8 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.scheduled_start_at,
             ss.running_at,
             ss.completed_at,
+            ss.completion_retention,
+            ss.journal_retention,
 
             sis.retry_count,
             sis.last_start_at,

@@ -175,6 +175,12 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_status
             .remove("completed_at")
             .expect("completed_at should exist"),
+        sys_invocation_status
+            .remove("completion_retention")
+            .expect("completion_retention should exist"),
+        sys_invocation_status
+            .remove("journal_retention")
+            .expect("journal_retention should exist"),
         sys_invocation_state
             .remove("retry_count")
             .expect("retry_count should exist"),
