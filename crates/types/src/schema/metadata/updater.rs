@@ -2351,40 +2351,37 @@ mod tests {
 
         #[test]
         fn workflow_retention() {
-            let schema_information = Schema::default();
-            let mut updater = SchemaUpdater::new(schema_information);
-
-            let mut deployment = Deployment::mock();
-            deployment.id = updater
-                .add_deployment(
-                    deployment.metadata.clone(),
-                    vec![endpoint_manifest::Service {
-                        handlers: vec![endpoint_manifest::Handler {
-                            workflow_completion_retention: Some(30 * 1000),
-                            ..greeter_workflow_greet_handler()
+            let (deployment_id, schema) =
+                SchemaUpdater::update_and_return(Schema::default(), move |updater| {
+                    updater.add_deployment(
+                        Deployment::mock().metadata.clone(),
+                        vec![endpoint_manifest::Service {
+                            handlers: vec![endpoint_manifest::Handler {
+                                workflow_completion_retention: Some(30 * 1000),
+                                ..greeter_workflow_greet_handler()
+                            }],
+                            ..greeter_workflow()
                         }],
-                        ..greeter_workflow()
-                    }],
-                    false,
-                )
+                        false,
+                    )
+                })
                 .unwrap();
-            let schema = updater.into_inner();
 
             assert_that!(
                 schema.assert_service(GREETER_SERVICE_NAME),
                 pat!(ServiceMetadata {
                     revision: eq(1),
-                    deployment_id: eq(deployment.id),
+                    deployment_id: eq(deployment_id),
                     workflow_completion_retention: eq(Some(Duration::from_secs(30)))
                 })
             );
             assert_that!(
                 schema
-                    .assert_service_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
                     .compute_retention(false),
                 eq(InvocationRetention {
                     completion_retention: Duration::from_secs(30),
-                    journal_retention: Duration::ZERO,
+                    journal_retention: Duration::from_secs(30),
                 })
             );
         }
@@ -2630,7 +2627,7 @@ mod tests {
             // 2. User updates journal retention to B in the UI, now journal retention is B
             let schema = SchemaUpdater::update(schema, |updater| {
                 updater.modify_service(
-                    GREETER_SERVICE_NAME.to_string(),
+                    GREETER_SERVICE_NAME,
                     vec![ModifyServiceChange::JournalRetention(Duration::from_secs(
                         120,
                     ))], // B = 120 seconds
@@ -3022,7 +3019,6 @@ mod tests {
         use super::*;
 
         use crate::invocation::InvocationRetention;
-        use crate::schema::invocation_target::InvocationTargetResolver;
         use crate::schema::service::ServiceMetadata;
         use googletest::prelude::*;
         use test_log::test;
@@ -3030,49 +3026,45 @@ mod tests {
         #[test]
         fn workflow_retention() {
             // Register a plain workflow first
-            let schema_information = Schema::default();
-            let mut updater = SchemaUpdater::new(schema_information);
-
-            let mut deployment = Deployment::mock();
-            deployment.id = updater
-                .add_deployment(deployment.metadata.clone(), vec![greeter_workflow()], false)
+            let (deployment_id, mut schema) =
+                SchemaUpdater::update_and_return(Schema::default(), move |updater| {
+                    updater.add_deployment(
+                        Deployment::mock().metadata.clone(),
+                        vec![greeter_workflow()],
+                        false,
+                    )
+                })
                 .unwrap();
-
-            let schema = updater.into_inner();
 
             assert_that!(
                 schema.assert_service(GREETER_SERVICE_NAME),
                 pat!(ServiceMetadata {
                     revision: eq(1),
-                    deployment_id: eq(deployment.id),
+                    deployment_id: eq(deployment_id),
                     workflow_completion_retention: eq(Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION))
                 })
             );
             assert_that!(
                 schema
-                    .resolve_latest_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
-                    .unwrap()
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
                     .compute_retention(false),
                 eq(InvocationRetention {
                     completion_retention: DEFAULT_WORKFLOW_COMPLETION_RETENTION,
-                    journal_retention: Duration::ZERO,
+                    journal_retention: DEFAULT_WORKFLOW_COMPLETION_RETENTION,
                 })
             );
 
             // Now update it
             let new_retention = Duration::from_secs(30);
-            let mut updater = SchemaUpdater::new(schema);
-
-            updater
-                .modify_service(
+            schema = SchemaUpdater::update(schema, |updater| {
+                updater.modify_service(
                     GREETER_SERVICE_NAME,
                     vec![ModifyServiceChange::WorkflowCompletionRetention(
                         new_retention,
                     )],
                 )
-                .unwrap();
-
-            let schema = updater.into_inner();
+            })
+            .unwrap();
 
             assert_that!(
                 schema.assert_service(GREETER_SERVICE_NAME),
@@ -3082,11 +3074,11 @@ mod tests {
             );
             assert_that!(
                 schema
-                    .assert_service_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                    .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
                     .compute_retention(false),
                 eq(InvocationRetention {
                     completion_retention: new_retention,
-                    journal_retention: Duration::ZERO,
+                    journal_retention: new_retention,
                 })
             );
         }
