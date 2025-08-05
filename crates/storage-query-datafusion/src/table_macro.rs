@@ -37,6 +37,9 @@ macro_rules! define_builder {
     (TimestampMillisecond) => {
         TimestampMillisecondUTCBuilder
     };
+    (DataType::Duration) => {
+        ::datafusion::arrow::array::DurationMillisecondBuilder
+    };
     (DataType::Boolean) => {
         ::datafusion::arrow::array::BooleanBuilder
     };
@@ -117,6 +120,9 @@ macro_rules! define_primitive_trait {
     (TimestampMillisecond) => {
         i64
     };
+    (DataType::Duration) => {
+        i64
+    };
     (DataType::UInt64) => {
         u64
     };
@@ -153,6 +159,9 @@ macro_rules! define_data_type {
             Some(TIMEZONE_UTC.clone()),
         )
     };
+    (DataType::Duration) => {
+        DataType::Duration(::datafusion::arrow::datatypes::TimeUnit::Millisecond)
+    };
     (DataType::UInt64) => {
         DataType::UInt64
     };
@@ -186,6 +195,9 @@ macro_rules! document_type {
     };
     (TimestampMillisecond) => {
         "TimestampMillisecond"
+    };
+    (DataType::Duration) => {
+        "DurationMillisecond"
     };
     (DataType::Boolean) => {
         "Boolean"
