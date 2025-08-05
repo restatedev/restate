@@ -184,18 +184,18 @@ impl PartitionStoreManager {
         cell.clone_db().await.map(PartitionStore::from)
     }
 
-    /// Opens a partition store for the given partition.
+    /// Opens a partition store for the given partition, potentially re-creating it from a snapshot
     ///
-    /// If `min_applied_lsn` is `None`, then the store will be opened from the local database
+    /// If `target_lsn` is `None`, then the store will be opened from the local database
     /// regardless of whether there is a snapshot available or not.
     #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
     pub async fn open(
         &self,
         partition: &Partition,
-        min_applied_lsn: Option<Lsn>,
+        target_lsn: Option<Lsn>,
     ) -> Result<PartitionStore, OpenError> {
-        // If we already have the partition locally and we don't have a fast-forward target, then
-        // we simply return it.
+        // If we already have the partition locally and we don't have a fast-forward target, or the
+        // store already meets the target LSN requirement, then we simply return it.
         let cell = self.state.get_or_open(partition, &self.rocksdb).await;
 
         let mut state_guard = cell.inner.write().await;
@@ -203,7 +203,7 @@ impl PartitionStoreManager {
         if let Some(db) = state_guard.get_db().cloned() {
             // we have a database, but perhaps it doesn't meet the min_applied_lsn requirement?
             let mut partition_store = PartitionStore::from(db);
-            match min_applied_lsn {
+            match target_lsn {
                 None => return Ok(partition_store),
                 Some(min_applied_lsn) => {
                     let my_applied_lsn = partition_store.get_applied_lsn().await?;
@@ -214,9 +214,10 @@ impl PartitionStoreManager {
                 }
             }
         }
+
         // **
         // We either don't have an existing local partition store initialized - or we have a
-        // min-applied-lsn target higher than our local state (probably due to seeing a log trim-gap).
+        // target-lsn target higher than our local state (probably due to seeing a log trim-gap).
         // **
 
         // Attempt to get the latest available snapshot from the snapshot repository:
@@ -226,7 +227,7 @@ impl PartitionStoreManager {
             .await
             .map_err(OpenError::Snapshot)?;
 
-        match (snapshot, min_applied_lsn) {
+        match (snapshot, target_lsn) {
             (None, None) => {
                 debug!("No snapshot found for partition, creating new partition store");
                 let db = cell
