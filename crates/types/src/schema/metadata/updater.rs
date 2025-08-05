@@ -883,10 +883,10 @@ impl SchemaUpdater {
 
     pub fn modify_service(
         &mut self,
-        name: String,
+        name: &str,
         changes: Vec<ModifyServiceChange>,
     ) -> Result<(), SchemaError> {
-        self.apply_change_to_active_service_revision(&name, |svc| {
+        self.apply_change_to_active_service_revision(name, |svc| {
             for command in changes {
                 match command {
                     ModifyServiceChange::Public(new_public_value) => {
@@ -1377,7 +1377,7 @@ mod tests {
         let version_before_modification = schemas.version();
         updater = SchemaUpdater::new(schemas);
         updater.modify_service(
-            GREETER_SERVICE_NAME.to_owned(),
+            GREETER_SERVICE_NAME,
             vec![ModifyServiceChange::Public(false)],
         )?;
         let schemas = updater.into_inner();
@@ -2188,7 +2188,7 @@ mod tests {
         let version_before_modification = schemas.version();
         updater = SchemaUpdater::new(schemas);
         updater.modify_service(
-            GREETER_SERVICE_NAME.to_owned(),
+            GREETER_SERVICE_NAME,
             vec![ModifyServiceChange::Public(false)],
         )?;
         let schemas = updater.into_inner();
@@ -2229,6 +2229,7 @@ mod tests {
         use crate::schema::deployment::Deployment;
         use crate::schema::invocation_target::InvocationTargetMetadata;
         use crate::schema::service::InvocationAttemptOptions;
+        use crate::schema::service::ServiceMetadata;
         use googletest::prelude::*;
         use std::time::Duration;
         use test_log::test;
@@ -2361,8 +2362,7 @@ mod tests {
             );
             assert_that!(
                 schema
-                    .resolve_latest_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
-                    .unwrap()
+                    .assert_service_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
                     .compute_retention(false),
                 eq(InvocationRetention {
                     completion_retention: Duration::from_secs(30),
@@ -2626,10 +2626,10 @@ mod tests {
     mod modify_service {
         use super::*;
 
+        use crate::invocation::InvocationRetention;
+        use crate::schema::invocation_target::InvocationTargetResolver;
+        use crate::schema::service::ServiceMetadata;
         use googletest::prelude::*;
-        use restate_types::invocation::InvocationRetention;
-        use restate_types::schema::invocation_target::InvocationTargetResolver;
-        use restate_types::schema::service::ServiceMetadata;
         use test_log::test;
 
         #[test]
@@ -2670,7 +2670,7 @@ mod tests {
 
             updater
                 .modify_service(
-                    GREETER_SERVICE_NAME.to_owned(),
+                    GREETER_SERVICE_NAME,
                     vec![ModifyServiceChange::WorkflowCompletionRetention(
                         new_retention,
                     )],
@@ -2687,8 +2687,7 @@ mod tests {
             );
             assert_that!(
                 schema
-                    .resolve_latest_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
-                    .unwrap()
+                    .assert_service_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
                     .compute_retention(false),
                 eq(InvocationRetention {
                     completion_retention: new_retention,
