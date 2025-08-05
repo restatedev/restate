@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::BytesMut;
-use restate_types::logs::{LogletOffset, SequenceNumber};
 use rocksdb::MergeOperands;
 use tracing::{error, trace};
+
+use restate_types::logs::{LogletOffset, SequenceNumber};
 
 use crate::rocksdb_logstore::keys::{KeyPrefixKind, MetadataKey};
 
@@ -20,11 +20,11 @@ use crate::rocksdb_logstore::keys::{KeyPrefixKind, MetadataKey};
 /// This merges some metadata updates to ensure that trimpoints can be processed out of order but
 /// it strictly moves forward on the storage layer.
 pub(super) fn metadata_full_merge(
-    key: &[u8],
+    mut key_buf: &[u8],
     existing_val: Option<&[u8]>,
     operands: &MergeOperands,
 ) -> Option<Vec<u8>> {
-    let key = MetadataKey::from_slice(key);
+    let key = MetadataKey::from_slice(&mut key_buf);
     trace!(key = ?key, "metadata_full_merge");
     if key.kind() != KeyPrefixKind::TrimPoint {
         error!(key = ?key, "Merge is only supported for trim-points");
@@ -40,9 +40,7 @@ pub(super) fn metadata_full_merge(
         // trim point can only move forward
         current_trim_point = updated_trim_point.max(current_trim_point);
     }
-    let mut buf = BytesMut::with_capacity(LogletOffset::estimated_encode_size());
-    current_trim_point.encode(&mut buf);
-    Some(buf.into())
+    Some(current_trim_point.to_binary_array().into())
 }
 
 pub(super) fn metadata_partial_merge(
