@@ -662,6 +662,8 @@ impl DbWatchdog {
 
         // todo: Apply other changes to the databases.
         // e.g. set write_buffer_size
+
+        self.current_common_opts = new_common_opts.clone();
     }
 }
 
