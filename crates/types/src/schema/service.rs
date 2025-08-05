@@ -20,7 +20,7 @@ use serde_with::serde_as;
 use restate_serde_util::DurationString;
 
 use super::Schema;
-use super::invocation_target::InvocationTargetMetadata;
+use super::invocation_target::{DEFAULT_WORKFLOW_COMPLETION_RETENTION, InvocationTargetMetadata};
 use crate::config::Configuration;
 use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
@@ -451,7 +451,18 @@ impl ServiceSchemas {
             revision: self.revision,
             public: self.location.public,
             idempotency_retention: self.idempotency_retention,
-            workflow_completion_retention: self.workflow_completion_retention,
+            workflow_completion_retention: if self.ty == ServiceType::Workflow {
+                Some(
+                    self.handlers
+                        .iter()
+                        .find(|(_, h)| h.workflow_completion_retention.is_some())
+                        .and_then(|(_, h)| h.workflow_completion_retention)
+                        .or(self.workflow_completion_retention)
+                        .unwrap_or(DEFAULT_WORKFLOW_COMPLETION_RETENTION),
+                )
+            } else {
+                None
+            },
             journal_retention: self.journal_retention,
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
