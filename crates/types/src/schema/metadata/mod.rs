@@ -242,7 +242,18 @@ impl ServiceRevision {
             revision: self.revision,
             public: self.public,
             idempotency_retention: self.idempotency_retention,
-            workflow_completion_retention: self.workflow_completion_retention,
+            workflow_completion_retention: if self.ty == ServiceType::Workflow {
+                Some(
+                    self.handlers
+                        .iter()
+                        .find(|(_, h)| h.workflow_completion_retention.is_some())
+                        .and_then(|(_, h)| h.workflow_completion_retention)
+                        .or(self.workflow_completion_retention)
+                        .unwrap_or(DEFAULT_WORKFLOW_COMPLETION_RETENTION),
+                )
+            } else {
+                None
+            },
             journal_retention: self.journal_retention,
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
