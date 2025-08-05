@@ -11,14 +11,14 @@
 mod processor_state;
 mod spawn_processor_task;
 
+use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
-use std::collections::{BTreeMap, HashMap};
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use ahash::HashSet;
+use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
@@ -86,7 +86,6 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
-use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SharedString};
 
 #[derive(Debug, Clone, derive_more::Display)]
@@ -160,7 +159,7 @@ enum RestartDelay {
     Immediate,
     Fixed,
     Exponential {
-        started_time: MillisSinceEpoch,
+        start_time: Instant,
         last_delay: Option<Duration>,
     },
     MaxBackoff,
@@ -564,7 +563,7 @@ impl PartitionProcessorManager {
                                 Err(err) => {
                                     warn!(%partition_id, %err, "Partition processor exited unexpectedly");
                                     RestartDelay::Exponential {
-                                        started_time: start_time,
+                                        start_time,
                                         last_delay: delay,
                                     }
                                 }
@@ -1230,10 +1229,10 @@ impl PartitionProcessorManager {
             RestartDelay::Immediate => None,
             RestartDelay::Fixed => Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE),
             RestartDelay::Exponential {
-                started_time,
+                start_time,
                 last_delay: previous_backoff,
             } => {
-                if started_time.elapsed() > PARTITION_PROCESSOR_DELAY_RESET_RUNNING_TIME {
+                if start_time.elapsed() > PARTITION_PROCESSOR_DELAY_RESET_RUNNING_TIME {
                     // if we have been running for a while, reset back to the base delay
                     Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE)
                 } else {

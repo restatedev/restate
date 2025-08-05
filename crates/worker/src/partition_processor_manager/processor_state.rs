@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::error::{SendError, TrySendError};
 use tokio::sync::{mpsc, watch};
@@ -22,7 +22,6 @@ use restate_invoker_impl::ChannelStatusReader;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::identifiers::{LeaderEpoch, PartitionKey};
 use restate_types::net::partition_processor::PartitionLeaderService;
-use restate_types::time::MillisSinceEpoch;
 
 use crate::partition::TargetLeaderState;
 
@@ -49,13 +48,13 @@ pub enum LeaderState {
 pub enum ProcessorState {
     Starting {
         target_run_mode: RunMode,
-        start_time: MillisSinceEpoch,
+        start_time: Instant,
         delay: Option<Duration>,
     },
     Started {
         processor: Option<StartedProcessor>,
         leader_state: LeaderState,
-        start_time: MillisSinceEpoch,
+        start_time: Instant,
         delay: Option<Duration>,
     },
     Stopping {
@@ -67,7 +66,7 @@ impl ProcessorState {
     pub fn starting(target_run_mode: RunMode, delay: Option<Duration>) -> Self {
         Self::Starting {
             target_run_mode,
-            start_time: MillisSinceEpoch::now(),
+            start_time: Instant::now(),
             delay,
         }
     }
@@ -80,7 +79,7 @@ impl ProcessorState {
 
     pub fn started(
         processor: StartedProcessor,
-        start_time: MillisSinceEpoch,
+        start_time: Instant,
         delay: Option<Duration>,
     ) -> Self {
         Self::Started {
