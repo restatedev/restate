@@ -138,18 +138,6 @@ impl SpawnPartitionProcessorTask {
                             .await
                         {
                             Ok(partition_store) => Ok(partition_store),
-                            Err(
-                                e @ restate_partition_store::OpenError::SnapshotRepositoryRequired
-                                | e @ restate_partition_store::OpenError::SnapshotRequired
-                                | e @ restate_partition_store::OpenError::SnapshotUnsuitable,
-                            ) => {
-                                // We expect the processor startup attempt will fail, avoid spinning too fast.
-                                // todo(pavel): replace this with RetryPolicy
-                                    tokio::time::sleep(Duration::from_millis(
-                                        10_000 + rand::random::<u64>() % 10_000,
-                                    )).await;
-                                Err(ProcessorError::from(e))
-                            }
                             Err(e) => Err(ProcessorError::from(e)),
                         }
                     };
