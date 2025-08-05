@@ -281,7 +281,7 @@ impl<V> SchemaRegistry<V> {
                     .is_some()
                 {
                     let mut updater = updater::SchemaUpdater::new(schema_information);
-                    updater.modify_service(service_name.clone(), changes.clone())?;
+                    updater.modify_service(&service_name, changes.clone())?;
                     Ok(updater.into_inner())
                 } else {
                     Err(updater::SchemaError::NotFound(format!(

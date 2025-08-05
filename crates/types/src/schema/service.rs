@@ -216,15 +216,13 @@ pub struct HandlerMetadata {
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub idempotency_retention: Option<Duration>,
 
-    /// # Workflow completion retention
-    ///
-    /// The retention duration of workflows. Only available on workflow services.
+    // TODO remove in Restate 1.6, this should not be used. Instead, use ServiceMetadata.
     #[serde(
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
     pub workflow_completion_retention: Option<Duration>,
 
     /// # Journal retention
