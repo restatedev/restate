@@ -114,7 +114,7 @@ pub fn decode_as_flexbuffers<T: DeserializeOwned>(
 }
 
 pub fn encode_as_bilrost<T: bilrost::Message>(value: &T) -> Bytes {
-    let buf = value.encode_fast();
+    let buf = value.encode_contiguous();
     Bytes::from(buf.into_vec())
 }
 
