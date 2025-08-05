@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-schema = ["dep:schemars"]
+schema = ["dep:schemars", "dep:serde_json"]
 proto = ["dep:prost", "dep:bytes"]
 
 [dependencies]
@@ -22,6 +22,7 @@ http-serde = { workspace = true }
 prost = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
 serde_with = { workspace = true }
 jiff = { workspace = true }
 

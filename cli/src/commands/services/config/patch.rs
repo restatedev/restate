@@ -144,12 +144,15 @@ pub(super) async fn apply_service_configuration_patch(
     }
     if let Some(workflow_completion_retention) = &modify_request.workflow_completion_retention {
         table.add_kv_row(
-            "Workflow retention time:",
+            "Workflow retention:",
             DurationString::display(*workflow_completion_retention),
         );
     }
     if let Some(journal_retention) = &modify_request.journal_retention {
-        table.add_kv_row("Journal time:", DurationString::display(*journal_retention));
+        table.add_kv_row(
+            "Journal retention:",
+            DurationString::display(*journal_retention),
+        );
     }
     if let Some(inactivity_timeout) = &modify_request.inactivity_timeout {
         table.add_kv_row(

@@ -11,9 +11,7 @@
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 
-#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "InvocationOptions", default))]
@@ -27,7 +25,11 @@ pub struct InvocationOptions {
     ///
     /// In production setups, it is advisable to disable default journal retention,
     /// and configure journal retention per service using the respective SDK APIs.
-    #[serde_as(as = "Option<restate_serde_util::DurationString>")]
+    #[serde(
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     #[cfg_attr(
         feature = "schemars",
         schemars(with = "Option<restate_serde_util::DurationString>")
@@ -40,7 +42,11 @@ pub struct InvocationOptions {
     /// When discovering a service deployment, or when modifying the journal retention using the Admin API, the given value will be clamped.
     ///
     /// `None` means no limit.
-    #[serde_as(as = "Option<restate_serde_util::DurationString>")]
+    #[serde(
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
     #[cfg_attr(
         feature = "schemars",
         schemars(with = "Option<restate_serde_util::DurationString>")

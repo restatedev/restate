@@ -169,8 +169,8 @@ struct ServiceRevision {
 
     /// The journal retention. When set, this applies to all requests to all handlers of this service.
     ///
-    /// In case the request has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
-    /// In case the request targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
+    /// In case the invocation has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
+    /// In case the invocation targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
     #[serde(
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
         skip_serializing_if = "Option::is_none",

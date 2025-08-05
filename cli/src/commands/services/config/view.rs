@@ -39,8 +39,8 @@ pub(super) const JOURNAL_RETENTION: &str = indoc! {
     "The journal retention.
     The retention period starts once the invocation completes (with either success or failure).
 
-    In case the request has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
-    In case the request targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time."
+    In case the invocation has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
+    In case the invocation targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time."
 };
 pub(super) const INACTIVITY_TIMEOUT: &str = indoc! {
     "This timer guards against stalled service/handler invocations. Once it expires,

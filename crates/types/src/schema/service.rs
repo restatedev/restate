@@ -92,8 +92,8 @@ pub struct ServiceMetadata {
     ///
     /// The journal retention. When set, this applies to all requests to all handlers of this service.
     ///
-    /// In case the request has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
-    /// In case the request targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
+    /// In case the invocation has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
+    /// In case the invocation targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
     #[serde(
         with = "serde_with::As::<Option<DurationString>>",
         skip_serializing_if = "Option::is_none",
@@ -111,7 +111,7 @@ pub struct ServiceMetadata {
     /// The 'abort timeout' is used to abort the invocation, in case it doesn't react to
     /// the request to suspend.
     ///
-    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     ///
     /// This overrides the default inactivity timeout set in invoker options.
     #[serde(
@@ -132,7 +132,7 @@ pub struct ServiceMetadata {
     /// This timer potentially **interrupts** user code. If the user code needs longer to
     /// gracefully terminate, then this value needs to be set accordingly.
     ///
-    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     ///
     /// This overrides the default abort timeout set in invoker options.
     #[serde(
@@ -231,7 +231,7 @@ pub struct HandlerMetadata {
     ///
     /// The journal retention. When set, this applies to all requests to this handler.
     ///
-    /// In case the request has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
+    /// In case the invocation has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
     /// In case this handler is a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
     #[serde(
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
