@@ -28,7 +28,6 @@ use super::{APPLICATION_JSON, Handler};
 use crate::RequestDispatcher;
 use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
 use crate::metric_definitions::{INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED};
-use restate_serde_util::DurationString;
 use restate_types::identifiers::{InvocationId, WithInvocationId};
 use restate_types::invocation::{
     Header, InvocationRequest, InvocationRequestHeader, InvocationTarget, InvocationTargetType,
@@ -145,8 +144,7 @@ where
         let runtime_span = tracing::info_span!(
             "ingress",
             restate.invocation.id = %invocation_id,
-            restate.invocation.target = %invocation_target.short(),
-            restate.invocation.journal.retention = DurationString::display(invocation_retention.journal_retention)
+            restate.invocation.target = %invocation_target.short()
         );
 
         let result = async move {

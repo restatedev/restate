@@ -100,6 +100,11 @@ impl schemars::JsonSchema for DurationString {
         let metadata = schema.metadata();
         metadata.title = Some("DurationString".to_owned());
         metadata.description = Some("Duration string in either jiff human friendly or ISO8601 format. Check https://docs.rs/jiff/latest/jiff/struct.Span.html#parsing-and-printing for more details.".to_owned());
+        metadata.examples = vec![
+            serde_json::Value::String("10 hours".to_owned()),
+            serde_json::Value::String("5 days".to_owned()),
+            serde_json::Value::String("P40D".to_owned()),
+        ];
         schema.into()
     }
 }

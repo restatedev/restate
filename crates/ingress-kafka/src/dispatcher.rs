@@ -15,12 +15,11 @@ use opentelemetry::trace::{Span, SpanContext, TraceContextExt};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, my_node_id};
-use restate_serde_util::DurationString;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
 use restate_types::invocation::{
-    InvocationRetention, InvocationTarget, ServiceInvocation, SpanRelation,
-    VirtualObjectHandlerType, WorkflowHandlerType,
+    InvocationTarget, ServiceInvocation, SpanRelation, VirtualObjectHandlerType,
+    WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
 use restate_types::partition_table::PartitionTableError;
@@ -141,7 +140,6 @@ impl KafkaIngressEvent {
             &invocation_id,
             &invocation_target,
             &headers,
-            &invocation_retention,
             consumer_group_id,
             topic,
             partition as i64,
@@ -257,7 +255,6 @@ pub(crate) fn prepare_tracing_span(
     invocation_id: &InvocationId,
     invocation_target: &InvocationTarget,
     headers: &[restate_types::invocation::Header],
-    retention: &InvocationRetention,
     consumer_group_name: &str,
     topic: &str,
     partition: i64,
@@ -283,8 +280,7 @@ pub(crate) fn prepare_tracing_span(
             messaging.operation.type = "process",
             messaging.kafka.offset = offset,
             messaging.source.partition.id = partition,
-            messaging.source.name = topic.to_owned(),
-            restate.invocation.journal.retention = DurationString::display(retention.journal_retention)
+            messaging.source.name = topic.to_owned()
         )
     );
 
