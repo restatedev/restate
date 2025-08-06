@@ -250,7 +250,9 @@ mod envelope {
 
     use restate_storage_api::protobuf_types::v1 as protobuf;
     use restate_types::storage::decode::{decode_bilrost, decode_serde};
-    use restate_types::storage::encode::{encode_bilrost, encode_serde};
+    use restate_types::storage::encode::{
+        encode_bilrost, encode_serde, estimate_encoded_serde_len,
+    };
     use restate_types::storage::{
         StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
     };
@@ -261,11 +263,26 @@ mod envelope {
         fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
             use bytes::BufMut;
             match self.default_codec() {
-                StorageCodecKind::FlexbuffersSerde => encode_serde(self, buf, self.default_codec()),
+                StorageCodecKind::FlexbuffersSerde => {
+                    encode_serde(self, buf, StorageCodecKind::FlexbuffersSerde)
+                }
                 StorageCodecKind::Custom => {
                     buf.put_slice(&encode(self)?);
                     Ok(())
                 }
+                _ => unreachable!("developer error"),
+            }
+        }
+
+        fn estimated_encoded_len(&self) -> usize {
+            match self.default_codec() {
+                StorageCodecKind::FlexbuffersSerde => {
+                    restate_types::storage::encode::estimate_encoded_serde_len(
+                        self,
+                        StorageCodecKind::FlexbuffersSerde,
+                    )
+                }
+                StorageCodecKind::Custom => estimate_custom_encoding_len(self),
                 _ => unreachable!("developer error"),
             }
         }
@@ -359,11 +376,47 @@ mod envelope {
             })
         }
 
+        fn serde_encoded_len<T: serde::Serialize>(value: &T, codec: StorageCodecKind) -> usize {
+            static EMPTY: Field = Field {
+                // note: the value of codec is irrelevant for this method, we assume that
+                // it takes a similar amount of space to encode all values of the StorageCodecKind
+                // enum.
+                codec: Some(StorageCodecKind::FlexbuffersSerde),
+                bytes: Bytes::new(),
+            };
+
+            let value_len = estimate_encoded_serde_len(value, codec);
+            EMPTY.encoded_len() + value_len
+        }
+
+        fn bilrost_encoded_len<T: bilrost::Message>(value: &T) -> usize {
+            static EMPTY: Field = Field {
+                codec: Some(StorageCodecKind::Bilrost),
+                bytes: Bytes::new(),
+            };
+
+            let value_len = bilrost::Message::encoded_len(value);
+            EMPTY.encoded_len() + value_len
+        }
+
         fn encode_bilrost<T: bilrost::Message>(value: &T) -> Result<Self, StorageEncodeError> {
             Ok(Self {
                 codec: Some(StorageCodecKind::Bilrost),
                 bytes: encode_bilrost(value),
             })
+        }
+
+        fn protobuf_encoded_len<T: prost::Message>(value: &T) -> usize {
+            static EMPTY: Field = Field {
+                // note: the value of codec is irrelevant for this method, we assume that
+                // it takes a similar amount of space to encode all values of the StorageCodecKind
+                // enum.
+                codec: Some(StorageCodecKind::Protobuf),
+                bytes: Bytes::new(),
+            };
+
+            let value_len = prost::Message::encoded_len(value);
+            EMPTY.encoded_len() + value_len
         }
 
         fn encode_protobuf<T: prost::Message>(value: &T) -> Result<Self, StorageEncodeError> {
@@ -435,6 +488,71 @@ mod envelope {
                 return Err(DecodeError::UnexpectedCodec(codec).into());
             }
         }};
+    }
+
+    pub fn estimate_custom_encoding_len(envelope: &super::Envelope) -> usize {
+        let command_len = match &envelope.command {
+            Command::UpdatePartitionDurability(value) => Field::bilrost_encoded_len(value),
+            Command::VersionBarrier(value) => Field::bilrost_encoded_len(value),
+            Command::AnnounceLeader(value) => {
+                Field::serde_encoded_len(value, StorageCodecKind::FlexbuffersSerde)
+            }
+            Command::PatchState(value) => {
+                // we are copying because we _assume_ that PatchState is not widely used.
+                // The clone will allocate a new hashmap but kvpairs are Bytes (cheap clones)
+                let value = protobuf::StateMutation::from(value.clone());
+                Field::protobuf_encoded_len(&value)
+            }
+            Command::TerminateInvocation(value) => {
+                Field::serde_encoded_len(value, StorageCodecKind::FlexbuffersSerde)
+            }
+            Command::PurgeInvocation(value) => {
+                Field::serde_encoded_len(value, StorageCodecKind::FlexbuffersSerde)
+            }
+            Command::PurgeJournal(value) => {
+                Field::serde_encoded_len(value, StorageCodecKind::FlexbuffersSerde)
+            }
+            Command::Invoke(value) => {
+                let value = protobuf::ServiceInvocation::from(value.as_ref());
+                // ideally, the envelope would carry the protobuf wrapper instead of doing the
+                // conversion twice (once for length estimate and another for serialization)
+                Field::protobuf_encoded_len(&value)
+            }
+            Command::TruncateOutbox(value) => {
+                Field::serde_encoded_len(value, StorageCodecKind::FlexbuffersSerde)
+            }
+            Command::ProxyThrough(value) => {
+                let value = protobuf::ServiceInvocation::from(value.as_ref());
+                Field::protobuf_encoded_len(&value)
+            }
+            Command::AttachInvocation(value) => {
+                let value = protobuf::outbox_message::AttachInvocationRequest::from(value.clone());
+                Field::protobuf_encoded_len(&value)
+            }
+            Command::InvokerEffect(value) => {
+                Field::serde_encoded_len(value, StorageCodecKind::FlexbuffersSerde)
+            }
+            Command::Timer(value) => {
+                Field::serde_encoded_len(value, StorageCodecKind::FlexbuffersSerde)
+            }
+            Command::ScheduleTimer(value) => {
+                Field::serde_encoded_len(value, StorageCodecKind::FlexbuffersSerde)
+            }
+            Command::InvocationResponse(value) => {
+                let value =
+                    protobuf::outbox_message::OutboxServiceInvocationResponse::from(value.clone());
+                Field::protobuf_encoded_len(&value)
+            }
+            Command::NotifyGetInvocationOutputResponse(value) => Field::bilrost_encoded_len(value),
+            Command::NotifySignal(value) => {
+                let value = protobuf::outbox_message::NotifySignal::from(value.clone());
+                Field::protobuf_encoded_len(&value)
+            }
+        };
+
+        // Assuming 350 bytes for the header and the envelope type-tag + 8 bytes for the command kind
+        // overhead = 358
+        358 + command_len
     }
 
     pub fn encode(envelope: &super::Envelope) -> Result<Bytes, StorageEncodeError> {

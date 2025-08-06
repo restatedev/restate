@@ -33,6 +33,7 @@ use std::time::Duration;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+#[cfg(debug_assertions)]
 use metrics::counter;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
@@ -42,7 +43,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
-use crate::metric_definitions::{self, STATUS_COMPLETED, STATUS_FAILED, TC_FINISHED, TC_SPAWN};
+#[cfg(debug_assertions)]
+use crate::metric_definitions::{STATUS_COMPLETED, STATUS_FAILED, TC_FINISHED, TC_SPAWN};
 use crate::{Metadata, ShutdownError, ShutdownSourceErr};
 use restate_types::SharedString;
 use restate_types::cluster_state::ClusterState;
@@ -350,7 +352,7 @@ impl TaskCenterInner {
         // partition processor runtimes
         #[cfg(any(test, feature = "test-util"))] pause_time: bool,
     ) -> Self {
-        metric_definitions::describe_metrics();
+        crate::metric_definitions::describe_metrics();
         let root_task_context = TaskContext {
             id: TaskId::ROOT,
             name: "::".into(),
@@ -899,10 +901,13 @@ impl TaskCenterInner {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let kind_str: &'static str = kind.into();
-        let runtime_name: &'static str = kind.runtime().into();
         let tokio_task = tokio::task::Builder::new().name(name);
-        counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
+        #[cfg(debug_assertions)]
+        {
+            let kind_str: &'static str = kind.into();
+            let runtime_name: &'static str = kind.runtime().into();
+            counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
+        }
         let runtime = match kind.runtime() {
             crate::AsyncRuntime::Inherit => &tokio::runtime::Handle::current(),
             crate::AsyncRuntime::Default => &self.default_runtime_handle,
@@ -930,6 +935,7 @@ impl TaskCenterInner {
             // This can happen if the task ownership was taken by calling take_task(id);
             return;
         };
+        #[cfg(debug_assertions)]
         let kind_str: &'static str = task.kind().into();
 
         let should_shutdown_on_error = task.kind().should_shutdown_on_error();
@@ -938,6 +944,7 @@ impl TaskCenterInner {
             match result {
                 Ok(Ok(())) => {
                     trace!(kind = ?task.kind(), name = ?task.name(), "Task {} exited normally", task_id);
+                    #[cfg(debug_assertions)]
                     counter!(TC_FINISHED, "kind" => kind_str, "status" => STATUS_COMPLETED)
                         .increment(1);
                 }
@@ -961,10 +968,12 @@ impl TaskCenterInner {
                     } else {
                         error!(kind = ?task.kind(), name = ?task.name(), "Task {} failed with: {:?}", task_id, err);
                     }
+                    #[cfg(debug_assertions)]
                     counter!(TC_FINISHED, "kind" => kind_str, "status" => STATUS_FAILED)
                         .increment(1);
                 }
                 Err(err) => {
+                    #[cfg(debug_assertions)]
                     counter!(TC_FINISHED, "kind" => kind_str, "status" => STATUS_FAILED)
                         .increment(1);
                     if should_shutdown_on_error {

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 use std::mem;
 
+use bincode::enc::write::SizeWriter;
 use bytes::{BufMut, Bytes, BytesMut};
 use serde::Serialize;
 
@@ -33,6 +34,17 @@ pub fn encode_serde<T: Serialize>(
     }
 }
 
+pub fn estimate_encoded_serde_len<T: Serialize>(value: &T, codec: StorageCodecKind) -> usize {
+    match codec {
+        // 2 KiB, completely arbitrary size since we don't have a way to estimate the size
+        // beforehand which is s a shame.
+        StorageCodecKind::FlexbuffersSerde => 2_048,
+        StorageCodecKind::BincodeSerde => estimate_bincode_len(value).unwrap_or(0),
+        StorageCodecKind::Json => estimate_json_serde_len(value).unwrap_or(0),
+        codec => unreachable!("Cannot encode serde type with codec {}", codec),
+    }
+}
+
 /// Utility method to encode a [`Serialize`] type as flexbuffers using serde.
 fn encode_serde_as_flexbuffers<T: Serialize>(
     value: T,
@@ -48,6 +60,12 @@ fn encode_serde_as_flexbuffers<T: Serialize>(
     // write the data
     buf.put_slice(&vec);
     Ok(())
+}
+
+fn estimate_bincode_len<T: Serialize>(value: &T) -> Result<usize, bincode::error::EncodeError> {
+    let mut writer = SizeWriter::default();
+    bincode::serde::encode_into_writer(value, &mut writer, bincode::config::standard())?;
+    Ok(writer.bytes_written)
 }
 
 /// Utility method to encode a [`Serialize`] type as bincode using serde.
@@ -67,6 +85,29 @@ fn encode_serde_as_bincode<T: Serialize>(
     bincode::serde::encode_into_writer(value, BytesWriter(buf), bincode::config::standard())?;
 
     Ok(())
+}
+
+fn estimate_json_serde_len<T: Serialize>(value: &T) -> Result<usize, serde_json::error::Error> {
+    #[derive(Default)]
+    struct SizeWriter {
+        bytes_written: usize,
+    }
+
+    impl std::io::Write for SizeWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.bytes_written += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = SizeWriter::default();
+
+    serde_json::to_writer(&mut writer, value)?;
+
+    Ok(writer.bytes_written)
 }
 
 /// Utility method to encode a [`Serialize`] type as json using serde.

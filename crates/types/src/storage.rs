@@ -101,6 +101,7 @@ impl StorageCodec {
         value: &T,
         buf: &mut BytesMut,
     ) -> Result<(), StorageEncodeError> {
+        buf.reserve(value.estimated_encoded_len() + mem::size_of::<u8>());
         // write codec
         buf.put_u8(value.default_codec().into());
         // encode value
@@ -143,6 +144,9 @@ pub trait StorageEncode: DowncastSync {
 
     /// Codec which is used when encode new values.
     fn default_codec(&self) -> StorageCodecKind;
+
+    /// Returns an estimate for the size of the encoded value.
+    fn estimated_encoded_len(&self) -> usize;
 }
 impl_downcast!(sync StorageEncode);
 
@@ -175,6 +179,10 @@ macro_rules! flexbuffers_storage_encode_decode {
                 buf: &mut ::bytes::BytesMut,
             ) -> Result<(), $crate::storage::StorageEncodeError> {
                 $crate::storage::encode::encode_serde(self, buf, self.default_codec())
+            }
+
+            fn estimated_encoded_len(&self) -> usize {
+                $crate::storage::encode::estimate_encoded_serde_len(self, self.default_codec())
             }
         }
 
@@ -227,12 +235,7 @@ impl PolyBytes {
     pub fn estimated_encode_size(&self) -> usize {
         match self {
             PolyBytes::Bytes(bytes) => bytes.len(),
-            PolyBytes::Typed(_) => {
-                // constant, assumption based on base envelope size of ~600 bytes.
-                // todo: use StorageEncode trait to get an actual estimate based
-                // on the underlying type
-                2_048 // 2KiB
-            }
+            PolyBytes::Typed(value) => value.estimated_encoded_len(),
         }
     }
 }
@@ -251,6 +254,13 @@ impl StorageEncode for PolyBytes {
     fn default_codec(&self) -> StorageCodecKind {
         StorageCodecKind::FlexbuffersSerde
     }
+
+    fn estimated_encoded_len(&self) -> usize {
+        match self {
+            PolyBytes::Bytes(bytes) => bytes.len(),
+            PolyBytes::Typed(typed) => typed.estimated_encoded_len(),
+        }
+    }
 }
 
 /// SerializeAs/DeserializeAs to implement ser/de trait for [`PolyBytes`]
@@ -265,7 +275,6 @@ impl serde_with::SerializeAs<PolyBytes> for EncodedPolyBytes {
         match source {
             PolyBytes::Bytes(bytes) => serializer.serialize_bytes(bytes.as_ref()),
             PolyBytes::Typed(typed) => {
-                // todo: estimate size to avoid re allocations
                 let mut buf = BytesMut::new();
                 StorageCodec::encode(&**typed, &mut buf).expect("record serde is infallible");
                 serializer.serialize_bytes(buf.as_ref())
@@ -290,6 +299,10 @@ static_assertions::assert_impl_all!(PolyBytes: Send, Sync);
 impl StorageEncode for String {
     fn default_codec(&self) -> StorageCodecKind {
         StorageCodecKind::LengthPrefixedRawBytes
+    }
+
+    fn estimated_encoded_len(&self) -> usize {
+        self.len() + mem::size_of::<u32>()
     }
 
     fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
@@ -357,6 +370,10 @@ impl StorageDecode for String {
 impl StorageEncode for bytes::Bytes {
     fn default_codec(&self) -> StorageCodecKind {
         StorageCodecKind::LengthPrefixedRawBytes
+    }
+
+    fn estimated_encoded_len(&self) -> usize {
+        self.len() + mem::size_of::<u32>()
     }
 
     fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
