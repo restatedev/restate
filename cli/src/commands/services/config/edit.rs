@@ -85,6 +85,11 @@ fn write_out_edit_toml(w: &mut impl io::Write, service_type: ServiceType) -> Res
         writeln!(w)?;
     }
 
+    write_prefixed_lines(w, "# ", super::patch::JOURNAL_RETENTION_EDIT_DESCRIPTION)?;
+    writeln!(w, "# Example:")?;
+    writeln!(w, "# journal_retention = \"2days\"")?;
+    writeln!(w)?;
+
     write_prefixed_lines(w, "# ", super::patch::INACTIVITY_TIMEOUT_EDIT_DESCRIPTION)?;
     writeln!(w, "# Example:")?;
     writeln!(w, "# inactivity_timeout = \"1min\"")?;

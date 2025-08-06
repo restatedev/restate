@@ -87,6 +87,28 @@ impl SerializeAs<std::time::Duration> for DurationString {
     }
 }
 
+#[cfg(feature = "schema")]
+impl schemars::JsonSchema for DurationString {
+    fn schema_name() -> String {
+        "DurationString".to_owned()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::schema::Schema {
+        let mut schema: schemars::schema::SchemaObject = generator.subschema_for::<String>().into();
+        let validation = schema.string();
+        validation.min_length = Some(1);
+        let metadata = schema.metadata();
+        metadata.title = Some("DurationString".to_owned());
+        metadata.description = Some("Duration string in either jiff human friendly or ISO8601 format. Check https://docs.rs/jiff/latest/jiff/struct.Span.html#parsing-and-printing for more details.".to_owned());
+        metadata.examples = vec![
+            serde_json::Value::String("10 hours".to_owned()),
+            serde_json::Value::String("5 days".to_owned()),
+            serde_json::Value::String("P40D".to_owned()),
+        ];
+        schema.into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -18,8 +18,8 @@ use restate_core::{Metadata, my_node_id};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
 use restate_types::invocation::{
-    InvocationRetention, InvocationTarget, InvocationTargetType, ServiceInvocation, SpanRelation,
-    VirtualObjectHandlerType, WorkflowHandlerType,
+    InvocationTarget, ServiceInvocation, SpanRelation, VirtualObjectHandlerType,
+    WorkflowHandlerType,
 };
 use restate_types::message::MessageIndex;
 use restate_types::partition_table::PartitionTableError;
@@ -123,20 +123,14 @@ impl KafkaIngressEvent {
             },
         };
 
-        // For workflows, we need to set the retention here
-        let invocation_retention = if invocation_target.invocation_target_ty()
-            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-        {
-            schema
-                .resolve_latest_invocation_target(
-                    invocation_target.service_name(),
-                    invocation_target.handler_name(),
-                )
-                .map(|target| target.compute_retention(false))
-                .unwrap_or_default()
-        } else {
-            InvocationRetention::none()
-        };
+        // Compute the retention values
+        let invocation_retention = schema
+            .resolve_latest_invocation_target(
+                invocation_target.service_name(),
+                invocation_target.handler_name(),
+            )
+            .ok_or_else(|| anyhow::anyhow!("Service and handler are not registered"))?
+            .compute_retention(false);
 
         // Time to generate invocation id
         let invocation_id = InvocationId::generate(&invocation_target, None);
@@ -255,6 +249,8 @@ fn wrap_service_invocation_in_envelope(
 
     Envelope::new(header, Command::ProxyThrough(service_invocation))
 }
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_tracing_span(
     invocation_id: &InvocationId,
     invocation_target: &InvocationTarget,
