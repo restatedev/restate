@@ -11,9 +11,9 @@
 use strum::EnumCount;
 
 use crate::invocation_status_table::run_invocation_status_v1_migration;
-use crate::{PartitionStoreTransaction, Result};
+use crate::{PartitionStore, Result};
 
-#[derive(Eq, PartialEq, strum::FromRepr, strum::EnumCount)]
+#[derive(Debug, Eq, PartialEq, strum::FromRepr, strum::EnumCount)]
 #[repr(u16)]
 pub(crate) enum LastExecutedMigration {
     None = 0,
@@ -35,10 +35,7 @@ impl LastExecutedMigration {
         ((self as u16) + 1).into()
     }
 
-    pub(crate) async fn run_all_migrations(
-        mut self,
-        storage: &mut PartitionStoreTransaction<'_>,
-    ) -> Result<Self> {
+    pub(crate) async fn run_all_migrations(mut self, storage: &mut PartitionStore) -> Result<Self> {
         while self != LATEST_MIGRATION {
             self.do_migration(storage).await?;
             self = self.next();
@@ -47,7 +44,7 @@ impl LastExecutedMigration {
     }
 
     // Add migrations here!
-    async fn do_migration(&self, storage: &mut PartitionStoreTransaction<'_>) -> Result<()> {
+    async fn do_migration(&self, storage: &mut PartitionStore) -> Result<()> {
         match self {
             LastExecutedMigration::None => {
                 run_invocation_status_v1_migration(storage).await?;

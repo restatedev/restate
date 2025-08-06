@@ -611,17 +611,16 @@ impl PartitionStore {
     }
 
     pub async fn verify_and_run_migrations(&mut self) -> Result<()> {
-        let mut tx = self.transaction();
-
         let mut last_executed_migration: LastExecutedMigration =
-            get_last_executed_migration(&mut tx).await?.into();
+            get_last_executed_migration(self, self.partition_id())
+                .await?
+                .into();
         if last_executed_migration != LATEST_MIGRATION {
             // We need to run some migrations!
-            last_executed_migration = last_executed_migration.run_all_migrations(&mut tx).await?;
-            put_last_executed_migration(&mut tx, last_executed_migration as u16).await?;
+            last_executed_migration = last_executed_migration.run_all_migrations(self).await?;
+            put_last_executed_migration(self, self.partition_id(), last_executed_migration as u16)
+                .await?;
         }
-
-        tx.commit().await?;
 
         Ok(())
     }
@@ -807,11 +806,6 @@ impl PartitionStoreTransaction<'_> {
     #[inline]
     pub(crate) fn partition_id(&self) -> PartitionId {
         self.meta.partition_id
-    }
-
-    #[inline]
-    pub(crate) fn partition_key_range(&self) -> &RangeInclusive<PartitionKey> {
-        &self.meta.key_range
     }
 
     #[inline]

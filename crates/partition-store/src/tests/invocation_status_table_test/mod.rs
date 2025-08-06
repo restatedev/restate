@@ -12,6 +12,8 @@
 #![allow(clippy::borrow_interior_mutable_const)]
 #![allow(clippy::declare_interior_mutable_const)]
 
+use super::storage_test_environment;
+
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -30,8 +32,9 @@ use restate_types::invocation::{
 };
 use restate_types::time::MillisSinceEpoch;
 
-use super::storage_test_environment;
+use crate::fsm_table::get_last_executed_migration;
 use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
+use crate::migrations::{LATEST_MIGRATION, LastExecutedMigration};
 use crate::partition_store::StorageAccess;
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
@@ -214,6 +217,16 @@ async fn test_migration() {
 
     // Now run the migrations
     rocksdb.verify_and_run_migrations().await.unwrap();
+    let partition_id = rocksdb.partition_id();
+
+    assert_eq!(
+        LastExecutedMigration::from(
+            get_last_executed_migration(&mut rocksdb, partition_id)
+                .await
+                .unwrap()
+        ),
+        LATEST_MIGRATION
+    );
 
     // Make sure we can read without mutating
     assert_eq!(

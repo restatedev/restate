@@ -25,7 +25,6 @@ use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, Wit
 
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::owned_iter::OwnedIterator;
 use crate::scan::TableScan;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
 
@@ -119,23 +118,25 @@ fn read_invoked_full_invocation_id(
     }
 }
 
-pub(crate) async fn run_invocation_status_v1_migration(
-    storage: &mut PartitionStoreTransaction<'_>,
-) -> Result<()> {
+pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionStore) -> Result<()> {
     let partition_key_range = storage.partition_key_range().clone();
-    let invocation_statuses: Result<Vec<_>> =
-        OwnedIterator::new(storage.iterator_from::<InvocationStatusKeyV1>(
-            FullScanPartitionKeyRange(partition_key_range),
-        )?)
-        .map(|(mut old_key, mut old_value)| {
-            Ok((
-                InvocationStatusKeyV1::deserialize_from(&mut old_key)?,
-                InvocationStatusV1::decode(&mut old_value)?,
-            ))
-        })
-        .collect();
 
-    for (key, value) in invocation_statuses? {
+    let mut iterator = storage
+        .run_iterator(
+            "invocation-status-v1-migration",
+            Priority::High,
+            FullScanPartitionKeyRange::<InvocationStatusKeyV1>(partition_key_range),
+            |(mut old_key, mut old_value)| {
+                Ok((
+                    InvocationStatusKeyV1::deserialize_from(&mut old_key)?,
+                    InvocationStatusV1::decode(&mut old_value)?,
+                ))
+            },
+        )
+        .map_err(|_| StorageError::OperationalError)?;
+
+    while let Some(res) = iterator.next().await {
+        let (key, value) = res?;
         put_invocation_status(
             storage,
             &InvocationId::from_parts(*key.partition_key_ok_or()?, *key.invocation_uuid_ok_or()?),

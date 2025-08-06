@@ -90,25 +90,23 @@ pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Re
     .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
 }
 
-pub(crate) async fn get_last_executed_migration(
-    storage: &mut PartitionStoreTransaction<'_>,
+pub(crate) async fn get_last_executed_migration<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
 ) -> Result<u16> {
-    get::<SequenceNumber, _>(
-        storage,
-        storage.partition_id(),
-        fsm_variable::LAST_EXECUTED_MIGRATION,
-    )
-    .map(|opt| opt.map(|s| s.0 as u16).unwrap_or_default())
+    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::LAST_EXECUTED_MIGRATION)
+        .map(|opt| opt.map(|s| s.0 as u16).unwrap_or_default())
 }
 
-pub(crate) async fn put_last_executed_migration(
-    storage: &mut PartitionStoreTransaction<'_>,
+pub(crate) async fn put_last_executed_migration<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
     last_executed_migration: u16,
 ) -> Result<()> {
     put(
         storage,
-        storage.partition_id(),
-        fsm_variable::INBOX_SEQ_NUMBER,
+        partition_id,
+        fsm_variable::LAST_EXECUTED_MIGRATION,
         &SequenceNumber::from(last_executed_migration as u64),
     )
 }
