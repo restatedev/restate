@@ -47,6 +47,10 @@ impl<T: prost::Message + 'static> StorageEncode for ProtobufStorageWrapper<T> {
             .map_err(|err| restate_types::storage::StorageEncodeError::EncodeValue(err.into()))
     }
 
+    fn estimated_encoded_len(&self) -> usize {
+        T::encoded_len(&self.0)
+    }
+
     fn default_codec(&self) -> restate_types::storage::StorageCodecKind {
         restate_types::storage::StorageCodecKind::Protobuf
     }
