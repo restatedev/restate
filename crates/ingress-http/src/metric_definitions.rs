@@ -16,7 +16,7 @@ pub const INGRESS_REQUESTS: &str = "restate.ingress.requests.total";
 // values of label `status` in INGRESS_REQUEST
 pub const REQUEST_ADMITTED: &str = "admitted";
 pub const REQUEST_COMPLETED: &str = "completed";
-pub const REQUEST_DENIED_THROTTLE: &str = "throttled";
+pub const REQUEST_RATE_LIMITED: &str = "rate-limited";
 
 pub const INGRESS_REQUEST_DURATION: &str = "restate.ingress.request_duration.seconds";
 

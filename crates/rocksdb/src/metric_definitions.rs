@@ -18,9 +18,6 @@ pub const STORAGE_BG_TASK_WAIT_DURATION: &str =
 pub const STORAGE_BG_TASK_RUN_DURATION: &str =
     "restate.rocksdb_manager.bg_task_run_duration.seconds";
 
-pub const STORAGE_BG_TASK_TOTAL_DURATION: &str =
-    "restate.rocksdb_manager.bg_task_total_duration.seconds";
-
 // Perf guard metrics
 pub const BLOCK_READ_BYTES: &str = "restate.rocksdb.perf.block_read_bytes.total";
 pub const BLOCK_READ_DURATION: &str = "restate.rocksdb.perf.block_read_duration.seconds";
@@ -101,12 +98,6 @@ pub fn describe_metrics() {
         STORAGE_BG_TASK_RUN_DURATION,
         Unit::Seconds,
         "Run time of storage tasks, with 'priority' label"
-    );
-
-    describe_histogram!(
-        STORAGE_BG_TASK_TOTAL_DURATION,
-        Unit::Seconds,
-        "Total time to queue+run a storage task, with 'priority' label"
     );
 
     describe_histogram!(

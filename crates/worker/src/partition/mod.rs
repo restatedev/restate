@@ -23,7 +23,7 @@ use anyhow::Context;
 use assert2::let_assert;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
-use metrics::{SharedString, counter, gauge, histogram};
+use metrics::{SharedString, gauge, histogram};
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -76,7 +76,6 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
     PARTITION_BLOCKED_FLARE, PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
-    PARTITION_RECORD_READ_COUNT,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
@@ -403,10 +402,10 @@ where
         let mut live_config = Configuration::live();
 
         // Telemetry setup
-        let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => self.partition_id_str.clone(), "leader" => "1");
-        let follower_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, PARTITION_LABEL => self.partition_id_str.clone(), "leader" => "0");
-        let command_read_count =
-            counter!(PARTITION_RECORD_READ_COUNT, PARTITION_LABEL => self.partition_id_str.clone());
+        let leader_record_write_to_read_latency =
+            histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, "leader" => "1");
+        let follower_record_write_to_read_latency =
+            histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, "leader" => "0");
         // Start reading after the last applied lsn
         let key_query = KeyFilter::Within(self.partition_store.partition_key_range().clone());
 
@@ -510,8 +509,6 @@ where
                 operation = Self::read_commands(&mut record_stream, config.worker.max_command_batch_size(), &mut command_buffer) => {
                     // check that reading has succeeded
                     operation?;
-
-                    command_read_count.increment(u64::try_from(command_buffer.len()).expect("usize fit in u64"));
 
                     let mut transaction = partition_store.transaction();
 

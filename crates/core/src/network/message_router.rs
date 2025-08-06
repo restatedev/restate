@@ -423,7 +423,6 @@ impl<S: Service> Default for ServiceReceiver<S> {
     }
 }
 
-#[derive(Clone)]
 struct ServiceSender {
     sender: mpsc::Sender<ServiceOp>,
     started: Arc<AtomicBool>,

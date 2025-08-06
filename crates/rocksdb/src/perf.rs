@@ -72,100 +72,65 @@ impl RocksDbPerfGuard {
     }
 
     fn report(&self) {
+        let labels = [(OP_NAME, self.name)];
         // Note to future visitors of this code. RocksDb reports times in nanoseconds in this
         // API compared to microseconds in Statistics/Properties. Use n_to_s() to convert to
         // standard prometheus unit (second).
-        histogram!(TOTAL_DURATION,
-             OP_NAME => self.name,
-        )
-        .record(self.start.elapsed());
+        histogram!(TOTAL_DURATION, &labels).record(self.start.elapsed());
 
         // iterators-related
         let v = self.context.metric(PerfMetric::NextOnMemtableCount);
         if v != 0 {
-            counter!(NEXT_ON_MEMTABLE,
-                 OP_NAME => self.name,
-            )
-            .increment(v)
+            counter!(NEXT_ON_MEMTABLE, &labels).increment(v)
         };
         let v = self.context.metric(PerfMetric::SeekOnMemtableTime);
         if v != 0 {
-            histogram!(SEEK_ON_MEMTABLE,
-                 OP_NAME => self.name,
-            )
-            .record(n_to_s(v));
+            histogram!(SEEK_ON_MEMTABLE, &labels).record(n_to_s(v));
         }
         let v = self.context.metric(PerfMetric::FindNextUserEntryTime);
         if v != 0 {
-            histogram!(SEEK_ON_MEMTABLE,
-                 OP_NAME => self.name,
-            )
-            .record(n_to_s(v));
+            histogram!(SEEK_ON_MEMTABLE, &labels).record(n_to_s(v));
         }
 
         // read-related
         let v = self.context.metric(PerfMetric::BlockReadByte);
         if v != 0 {
-            counter!(BLOCK_READ_BYTES,
-                 OP_NAME => self.name,
-            )
-            .increment(v)
+            counter!(BLOCK_READ_BYTES, &labels).increment(v)
         };
 
         let v = self.context.metric(PerfMetric::BlockReadTime);
         if v != 0 {
-            histogram!(BLOCK_READ_DURATION,
-                 OP_NAME => self.name,
-            )
-            .record(n_to_s(v));
+            histogram!(BLOCK_READ_DURATION, &labels).record(n_to_s(v));
         }
 
         let v = self.context.metric(PerfMetric::GetFromMemtableTime);
         if v != 0 {
-            histogram!(GET_FROM_MEMTABLE_DURATION,
-                 OP_NAME => self.name,
-            )
-            .record(n_to_s(v));
+            histogram!(GET_FROM_MEMTABLE_DURATION, &labels).record(n_to_s(v));
         }
 
         let v = self.context.metric(PerfMetric::BlockDecompressTime);
         if v != 0 {
-            histogram!(BLOCK_DECOMPRESS_DURATION,
-                 OP_NAME => self.name,
-            )
-            .record(n_to_s(v));
+            histogram!(BLOCK_DECOMPRESS_DURATION, &labels).record(n_to_s(v));
         }
 
         // write-related
         let v = self.context.metric(PerfMetric::WriteWalTime);
         if v != 0 {
-            histogram!(WRITE_WAL_DURATION,
-                 OP_NAME => self.name,
-            )
-            .record(n_to_s(v));
+            histogram!(WRITE_WAL_DURATION, &labels).record(n_to_s(v));
         }
         let v = self.context.metric(PerfMetric::WriteMemtableTime);
         if v != 0 {
-            histogram!(WRITE_MEMTABLE_DURATION,
-                 OP_NAME => self.name,
-            )
-            .record(n_to_s(v));
+            histogram!(WRITE_MEMTABLE_DURATION, &labels).record(n_to_s(v));
         }
 
         let v = self.context.metric(PerfMetric::WritePreAndPostProcessTime);
         if v != 0 {
-            histogram!(WRITE_PRE_AND_POST_DURATION,
-                 OP_NAME => self.name,
-            )
-            .record(n_to_s(v));
+            histogram!(WRITE_PRE_AND_POST_DURATION, &labels).record(n_to_s(v));
         }
 
         let v = self.context.metric(PerfMetric::WriteDelayTime);
         if v != 0 {
-            histogram!(WRITE_ARTIFICIAL_DELAY_DURATION,
-                 OP_NAME => self.name,
-            )
-            .record(n_to_s(v));
+            histogram!(WRITE_ARTIFICIAL_DELAY_DURATION, &labels).record(n_to_s(v));
         }
     }
 }
