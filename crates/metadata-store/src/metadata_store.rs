@@ -284,7 +284,6 @@ impl MetadataStoreClient {
         key: ByteString,
     ) -> Result<Option<T>, ReadError> {
         let start_time = Instant::now();
-        let key_str = key.to_string();
         let result = {
             let value = self.inner.get(key).await?;
 
@@ -311,7 +310,7 @@ impl MetadataStoreClient {
         };
 
         histogram!(METADATA_CLIENT_GET_DURATION).record(start_time.elapsed());
-        counter!(METADATA_CLIENT_GET_TOTAL, "key" => key_str, "status" => status).increment(1);
+        counter!(METADATA_CLIENT_GET_TOTAL, "status" => status).increment(1);
 
         result
     }
@@ -320,7 +319,6 @@ impl MetadataStoreClient {
     /// [`None`].
     pub async fn get_version(&self, key: ByteString) -> Result<Option<Version>, ReadError> {
         let start_time = Instant::now();
-        let key_str = key.to_string();
         let result = self.inner.get_version(key).await;
 
         let status = if result.is_ok() {
@@ -330,8 +328,7 @@ impl MetadataStoreClient {
         };
 
         histogram!(METADATA_CLIENT_GET_VERSION_DURATION).record(start_time.elapsed());
-        counter!(METADATA_CLIENT_GET_VERSION_TOTAL, "key" => key_str, "status" => status)
-            .increment(1);
+        counter!(METADATA_CLIENT_GET_VERSION_TOTAL, "status" => status).increment(1);
 
         result
     }
@@ -348,7 +345,6 @@ impl MetadataStoreClient {
         T: Versioned + StorageEncode,
     {
         let start_time = Instant::now();
-        let key_str = key.to_string();
         let result = {
             let versioned_value =
                 serialize_value(value).map_err(|err| WriteError::Codec(err.into()))?;
@@ -363,7 +359,7 @@ impl MetadataStoreClient {
         };
 
         histogram!(METADATA_CLIENT_PUT_DURATION).record(start_time.elapsed());
-        counter!(METADATA_CLIENT_PUT_TOTAL, "key" => key_str, "status" => status).increment(1);
+        counter!(METADATA_CLIENT_PUT_TOTAL, "status" => status).increment(1);
 
         result
     }
@@ -383,7 +379,6 @@ impl MetadataStoreClient {
         precondition: Precondition,
     ) -> Result<(), WriteError> {
         let start_time = Instant::now();
-        let key_str = key.to_string();
         let result = self.inner.delete(key, precondition).await;
 
         let status = if result.is_ok() {
@@ -394,7 +389,8 @@ impl MetadataStoreClient {
 
         histogram!(crate::metric_definitions::METADATA_CLIENT_DELETE_DURATION)
             .record(start_time.elapsed());
-        counter!(crate::metric_definitions::METADATA_CLIENT_DELETE_TOTAL,"key" => key_str,  "status" => status).increment(1);
+        counter!(crate::metric_definitions::METADATA_CLIENT_DELETE_TOTAL, "status" => status)
+            .increment(1);
 
         result
     }

@@ -33,6 +33,7 @@ use std::time::Duration;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+#[cfg(debug_assertions)]
 use metrics::counter;
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
@@ -902,7 +903,9 @@ impl TaskCenterInner {
         let kind_str: &'static str = kind.into();
         let runtime_name: &'static str = kind.runtime().into();
         let tokio_task = tokio::task::Builder::new().name(name);
-        counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
+        if cfg!(debug_assertions) {
+            counter!(TC_SPAWN, "kind" => kind_str, "runtime" => runtime_name).increment(1);
+        }
         let runtime = match kind.runtime() {
             crate::AsyncRuntime::Inherit => &tokio::runtime::Handle::current(),
             crate::AsyncRuntime::Default => &self.default_runtime_handle,
@@ -938,6 +941,7 @@ impl TaskCenterInner {
             match result {
                 Ok(Ok(())) => {
                     trace!(kind = ?task.kind(), name = ?task.name(), "Task {} exited normally", task_id);
+                    #[cfg(debug_assertions)]
                     counter!(TC_FINISHED, "kind" => kind_str, "status" => STATUS_COMPLETED)
                         .increment(1);
                 }
@@ -961,10 +965,12 @@ impl TaskCenterInner {
                     } else {
                         error!(kind = ?task.kind(), name = ?task.name(), "Task {} failed with: {:?}", task_id, err);
                     }
+                    #[cfg(debug_assertions)]
                     counter!(TC_FINISHED, "kind" => kind_str, "status" => STATUS_FAILED)
                         .increment(1);
                 }
                 Err(err) => {
+                    #[cfg(debug_assertions)]
                     counter!(TC_FINISHED, "kind" => kind_str, "status" => STATUS_FAILED)
                         .increment(1);
                     if should_shutdown_on_error {

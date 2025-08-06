@@ -14,9 +14,7 @@ use derive_builder::Builder;
 use metrics::{gauge, histogram};
 use tokio::sync::oneshot;
 
-use crate::metric_definitions::{
-    STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_TOTAL_DURATION, STORAGE_BG_TASK_WAIT_DURATION,
-};
+use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
 use crate::{OP_TYPE, PRIORITY, Priority, STORAGE_BG_TASK_IN_FLIGHT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
@@ -89,23 +87,10 @@ where
 
     fn run(self) -> R {
         let start = Instant::now();
-        histogram!(
-            STORAGE_BG_TASK_WAIT_DURATION,
-             PRIORITY => self.priority.as_static_str(),
-             OP_TYPE => self.kind.as_static_str(),
-        )
-        .record(self.created_at.elapsed());
+        let labels = [(OP_TYPE, self.kind.as_static_str())];
+        histogram!(STORAGE_BG_TASK_WAIT_DURATION, &labels).record(self.created_at.elapsed());
         let res = (self.op)();
-        histogram!(STORAGE_BG_TASK_RUN_DURATION,
-             PRIORITY => self.priority.as_static_str(),
-             OP_TYPE => self.kind.as_static_str(),
-        )
-        .record(start.elapsed());
-        histogram!(STORAGE_BG_TASK_TOTAL_DURATION,
-             PRIORITY => self.priority.as_static_str(),
-             OP_TYPE => self.kind.as_static_str(),
-        )
-        .record(self.created_at.elapsed());
+        histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(start.elapsed());
         gauge!(STORAGE_BG_TASK_IN_FLIGHT,
              PRIORITY => self.priority.as_static_str(),
              OP_TYPE => self.kind.as_static_str(),
