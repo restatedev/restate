@@ -20,7 +20,7 @@ impl<'a, DB: DBAccess> OwnedIterator<'a, DB> {
     pub(crate) fn new(iter: DBRawIteratorWithThreadMode<'a, DB>) -> Self {
         Self {
             iter,
-            arena: BytesMut::with_capacity(8196),
+            arena: BytesMut::new(),
         }
     }
 }
@@ -30,9 +30,8 @@ impl<DB: DBAccess> Iterator for OwnedIterator<'_, DB> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.arena.reserve(8192);
-
         if let Some((k, v)) = self.iter.item() {
+            self.arena.reserve(k.len() + v.len());
             self.arena.put_slice(k);
             let key = self.arena.split().freeze();
             self.arena.put_slice(v);
