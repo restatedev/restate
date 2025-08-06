@@ -250,23 +250,12 @@ where
                                     {
                                         let inner = inner.clone();
                                         tokio::task::spawn(async move {
-                                            match tokio::time::timeout(
-                                                Duration::from_secs(5),
-                                                inner.process_start_trailers(body),
-                                            )
-                                            .await
-                                            {
-                                                Ok(Ok(())) => {
+                                            match inner.process_start_trailers(body).await {
+                                                Ok(()) => {
                                                     let _ = serve_state.start_result.set(Ok(()));
                                                 }
-                                                Ok(Err(err)) => {
+                                                Err(err) => {
                                                     let _ = serve_state.start_result.set(Err(err));
-                                                    serve_state.cancel.cancel();
-                                                }
-                                                Err(_timeout) => {
-                                                    let _ = serve_state
-                                                        .start_result
-                                                        .set(Err(StartError::Timeout));
                                                     serve_state.cancel.cancel();
                                                 }
                                             }
@@ -304,6 +293,15 @@ where
                     );
             let mut server = pin!(server);
 
+            let handshake_timeout = async {
+                match tokio::time::timeout(Duration::from_secs(5), serve_state.start_result.wait())
+                    .await
+                {
+                    Ok(Ok(_)) | Ok(Err(_)) => std::future::pending().await,
+                    Err(_) => {}
+                }
+            };
+
             tokio::select! {
                 server_result = &mut server => match server_result {
                     Ok(()) => {},
@@ -311,24 +309,39 @@ where
                         return err.into();
                     }
                 },
+                _ = handshake_timeout => {
+                    let _ = serve_state.start_result.set(Err(StartError::Timeout));
+                    serve_state.cancel.cancel();
+
+                    if serve_state.started.load(Ordering::Relaxed) {
+                        hyper::server::conn::http2::Connection::graceful_shutdown(server.as_mut());
+                        // let the server drain, ignoring any errors
+                        let _ = server.await;
+                    }
+                }
                 _ = serve_state.cancel.cancelled() => {
-                    hyper::server::conn::http2::Connection::graceful_shutdown(server.as_mut());
-                    // let the server drain, ignoring any errors
-                    let _ = server.await;
+                    if serve_state.started.load(Ordering::Relaxed) {
+                        hyper::server::conn::http2::Connection::graceful_shutdown(server.as_mut());
+                        // let the server drain, ignoring any errors
+                        let _ = server.await;
+                    }
                 },
             }
         }
 
-        match serve_state.start_result.wait().await {
-            Ok(()) if serve_state.cancel.is_cancelled() => {
+        match serve_state.start_result.get() {
+            Some(Ok(())) if serve_state.cancel.is_cancelled() => {
                 // if we are cancelled but not failed, someone higher up the call stack requested the cancellation
                 ServeError::ClientClosed("proxying")
             }
-            Ok(()) => {
+            Some(Ok(())) => {
                 // if we are not cancelled or failed, the tcp connection simply closed
                 ServeError::ServerClosed("proxying")
             }
-            Err(err) => err.clone().into(),
+            // handshake failure
+            Some(Err(err)) => err.clone().into(),
+            // closed before we finished the handshake
+            None => ServeError::ClientClosed("handshaking"),
         }
     }
 }
@@ -523,6 +536,10 @@ impl<T> AsyncOnce<T> {
             }
             Err(value) => Err(value),
         }
+    }
+
+    pub fn get(&self) -> Option<&T> {
+        self.cell.get()
     }
 }
 
