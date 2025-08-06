@@ -56,6 +56,20 @@ pub struct ConnectionInfo {
     )]
     pub address: Vec<AdvertisedAddress>,
 
+    /// Connect to a single address only, avoiding node enumeration.
+    ///
+    /// This bypasses cluster discovery and uses only the specified address
+    /// for all operations. Useful with load balancers or when direct node
+    /// access is not available.
+    #[clap(
+        long,
+        short('S'),
+        value_hint = clap::ValueHint::Url,
+        global = true,
+        conflicts_with = "address",
+    )]
+    pub single_address: Option<AdvertisedAddress>,
+
     #[clap(skip)]
     nodes_configuration: Arc<Mutex<Option<NodesConfiguration>>>,
 
@@ -73,10 +87,112 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
+    pub fn is_single_address_mode(&self) -> bool {
+        self.single_address.is_some()
+    }
+
+    fn get_effective_addresses(&self) -> Vec<&AdvertisedAddress> {
+        if let Some(addr) = &self.single_address {
+            vec![addr]
+        } else {
+            self.address.iter().collect()
+        }
+    }
+
+    async fn get_metadata_single_address<T, M>(
+        &self,
+        kind: MetadataKind,
+        guard: MutexGuard<'_, Option<T>>,
+        extract_version: M,
+        metadata_name: &str,
+    ) -> Result<T, ConnectionInfoError>
+    where
+        T: StorageDecode + Versioned + Clone,
+        M: Fn(&IdentResponse) -> Version,
+    {
+        info!(
+            "Single-address mode: reading {} from only one node (no majority consensus)",
+            metadata_name
+        );
+        let effective_addresses = self.get_effective_addresses();
+        self.get_latest_metadata(
+            effective_addresses.into_iter(),
+            1,
+            kind,
+            guard,
+            extract_version,
+        )
+        .await
+    }
+
+    async fn get_majority_consensus_addresses<'a>(
+        &self,
+        nodes_config: &'a NodesConfiguration,
+    ) -> Vec<&'a AdvertisedAddress> {
+        let mut nodes_addresses = nodes_config
+            .iter()
+            .map(|(_, node)| &node.address)
+            .collect::<Vec<_>>();
+
+        nodes_addresses.shuffle(&mut rng());
+
+        let cached = self
+            .open_connections
+            .lock()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert!(!cached.is_empty(), "must have cached connections");
+        let (cached_nodes, uncached_nodes): (Vec<_>, Vec<_>) = nodes_addresses
+            .into_iter()
+            .partition(|address| cached.contains(address));
+
+        cached_nodes.into_iter().chain(uncached_nodes).collect()
+    }
+
+    async fn try_single_address_operation<F, T, E, Fut>(
+        &self,
+        mut node_operation: F,
+        role: Option<Role>,
+    ) -> Result<T, ConnectionInfoError>
+    where
+        F: FnMut(Channel) -> Fut,
+        E: Into<NodeOperationError>,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let effective_addresses = self.get_effective_addresses();
+        let mut open_connections = self.open_connections.lock().await;
+
+        if let Some(address) = effective_addresses.into_iter().next() {
+            if let Some(channel) = self.connect_internal(address, &mut open_connections).await {
+                debug!("Trying {} (single-address mode)...", address);
+                let result = node_operation(channel).await.map_err(Into::into);
+                return match result {
+                    Ok(response) => Ok(response),
+                    Err(error) => {
+                        let mut errors = NodesErrors::default();
+                        let simple_status = match error {
+                            NodeOperationError::RetryElsewhere(status) => status,
+                            NodeOperationError::Terminal(status) => status,
+                        };
+                        errors.error(address.clone(), simple_status);
+                        Err(ConnectionInfoError::NodesErrors(errors))
+                    }
+                };
+            }
+            return Err(ConnectionInfoError::NodeUnreachable);
+        }
+
+        Err(ConnectionInfoError::NoAvailableNodes(NoRoleError(role)))
+    }
+
     /// Gets NodesConfiguration object. Tries all provided addresses and caches the
     /// response. Always uses the address seed provided on the command line.
     pub async fn get_nodes_configuration(&self) -> Result<NodesConfiguration, ConnectionInfoError> {
-        if self.address.is_empty() {
+        let effective_addresses = self.get_effective_addresses();
+        if effective_addresses.is_empty() {
             return Err(ConnectionInfoError::NoAvailableNodes(NoRoleError(None)));
         }
 
@@ -85,9 +201,15 @@ impl ConnectionInfo {
             debug!("Using cached nodes configuration");
         }
 
+        let stop_after_responses = if self.is_single_address_mode() {
+            1
+        } else {
+            effective_addresses.len()
+        };
+
         self.get_latest_metadata(
-            self.address.iter(),
-            self.address.len(),
+            effective_addresses.into_iter(),
+            stop_after_responses,
             MetadataKind::NodesConfiguration,
             guard,
             |ident| Version::from(ident.nodes_config_version),
@@ -100,42 +222,25 @@ impl ConnectionInfo {
     /// This function will try multiple nodes learned from nodes_configuration
     /// to get the best guess of the latest logs version is.
     pub async fn get_logs(&self) -> Result<Logs, ConnectionInfoError> {
-        let nodes_config = self.get_nodes_configuration().await?;
-
         let guard = self.logs.lock().await;
 
-        let mut nodes_addresses = nodes_config
-            .iter()
-            .map(|(_, node)| &node.address)
-            .collect::<Vec<_>>();
+        if self.is_single_address_mode() {
+            return self
+                .get_metadata_single_address(
+                    MetadataKind::Logs,
+                    guard,
+                    |ident| Version::from(ident.logs_version),
+                    "logs metadata",
+                )
+                .await;
+        }
 
-        nodes_addresses.shuffle(&mut rng());
-
-        let cluster_size = nodes_addresses.len();
-        let cached = self
-            .open_connections
-            .lock()
-            .await
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-
-        assert!(!cached.is_empty(), "must have cached connections");
-
-        // To improve our chance of getting the latest logs definition, we read from a simple
-        // majority of nodes. Existing connections take precedence.
-        let logs_source_nodes = cached
-            .iter()
-            .chain(
-                nodes_addresses
-                    .into_iter()
-                    .filter(|address| !cached.contains(address)),
-            )
-            .collect::<Vec<_>>();
+        let nodes_config = self.get_nodes_configuration().await?;
+        let addresses = self.get_majority_consensus_addresses(&nodes_config).await;
 
         self.get_latest_metadata(
-            logs_source_nodes.into_iter(),
-            (cluster_size / 2) + 1,
+            addresses.into_iter(),
+            (nodes_config.len() / 2) + 1,
             MetadataKind::Logs,
             guard,
             |ident| Version::from(ident.logs_version),
@@ -144,42 +249,25 @@ impl ConnectionInfo {
     }
 
     pub async fn get_partition_table(&self) -> Result<PartitionTable, ConnectionInfoError> {
-        let nodes_config = self.get_nodes_configuration().await?;
-
         let guard = self.partition_table.lock().await;
 
-        let mut nodes_addresses = nodes_config
-            .iter()
-            .map(|(_, node)| &node.address)
-            .collect::<Vec<_>>();
+        if self.is_single_address_mode() {
+            return self
+                .get_metadata_single_address(
+                    MetadataKind::PartitionTable,
+                    guard,
+                    |ident| Version::from(ident.partition_table_version),
+                    "partition table",
+                )
+                .await;
+        }
 
-        nodes_addresses.shuffle(&mut rng());
-
-        let cluster_size = nodes_addresses.len();
-        let cached = self
-            .open_connections
-            .lock()
-            .await
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-
-        assert!(!cached.is_empty(), "must have cached connections");
-
-        // To improve our chance of getting the latest partition table, we read from a simple
-        // majority of nodes. Existing connections take precedence.
-        let partition_table_nodes = cached
-            .iter()
-            .chain(
-                nodes_addresses
-                    .into_iter()
-                    .filter(|address| !cached.contains(address)),
-            )
-            .collect::<Vec<_>>();
+        let nodes_config = self.get_nodes_configuration().await?;
+        let addresses = self.get_majority_consensus_addresses(&nodes_config).await;
 
         self.get_latest_metadata(
-            partition_table_nodes.into_iter(),
-            (cluster_size / 2) + 1,
+            addresses.into_iter(),
+            (nodes_config.len() / 2) + 1,
             MetadataKind::PartitionTable,
             guard,
             |ident| Version::from(ident.partition_table_version),
@@ -317,6 +405,12 @@ impl ConnectionInfo {
         E: Into<NodeOperationError>,
         Fut: Future<Output = Result<T, E>>,
     {
+        if self.is_single_address_mode() {
+            return self
+                .try_single_address_operation(node_operation, role)
+                .await;
+        }
+
         let nodes_config = self.get_nodes_configuration().await?;
         let mut open_connections = self.open_connections.lock().await;
 
