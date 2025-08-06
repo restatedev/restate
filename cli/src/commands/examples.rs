@@ -29,6 +29,10 @@ use crate::console::{Styled, c_println, choose};
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_examples")]
 pub struct Examples {
+    /// Output directory.
+    #[arg(long, alias = "out")]
+    output_directory: Option<PathBuf>,
+
     /// Example name.
     ///
     /// If omitted, an interactive prompt will ask you which example to download.
@@ -72,7 +76,13 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
             .asset
     };
 
-    download_example(examples_repo, example_asset).await
+    let output_dir = if let Some(out_dir) = &example_opts.output_directory {
+
+    } else {
+        let out_dir_name = PathBuf::from(example_asset.name.trim_end_matches(".zip").to_owned());
+    }
+
+    download_example(examples_repo, example_asset).await;
 }
 
 struct Language {
