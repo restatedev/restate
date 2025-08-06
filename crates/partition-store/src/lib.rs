@@ -18,6 +18,7 @@ pub mod invocation_status_table;
 pub mod journal_table;
 pub mod journal_table_v2;
 pub mod keys;
+mod migrations;
 pub mod outbox_table;
 mod owned_iter;
 mod partition_db;

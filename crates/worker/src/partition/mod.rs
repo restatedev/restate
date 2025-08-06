@@ -313,6 +313,10 @@ where
 
     async fn run_inner(&mut self) -> Result<(), ProcessorError> {
         let mut partition_store = self.partition_store.clone();
+
+        // Run migrations
+        partition_store.verify_and_run_migrations().await?;
+
         let last_applied_lsn = partition_store
             .get_applied_lsn()
             .await?

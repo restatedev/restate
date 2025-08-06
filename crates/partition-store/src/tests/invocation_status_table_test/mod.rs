@@ -212,6 +212,9 @@ async fn test_migration() {
     .unwrap();
     txn.commit().await.unwrap();
 
+    // Now run the migrations
+    rocksdb.verify_and_run_migrations().await.unwrap();
+
     // Make sure we can read without mutating
     assert_eq!(
         status,
