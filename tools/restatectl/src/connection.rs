@@ -167,6 +167,26 @@ impl ConnectionInfo {
 
         if let Some(address) = effective_addresses.into_iter().next() {
             if let Some(channel) = self.connect_internal(address, &mut open_connections).await {
+                if let Some(required_role) = role {
+                    let mut client = new_node_ctl_client(channel.clone());
+                    let ident_response = match client.get_ident(()).await {
+                        Ok(response) => response.into_inner(),
+                        Err(status) => {
+                            let mut errors = NodesErrors::default();
+                            errors.error(address.clone(), SimpleStatus::from(status));
+                            return Err(ConnectionInfoError::NodesErrors(errors));
+                        }
+                    };
+
+                    if !ident_response.roles.contains(&required_role.to_string()) {
+                        return Err(ConnectionInfoError::NodeRoleMismatch {
+                            address: address.clone(),
+                            required_role,
+                            available_roles: ident_response.roles.join(", "),
+                        });
+                    }
+                }
+
                 debug!("Trying {} (single-address mode)...", address);
                 let result = node_operation(channel).await.map_err(Into::into);
                 return match result {
@@ -574,6 +594,14 @@ pub enum ConnectionInfoError {
 
     #[error("Node is unreachable")]
     NodeUnreachable,
+    #[error(
+        "Single address mode: node {address} does not have the required role '{required_role}'. Node has roles: [{available_roles}]"
+    )]
+    NodeRoleMismatch {
+        address: AdvertisedAddress,
+        required_role: Role,
+        available_roles: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
