@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
-use metrics_util::MetricKindMask;
-
 use metrics_exporter_prometheus::formatting;
-use restate_types::config::CommonOptions;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use tokio::task::AbortHandle;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, trace};
+
+use restate_types::config::CommonOptions;
 
 #[derive(Default)]
 pub struct Prometheus {
@@ -39,11 +38,6 @@ impl Prometheus {
             };
         }
         let builder = PrometheusBuilder::default()
-            // Remove a metric from registry if it was not updated for that duration
-            .idle_timeout(
-                MetricKindMask::HISTOGRAM,
-                opts.histogram_inactivity_timeout.map(Into::into),
-            )
             .add_global_label("cluster_name", opts.cluster_name())
             .add_global_label("node_name", opts.node_name())
             .set_quantiles(&[0.5, 0.9, 0.99, 1.0])
