@@ -19,10 +19,10 @@ use convert_case::{Case, Casing};
 use futures::StreamExt;
 use octocrab::models::repos::Asset;
 use octocrab::repos::RepoHandler;
+use restate_cli_util::ui::console::input;
+use restate_cli_util::ui::stylesheet::Style;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-
-use restate_cli_util::ui::stylesheet::Style;
 
 use crate::console::{Styled, c_println, choose};
 
@@ -77,12 +77,16 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
     };
 
     let output_dir = if let Some(out_dir) = &example_opts.output_directory {
-
+        out_dir.clone()
     } else {
-        let out_dir_name = PathBuf::from(example_asset.name.trim_end_matches(".zip").to_owned());
-    }
+        input(
+            "Output directory",
+            example_asset.name.trim_end_matches(".zip").to_owned(),
+        )?
+        .into()
+    };
 
-    download_example(examples_repo, example_asset).await;
+    download_example(output_dir, examples_repo, example_asset).await
 }
 
 struct Language {
@@ -180,8 +184,11 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-async fn download_example(repo_handler: RepoHandler<'_>, asset: Asset) -> Result<()> {
-    let out_dir_name = PathBuf::from(asset.name.trim_end_matches(".zip").to_owned());
+async fn download_example(
+    out_dir_name: PathBuf,
+    repo_handler: RepoHandler<'_>,
+    asset: Asset,
+) -> Result<()> {
     // This fails if the directory already exists.
     tokio::fs::create_dir(&out_dir_name)
         .await
