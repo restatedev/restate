@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#![allow(unused)]
+
 use metrics::{Unit, describe_counter};
 
 // value of label `kind` in TC_SPAWN are defined in [`crate::TaskKind`].

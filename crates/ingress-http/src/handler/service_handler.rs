@@ -227,7 +227,6 @@ where
         histogram!(
             INGRESS_REQUEST_DURATION,
             "rpc.service" => service_name.clone(),
-            "rpc.method" => handler_name.clone(),
         )
         .record(start_time.elapsed());
 
@@ -235,7 +234,6 @@ where
             INGRESS_REQUESTS,
             "status" => REQUEST_COMPLETED,
             "rpc.service" => service_name,
-            "rpc.method" => handler_name,
         )
         .increment(1);
         result

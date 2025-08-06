@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metric_definitions::{INGRESS_REQUESTS, REQUEST_ADMITTED, REQUEST_DENIED_THROTTLE};
+use crate::metric_definitions::{INGRESS_REQUESTS, REQUEST_ADMITTED, REQUEST_RATE_LIMITED};
 use futures::ready;
 use http::{Request, Response, StatusCode};
 use metrics::counter;
@@ -76,7 +76,7 @@ where
             warn!("No available quota to process the request");
 
             // Register request denied
-            counter!(INGRESS_REQUESTS, "status" => REQUEST_DENIED_THROTTLE).increment(1);
+            counter!(INGRESS_REQUESTS, "status" => REQUEST_RATE_LIMITED).increment(1);
 
             return ResponseFuture {
                 state: ResponseState::Overloaded,
