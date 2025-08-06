@@ -192,15 +192,6 @@ pub struct CommonOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub tokio_console_bind_address: Option<BindAddress>,
 
-    /// Timeout for idle histograms.
-    ///
-    /// The duration after which a histogram is considered idle and will be removed from
-    /// metric responses to save memory. This value should be configured higher than the
-    /// scrape interval of the telemetry collection system (e.g. Prometheus).
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub histogram_inactivity_timeout: Option<humantime::Duration>,
-
     #[serde(flatten)]
     pub service_client: ServiceClientOptions,
 
@@ -444,7 +435,6 @@ impl Default for CommonOptions {
             advertised_address: AdvertisedAddress::from_str(DEFAULT_ADVERTISED_ADDRESS).unwrap(),
             default_num_partitions: 24,
             default_replication: ReplicationProperty::new_unchecked(1),
-            histogram_inactivity_timeout: None,
             disable_prometheus: false,
             service_client: Default::default(),
             shutdown_timeout: Duration::from_secs(60).into(),
