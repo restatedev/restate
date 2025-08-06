@@ -2143,7 +2143,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         let journal_stream =
             match <S as restate_storage_api::journal_table_v2::ReadOnlyJournalTable>::get_journal(
-                &mut self.storage,
+                self.storage,
                 *invocation_id,
                 journal_length,
             ) {
@@ -2187,7 +2187,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         let final_duration_ms = max(final_entry_ms, 1);
         total_byte_ms += cumulative_bytes * final_duration_ms;
 
-        return total_byte_ms;
+        total_byte_ms
     }
 
     async fn calculate_retained_byte_ms(
@@ -2203,7 +2203,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         let journal_stream =
             match <S as restate_storage_api::journal_table_v2::ReadOnlyJournalTable>::get_journal(
-                &mut self.storage,
+                self.storage,
                 *invocation_id,
                 journal_length,
             ) {
@@ -2238,7 +2238,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         let retained_ms = deleted_at.as_u64().saturating_sub(invoke_end_at.as_u64());
         let duration_ms = max(retained_ms, 1); // minimum 1ms
 
-        return total_bytes * duration_ms;
+        total_bytes * duration_ms
     }
 
     #[allow(clippy::too_many_arguments)]
