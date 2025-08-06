@@ -19,12 +19,14 @@ pub const STATUS_COMPLETED: &str = "completed";
 pub const STATUS_FAILED: &str = "failed";
 
 pub fn describe_metrics() {
+    #[cfg(debug_assertions)]
     describe_counter!(
         TC_SPAWN,
         Unit::Count,
         "Total tasks spawned by the task center"
     );
 
+    #[cfg(debug_assertions)]
     describe_counter!(
         TC_FINISHED,
         Unit::Count,

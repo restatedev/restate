@@ -31,13 +31,11 @@ use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, info_span, instrument, trace, warn};
 
-use crate::metric_definitions::PARTITION_DURABLE_LSN;
-use crate::metric_definitions::PARTITION_IS_ACTIVE;
+use crate::metric_definitions::NUM_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
 use crate::metric_definitions::PARTITION_LABEL;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
-use crate::metric_definitions::{NUM_PARTITIONS, PARTITION_APPLIED_LSN};
 use crate::partition::ProcessorError;
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
@@ -720,38 +718,18 @@ impl PartitionProcessorManager {
             .iter()
             .filter_map(|(partition_id, processor_state)| {
                 let mut status = processor_state.partition_processor_status()?;
+                let labels = [(PARTITION_LABEL, partition_id.to_string())];
 
-                gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE,
-                        PARTITION_LABEL => partition_id.to_string())
-                .set(status.updated_at.elapsed());
+                gauge!(PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, &labels)
+                    .set(status.updated_at.elapsed());
 
-                gauge!(PARTITION_IS_EFFECTIVE_LEADER,
-                        PARTITION_LABEL => partition_id.to_string())
-                .set(if status.is_effective_leader() {
-                    1.0
-                } else {
-                    0.0
-                });
-
-                gauge!(PARTITION_IS_ACTIVE,
-                        PARTITION_LABEL => partition_id.to_string())
-                .set(if status.replay_status == ReplayStatus::Active {
-                    1.0
-                } else {
-                    0.0
-                });
-
-                if let Some(last_applied_log_lsn) = status.last_applied_log_lsn {
-                    gauge!(PARTITION_APPLIED_LSN,
-                        PARTITION_LABEL => partition_id.to_string())
-                    .set(last_applied_log_lsn.as_u64() as f64);
-                }
-
-                if let Some(durable_lsn) = status.last_persisted_log_lsn {
-                    gauge!(PARTITION_DURABLE_LSN,
-                        PARTITION_LABEL => partition_id.to_string())
-                    .set(durable_lsn.as_u64() as f64);
-                }
+                gauge!(PARTITION_IS_EFFECTIVE_LEADER, &labels).set(
+                    if status.is_effective_leader() {
+                        1.0
+                    } else {
+                        0.0
+                    },
+                );
 
                 // it is a bit unfortunate that we share PartitionProcessorStatus between the
                 // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
@@ -768,16 +746,18 @@ impl PartitionProcessorManager {
                     None => {
                         // current tail lsn is unknown.
                         // This might indicate an issue, so we set the metric to infinity
-                        gauge!(PARTITION_APPLIED_LSN_LAG, PARTITION_LABEL => partition_id.to_string())
-                        .set(f64::INFINITY);
-                    },
+                        gauge!(PARTITION_APPLIED_LSN_LAG, &labels).set(f64::INFINITY);
+                    }
                     Some(target_tail_lsn) => {
                         status.target_tail_lsn = Some(target_tail_lsn);
 
                         // tail lsn always points to the next "free" lsn slot. Therefor the lag is calculate as `lsn-1`
                         // hence we do target_tail_lsn.prev() below
-                        gauge!(PARTITION_APPLIED_LSN_LAG, PARTITION_LABEL => partition_id.to_string())
-                        .set(target_tail_lsn.prev().as_u64().saturating_sub(status.last_applied_log_lsn.unwrap_or(Lsn::OLDEST).as_u64()) as f64);
+                        gauge!(PARTITION_APPLIED_LSN_LAG, &labels).set(
+                            target_tail_lsn.prev().as_u64().saturating_sub(
+                                status.last_applied_log_lsn.unwrap_or(Lsn::OLDEST).as_u64(),
+                            ) as f64,
+                        );
                     }
                 }
 

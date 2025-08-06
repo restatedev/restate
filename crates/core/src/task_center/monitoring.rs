@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use metrics::gauge;
+use metrics::{counter, gauge};
 use tokio::runtime::RuntimeMetrics;
 
 use restate_types::SharedString;
@@ -60,35 +60,44 @@ impl TaskCenterMonitoring for Handle {
 }
 
 fn submit_runtime_metrics(runtime: impl Into<SharedString>, stats: RuntimeMetrics) {
-    let runtime = runtime.into();
-    gauge!("restate.tokio.num_workers", "runtime" => runtime.clone())
-        .set(stats.num_workers() as f64);
-    gauge!("restate.tokio.blocking_threads", "runtime" => runtime.clone())
-        .set(stats.num_blocking_threads() as f64);
-    gauge!("restate.tokio.blocking_queue_depth", "runtime" => runtime.clone())
-        .set(stats.blocking_queue_depth() as f64);
-    gauge!("restate.tokio.num_alive_tasks", "runtime" => runtime.clone())
-        .set(stats.num_alive_tasks() as f64);
-    gauge!("restate.tokio.io_driver_ready_count", "runtime" => runtime.clone())
+    let runtime: SharedString = runtime.into();
+    let labels = [("runtime", runtime.clone())];
+    #[cfg(debug_assertions)]
+    gauge!("restate.tokio.num_workers", &labels).set(stats.num_workers() as f64);
+    #[cfg(debug_assertions)]
+    gauge!("restate.tokio.blocking_threads", &labels).set(stats.num_blocking_threads() as f64);
+    #[cfg(debug_assertions)]
+    gauge!("restate.tokio.blocking_queue_depth", &labels).set(stats.blocking_queue_depth() as f64);
+    #[cfg(debug_assertions)]
+    gauge!("restate.tokio.num_alive_tasks", &labels).set(stats.num_alive_tasks() as f64);
+    #[cfg(debug_assertions)]
+    gauge!("restate.tokio.io_driver_ready_count", &labels)
         .set(stats.io_driver_ready_count() as f64);
-    gauge!("restate.tokio.remote_schedule_count", "runtime" => runtime.clone())
-        .set(stats.remote_schedule_count() as f64);
+    #[cfg(debug_assertions)]
+    counter!("restate.tokio.remote_schedule_count", &labels)
+        .absolute(stats.remote_schedule_count());
     // per worker stats
     for idx in 0..stats.num_workers() {
-        gauge!("restate.tokio.worker_overflow_count", "runtime" => runtime.clone(), "worker" =>
-            idx.to_string())
-        .set(stats.worker_overflow_count(idx) as f64);
-        gauge!("restate.tokio.worker_poll_count", "runtime" => runtime.clone(), "worker" => idx.to_string())
-            .set(stats.worker_poll_count(idx) as f64);
-        gauge!("restate.tokio.worker_park_count", "runtime" => runtime.clone(), "worker" => idx.to_string())
-            .set(stats.worker_park_count(idx) as f64);
-        gauge!("restate.tokio.worker_noop_count", "runtime" => runtime.clone(), "worker" => idx.to_string())
-            .set(stats.worker_noop_count(idx) as f64);
-        gauge!("restate.tokio.worker_steal_count", "runtime" => runtime.clone(), "worker" => idx.to_string())
-            .set(stats.worker_steal_count(idx) as f64);
-        gauge!("restate.tokio.worker_total_busy_duration_seconds", "runtime" => runtime.clone(), "worker" => idx.to_string())
+        let labels = [
+            ("runtime", runtime.clone()),
+            ("worker", idx.to_string().into()),
+        ];
+        #[cfg(debug_assertions)]
+        counter!("restate.tokio.worker_overflow_count", &labels)
+            .absolute(stats.worker_overflow_count(idx));
+        #[cfg(debug_assertions)]
+        counter!("restate.tokio.worker_park_count", &labels).absolute(stats.worker_park_count(idx));
+        #[cfg(debug_assertions)]
+        counter!("restate.tokio.worker_noop_count", &labels).absolute(stats.worker_noop_count(idx));
+        #[cfg(debug_assertions)]
+        counter!("restate.tokio.worker_steal_count", &labels)
+            .absolute(stats.worker_steal_count(idx));
+        #[cfg(debug_assertions)]
+        gauge!("restate.tokio.worker_total_busy_duration_seconds", &labels)
             .set(stats.worker_total_busy_duration(idx).as_secs_f64());
-        gauge!("restate.tokio.worker_mean_poll_time", "runtime" => runtime.clone(), "worker" => idx.to_string())
+        // Main metrics we want in non-debug mode
+        counter!("restate.tokio.worker_poll_count", &labels).absolute(stats.worker_poll_count(idx));
+        gauge!("restate.tokio.worker_mean_poll_time", &labels)
             .set(stats.worker_mean_poll_time(idx).as_secs_f64());
     }
 }

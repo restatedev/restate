@@ -4442,7 +4442,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -4662,9 +4662,9 @@ dependencies = [
 
 [[package]]
 name = "metrics-exporter-prometheus"
-version = "0.17.0"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df88858cd28baaaf2cfc894e37789ed4184be0e1351157aec7bf3c2266c793fd"
+checksum = "2b166dea96003ee2531cf14833efedced545751d800f03535801d833313f8c15"
 dependencies = [
  "base64 0.22.1",
  "hyper-util",
@@ -4678,9 +4678,9 @@ dependencies = [
 
 [[package]]
 name = "metrics-util"
-version = "0.19.1"
+version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8496cc523d1f94c1385dd8f0f0c2c480b2b8aeccb5b7e4485ad6365523ae376"
+checksum = "fe8db7a05415d0f919ffb905afa37784f71901c9a773188876984b4f769ab986"
 dependencies = [
  "aho-corasick",
  "crossbeam-epoch",
@@ -7997,8 +7997,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.0.93"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.93#16ac00bd212039bf290334cfd5c245d675ab3b5d"
+version = "0.0.94"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.94#f735c111179efab9ac3551213ec19e51bd10e432"
 dependencies = [
  "anyhow",
  "include_dir",
