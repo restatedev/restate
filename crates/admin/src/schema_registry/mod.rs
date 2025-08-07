@@ -206,7 +206,7 @@ impl<V> SchemaRegistry<V> {
                     urlencoding::encode(full_sdk_version_string)
                 )
                 .parse()
-                .with_context(|| format!("cannot parse uri"))?;
+                .with_context(|| "cannot create telemetry uri")?;
 
                 trace!(%uri, "Sending telemetry data");
 
