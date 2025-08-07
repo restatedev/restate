@@ -47,6 +47,9 @@ static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
         .with_no_client_auth()
 });
 
+const HTTP_VERSION_HEADER: http::HeaderName =
+    http::HeaderName::from_static("x-restate-http-version");
+
 // TODO
 //  for the time being we use BoxBody here to simplify the migration to hyper 1.0.
 //  We should consider replacing this with some concrete type that makes sense.
@@ -143,16 +146,29 @@ impl HttpClient {
             }),
         };
 
+        let is_https = uri_parts.scheme == Some(http::uri::Scheme::HTTPS);
+
         let mut http_request_builder = Request::builder()
             .method(method)
             .uri(Uri::from_parts(uri_parts)?);
 
-        for (header, value) in headers.iter() {
-            http_request_builder = http_request_builder.header(header, value)
-        }
-
         if let Some(version) = version {
             http_request_builder = http_request_builder.version(version);
+
+            if version == http::Version::HTTP_11 && is_https {
+                // The user specifically requested use_http_11, but this is a https request so it will go over ALPN
+                // we use a header to communicate the users original intent; maybe a proxy further down the chain
+                // can use http1.1.
+                // In particular, cloud tunnel clients can use this header to decide what version to use.
+                http_request_builder = http_request_builder.header(
+                    HTTP_VERSION_HEADER,
+                    http::HeaderValue::from_static("HTTP/1.1"),
+                );
+            }
+        }
+
+        for (header, value) in headers.iter() {
+            http_request_builder = http_request_builder.header(header, value)
         }
 
         http_request_builder.body(BoxBody::new(body.map_err(|e| e.into())))
