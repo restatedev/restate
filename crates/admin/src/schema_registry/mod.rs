@@ -11,14 +11,14 @@
 pub mod error;
 mod updater;
 
+use anyhow::Context;
+use http::uri::PathAndQuery;
+use http::{HeaderMap, HeaderValue, Uri};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
-
-use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderValue, Uri};
 use tracing::subscriber::NoSubscriber;
 use tracing::trace;
 
@@ -187,7 +187,7 @@ impl<V> SchemaRegistry<V> {
     fn send_register_deployment_telemetry(&self, sdk_version: Option<String>) {
         if let Some(telemetry_http_client) = &self.telemetry_http_client {
             let client = telemetry_http_client.clone();
-            let _ = TaskCenter::spawn(TaskKind::Background, "telemetry-operation", async move {
+            let _ = TaskCenter::spawn(TaskKind::Disposable, "telemetry-operation", async move {
                 let (sdk_type, full_sdk_version_string) = if let Some(sdk_version) = &sdk_version {
                     (
                         sdk_version
@@ -206,7 +206,7 @@ impl<V> SchemaRegistry<V> {
                     urlencoding::encode(full_sdk_version_string)
                 )
                 .parse()
-                .expect("URI should be valid");
+                .with_context(|| format!("cannot parse uri"))?;
 
                 trace!(%uri, "Sending telemetry data");
 
