@@ -11,16 +11,19 @@
 pub mod error;
 mod updater;
 
+use anyhow::Context;
+use http::uri::PathAndQuery;
+use http::{HeaderMap, HeaderValue, Uri};
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
-
-use http::Uri;
 use tracing::subscriber::NoSubscriber;
+use tracing::trace;
 
-use restate_core::{Metadata, MetadataWriter};
+use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
+use restate_service_client::HttpClient;
 use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
 use restate_types::schema::Schema;
@@ -77,6 +80,7 @@ pub enum ModifyServiceChange {
 pub struct SchemaRegistry<V> {
     metadata_writer: MetadataWriter,
     service_discovery: ServiceDiscovery,
+    telemetry_http_client: Option<HttpClient>,
     subscription_validator: V,
 }
 
@@ -84,11 +88,13 @@ impl<V> SchemaRegistry<V> {
     pub fn new(
         metadata_writer: MetadataWriter,
         service_discovery: ServiceDiscovery,
+        telemetry_http_client: Option<HttpClient>,
         subscription_validator: V,
     ) -> Self {
         Self {
             metadata_writer,
             service_discovery,
+            telemetry_http_client,
             subscription_validator,
         }
     }
@@ -123,7 +129,7 @@ impl<V> SchemaRegistry<V> {
             ),
         };
 
-        let (id, services) = if !apply_mode.should_apply() {
+        let (deployment, services) = if !apply_mode.should_apply() {
             let mut updater =
                 SchemaUpdater::new(Metadata::with_current(|m| m.schema()).deref().clone());
 
@@ -171,7 +177,64 @@ impl<V> SchemaRegistry<V> {
             (deployment, services)
         };
 
-        Ok((id, services))
+        if apply_mode.should_apply() {
+            self.send_register_deployment_telemetry(deployment.metadata.sdk_version.clone());
+        }
+
+        Ok((deployment, services))
+    }
+
+    fn send_register_deployment_telemetry(&self, sdk_version: Option<String>) {
+        if let Some(telemetry_http_client) = &self.telemetry_http_client {
+            let client = telemetry_http_client.clone();
+            let _ = TaskCenter::spawn(TaskKind::Disposable, "telemetry-operation", async move {
+                let (sdk_type, full_sdk_version_string) = if let Some(sdk_version) = &sdk_version {
+                    (
+                        sdk_version
+                            .split_once('/')
+                            .map(|(version, _)| version)
+                            .unwrap_or_else(|| "unknown"),
+                        sdk_version.as_str(),
+                    )
+                } else {
+                    ("unknown", "unknown")
+                };
+
+                let uri = format!(
+                    "{TELEMETRY_URI_PREFIX}?sdk={}&version={}",
+                    urlencoding::encode(sdk_type),
+                    urlencoding::encode(full_sdk_version_string)
+                )
+                .parse()
+                .with_context(|| "cannot create telemetry uri")?;
+
+                trace!(%uri, "Sending telemetry data");
+
+                match client
+                    .request(
+                        uri,
+                        None,
+                        http::Method::GET,
+                        http_body_util::Empty::new(),
+                        PathAndQuery::from_static("/"),
+                        HeaderMap::from_iter([(
+                            http::header::USER_AGENT,
+                            HeaderValue::from_static("restate-server"),
+                        )]),
+                    )
+                    .await
+                {
+                    Ok(resp) => {
+                        trace!(status = %resp.status(), "Sent telemetry data")
+                    }
+                    Err(err) => {
+                        trace!(error = %err, "Failed to send telemetry data")
+                    }
+                }
+
+                Ok(())
+            });
+        }
     }
 
     pub async fn update_deployment(
@@ -467,3 +530,5 @@ impl Borrow<String> for ServiceName {
         &self.0
     }
 }
+
+static TELEMETRY_URI_PREFIX: &str = "https://restate.gateway.scarf.sh/sdk-registration/";

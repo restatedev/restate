@@ -6695,6 +6695,7 @@ dependencies = [
  "tonic",
  "tower 0.5.2",
  "tracing",
+ "urlencoding",
 ]
 
 [[package]]

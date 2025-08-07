@@ -20,6 +20,7 @@ use crate::schema_registry::SchemaRegistry;
 use crate::{rest_api, state};
 use restate_core::MetadataWriter;
 use restate_core::network::net_util;
+use restate_service_client::HttpClient;
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::net::BindAddress;
@@ -51,6 +52,7 @@ where
         invocation_client: IC,
         subscription_validator: V,
         service_discovery: ServiceDiscovery,
+        telemetry_http_client: Option<HttpClient>,
     ) -> Self {
         Self {
             bifrost,
@@ -59,6 +61,7 @@ where
             schema_registry: SchemaRegistry::new(
                 metadata_writer,
                 service_discovery,
+                telemetry_http_client,
                 subscription_validator,
             ),
             invocation_client,
