@@ -48,7 +48,7 @@ tokio = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true, features = ["cors", "normalize-path"] }
 url = "2.5.0"
-urlencoding = "2.1"
+urlencoding = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }

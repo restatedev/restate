@@ -20,7 +20,7 @@ use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::PartitionProcessorInvocationClient;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
-use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_service_client::{AssumeRoleCacheMode, HttpClient, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::empty_invoker_status_handle::EmptyInvokerStatusHandle;
@@ -84,6 +84,12 @@ impl<T: TransportConnect> AdminRole<T> {
             ServiceClient::from_options(&config.common.service_client, AssumeRoleCacheMode::None)?;
         let service_discovery = ServiceDiscovery::new(retry_policy, client);
 
+        let telemetry_http_client = if config.common.disable_telemetry {
+            None
+        } else {
+            Some(HttpClient::from_options(&config.common.service_client.http))
+        };
+
         let query_context = if let Some(query_context) = local_query_context {
             query_context
         } else {
@@ -114,6 +120,7 @@ impl<T: TransportConnect> AdminRole<T> {
             ),
             config.ingress.clone(),
             service_discovery,
+            telemetry_http_client,
         )
         .with_query_context(query_context);
 
