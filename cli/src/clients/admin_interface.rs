@@ -12,6 +12,7 @@ use super::AdminClient;
 use super::admin_client::Envelope;
 
 use restate_admin_rest_model::deployments::*;
+use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_admin_rest_model::services::*;
 use restate_admin_rest_model::version::VersionInformation;
 use restate_types::schema::service::ServiceMetadata;
@@ -39,6 +40,11 @@ pub trait AdminClientInterface {
     ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>>;
 
     async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
+
+    async fn restart_invocation(
+        &self,
+        id: &str,
+    ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>>;
 
     async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>>;
 
@@ -110,6 +116,14 @@ impl AdminClientInterface for AdminClient {
         url.set_query(Some("mode=purge"));
 
         self.run(reqwest::Method::DELETE, url).await
+    }
+
+    async fn restart_invocation(
+        &self,
+        id: &str,
+    ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>> {
+        let url = self.versioned_url(["invocations", id, "restart-as-new"]);
+        self.run(reqwest::Method::PATCH, url).await
     }
 
     async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>> {

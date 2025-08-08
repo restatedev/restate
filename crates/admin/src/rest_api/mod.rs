@@ -103,6 +103,10 @@ where
             patch(openapi_handler!(invocations::purge_journal)),
         )
         .route(
+            "/invocations/:invocation_id/restart-as-new",
+            patch(openapi_handler!(invocations::restart_as_new_invocation)),
+        )
+        .route(
             "/subscriptions",
             post(openapi_handler!(subscriptions::create_subscription)),
         )

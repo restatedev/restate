@@ -32,3 +32,4 @@ pub use assert2::{assert, check, let_assert};
 pub use pretty_assertions::{assert_eq, assert_ne};
 
 pub mod matchers;
+pub mod rand;

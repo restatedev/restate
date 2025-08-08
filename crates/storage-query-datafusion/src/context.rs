@@ -55,6 +55,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.invoked_by_id,
             ss.invoked_by_subscription_id,
             ss.invoked_by_target,
+            ss.restarted_from,
             ss.pinned_deployment_id,
             ss.pinned_service_protocol_version,
             ss.trace_id,

@@ -8,10 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod converters;
-pub mod deployments;
-pub mod handlers;
-pub mod invocations;
-pub mod services;
-pub mod subscriptions;
-pub mod version;
+use restate_types::identifiers::InvocationId;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct RestartAsNewInvocationResponse {
+    /// The invocation id of the new invocation.
+    pub new_invocation_id: InvocationId,
+}

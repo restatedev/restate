@@ -47,6 +47,8 @@ pub use types::*;
 
 #[cfg(feature = "test-util")]
 pub use connection::test_util::*;
+#[cfg(feature = "test-util")]
+pub use incoming::test_util::*;
 
 #[cfg(feature = "test-util")]
 pub use transport_connector::test_util::*;
