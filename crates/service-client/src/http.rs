@@ -16,7 +16,6 @@ use bytes::Bytes;
 use futures::FutureExt;
 use futures::future::Either;
 use http::Version;
-use http::uri::Scheme;
 use http_body_util::BodyExt;
 use hyper::body::Body;
 use hyper::http::HeaderValue;
@@ -33,7 +32,6 @@ use std::sync::{Arc, LazyLock};
 use std::{fmt, future};
 
 type ProxiedHttpsConnector = ProxyConnector<HttpsConnector<HttpConnector>>;
-type ProxiedHttpConnector = ProxyConnector<HttpConnector>;
 
 static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
     // We need to explicitly configure the crypto provider since we activate the ring as well as
@@ -55,17 +53,18 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {
-    /// Client used for HTTPs (all HTTP version) and HTTP/1.1 with h2c, for HTTP/2 we use `h2c_prior_knowledge_client`.
-    client: hyper_util::client::legacy::Client<ProxiedHttpsConnector, BoxBody>,
+    /// Client used for HTTPS as long as HTTP1.1 or HTTP2 was not specifically requested.
+    /// All HTTP versions are possible.
+    alpn_client: hyper_util::client::legacy::Client<ProxiedHttpsConnector, BoxBody>,
 
-    /// tl;dr we need this because `client` won't do h2c with prior knowledge.
-    ///
-    /// We need a separate client for h2c with prior knowledge because the hyper pooling code
-    /// won't respect the `Version` provided in the request for the connection,
-    /// but arbitrarily chooses to proceed with an HTTP/1.1 handshake when `http` is used (with h2c `Upgrade` support),
-    /// unless `http2_only` is provided (which effectively enables h2c prior knowledge always).
-    /// This is irrelevant with `https`, as ALPN will choose the protocol for us.
-    h2c_prior_knowledge_client: hyper_util::client::legacy::Client<ProxiedHttpConnector, BoxBody>,
+    /// Client when HTTP1.1 was specifically requested - even if the ALPN advertises
+    /// h2, we will not use it.
+    h1_client: hyper_util::client::legacy::Client<ProxiedHttpsConnector, BoxBody>,
+
+    /// Client when HTTP2 was specifically requested - for cleartext, we use h2c,
+    /// and for HTTPS, we will fail unless the ALPN supports h2.
+    /// In practice, at discovery time we never force h2 for HTTPS.
+    h2_client: hyper_util::client::legacy::Client<ProxiedHttpsConnector, BoxBody>,
 }
 
 impl HttpClient {
@@ -85,25 +84,42 @@ impl HttpClient {
         http_connector.set_nodelay(true);
         http_connector.set_connect_timeout(Some(options.connect_timeout.into()));
 
-        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+        let https_alpn_connector = hyper_rustls::HttpsConnectorBuilder::new()
             .with_tls_config(TLS_CLIENT_CONFIG.clone())
             .https_or_http()
             .enable_http1()
             .enable_http2()
             .wrap_connector(http_connector.clone());
 
+        let https_h1_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(TLS_CLIENT_CONFIG.clone())
+            .https_or_http()
+            .enable_http1()
+            .wrap_connector(http_connector.clone());
+
+        let https_h2_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(TLS_CLIENT_CONFIG.clone())
+            .https_or_http()
+            .enable_http2()
+            .wrap_connector(http_connector.clone());
+
         HttpClient {
-            client: builder.clone().build::<_, BoxBody>(ProxyConnector::new(
+            alpn_client: builder.clone().build::<_, BoxBody>(ProxyConnector::new(
                 options.http_proxy.clone(),
                 options.no_proxy.clone(),
-                https_connector,
+                https_alpn_connector,
             )),
-            h2c_prior_knowledge_client: {
+            h1_client: builder.clone().build::<_, BoxBody>(ProxyConnector::new(
+                options.http_proxy.clone(),
+                options.no_proxy.clone(),
+                https_h1_connector,
+            )),
+            h2_client: {
                 builder.http2_only(true);
                 builder.build::<_, BoxBody>(ProxyConnector::new(
                     options.http_proxy.clone(),
                     options.no_proxy.clone(),
-                    http_connector,
+                    https_h2_connector,
                 ))
             },
         }
@@ -176,14 +192,15 @@ impl HttpClient {
             Err(err) => return future::ready(Err(err.into())).right_future(),
         };
 
-        let fut = match (
-            request.version(),
-            request.uri().scheme().expect("URI should be absolute"),
-        ) {
-            (Version::HTTP_2, scheme) if scheme == &Scheme::HTTP => {
-                self.h2c_prior_knowledge_client.request(request)
-            }
-            (_, _) => self.client.request(request),
+        let fut = match version {
+            // version is set to http1.1 when use_http1.1 is set
+            Some(Version::HTTP_11) => self.h1_client.request(request),
+            // version is set to http2 for cleartext urls when use_http1.1 is not set
+            Some(Version::HTTP_2) => self.h2_client.request(request),
+            // version is currently set to none for https urls when use_http1.1 is not set
+            None => self.alpn_client.request(request),
+            // nothing currently sets a different version, but the alpn client is a sensible default
+            Some(_) => self.alpn_client.request(request),
         };
 
         Either::Left(async move {
