@@ -39,6 +39,13 @@ pub fn render_deployment_url(deployment: &Deployment) -> String {
 
 pub fn render_deployment_type(deployment: &Deployment) -> String {
     match deployment {
+        Deployment::Http { .. } => "HTTP".to_string(),
+        Deployment::Lambda { .. } => "Lambda".to_string(),
+    }
+}
+
+pub fn render_transport_protocol(deployment: &Deployment) -> String {
+    match deployment {
         Deployment::Http { http_version, .. } => {
             format!("{http_version:?}")
         }
@@ -92,7 +99,6 @@ pub fn render_active_invocations(active_inv: i64) -> Cell {
 }
 
 pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
-    table.add_kv_row("Deployment Type:", render_deployment_type(deployment));
     let (additional_headers, created_at, min_protocol_version, max_protocol_version) =
         match &deployment {
             Deployment::Http {
@@ -105,13 +111,8 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 max_protocol_version,
                 ..
             } => {
-                let protocol_type = match protocol_type {
-                    ProtocolType::RequestResponse => "Request/Response",
-                    ProtocolType::BidiStream => "Streaming",
-                }
-                .to_string();
-                table.add_kv_row("Protocol Style:", protocol_type);
-
+                table.add_kv_row("Transport:", render_transport_protocol(deployment));
+                table.add_kv_row("Protocol Style:", format!("{protocol_type}"));
                 table.add_kv_row("Endpoint:", uri);
                 (
                     additional_headers.clone(),
@@ -129,7 +130,11 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 max_protocol_version,
                 ..
             } => {
-                table.add_kv_row("Protocol Style:", "Request/Response");
+                table.add_kv_row("Transport:", "AWS Lambda");
+                table.add_kv_row(
+                    "Protocol Style:",
+                    format!("{}", ProtocolType::RequestResponse),
+                );
                 table.add_kv_row_if(
                     || assume_role_arn.is_some(),
                     "Deployment Assume Role ARN:",
