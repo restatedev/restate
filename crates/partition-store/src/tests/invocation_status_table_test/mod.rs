@@ -196,23 +196,30 @@ async fn test_invocation_status() {
 async fn test_migration() {
     let mut rocksdb = storage_test_environment().await;
 
-    let invocation_id = InvocationId::mock_random();
-    let in_flight_invocation_status = InFlightInvocationMetadata {
-        // Old data structure doesn't support created_using_restate_version
-        created_using_restate_version: RestateVersion::unknown(),
-        ..InFlightInvocationMetadata::mock()
-    };
-    let status = InvocationStatus::Invoked(in_flight_invocation_status);
+    // Generate 2001 invocations
+    let mut mocked_invocations = Vec::new();
+    for _ in 0..2001 {
+        let invocation_id = InvocationId::mock_random();
+        let in_flight_invocation_status = InFlightInvocationMetadata {
+            // Old data structure doesn't support created_using_restate_version
+            created_using_restate_version: RestateVersion::unknown(),
+            ..InFlightInvocationMetadata::mock()
+        };
+        let status = InvocationStatus::Invoked(in_flight_invocation_status);
+        mocked_invocations.push((invocation_id, status));
+    }
 
-    // Let's mock the old invocation status
+    // Let's mock the old invocation statuses
     let mut txn = rocksdb.transaction();
-    txn.put_kv(
-        InvocationStatusKeyV1::default()
-            .partition_key(invocation_id.partition_key())
-            .invocation_uuid(invocation_id.invocation_uuid()),
-        &InvocationStatusV1(status.clone()),
-    )
-    .unwrap();
+    for (invocation_id, status) in &mocked_invocations {
+        txn.put_kv(
+            InvocationStatusKeyV1::default()
+                .partition_key(invocation_id.partition_key())
+                .invocation_uuid(invocation_id.invocation_uuid()),
+            &InvocationStatusV1(status.clone()),
+        )
+        .unwrap();
+    }
     txn.commit().await.unwrap();
 
     // Now run the migrations
@@ -229,38 +236,40 @@ async fn test_migration() {
 
     // --- From now on all the statuses should be migrated
 
-    assert_eq!(
-        status,
-        rocksdb.get_invocation_status(&invocation_id).await.unwrap()
-    );
+    for (invocation_id, expected_status) in &mocked_invocations {
+        assert_eq!(
+            *expected_status,
+            rocksdb.get_invocation_status(invocation_id).await.unwrap()
+        );
 
-    let mut txn = rocksdb.transaction();
-    assert_eq!(
-        status,
-        txn.get_invocation_status(&invocation_id).await.unwrap()
-    );
-    txn.commit().await.unwrap();
+        let mut txn = rocksdb.transaction();
+        assert_eq!(
+            *expected_status,
+            txn.get_invocation_status(invocation_id).await.unwrap()
+        );
+        txn.commit().await.unwrap();
 
-    // Let's check nothing is left in the old key space
-    assert!(
-        rocksdb
-            .get_kv_raw(
-                InvocationStatusKeyV1::default()
-                    .partition_key(invocation_id.partition_key())
-                    .invocation_uuid(invocation_id.invocation_uuid()),
-                |_, v| Ok(v.is_none())
-            )
-            .unwrap()
-    );
-    // But invocation status is only in the new key space
-    assert!(
-        rocksdb
-            .get_kv_raw(
-                InvocationStatusKey::default()
-                    .partition_key(invocation_id.partition_key())
-                    .invocation_uuid(invocation_id.invocation_uuid()),
-                |_, v| Ok(v.is_some())
-            )
-            .unwrap()
-    );
+        // Let's check nothing is left in the old key space
+        assert!(
+            rocksdb
+                .get_kv_raw(
+                    InvocationStatusKeyV1::default()
+                        .partition_key(invocation_id.partition_key())
+                        .invocation_uuid(invocation_id.invocation_uuid()),
+                    |_, v| Ok(v.is_none())
+                )
+                .unwrap()
+        );
+        // But invocation status is only in the new key space
+        assert!(
+            rocksdb
+                .get_kv_raw(
+                    InvocationStatusKey::default()
+                        .partition_key(invocation_id.partition_key())
+                        .invocation_uuid(invocation_id.invocation_uuid()),
+                    |_, v| Ok(v.is_some())
+                )
+                .unwrap()
+        );
+    }
 }

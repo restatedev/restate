@@ -118,6 +118,8 @@ fn read_invoked_full_invocation_id(
     }
 }
 
+const MIGRATION_BATCH_SIZE: usize = 1000;
+
 pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionStore) -> Result<()> {
     let partition_key_range = storage.partition_key_range().clone();
 
@@ -136,6 +138,7 @@ pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionSt
         .map_err(|_| StorageError::OperationalError)?;
 
     let mut tx = storage.transaction();
+    let mut batch_size = 0;
     while let Some(res) = iterator.next().await {
         let (key, value) = res?;
         put_invocation_status(
@@ -144,6 +147,13 @@ pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionSt
             &value.0,
         )?;
         tx.delete_key(&key)?;
+
+        batch_size += 1;
+        if batch_size > MIGRATION_BATCH_SIZE {
+            tx.commit().await?;
+            batch_size = 0;
+            tx = storage.transaction();
+        }
     }
     tx.commit().await?;
 
