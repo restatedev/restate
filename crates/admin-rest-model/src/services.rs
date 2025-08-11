@@ -36,25 +36,49 @@ pub struct ModifyServiceRequest {
     ///
     /// Modify the retention of idempotent requests for this service.
     ///
-    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
     pub idempotency_retention: Option<Duration>,
 
     /// # Workflow completion retention
     ///
     /// Modify the retention of the workflow completion. This can be modified only for workflow services!
     ///
-    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
     pub workflow_completion_retention: Option<Duration>,
+
+    /// # Journal retention
+    ///
+    /// Modify the journal retention for this service. When set, this applies to all requests to all handlers of this service.
+    ///
+    /// In case the invocation has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
+    /// In case the invocation targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
+    ///
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
+    pub journal_retention: Option<Duration>,
 
     /// # Inactivity timeout
     ///
@@ -65,14 +89,17 @@ pub struct ModifyServiceRequest {
     /// The 'abort timeout' is used to abort the invocation, in case it doesn't react to
     /// the request to suspend.
     ///
-    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     ///
     /// This overrides the default inactivity timeout set in invoker options.
     #[serde(
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
     pub inactivity_timeout: Option<Duration>,
 
     /// # Abort timeout
@@ -85,14 +112,17 @@ pub struct ModifyServiceRequest {
     /// This timer potentially **interrupts** user code. If the user code needs longer to
     /// gracefully terminate, then this value needs to be set accordingly.
     ///
-    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601.
+    /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     ///
     /// This overrides the default abort timeout set in invoker options.
     #[serde(
         default,
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
     pub abort_timeout: Option<Duration>,
 }
 

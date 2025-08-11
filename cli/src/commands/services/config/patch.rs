@@ -33,6 +33,11 @@ pub(super) const WORKFLOW_RETENTION_EDIT_DESCRIPTION: &str = concatcp!(
     "\n",
     DURATION_EDIT_DESCRIPTION
 );
+pub(super) const JOURNAL_RETENTION_EDIT_DESCRIPTION: &str = concatcp!(
+    super::view::JOURNAL_RETENTION,
+    "\n",
+    DURATION_EDIT_DESCRIPTION
+);
 pub(super) const INACTIVITY_TIMEOUT_EDIT_DESCRIPTION: &str = concatcp!(
     super::view::INACTIVITY_TIMEOUT,
     "\n",
@@ -52,6 +57,9 @@ pub struct Patch {
 
     #[clap(long, alias = "workflow_completion_retention", help = WORKFLOW_RETENTION_EDIT_DESCRIPTION)]
     workflow_completion_retention: Option<String>,
+
+    #[clap(long, alias = "journal_retention", help = JOURNAL_RETENTION_EDIT_DESCRIPTION)]
+    journal_retention: Option<String>,
 
     #[clap(long, alias = "inactivity_retention", help = INACTIVITY_TIMEOUT_EDIT_DESCRIPTION)]
     inactivity_timeout: Option<String>,
@@ -86,6 +94,11 @@ async fn patch(env: &CliEnv, opts: &Patch) -> Result<()> {
                     .context("Cannot parse workflow_completion_retention")
             })
             .transpose()?,
+        journal_retention: opts
+            .journal_retention
+            .as_ref()
+            .map(|s| DurationString::parse_duration(s).context("Cannot parse journal_retention"))
+            .transpose()?,
         inactivity_timeout: opts
             .inactivity_timeout
             .as_ref()
@@ -111,6 +124,7 @@ pub(super) async fn apply_service_configuration_patch(
         && modify_request.workflow_completion_retention.is_none()
         && modify_request.idempotency_retention.is_none()
         && modify_request.inactivity_timeout.is_none()
+        && modify_request.journal_retention.is_none()
         && modify_request.abort_timeout.is_none()
     {
         c_println!("No changes requested");
@@ -130,8 +144,14 @@ pub(super) async fn apply_service_configuration_patch(
     }
     if let Some(workflow_completion_retention) = &modify_request.workflow_completion_retention {
         table.add_kv_row(
-            "Workflow retention time:",
+            "Workflow retention:",
             DurationString::display(*workflow_completion_retention),
+        );
+    }
+    if let Some(journal_retention) = &modify_request.journal_retention {
+        table.add_kv_row(
+            "Journal retention:",
+            DurationString::display(*journal_retention),
         );
     }
     if let Some(inactivity_timeout) = &modify_request.inactivity_timeout {

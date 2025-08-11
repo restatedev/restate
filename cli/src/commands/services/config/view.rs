@@ -35,6 +35,13 @@ pub(super) const WORKFLOW_RETENTION: &str = indoc! {
     The retention period starts once the invocation completes (with either success or failure).
     After the retention period, the invocation response together with the workflow state and promises will be forgotten."
 };
+pub(super) const JOURNAL_RETENTION: &str = indoc! {
+    "The journal retention.
+    The retention period starts once the invocation completes (with either success or failure).
+
+    In case the invocation has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
+    In case the invocation targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time."
+};
 pub(super) const INACTIVITY_TIMEOUT: &str = indoc! {
     "This timer guards against stalled service/handler invocations. Once it expires,
     Restate triggers a graceful termination by asking the service invocation to
@@ -107,6 +114,17 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         );
         c_println!("{table}");
         c_tip!("{}", WORKFLOW_RETENTION);
+        c_println!();
+    }
+
+    if let Some(journal_retention) = service.journal_retention {
+        let mut table = Table::new_styled();
+        table.add_kv_row(
+            "Journal retention:",
+            DurationString::display(journal_retention),
+        );
+        c_println!("{table}");
+        c_tip!("{}", JOURNAL_RETENTION);
         c_println!();
     }
 
