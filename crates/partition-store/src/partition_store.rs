@@ -26,7 +26,7 @@ use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::trace;
+use tracing::{debug, trace};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{CfName, IoMode, IterAction, Priority, RocksDb, RocksError};
@@ -40,9 +40,10 @@ use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
 
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
-use crate::fsm_table::get_locally_durable_lsn;
+use crate::fsm_table::{get_locally_durable_lsn, get_schema_version, put_schema_version};
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
+use crate::migrations::{LATEST_VERSION, SchemaVersion};
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -284,7 +285,7 @@ impl PartitionStore {
     }
 
     #[inline]
-    pub fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
+    pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(&self.db.partition().key_range, partition_key)
     }
 
@@ -605,6 +606,22 @@ impl PartitionStore {
 
     pub fn partition(&self) -> &Arc<Partition> {
         self.db.partition()
+    }
+
+    pub async fn verify_and_run_migrations(&mut self) -> Result<()> {
+        let mut schema_version: SchemaVersion =
+            get_schema_version(self, self.partition_id()).await?.into();
+        if schema_version != LATEST_VERSION {
+            // We need to run some migrations!
+            debug!(
+                "Running storage migration from {:?} to {:?}",
+                schema_version, LATEST_VERSION
+            );
+            schema_version = schema_version.run_all_migrations(self).await?;
+            put_schema_version(self, self.partition_id(), schema_version as u16).await?;
+        }
+
+        Ok(())
     }
 }
 

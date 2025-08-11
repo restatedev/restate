@@ -35,6 +35,9 @@ pub(crate) mod fsm_variable {
     pub(crate) const APPLIED_LSN: u64 = 2;
     pub(crate) const RESTATE_VERSION_BARRIER: u64 = 3;
     pub(crate) const PARTITION_DURABILITY: u64 = 4;
+
+    /// Schema versions are represented as a strictly monotonically increasing number.
+    pub(crate) const SCHEMA_VERSION: u64 = 5;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -85,6 +88,27 @@ pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Re
         fsm_variable::APPLIED_LSN,
     )
     .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
+}
+
+pub(crate) async fn get_schema_version<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+) -> Result<u16> {
+    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::SCHEMA_VERSION)
+        .map(|opt| opt.map(|s| s.0 as u16).unwrap_or_default())
+}
+
+pub(crate) async fn put_schema_version<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    last_executed_migration: u16,
+) -> Result<()> {
+    put(
+        storage,
+        partition_id,
+        fsm_variable::SCHEMA_VERSION,
+        &SequenceNumber::from(last_executed_migration as u64),
+    )
 }
 
 impl ReadOnlyFsmTable for PartitionStore {
