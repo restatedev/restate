@@ -1299,9 +1299,9 @@ dependencies = [
 
 [[package]]
 name = "bytecount"
-version = "0.6.8"
+version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ce89b21cab1437276d2650d57e971f9d548a2d9037cc231abdc0562b97498ce"
+checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
 
 [[package]]
 name = "bytemuck"
@@ -6666,7 +6666,6 @@ dependencies = [
  "http-body-util",
  "hyper-util",
  "itertools 0.14.0",
- "jsonschema",
  "mime_guess",
  "okapi-operation",
  "parking_lot",
@@ -7912,6 +7911,7 @@ dependencies = [
  "itertools 0.14.0",
  "jiff",
  "jsonptr 0.7.1",
+ "jsonschema",
  "metrics",
  "moka",
  "notify",

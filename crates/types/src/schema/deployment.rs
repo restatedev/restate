@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
-use crate::schema::Schema;
 use crate::schema::service::ServiceMetadata;
 use crate::time::MillisSinceEpoch;
 
@@ -46,6 +45,7 @@ impl DeliveryOptions {
     }
 }
 
+// TODO this type should not be serde, the actual type we need in the Admin API should be moved there.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Deployment {
@@ -67,7 +67,7 @@ pub struct DeploymentMetadata {
 
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(from = "DeploymentTypeShadow")]
+#[serde(from = "serde_hacks::DeploymentType")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum DeploymentType {
     Http {
@@ -86,47 +86,68 @@ pub enum DeploymentType {
     },
 }
 
-#[derive(serde::Deserialize)]
-enum DeploymentTypeShadow {
-    Http {
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        address: Uri,
-        protocol_type: ProtocolType,
-        #[serde(
-            default,
-            with = "serde_with::As::<Option<restate_serde_util::VersionSerde>>"
-        )]
-        // this field did not used to be stored, so we must consider it optional when deserialising
-        http_version: Option<http::Version>,
-    },
-    Lambda {
-        arn: LambdaARN,
-        assume_role_arn: Option<ByteString>,
-    },
+impl DeploymentType {
+    // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
+    // and for Lambda deployments its the ARN
+    pub fn address_display(&self) -> impl Display + '_ {
+        struct Wrapper<'a>(&'a DeploymentType);
+        impl Display for Wrapper<'_> {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                match self {
+                    Wrapper(DeploymentType::Http { address, .. }) => address.fmt(f),
+                    Wrapper(DeploymentType::Lambda { arn, .. }) => arn.fmt(f),
+                }
+            }
+        }
+        Wrapper(self)
+    }
 }
 
-impl From<DeploymentTypeShadow> for DeploymentType {
-    fn from(value: DeploymentTypeShadow) -> Self {
-        match value {
-            DeploymentTypeShadow::Http {
-                address,
-                protocol_type,
-                http_version,
-            } => Self::Http {
-                address,
-                protocol_type,
-                http_version: match http_version {
-                    Some(v) => v,
-                    None => Self::backfill_http_version(protocol_type),
+mod serde_hacks {
+    use super::*;
+
+    #[derive(serde::Deserialize)]
+    pub(super) enum DeploymentType {
+        Http {
+            #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+            address: Uri,
+            protocol_type: ProtocolType,
+            #[serde(
+                default,
+                with = "serde_with::As::<Option<restate_serde_util::VersionSerde>>"
+            )]
+            // this field did not used to be stored, so we must consider it optional when deserialising
+            http_version: Option<http::Version>,
+        },
+        Lambda {
+            arn: LambdaARN,
+            assume_role_arn: Option<ByteString>,
+        },
+    }
+
+    impl From<DeploymentType> for super::DeploymentType {
+        fn from(value: DeploymentType) -> Self {
+            match value {
+                DeploymentType::Http {
+                    address,
+                    protocol_type,
+                    http_version,
+                } => Self::Http {
+                    address,
+                    protocol_type,
+                    http_version: match http_version {
+                        Some(v) => v,
+                        None => Self::backfill_http_version(protocol_type),
+                    },
                 },
-            },
-            DeploymentTypeShadow::Lambda {
-                arn,
-                assume_role_arn,
-            } => Self::Lambda {
-                arn,
-                assume_role_arn,
-            },
+                DeploymentType::Lambda {
+                    arn,
+                    assume_role_arn,
+                } => Self::Lambda {
+                    arn,
+                    assume_role_arn,
+                },
+            }
         }
     }
 }
@@ -271,16 +292,7 @@ impl DeploymentMetadata {
     // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
     // and for Lambda deployments its the ARN
     pub fn address_display(&self) -> impl Display + '_ {
-        struct Wrapper<'a>(&'a DeploymentType);
-        impl Display for Wrapper<'_> {
-            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                match self {
-                    Wrapper(DeploymentType::Http { address, .. }) => address.fmt(f),
-                    Wrapper(DeploymentType::Lambda { arn, .. }) => arn.fmt(f),
-                }
-            }
-        }
-        Wrapper(&self.ty)
+        self.ty.address_display()
     }
 
     pub fn created_at(&self) -> MillisSinceEpoch {
@@ -412,72 +424,5 @@ pub mod test_util {
                 })
                 .collect()
         }
-    }
-}
-
-#[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DeploymentSchemas {
-    pub metadata: DeploymentMetadata,
-
-    #[serde_as(as = "restate_serde_util::MapAsVec")]
-    pub services: HashMap<String, ServiceMetadata>,
-}
-
-impl DeploymentResolver for Schema {
-    fn resolve_latest_deployment_for_service(
-        &self,
-        service_name: impl AsRef<str>,
-    ) -> Option<Deployment> {
-        let service = self.services.get(service_name.as_ref())?;
-        self.deployments
-            .get(&service.location.latest_deployment)
-            .map(|schemas| Deployment {
-                id: service.location.latest_deployment,
-                metadata: schemas.metadata.clone(),
-            })
-    }
-
-    fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
-        self.deployments
-            .get(deployment_id)
-            .map(|schemas| Deployment {
-                id: *deployment_id,
-                metadata: schemas.metadata.clone(),
-            })
-    }
-
-    fn get_deployment_and_services(
-        &self,
-        deployment_id: &DeploymentId,
-    ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
-        self.deployments.get(deployment_id).map(|schemas| {
-            (
-                Deployment {
-                    id: *deployment_id,
-                    metadata: schemas.metadata.clone(),
-                },
-                schemas.services.values().cloned().collect(),
-            )
-        })
-    }
-
-    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
-        self.deployments
-            .iter()
-            .map(|(deployment_id, schemas)| {
-                (
-                    Deployment {
-                        id: *deployment_id,
-                        metadata: schemas.metadata.clone(),
-                    },
-                    schemas
-                        .services
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.revision))
-                        .collect(),
-                )
-            })
-            .collect()
     }
 }

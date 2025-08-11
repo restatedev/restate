@@ -46,7 +46,6 @@ http-body = { workspace = true }
 http-body-util = { workspace = true }
 hyper-util = { workspace = true }
 itertools = { workspace = true }
-jsonschema = { workspace = true }
 mime_guess = { version = "2.0.5", optional = true }
 okapi-operation = { version = "0.3.0-rc3", features = ["axum-integration"] }
 parking_lot = { workspace = true }
