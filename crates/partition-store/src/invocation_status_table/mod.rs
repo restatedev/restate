@@ -149,7 +149,7 @@ pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionSt
         tx.delete_key(&key)?;
 
         batch_size += 1;
-        if batch_size > MIGRATION_BATCH_SIZE {
+        if batch_size >= MIGRATION_BATCH_SIZE {
             tx.commit().await?;
             batch_size = 0;
             tx = storage.transaction();
