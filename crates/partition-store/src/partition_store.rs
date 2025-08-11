@@ -40,12 +40,10 @@ use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
 
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
-use crate::fsm_table::{
-    get_last_executed_migration, get_locally_durable_lsn, put_last_executed_migration,
-};
+use crate::fsm_table::{get_locally_durable_lsn, get_schema_version, put_schema_version};
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
-use crate::migrations::{LATEST_MIGRATION, LastExecutedMigration};
+use crate::migrations::{LATEST_VERSION, SchemaVersion};
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -611,16 +609,16 @@ impl PartitionStore {
     }
 
     pub async fn verify_and_run_migrations(&mut self) -> Result<()> {
-        let mut last_executed_migration: LastExecutedMigration =
-            get_last_executed_migration(self, self.partition_id())
-                .await?
-                .into();
-        if last_executed_migration != LATEST_MIGRATION {
+        let mut schema_version: SchemaVersion =
+            get_schema_version(self, self.partition_id()).await?.into();
+        if schema_version != LATEST_VERSION {
             // We need to run some migrations!
-            debug!("Running storage migration from {} to {}", last_executed_migration, LATEST_MIGRATION);
-            last_executed_migration = last_executed_migration.run_all_migrations(self).await?;
-            put_last_executed_migration(self, self.partition_id(), last_executed_migration as u16)
-                .await?;
+            debug!(
+                "Running storage migration from {:?} to {:?}",
+                schema_version, LATEST_VERSION
+            );
+            schema_version = schema_version.run_all_migrations(self).await?;
+            put_schema_version(self, self.partition_id(), schema_version as u16).await?;
         }
 
         Ok(())

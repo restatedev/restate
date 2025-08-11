@@ -32,9 +32,9 @@ use restate_types::invocation::{
 };
 use restate_types::time::MillisSinceEpoch;
 
-use crate::fsm_table::get_last_executed_migration;
+use crate::fsm_table::get_schema_version;
 use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
-use crate::migrations::{LATEST_MIGRATION, LastExecutedMigration};
+use crate::migrations::{LATEST_VERSION, SchemaVersion};
 use crate::partition_store::StorageAccess;
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
@@ -219,12 +219,12 @@ async fn test_migration() {
     rocksdb.verify_and_run_migrations().await.unwrap();
     let partition_id = rocksdb.partition_id();
     assert_eq!(
-        LastExecutedMigration::from(
-            get_last_executed_migration(&mut rocksdb, partition_id)
+        SchemaVersion::from(
+            get_schema_version(&mut rocksdb, partition_id)
                 .await
                 .unwrap()
         ),
-        LATEST_MIGRATION
+        LATEST_VERSION
     );
 
     // --- From now on all the statuses should be migrated

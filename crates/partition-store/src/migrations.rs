@@ -13,30 +13,33 @@ use strum::EnumCount;
 use crate::invocation_status_table::run_invocation_status_v1_migration;
 use crate::{PartitionStore, Result};
 
+// NOTE: The representation numbers here must be strictly monotonically increasing.
 #[derive(Debug, Eq, PartialEq, strum::FromRepr, strum::EnumCount)]
 #[repr(u16)]
-pub(crate) enum LastExecutedMigration {
+pub(crate) enum SchemaVersion {
+    /// Before 1.5
     None = 0,
-    /// Invocation status V1 -> V2
+    /// Migrations:
+    /// * Invocation status V1 -> V2
     V1_5 = 1,
 }
 
-pub(crate) const LATEST_MIGRATION: LastExecutedMigration =
-    LastExecutedMigration::from_repr((LastExecutedMigration::COUNT as u16) - 1).unwrap();
+pub(crate) const LATEST_VERSION: SchemaVersion =
+    SchemaVersion::from_repr((SchemaVersion::COUNT as u16) - 1).unwrap();
 
-impl From<u16> for LastExecutedMigration {
+impl From<u16> for SchemaVersion {
     fn from(value: u16) -> Self {
-        LastExecutedMigration::from_repr(value).unwrap_or(LastExecutedMigration::V1_5)
+        SchemaVersion::from_repr(value).unwrap_or(SchemaVersion::V1_5)
     }
 }
 
-impl LastExecutedMigration {
+impl SchemaVersion {
     fn next(self) -> Self {
         ((self as u16) + 1).into()
     }
 
     pub(crate) async fn run_all_migrations(mut self, storage: &mut PartitionStore) -> Result<Self> {
-        while self != LATEST_MIGRATION {
+        while self != LATEST_VERSION {
             self.do_migration(storage).await?;
             self = self.next();
         }
@@ -46,10 +49,10 @@ impl LastExecutedMigration {
     // Add migrations here!
     async fn do_migration(&self, storage: &mut PartitionStore) -> Result<()> {
         match self {
-            LastExecutedMigration::None => {
+            SchemaVersion::None => {
                 run_invocation_status_v1_migration(storage).await?;
             }
-            LastExecutedMigration::V1_5 => {}
+            SchemaVersion::V1_5 => {}
         }
         Ok(())
     }
