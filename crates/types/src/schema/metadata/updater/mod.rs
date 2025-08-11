@@ -681,7 +681,7 @@ impl SchemaUpdater {
             if service_level_settings_behavior.preserve() {
                 active_revision.and_then(|old_svc| old_svc.idempotency_retention)
             } else {
-                // TODO(slinydeveloper) Remove this in Restate 1.5, no need for this defaulting anymore!
+                // TODO(slinydeveloper) Remove this in Restate 1.6, no need for this defaulting anymore!
                 Some(DEFAULT_IDEMPOTENCY_RETENTION)
             },
         );
@@ -699,6 +699,7 @@ impl SchemaUpdater {
         {
             active_revision.and_then(|old_svc| old_svc.workflow_completion_retention)
         } else if service_type == ServiceType::Workflow {
+            // TODO(slinydeveloper) Remove this in Restate 1.6, no need for this defaulting anymore!
             Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
         } else {
             None
