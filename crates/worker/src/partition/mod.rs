@@ -11,6 +11,7 @@
 mod cleaner;
 pub mod invoker_storage_reader;
 mod leadership;
+mod rpc;
 pub mod shuffle;
 mod state_machine;
 pub mod types;
@@ -38,38 +39,23 @@ use restate_storage_api::deduplication_table::{
     ReadOnlyDeduplicationTable,
 };
 use restate_storage_api::fsm_table::{FsmTable, PartitionDurability, ReadOnlyFsmTable};
-use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
-use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadOnlyInvocationStatusTable,
-};
 use restate_storage_api::outbox_table::ReadOnlyOutboxTable;
-use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
-};
 use restate_storage_api::{StorageError, Transaction};
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::Configuration;
-use restate_types::identifiers::{LeaderEpoch, PartitionProcessorRpcRequestId, WithPartitionKey};
-use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
-use restate_types::invocation::{
-    AttachInvocationRequest, IngressInvocationResponseSink, InvocationMutationResponseSink,
-    InvocationQuery, InvocationTarget, InvocationTargetType, InvocationTermination,
-    NotifySignalRequest, PurgeInvocationRequest, ResponseResult, ServiceInvocation,
-    ServiceInvocationResponseSink, SubmitNotificationSink, TerminationFlavor, WorkflowHandlerType,
-};
+use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
 use restate_types::net::RpcRequest;
 use restate_types::net::partition_processor::{
-    AppendInvocationReplyOn, GetInvocationOutputResponseMode, PartitionLeaderService,
-    PartitionProcessorRpcError, PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner,
+    PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcResponse,
 };
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
-use restate_types::{GenerationalNodeId, SemanticRestateVersion, invocation};
+use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
@@ -613,8 +599,6 @@ where
         Ok(())
     }
 
-    // --- RPC Handling
-
     async fn on_rpc(
         &mut self,
         response_tx: Reciprocal<
@@ -623,260 +607,12 @@ where
         body: PartitionProcessorRpcRequest,
         partition_store: &mut PartitionStore,
     ) {
-        let PartitionProcessorRpcRequest {
-            request_id, inner, ..
-        } = body;
-        match inner {
-            PartitionProcessorRpcRequestInner::AppendInvocation(
-                invocation_request,
-                AppendInvocationReplyOn::Appended,
-            ) => {
-                let service_invocation = ServiceInvocation::from_request(
-                    Arc::unwrap_or_clone(invocation_request),
-                    invocation::Source::ingress(request_id),
-                );
-
-                self.leadership_state
-                    .self_propose_and_respond_asynchronously(
-                        service_invocation.partition_key(),
-                        Command::Invoke(Box::new(service_invocation)),
-                        response_tx,
-                    )
-                    .await;
-            }
-            PartitionProcessorRpcRequestInner::AppendInvocation(
-                invocation_request,
-                AppendInvocationReplyOn::Submitted,
-            ) => {
-                let mut service_invocation = ServiceInvocation::from_request(
-                    Arc::unwrap_or_clone(invocation_request),
-                    invocation::Source::ingress(request_id),
-                );
-                service_invocation.submit_notification_sink =
-                    Some(SubmitNotificationSink::Ingress { request_id });
-
-                self.leadership_state
-                    .handle_rpc_proposal_command(
-                        request_id,
-                        response_tx,
-                        service_invocation.partition_key(),
-                        Command::Invoke(Box::new(service_invocation)),
-                    )
-                    .await
-            }
-            PartitionProcessorRpcRequestInner::AppendInvocation(
-                invocation_request,
-                AppendInvocationReplyOn::Output,
-            ) => {
-                let mut service_invocation = ServiceInvocation::from_request(
-                    Arc::unwrap_or_clone(invocation_request),
-                    invocation::Source::ingress(request_id),
-                );
-                service_invocation.response_sink =
-                    Some(ServiceInvocationResponseSink::Ingress { request_id });
-
-                self.leadership_state
-                    .handle_rpc_proposal_command(
-                        request_id,
-                        response_tx,
-                        service_invocation.partition_key(),
-                        Command::Invoke(Box::new(service_invocation)),
-                    )
-                    .await
-            }
-            PartitionProcessorRpcRequestInner::GetInvocationOutput(
-                invocation_query,
-                GetInvocationOutputResponseMode::BlockWhenNotReady,
-            ) => {
-                // Try to get invocation output now, if it's ready reply immediately with it
-                if let Ok(ready_result @ PartitionProcessorRpcResponse::Output(_)) = self
-                    .handle_rpc_get_invocation_output(
-                        request_id,
-                        invocation_query.clone(),
-                        partition_store,
-                    )
-                    .await
-                {
-                    response_tx.send(Ok(ready_result));
-                    return;
-                }
-
-                self.leadership_state
-                    .handle_rpc_proposal_command(
-                        request_id,
-                        response_tx,
-                        invocation_query.partition_key(),
-                        Command::AttachInvocation(AttachInvocationRequest {
-                            invocation_query,
-                            block_on_inflight: true,
-                            response_sink: ServiceInvocationResponseSink::Ingress { request_id },
-                        }),
-                    )
-                    .await
-            }
-            PartitionProcessorRpcRequestInner::GetInvocationOutput(
-                invocation_query,
-                GetInvocationOutputResponseMode::ReplyIfNotReady,
-            ) => {
-                response_tx.send(
-                    self.handle_rpc_get_invocation_output(
-                        request_id,
-                        invocation_query,
-                        partition_store,
-                    )
-                    .await
-                    .map_err(|err| PartitionProcessorRpcError::Internal(err.to_string())),
-                );
-            }
-            PartitionProcessorRpcRequestInner::AppendInvocationResponse(invocation_response) => {
-                self.leadership_state
-                    .self_propose_and_respond_asynchronously(
-                        invocation_response.partition_key(),
-                        Command::InvocationResponse(invocation_response),
-                        response_tx,
-                    )
-                    .await;
-            }
-            PartitionProcessorRpcRequestInner::AppendSignal(invocation_id, signal) => {
-                self.leadership_state
-                    .self_propose_and_respond_asynchronously(
-                        invocation_id.partition_key(),
-                        Command::NotifySignal(NotifySignalRequest {
-                            invocation_id,
-                            signal,
-                        }),
-                        response_tx,
-                    )
-                    .await;
-            }
-            PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id } => {
-                self.leadership_state
-                    .handle_rpc_proposal_command(
-                        request_id,
-                        response_tx,
-                        invocation_id.partition_key(),
-                        Command::TerminateInvocation(InvocationTermination {
-                            invocation_id,
-                            flavor: TerminationFlavor::Cancel,
-                            response_sink: Some(InvocationMutationResponseSink::Ingress(
-                                IngressInvocationResponseSink { request_id },
-                            )),
-                        }),
-                    )
-                    .await
-            }
-            PartitionProcessorRpcRequestInner::KillInvocation { invocation_id } => {
-                self.leadership_state
-                    .handle_rpc_proposal_command(
-                        request_id,
-                        response_tx,
-                        invocation_id.partition_key(),
-                        Command::TerminateInvocation(InvocationTermination {
-                            invocation_id,
-                            flavor: TerminationFlavor::Kill,
-                            response_sink: Some(InvocationMutationResponseSink::Ingress(
-                                IngressInvocationResponseSink { request_id },
-                            )),
-                        }),
-                    )
-                    .await
-            }
-            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => {
-                self.leadership_state
-                    .handle_rpc_proposal_command(
-                        request_id,
-                        response_tx,
-                        invocation_id.partition_key(),
-                        Command::PurgeInvocation(PurgeInvocationRequest {
-                            invocation_id,
-                            response_sink: Some(InvocationMutationResponseSink::Ingress(
-                                IngressInvocationResponseSink { request_id },
-                            )),
-                        }),
-                    )
-                    .await
-            }
-            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
-                self.leadership_state
-                    .handle_rpc_proposal_command(
-                        request_id,
-                        response_tx,
-                        invocation_id.partition_key(),
-                        Command::PurgeJournal(PurgeInvocationRequest {
-                            invocation_id,
-                            response_sink: Some(InvocationMutationResponseSink::Ingress(
-                                IngressInvocationResponseSink { request_id },
-                            )),
-                        }),
-                    )
-                    .await
-            }
-        };
-    }
-
-    async fn handle_rpc_get_invocation_output(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_query: InvocationQuery,
-        partition_store: &mut PartitionStore,
-    ) -> Result<PartitionProcessorRpcResponse, StorageError> {
-        // We can handle this immediately by querying the partition store, no need to go through proposals
-        let invocation_id = match invocation_query {
-            InvocationQuery::Invocation(iid) => iid,
-            ref q @ InvocationQuery::Workflow(ref sid) => {
-                // TODO We need this query for backward compatibility, remove when we remove the idempotency table
-                match partition_store.get_virtual_object_status(sid).await? {
-                    VirtualObjectStatus::Locked(iid) => iid,
-                    VirtualObjectStatus::Unlocked => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-            ref q @ InvocationQuery::IdempotencyId(ref iid) => {
-                // TODO We need this query for backward compatibility, remove when we remove the idempotency table
-                match partition_store.get_idempotency_metadata(iid).await? {
-                    Some(idempotency_metadata) => idempotency_metadata.invocation_id,
-                    None => {
-                        // Try the deterministic id
-                        q.to_invocation_id()
-                    }
-                }
-            }
-        };
-
-        let invocation_status = partition_store
-            .get_invocation_status(&invocation_id)
-            .await?;
-
-        match invocation_status {
-            InvocationStatus::Free => Ok(PartitionProcessorRpcResponse::NotFound),
-            is if is.idempotency_key().is_none()
-                && is
-                    .invocation_target()
-                    .map(InvocationTarget::invocation_target_ty)
-                    != Some(InvocationTargetType::Workflow(
-                        WorkflowHandlerType::Workflow,
-                    )) =>
-            {
-                Ok(PartitionProcessorRpcResponse::NotSupported)
-            }
-            InvocationStatus::Completed(completed) => {
-                let completion_expiry_time = completed.completion_expiry_time();
-                Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {
-                    request_id,
-                    response: match completed.response_result.clone() {
-                        ResponseResult::Success(res) => {
-                            InvocationOutputResponse::Success(completed.invocation_target, res)
-                        }
-                        ResponseResult::Failure(err) => InvocationOutputResponse::Failure(err),
-                    },
-                    invocation_id: Some(invocation_id),
-                    completion_expiry_time,
-                }))
-            }
-            _ => Ok(PartitionProcessorRpcResponse::NotReady),
-        }
+        let _ = rpc::RpcHandler::handle(
+            rpc::RpcContext::new(&mut self.leadership_state, partition_store),
+            body,
+            rpc::Replier::new(response_tx),
+        )
+        .await;
     }
 
     // --- Apply new commands/records
