@@ -31,9 +31,7 @@ use restate_types::invocation::Header;
 use restate_types::live::Live;
 use restate_types::message::MessageIndex;
 use restate_types::schema::Schema;
-use restate_types::schema::subscriptions::{
-    EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
-};
+use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{Instrument, debug, info, info_span, warn};
 
@@ -83,10 +81,7 @@ impl KafkaDeduplicationId {
         // Service event receiver requires proxying because we don't want to scatter deduplication ids (kafka topic/partition offsets) in all the Restate partitions.
         matches!(
             subscription.sink(),
-            Sink::DeprecatedService {
-                ty: EventReceiverServiceType::Service,
-                ..
-            } | Sink::Invocation {
+            Sink::Invocation {
                 event_invocation_target_template: EventInvocationTargetTemplate::Service { .. }
             },
         )

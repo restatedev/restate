@@ -42,32 +42,15 @@ impl PartialEq<&str> for Source {
     }
 }
 
-/// Specialized version of [super::service::ServiceType]
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub enum EventReceiverServiceType {
-    VirtualObject,
-    Workflow,
-    Service,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(from = "serde_hacks::Sink", into = "serde_hacks::Sink")]
 pub enum Sink {
-    // Could not use the Rust built-in deprecated feature because some macros will fail with it and won't apply the #[allow(deprecated)] :(
-    #[serde(rename = "Service")]
-    DeprecatedService {
-        name: String,
-        handler: String,
-        ty: EventReceiverServiceType,
-    },
     Invocation {
         event_invocation_target_template: EventInvocationTargetTemplate,
     },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EventInvocationTargetTemplate {
     Service {
         name: String,
@@ -88,9 +71,6 @@ pub enum EventInvocationTargetTemplate {
 impl fmt::Display for Sink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Sink::DeprecatedService { name, handler, .. } => {
-                write!(f, "service://{name}/{handler}")
-            }
             Sink::Invocation {
                 event_invocation_target_template:
                     EventInvocationTargetTemplate::Service { name, handler, .. },
@@ -116,7 +96,6 @@ impl PartialEq<&str> for Sink {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Subscription {
     id: SubscriptionId,
     source: Source,
@@ -242,6 +221,93 @@ impl SubscriptionValidator for IngressOptions {
         }
 
         Ok(subscription)
+    }
+}
+
+mod serde_hacks {
+    use super::*;
+
+    /// Specialized version of [super::service::ServiceType]
+    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+    #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+    pub enum EventReceiverServiceType {
+        VirtualObject,
+        Workflow,
+        Service,
+    }
+
+    // TODO(slinkydeveloper) this migration will be executed in 1.5, together with the new schema registry
+    //  we should be able to remove it when we remove the old schema registry migration
+    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+    pub enum Sink {
+        // Could not use the Rust built-in deprecated feature because some macros will fail with it and won't apply the #[allow(deprecated)] :(
+        #[serde(rename = "Service")]
+        DeprecatedService {
+            name: String,
+            handler: String,
+            ty: EventReceiverServiceType,
+        },
+        Invocation {
+            event_invocation_target_template: EventInvocationTargetTemplate,
+        },
+    }
+
+    impl From<Sink> for super::Sink {
+        fn from(value: Sink) -> Self {
+            match value {
+                Sink::DeprecatedService {
+                    name,
+                    handler,
+                    ty: EventReceiverServiceType::Service,
+                } => Self::Invocation {
+                    event_invocation_target_template: EventInvocationTargetTemplate::Service {
+                        name,
+                        handler,
+                    },
+                },
+                Sink::DeprecatedService {
+                    name,
+                    handler,
+                    ty: EventReceiverServiceType::VirtualObject,
+                } => Self::Invocation {
+                    event_invocation_target_template:
+                        EventInvocationTargetTemplate::VirtualObject {
+                            name,
+                            handler,
+                            handler_ty: VirtualObjectHandlerType::Exclusive,
+                        },
+                },
+                Sink::DeprecatedService {
+                    name,
+                    handler,
+                    ty: EventReceiverServiceType::Workflow,
+                } => Self::Invocation {
+                    event_invocation_target_template: EventInvocationTargetTemplate::Workflow {
+                        name,
+                        handler,
+                        handler_ty: WorkflowHandlerType::Workflow,
+                    },
+                },
+                Sink::Invocation {
+                    event_invocation_target_template,
+                    ..
+                } => Self::Invocation {
+                    event_invocation_target_template,
+                },
+            }
+        }
+    }
+
+    impl From<super::Sink> for Sink {
+        fn from(value: super::Sink) -> Self {
+            match value {
+                super::Sink::Invocation {
+                    event_invocation_target_template,
+                } => Self::Invocation {
+                    event_invocation_target_template,
+                },
+            }
+        }
     }
 }
 

@@ -17,17 +17,12 @@ use restate_bifrost::Bifrost;
 use restate_core::{Metadata, my_node_id};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
-use restate_types::invocation::{
-    InvocationTarget, ServiceInvocation, SpanRelation, VirtualObjectHandlerType,
-    WorkflowHandlerType,
-};
+use restate_types::invocation::{InvocationTarget, ServiceInvocation, SpanRelation};
 use restate_types::message::MessageIndex;
 use restate_types::partition_table::PartitionTableError;
 use restate_types::schema::Schema;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::schema::subscriptions::{
-    EventInvocationTargetTemplate, EventReceiverServiceType, Sink, Subscription,
-};
+use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
 use restate_types::{GenerationalNodeId, live};
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 use std::borrow::Borrow;
@@ -67,25 +62,6 @@ impl KafkaIngressEvent {
         };
 
         let invocation_target = match subscription.sink() {
-            Sink::DeprecatedService { name, handler, ty } => match ty {
-                EventReceiverServiceType::VirtualObject => InvocationTarget::virtual_object(
-                    &**name,
-                    std::str::from_utf8(&key)
-                        .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
-                        .to_owned(),
-                    &**handler,
-                    VirtualObjectHandlerType::Exclusive,
-                ),
-                EventReceiverServiceType::Workflow => InvocationTarget::workflow(
-                    &**name,
-                    std::str::from_utf8(&key)
-                        .map_err(|e| anyhow::anyhow!("The key must be valid UTF-8: {e}"))?
-                        .to_owned(),
-                    &**handler,
-                    WorkflowHandlerType::Workflow,
-                ),
-                EventReceiverServiceType::Service => InvocationTarget::service(&**name, &**handler),
-            },
             Sink::Invocation {
                 event_invocation_target_template,
             } => match event_invocation_target_template {

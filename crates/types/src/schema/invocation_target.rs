@@ -394,6 +394,7 @@ pub enum OutputContentTypeRule {
         // If true, this should be a JSON Value.
         // We don't need this field anymore, but we can't remove because we break back-compat
         #[deprecated]
+        #[serde(default)] // TODO(slinkydeveloper) remove in 1.6
         has_json_schema: bool,
     },
 }
