@@ -8,16 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
 
-use http::Uri;
+use anyhow::Context;
+use http::{HeaderMap, HeaderValue, Uri, uri::PathAndQuery};
 use tracing::subscriber::NoSubscriber;
 use tracing::trace;
 
-use restate_core::{Metadata, MetadataWriter, ShutdownError};
+use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind};
 use restate_metadata_store::ReadModifyWriteError;
+use restate_service_client::HttpClient;
 use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
 use restate_types::schema::deployment::{
@@ -27,6 +30,7 @@ use restate_types::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMe
 use restate_types::schema::subscriptions::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
 };
+use restate_types::schema::updater::ServiceError;
 use restate_types::schema::{Schema, updater};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -505,14 +509,10 @@ impl AsRef<str> for ServiceName {
     }
 }
 
-impl ServiceName {
-    fn into_inner(self) -> String {
-        self.0
-    }
-}
-
 impl Borrow<String> for ServiceName {
     fn borrow(&self) -> &String {
         &self.0
     }
 }
+
+static TELEMETRY_URI_PREFIX: &str = "https://restate.gateway.scarf.sh/sdk-registration/";
