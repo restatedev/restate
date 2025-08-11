@@ -218,7 +218,6 @@ async fn test_migration() {
     // Now run the migrations
     rocksdb.verify_and_run_migrations().await.unwrap();
     let partition_id = rocksdb.partition_id();
-
     assert_eq!(
         LastExecutedMigration::from(
             get_last_executed_migration(&mut rocksdb, partition_id)
@@ -228,14 +227,13 @@ async fn test_migration() {
         LATEST_MIGRATION
     );
 
-    // Make sure we can read without mutating
+    // --- From now on all the statuses should be migrated
+
     assert_eq!(
         status,
         rocksdb.get_invocation_status(&invocation_id).await.unwrap()
     );
 
-    // Now reading should perform the migration,
-    // and result should be equal to the first inserted status
     let mut txn = rocksdb.transaction();
     assert_eq!(
         status,
@@ -243,7 +241,7 @@ async fn test_migration() {
     );
     txn.commit().await.unwrap();
 
-    // Let's check migration was done
+    // Let's check nothing is left in the old key space
     assert!(
         rocksdb
             .get_kv_raw(
@@ -254,6 +252,7 @@ async fn test_migration() {
             )
             .unwrap()
     );
+    // But invocation status is only in the new key space
     assert!(
         rocksdb
             .get_kv_raw(
@@ -263,11 +262,5 @@ async fn test_migration() {
                 |_, v| Ok(v.is_some())
             )
             .unwrap()
-    );
-
-    // Make sure we can read without mutating V2
-    assert_eq!(
-        status,
-        rocksdb.get_invocation_status(&invocation_id).await.unwrap()
     );
 }

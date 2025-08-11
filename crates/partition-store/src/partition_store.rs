@@ -26,7 +26,7 @@ use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::trace;
+use tracing::{debug, trace};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{CfName, IoMode, IterAction, Priority, RocksDb, RocksError};
@@ -617,6 +617,7 @@ impl PartitionStore {
                 .into();
         if last_executed_migration != LATEST_MIGRATION {
             // We need to run some migrations!
+            debug!("Running storage migration from {} to {}", last_executed_migration, LATEST_MIGRATION);
             last_executed_migration = last_executed_migration.run_all_migrations(self).await?;
             put_last_executed_migration(self, self.partition_id(), last_executed_migration as u16)
                 .await?;
