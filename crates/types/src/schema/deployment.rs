@@ -7,6 +7,7 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+
 use std::collections::HashMap;
 use std::fmt;
 use std::fmt::{Display, Formatter};
@@ -53,6 +54,7 @@ pub struct Deployment {
     pub metadata: DeploymentMetadata,
 }
 
+// TODO this type should not be serde, the actual type we need in the Admin API should be moved there.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -65,6 +67,7 @@ pub struct DeploymentMetadata {
     pub created_at: MillisSinceEpoch,
 }
 
+// TODO this type should not be serde, the actual type we need in the Admin API should be moved there.
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "serde_hacks::DeploymentType")]
