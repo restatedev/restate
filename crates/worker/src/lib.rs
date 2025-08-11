@@ -42,7 +42,6 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
-use restate_storage_query_postgres::service::PostgresQueryService;
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
@@ -102,7 +101,6 @@ pub enum Error {
 
 pub struct Worker {
     storage_query_context: QueryContext,
-    storage_query_postgres: Option<PostgresQueryService>,
     datafusion_remote_scanner: RemoteQueryScannerServer,
     ingress_kafka: IngressKafkaService,
     subscription_controller_handle: SubscriptionControllerHandle,
@@ -178,22 +176,11 @@ impl Worker {
         )
         .await?;
 
-        #[allow(deprecated)]
-        let storage_query_postgres = match config.admin.query_engine.pgsql_bind_address {
-            Some(bind_address) => {
-                let storage_query_postgres =
-                    PostgresQueryService::from_options(bind_address, storage_query_context.clone());
-                Some(storage_query_postgres)
-            }
-            None => None,
-        };
-
         let datafusion_remote_scanner =
             RemoteQueryScannerServer::new(remote_scanner_manager, router_builder);
 
         Ok(Self {
             storage_query_context,
-            storage_query_postgres,
             datafusion_remote_scanner,
             ingress_kafka,
             subscription_controller_handle,
@@ -215,15 +202,6 @@ impl Worker {
             "subscription_controller",
             Self::watch_subscriptions(self.subscription_controller_handle.clone()),
         )?;
-
-        // Postgres external server
-        if let Some(postgres) = self.storage_query_postgres {
-            TaskCenter::spawn_child(
-                TaskKind::SystemService,
-                "postgres-query-server",
-                postgres.run(),
-            )?;
-        }
 
         // Datafusion remote scanner
         TaskCenter::spawn_child(

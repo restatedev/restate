@@ -19,7 +19,6 @@ use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
 use super::QueryEngineOptions;
-use crate::config::print_warning_deprecated_config_option;
 
 /// # Admin server options
 #[serde_as]
@@ -122,13 +121,6 @@ impl AdminOptions {
                     .build()
                     .expect("valid bind address"),
             );
-        }
-    }
-    #[allow(deprecated)]
-    pub fn print_deprecation_warnings(&self) {
-        if self.query_engine.pgsql_bind_address.is_some() {
-            print_warning_deprecated_config_option("admin.query-enging.pgsql-bind-address", None);
-            eprintln!("Please make SQL queries using the CLI or with the admin API endpoint.")
         }
     }
 }

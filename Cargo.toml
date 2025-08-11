@@ -73,7 +73,6 @@ restate-service-protocol = { path = "crates/service-protocol" }
 restate-service-protocol-v4 = { path = "crates/service-protocol-v4" }
 restate-storage-api = { path = "crates/storage-api" }
 restate-storage-query-datafusion = { path = "crates/storage-query-datafusion" }
-restate-storage-query-postgres = { path = "crates/storage-query-postgres" }
 restate-test-util = { path = "crates/test-util" }
 restate-timer = { path = "crates/timer" }
 restate-timer-queue = { path = "crates/timer-queue" }
