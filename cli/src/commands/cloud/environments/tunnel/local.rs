@@ -26,9 +26,14 @@ use crate::clients::cloud::generated::DescribeEnvironmentResponse;
 
 use super::renderer::{LocalRenderer, TunnelRenderer};
 
+const HTTP_VERSION: http::HeaderName =
+    http::HeaderName::from_static("x-restate-tunnel-http-version");
+const HTTP_VERSION_11: http::HeaderValue = http::HeaderValue::from_static("HTTP/1.1");
+
 pub(crate) async fn run_local(
     env: &CliEnv,
-    client: reqwest::Client,
+    h1_client: reqwest::Client,
+    h2_client: reqwest::Client,
     bearer_token: &str,
     environment_info: DescribeEnvironmentResponse,
     opts: &super::Tunnel,
@@ -51,7 +56,12 @@ pub(crate) async fn run_local(
 
     let handler = restate_cloud_tunnel_client::client::Handler::<(), ()>::new(
         hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
-            do_proxy(&client, &url, req)
+            let client = if req.headers().get(HTTP_VERSION) == Some(&HTTP_VERSION_11) {
+                &h1_client
+            } else {
+                &h2_client
+            };
+            do_proxy(client, &url, req)
         }),
         CliContext::get().connect_timeout(),
         &environment_info.environment_id,

@@ -101,16 +101,26 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         .into_body()
         .await?;
 
-    let client = reqwest::Client::builder()
-        .user_agent(format!(
-            "{}/{} {}-{}",
-            env!("CARGO_PKG_NAME"),
-            build_info::RESTATE_CLI_VERSION,
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-        ))
-        .connect_timeout(CliContext::get().connect_timeout())
+    let user_agent = format!(
+        "{}/{} {}-{}",
+        env!("CARGO_PKG_NAME"),
+        build_info::RESTATE_CLI_VERSION,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    );
+
+    let connect_timeout = CliContext::get().connect_timeout();
+
+    let h2_client = reqwest::Client::builder()
+        .user_agent(user_agent.clone())
+        .connect_timeout(connect_timeout)
         .http2_prior_knowledge()
+        .build()?;
+
+    let h1_client = reqwest::Client::builder()
+        .user_agent(user_agent)
+        .connect_timeout(connect_timeout)
+        .http1_only()
         .build()?;
 
     let cancellation = CancellationToken::new();
@@ -126,7 +136,8 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
 
     let local_fut = local::run_local(
         &env,
-        client.clone(),
+        h1_client.clone(),
+        h2_client.clone(),
         &bearer_token,
         environment_info,
         &opts,
@@ -142,7 +153,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
 
         remote_futs.push(remote::run_remote(
             *remote_port,
-            client.clone(),
+            h2_client.clone(),
             base_url,
             &bearer_token,
             tunnel_renderer.clone(),
