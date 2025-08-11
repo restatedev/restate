@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
@@ -45,16 +44,6 @@ pub struct QueryEngineOptions {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub datafusion_options: HashMap<String, String>,
-
-    /// # Pgsql Bind address
-    ///
-    /// The address to bind for the psql service.
-    #[deprecated(
-        since = "1.4.0",
-        note = "Pgsql query engine be disable with 1.4.0, and removed with 1.5.0"
-    )]
-    #[serde(skip_serializing)]
-    pub pgsql_bind_address: Option<SocketAddr>,
 }
 
 impl QueryEngineOptions {
@@ -71,7 +60,6 @@ impl Default for QueryEngineOptions {
             tmp_dir: None,
             query_parallelism: None,
             datafusion_options: HashMap::new(),
-            pgsql_bind_address: None,
         }
     }
 }
