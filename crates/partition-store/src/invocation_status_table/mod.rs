@@ -20,7 +20,7 @@ use restate_storage_api::invocation_status_table::{
     ScanInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::{Result, StorageError, Transaction};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 
 use crate::TableScan::FullScanPartitionKeyRange;
@@ -135,15 +135,17 @@ pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionSt
         )
         .map_err(|_| StorageError::OperationalError)?;
 
+    let mut tx = storage.transaction();
     while let Some(res) = iterator.next().await {
         let (key, value) = res?;
         put_invocation_status(
-            storage,
+            &mut tx,
             &InvocationId::from_parts(*key.partition_key_ok_or()?, *key.invocation_uuid_ok_or()?),
             &value.0,
         )?;
-        storage.delete_key(&key)?;
+        tx.delete_key(&key)?;
     }
+    tx.commit().await?;
 
     Ok(())
 }
