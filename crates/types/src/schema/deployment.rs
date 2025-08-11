@@ -23,10 +23,12 @@ use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
 use crate::schema::service::ServiceMetadata;
 use crate::time::MillisSinceEpoch;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum ProtocolType {
+    #[display("Request/Response")]
     RequestResponse,
+    #[display("Bidirectional Stream")]
     BidiStream,
 }
 
