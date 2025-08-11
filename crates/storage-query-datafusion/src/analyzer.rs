@@ -39,7 +39,7 @@ impl AnalyzerRule for UseSymmetricHashJoinWhenPartitionKeyIsPresent {
                 join_type,
                 join_constraint,
                 schema,
-                null_equals_null,
+                null_equality,
             }) = &plan
             else {
                 return Ok(Transformed::no(plan));
@@ -82,7 +82,7 @@ impl AnalyzerRule for UseSymmetricHashJoinWhenPartitionKeyIsPresent {
                 join_type: *join_type,
                 join_constraint: *join_constraint,
                 schema: schema.clone(),
-                null_equals_null: *null_equals_null,
+                null_equality: *null_equality,
             });
 
             Ok(Transformed::yes(new_plan))

@@ -169,7 +169,7 @@ where
             EquivalenceProperties::new(projected_schema.clone())
         } else {
             let ordering = make_ordering(sort_columns.clone());
-            EquivalenceProperties::new_with_orderings(projected_schema.clone(), &[ordering])
+            EquivalenceProperties::new_with_orderings(projected_schema.clone(), [ordering])
         };
 
         let partition_plan = if sort_columns.is_empty() {

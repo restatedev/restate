@@ -20,7 +20,7 @@ ahash = { version = "0.8", features = ["serde"] }
 arrow = { version = "55", features = ["chrono-tz", "prettyprint"] }
 arrow-array = { version = "55", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "55", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "55", features = ["lz4"] }
+arrow-ipc = { version = "55", features = ["lz4", "zstd"] }
 arrow-schema = { version = "55", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
@@ -44,7 +44,7 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
-datafusion-common = { version = "48", default-features = false, features = ["object_store"] }
+datafusion-common = { version = "49", default-features = false, features = ["object_store"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
@@ -144,7 +144,7 @@ ahash = { version = "0.8", features = ["serde"] }
 arrow = { version = "55", features = ["chrono-tz", "prettyprint"] }
 arrow-array = { version = "55", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "55", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "55", features = ["lz4"] }
+arrow-ipc = { version = "55", features = ["lz4", "zstd"] }
 arrow-schema = { version = "55", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
@@ -169,7 +169,7 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
-datafusion-common = { version = "48", default-features = false, features = ["object_store"] }
+datafusion-common = { version = "49", default-features = false, features = ["object_store"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
