@@ -199,8 +199,8 @@ where
             .service(Handler::new(schemas, dispatcher));
 
         info!(
-            net.host.addr = %local_addr.ip(),
-            net.host.port = %local_addr.port(),
+            server.address = %local_addr.ip(),
+            server.port = %local_addr.port(),
             "Ingress HTTP listening"
         );
 
