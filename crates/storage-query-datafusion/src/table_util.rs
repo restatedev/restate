@@ -11,7 +11,7 @@
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_expr::expressions::col;
-use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr};
+use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use std::fmt::Write;
 use std::sync::Arc;
 use tracing::error;
@@ -40,16 +40,14 @@ pub(crate) fn find_sort_columns(
         .collect()
 }
 
-pub(crate) fn make_ordering(columns: Vec<Arc<dyn PhysicalExpr>>) -> LexOrdering {
-    let cols: Vec<_> = columns
+pub(crate) fn make_ordering(columns: Vec<Arc<dyn PhysicalExpr>>) -> Vec<PhysicalSortExpr> {
+    columns
         .into_iter()
         .map(|expr| PhysicalSortExpr {
             expr,
             options: Default::default(),
         })
-        .collect();
-
-    LexOrdering::new(cols)
+        .collect()
 }
 
 #[inline]
