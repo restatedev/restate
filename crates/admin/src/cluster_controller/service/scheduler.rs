@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 
 use ahash::HashMap;
-use tracing::{debug, info, trace};
+use tracing::{debug, info};
 
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
@@ -182,9 +182,19 @@ impl<T: TransportConnect> Scheduler<T> {
     ) {
         let (updated, occupied_entry) = match self.partitions.entry(partition_id) {
             Entry::Occupied(mut entry) => {
-                (entry.get_mut().update_configuration(current, next), entry)
+                let updated = entry.get_mut().update_configuration(current, next);
+                debug!(
+                    %partition_id,
+                    updated,
+                    "Updated partition configuration in update_partition_configuration"
+                );
+
+                (updated, entry)
             }
-            Entry::Vacant(entry) => (true, entry.insert_entry(PartitionState::new(current, next))),
+            Entry::Vacant(entry) => {
+                debug!(%partition_id, "Inserting new partition configuration");
+                (true, entry.insert_entry(PartitionState::new(current, next)))
+            }
         };
 
         if updated {
@@ -201,6 +211,8 @@ impl<T: TransportConnect> Scheduler<T> {
         partition_state: &PartitionState,
         replica_set_states: &PartitionReplicaSetStates,
     ) {
+        debug!(%partition_id, "Noting observed membership update");
+
         let current_membership =
             ReplicaSetState::from_partition_configuration(&partition_state.current);
         let next_membership = partition_state
@@ -272,7 +284,7 @@ impl<T: TransportConnect> Scheduler<T> {
                         nodes_config,
                         &self.cluster_state,
                     ) {
-                        trace!("Partition {} requires reconfiguration", partition_id);
+                        debug!("Partition {} requires reconfiguration", partition_id);
 
                         if let Some(next) = Self::choose_partition_configuration(
                             partition_id,
@@ -294,10 +306,16 @@ impl<T: TransportConnect> Scheduler<T> {
                                     next,
                                 )
                                 .await?;
-                            if entry.get_mut().update_configuration(
+                            let updated = entry.get_mut().update_configuration(
                                 partition_configuration_update.current,
                                 partition_configuration_update.next,
-                            ) {
+                            );
+                            debug!(
+                                %partition_id,
+                                updated,
+                                "Updated partition configuration in update_partition_configuration"
+                            );
+                            if updated {
                                 Self::note_observed_membership_update(
                                     partition_id,
                                     entry.get(),
@@ -323,6 +341,11 @@ impl<T: TransportConnect> Scheduler<T> {
                         NodeSet::default(),
                         &self.cluster_state,
                     ) {
+                        debug!(
+                            %partition_id,
+                            "Chose initial partition configuration"
+                        );
+
                         let occupied_entry = entry.insert_entry(
                             Self::store_initial_partition_configuration(
                                 self.metadata_writer.raw_metadata_store_client(),
@@ -338,6 +361,11 @@ impl<T: TransportConnect> Scheduler<T> {
                         );
                         occupied_entry
                     } else {
+                        debug!(
+                            %partition_id,
+                            "Skipped invalid initial partition configuration"
+                        );
+
                         // no valid configuration, skip
                         continue;
                     }
@@ -359,10 +387,18 @@ impl<T: TransportConnect> Scheduler<T> {
                 )
                 .await?;
 
-                if occupied_entry.get_mut().update_configuration(
+                let updated = occupied_entry.get_mut().update_configuration(
                     partition_configuration_update.current,
                     partition_configuration_update.next,
-                ) {
+                );
+
+                debug!(
+                    %partition_id,
+                    updated,
+                    "Updated partition configuration in update_partition_configuration"
+                );
+
+                if updated {
                     Self::note_observed_membership_update(
                         partition_id,
                         occupied_entry.get(),
@@ -475,6 +511,7 @@ impl<T: TransportConnect> Scheduler<T> {
         expected_next_version: Version,
         next: PartitionConfiguration,
     ) -> Result<PartitionConfigurationUpdate, Error> {
+        debug!(%partition_id, "Reconfiguring partition configuration");
         match metadata_store_client
             .read_modify_write(
                 partition_processor_epoch_key(partition_id),
@@ -663,12 +700,23 @@ impl<T: TransportConnect> Scheduler<T> {
         legacy_cluster_state: &LegacyClusterState,
     ) {
         let Some(partition) = self.partitions.get_mut(partition_id) else {
+            debug!(
+                %partition_id,
+                "Not selecting leader because partition is not in the map"
+            );
+
             return;
         };
 
         if let Some(leader) = Self::select_leader_by_priority(partition, cluster_state, |node_id| {
             legacy_cluster_state.is_partition_processor_active(partition_id, &node_id)
         }) {
+            debug!(
+                %partition_id,
+                %leader,
+                "Selected leader which is an active pp"
+            );
+
             partition.target_leader = Some(leader);
             return;
         }
@@ -676,8 +724,22 @@ impl<T: TransportConnect> Scheduler<T> {
         if let Some(leader) =
             Self::select_leader_by_priority(partition, cluster_state, |_node_id| true)
         {
+            debug!(
+                %partition_id,
+                %leader,
+                "Selected leader which is not an active pp"
+            );
+
             partition.target_leader = Some(leader);
         }
+
+        let cluster_state = cluster_state.all();
+
+        debug!(
+            %partition_id,
+            ?cluster_state,
+            "Failed to select a leader as no nodes are alive"
+        );
 
         // keep the current target leader as we couldn't find any suitable substitute
     }
@@ -712,12 +774,12 @@ impl<T: TransportConnect> Scheduler<T> {
         }
 
         if !commands.is_empty() {
-            trace!(
+            debug!(
                 "Instruct nodes with partition processor commands: {:?} ",
                 commands
             );
         } else {
-            trace!(
+            debug!(
                 "No need to instruct nodes as they are running the correct partition processors"
             );
         }
@@ -746,12 +808,22 @@ impl<T: TransportConnect> Scheduler<T> {
                                 .get_connection(node_id, Swimlane::default())
                                 .await
                             else {
+                                debug!(
+                                    %node_id,
+                                    "Failed to instruct node as we couldn't get a connection"
+                                );
+
                                 // ignore connection errors, no need to mark the task as failed
                                 // as it pollutes the log.
                                 return Ok(());
                             };
 
                             let Some(permit) = connection.reserve().await else {
+                                debug!(
+                                    %node_id,
+                                    "Failed to instruct node as we couldn't reserve the connection"
+                                );
+
                                 // ditto
                                 return Ok(());
                             };

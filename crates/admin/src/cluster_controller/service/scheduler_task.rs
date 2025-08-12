@@ -80,17 +80,20 @@ where
                     break;
                 }
                 Ok(_) = partition_table_watcher.changed() => {
+                    debug!("Partition table watcher changed");
                     // if the partition table changed, this can mean that the partition replication
                     // changed or that new partitions where added that we need to configure
                     self.on_cluster_state_change(&cs, &self.cluster_state_watcher.current(), nodes_config.live_load(), partition_table.live_load()).await
                 },
                 Ok(_) = nodes_config_watcher.changed() => {
+                    debug!("Nodes config watcher changed");
                     // A changed nodes configuration might mean that nodes were added/removed from the
                     // cluster or that the worker state changed. Both might require the scheduler to
                     // take action.
                     self.on_cluster_state_change(&cs, &self.cluster_state_watcher.current(), nodes_config.live_load(), partition_table.live_load()).await
                 },
                 () = &mut cs_changed => {
+                    debug!("Cluster state changed");
                     // register waiting for the next update
                     cs_changed.set(cs.changed());
 
@@ -100,6 +103,7 @@ where
                     self.on_cluster_state_change(&cs, &self.cluster_state_watcher.current(), nodes_config.live_load(), partition_table.live_load()).await
                 },
                 Ok(legacy_cluster_state) = self.cluster_state_watcher.next_cluster_state() => {
+                    debug!("Legacy cluster state changed");
                     // A changed old cluster state might mean that a partition processor has caught
                     // up to the tail of the log and can now become a leader.
                     self.on_cluster_state_change(&cs, &legacy_cluster_state, nodes_config.live_load(), partition_table.live_load()).await
@@ -107,6 +111,7 @@ where
                 Some(epoch_metadata) = OptionFuture::from(fetch_epoch_metadata_task.as_mut()) => {
                     match epoch_metadata {
                         Ok(epoch_metadata) => {
+                            debug!("Epoch metadata fetch completed");
                             for (partition_id, epoch_metadata) in epoch_metadata {
                                 let (_, _, current, next) = epoch_metadata.into_inner();
                                 self.scheduler.update_partition_configuration(partition_id, current, next);
