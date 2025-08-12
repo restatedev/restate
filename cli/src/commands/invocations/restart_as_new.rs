@@ -13,12 +13,13 @@ use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface};
 use crate::ui::invocations::render_simple_invocation_list;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
-use comfy_table::{Attribute, Cell, Table};
+use comfy_table::{Attribute, Cell, Color, Table};
+use futures::TryFutureExt;
 use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
-use restate_cli_util::{c_indent_table, c_println, c_success};
+use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
 use restate_types::identifiers::InvocationId;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -72,14 +73,21 @@ pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) 
 
     // Restart invocations
     let mut restarted = Vec::with_capacity(invocations.len());
+    let mut failed_to_restart = vec![];
     for inv in invocations {
-        let RestartAsNewInvocationResponse { new_invocation_id } = client
+        match client
             .restart_invocation(&inv.id)
-            .await?
-            .into_body()
+            .map_err(anyhow::Error::from)
+            .and_then(|e| async { e.into_body().map_err(anyhow::Error::from).await })
             .await
-            .with_context(|| anyhow!("Error when trying to restart invocation {}", inv.id))?;
-        restarted.push((inv.id, new_invocation_id));
+        {
+            Ok(RestartAsNewInvocationResponse { new_invocation_id }) => {
+                restarted.push((inv.id, new_invocation_id));
+            }
+            Err(err) => {
+                failed_to_restart.push((inv.id, err));
+            }
+        }
     }
 
     c_println!();
@@ -95,6 +103,21 @@ pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) 
         ]);
     }
     c_indent_table!(0, invocations_table);
+
+    // Print failed ones, if any
+    if !failed_to_restart.is_empty() {
+        c_println!();
+        c_warn!("Failed to restart:");
+        let mut failed_to_restart_table = Table::new_styled();
+        failed_to_restart_table.set_styled_header(vec!["ID", "REASON"]);
+        for (id, reason) in failed_to_restart {
+            failed_to_restart_table
+                .add_row(vec![Cell::new(&id), Cell::new(reason).fg(Color::DarkRed)]);
+        }
+        c_indent_table!(0, failed_to_restart_table);
+
+        return Err(anyhow!("Failed to restart some invocations"));
+    }
 
     Ok(())
 }

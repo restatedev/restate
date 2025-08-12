@@ -119,7 +119,7 @@ message Source {
     Service service = 10;
     google.protobuf.Empty internal = 11;
     Subscription subscription = 12;
-      RestartAsNew restart_as_new = 13;
+    RestartAsNew restart_as_new = 13;
   }
 }
 
