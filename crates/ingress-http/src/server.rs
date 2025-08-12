@@ -13,7 +13,6 @@ use super::*;
 use crate::handler::Handler;
 use codederror::CodedError;
 use http::{Request, Response};
-use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
@@ -27,12 +26,15 @@ use restate_types::schema::service::ServiceMetadataResolver;
 use std::convert::Infallible;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tower::{ServiceBuilder, ServiceExt};
+use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::cors::CorsLayer;
 use tower_http::normalize_path::NormalizePathLayer;
-use tracing::{info, warn};
+use tower_http::trace::TraceLayer;
+use tracing::{Span, debug, info, info_span, warn};
 
 pub type StartSignal = oneshot::Receiver<SocketAddr>;
 
@@ -143,6 +145,53 @@ where
 
         // Prepare the handler
         let service = ServiceBuilder::new()
+            .layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(|request: &Request<_>| {
+                        info_span!(
+                            target: "restate_ingress_http::api",
+                            "ingress-http-request",
+                            http.version = ?request.version(),
+                            http.request.method = %request.method(),
+                            url.path = request.uri().path(),
+                            url.query = request.uri().query().unwrap_or_default(),
+                            url.scheme = request.uri().scheme_str().unwrap_or("http")
+                        )
+                    })
+                    // Just log on response
+                    .on_request(())
+                    .on_eos(())
+                    .on_body_chunk(())
+                    .on_response(
+                        move |response: &Response<_>, latency: Duration, span: &Span| {
+                            debug!(
+                                name: "access-log",
+                                target: "restate_ingress_http::api",
+                                parent: span,
+                                { http.response.status_code = response.status().as_u16() },
+                                "Replied in {}ms", latency.as_millis()
+                            )
+                        },
+                    )
+                    .on_failure(
+                        move |error: ServerErrorsFailureClass, latency: Duration, span: &Span| {
+                            match error {
+                                ServerErrorsFailureClass::StatusCode(_) => {
+                                    // No need to log it, on_response will log it already
+                                }
+                                ServerErrorsFailureClass::Error(error_string) => {
+                                    debug!(
+                                        name: "access-log",
+                                        target: "restate_ingress_http::api",
+                                        parent: span,
+                                        { error.type = error_string },
+                                        "Failed processing after {}ms", latency.as_millis()
+                                    )
+                                }
+                            }
+                        },
+                    ),
+            )
             .layer(NormalizePathLayer::trim_trailing_slash())
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(CorsLayer::very_permissive())
@@ -176,16 +225,19 @@ where
         }
     }
 
-    fn handle_connection<T, F>(
+    fn handle_connection<T, F, B>(
         stream: TcpStream,
         remote_peer: SocketAddr,
         handler: T,
     ) -> anyhow::Result<()>
     where
         F: Send,
+        B: http_body::Body + Send + 'static,
+        <B as http_body::Body>::Data: Send + 'static,
+        <B as http_body::Body>::Error: std::error::Error + Sync + Send + 'static,
         T: tower::Service<
                 Request<Incoming>,
-                Response = Response<Full<Bytes>>,
+                Response = Response<B>,
                 Error = Infallible,
                 Future = F,
             > + Clone
