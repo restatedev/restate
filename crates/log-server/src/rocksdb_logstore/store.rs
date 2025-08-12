@@ -266,7 +266,6 @@ impl LogStore for RocksDbLogStore {
         // In summary, if loglet reader started before a trim point and data is readable, we should
         // continue reading them. It's the responsibility of the upper layer to decide on a sane
         // value of _from_offset_.
-        readopts.set_ignore_range_deletions(true);
         readopts.set_prefix_same_as_start(true);
         readopts.set_total_order_seek(false);
         // don't fill up the cache as the reader we often don't read the same record multiple times
@@ -407,7 +406,6 @@ impl LogStore for RocksDbLogStore {
         // In summary, if loglet reader started before a trim point and data is readable, we should
         // continue reading them. It's the responsibility of the upper layer to decide on a sane
         // value of _from_offset_.
-        readopts.set_ignore_range_deletions(true);
         readopts.set_prefix_same_as_start(true);
         readopts.set_total_order_seek(false);
         // don't fill up the cache as the reader might actually end up reading very few records and
