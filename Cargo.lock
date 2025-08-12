@@ -587,7 +587,7 @@ version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77926887776171ced7d662120a75998e444d3750c951abfe07f90da130514b1f"
 dependencies = [
- "bindgen",
+ "bindgen 0.69.5",
  "cc",
  "cmake",
  "dunce",
@@ -1132,6 +1132,24 @@ dependencies = [
  "shlex",
  "syn 2.0.104",
  "which",
+]
+
+[[package]]
+name = "bindgen"
+version = "0.72.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f72209734318d0b619a5e0f5129918b848c416e122a3c4ce054e03cb87b726f"
+dependencies = [
+ "bitflags 2.9.1",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.0",
+ "shlex",
+ "syn 2.0.104",
 ]
 
 [[package]]
@@ -7912,7 +7930,6 @@ dependencies = [
  "idna",
  "indexmap 1.9.3",
  "indexmap 2.10.0",
- "itertools 0.10.5",
  "itertools 0.14.0",
  "lexical-parse-float",
  "lexical-parse-integer",
@@ -8113,10 +8130,10 @@ dependencies = [
 
 [[package]]
 name = "rust-librocksdb-sys"
-version = "0.37.0+10.2.1"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=309f749c033731c21a520f5b47773fe31deafd79#309f749c033731c21a520f5b47773fe31deafd79"
+version = "0.39.0+10.5.1"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=8873ba40ae687862dbe177e645e7b03c5ce025e3#8873ba40ae687862dbe177e645e7b03c5ce025e3"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.0",
  "bzip2-sys",
  "cc",
  "glob",
@@ -8129,8 +8146,8 @@ dependencies = [
 
 [[package]]
 name = "rust-rocksdb"
-version = "0.41.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=309f749c033731c21a520f5b47773fe31deafd79#309f749c033731c21a520f5b47773fe31deafd79"
+version = "0.43.0"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=8873ba40ae687862dbe177e645e7b03c5ce025e3#8873ba40ae687862dbe177e645e7b03c5ce025e3"
 dependencies = [
  "libc",
  "parking_lot",

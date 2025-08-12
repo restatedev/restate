@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::{CStr, CString};
 use std::sync::{Arc, Weak};
 
@@ -114,7 +115,7 @@ impl DurableLsnEventListener {
 }
 
 impl EventListener for DurableLsnEventListener {
-    fn on_flush_completed(&self, flush_job_info: FlushJobInfo) {
+    fn on_flush_completed(&self, flush_job_info: &FlushJobInfo) {
         let Some(shared_state) = self.shared_state.upgrade() else {
             // we have dropped all references to the database, we are not interested in monitoring
             // flushes anymore.
@@ -135,11 +136,12 @@ impl EventListener for DurableLsnEventListener {
             if let (Ok(ref partition_id), Ok(Some(ref lsn))) = (partition_id, lsn) {
                 shared_state.note_durable_lsn(*partition_id, *lsn);
             } else {
-                warn!(
-                    cf_name = flush_job_info.cf_name,
-                    ?key,
-                    "Failed to decode partition applied LSN from flush event",
-                );
+                let cf_name = flush_job_info.cf_name();
+                let cf_name = cf_name
+                    .as_ref()
+                    .map(|name| std::string::String::from_utf8_lossy(name))
+                    .unwrap_or(Cow::Borrowed("unknown"));
+                warn!(%cf_name, ?key, "Failed to decode partition applied LSN from flush event");
             }
         }
     }
