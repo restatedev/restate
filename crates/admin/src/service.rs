@@ -16,6 +16,7 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use restate_bifrost::Bifrost;
 use restate_core::MetadataWriter;
 use restate_core::network::net_util;
+use restate_serde_util::DurationString;
 use restate_service_client::HttpClient;
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_types::config::AdminOptions;
@@ -133,8 +134,8 @@ where
                             name: "access-log",
                             target: "restate_admin::api",
                             parent: span,
-                            { http.response.status_code = response.status().as_u16() },
-                            "Replied in {}ms", latency.as_millis()
+                            { http.response.status_code = response.status().as_u16(), http.response.latency = DurationString::display(latency) },
+                            "Replied"
                         )
                     },
                 )
@@ -149,8 +150,8 @@ where
                                     name: "access-log",
                                     target: "restate_admin::api",
                                     parent: span,
-                                    { error.type = error_string },
-                                    "Failed processing after {}ms", latency.as_millis()
+                                    { error.type = error_string, http.response.latency = DurationString::display(latency) },
+                                    "Failed processing"
                                 )
                             }
                         }

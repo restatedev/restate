@@ -17,6 +17,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
+use restate_serde_util::DurationString;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -168,8 +169,8 @@ where
                                 name: "access-log",
                                 target: "restate_ingress_http::api",
                                 parent: span,
-                                { http.response.status_code = response.status().as_u16() },
-                                "Replied in {}ms", latency.as_millis()
+                                { http.response.status_code = response.status().as_u16(), http.response.latency = DurationString::display(latency) },
+                                "Replied"
                             )
                         },
                     )
@@ -184,8 +185,8 @@ where
                                         name: "access-log",
                                         target: "restate_ingress_http::api",
                                         parent: span,
-                                        { error.type = error_string },
-                                        "Failed processing after {}ms", latency.as_millis()
+                                        { error.type = error_string, http.response.latency = DurationString::display(latency) },
+                                        "Failed processing"
                                     )
                                 }
                             }
