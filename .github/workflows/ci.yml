@@ -79,7 +79,7 @@ jobs:
           tool: nextest@0.9.98
 
       - name: Setup just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
