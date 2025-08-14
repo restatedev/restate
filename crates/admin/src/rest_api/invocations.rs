@@ -9,21 +9,23 @@
 // by the Apache License, Version 2.0.
 
 use super::error::*;
-use std::sync::Arc;
-
 use crate::generate_meta_api_error;
 use crate::rest_api::create_envelope_header;
 use crate::state::AdminServiceState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
+use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::client::{
-    CancelInvocationResponse, InvocationClient, KillInvocationResponse, PurgeInvocationResponse,
+    self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
+    PurgeInvocationResponse,
 };
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_wal_protocol::{Command, Envelope};
 use serde::Deserialize;
+use std::sync::Arc;
 use tracing::warn;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -306,4 +308,64 @@ where
     };
 
     Ok(())
+}
+
+generate_meta_api_error!(RestartInvocationError: [
+    InvocationNotFoundError,
+    InvocationClientError,
+    InvalidFieldError,
+    RestartAsNewInvocationStillRunningError,
+    RestartAsNewInvocationUnsupportedError,
+    RestartAsNewInvocationMissingInputError,
+    RestartAsNewInvocationNotStartedError
+]);
+
+/// Restart an invocation
+#[openapi(
+    summary = "Restart as new invocation",
+    description = "Restart the given invocation as new. This will restart the invocation, given its input is available, as a new invocation with a different invocation id.",
+    operation_id = "restart_as_new_invocation",
+    tags = "invocation",
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    ))
+)]
+pub async fn restart_as_new_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+) -> Result<Json<RestartAsNewInvocationResponse>, RestartInvocationError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .restart_as_new_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .await
+        .map_err(InvocationClientError)?
+    {
+        client::RestartAsNewInvocationResponse::Ok { new_invocation_id } => {
+            Ok(RestartAsNewInvocationResponse { new_invocation_id }.into())
+        }
+        client::RestartAsNewInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        client::RestartAsNewInvocationResponse::StillRunning => Err(
+            RestartAsNewInvocationStillRunningError(invocation_id.to_string()),
+        )?,
+        client::RestartAsNewInvocationResponse::Unsupported => Err(
+            RestartAsNewInvocationUnsupportedError(invocation_id.to_string()),
+        )?,
+        client::RestartAsNewInvocationResponse::MissingInput => Err(
+            RestartAsNewInvocationMissingInputError(invocation_id.to_string()),
+        )?,
+        client::RestartAsNewInvocationResponse::NotStarted => Err(
+            RestartAsNewInvocationNotStartedError(invocation_id.to_string()),
+        )?,
+    }
 }

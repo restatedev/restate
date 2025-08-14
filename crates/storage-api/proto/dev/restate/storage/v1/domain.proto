@@ -110,11 +110,16 @@ message Source {
 
   message Subscription { bytes subscription_id = 1; }
 
+  message RestartAsNew {
+    InvocationId invocation_id = 1;
+  }
+
   oneof source {
     Ingress ingress = 9;
     Service service = 10;
     google.protobuf.Empty internal = 11;
     Subscription subscription = 12;
+    RestartAsNew restart_as_new = 13;
   }
 }
 

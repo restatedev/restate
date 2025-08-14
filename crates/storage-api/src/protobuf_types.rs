@@ -1684,6 +1684,15 @@ pub mod v1 {
                                 .ok_or(ConversionError::missing_field("invocation_target"))?,
                         )?,
                     ),
+                    source::Source::RestartAsNew(service) => {
+                        restate_types::invocation::Source::RestartAsNew(
+                            restate_types::identifiers::InvocationId::try_from(
+                                service
+                                    .invocation_id
+                                    .ok_or(ConversionError::missing_field("invocation_id"))?,
+                            )?,
+                        )
+                    }
                     source::Source::Internal(_) => restate_types::invocation::Source::Internal,
                 };
 
@@ -1711,6 +1720,11 @@ pub mod v1 {
                         invocation_id: Some(InvocationId::from(invocation_id)),
                         invocation_target: Some(InvocationTarget::from(invocation_target)),
                     }),
+                    restate_types::invocation::Source::RestartAsNew(invocation_id) => {
+                        source::Source::RestartAsNew(source::RestartAsNew {
+                            invocation_id: Some(InvocationId::from(invocation_id)),
+                        })
+                    }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
                 };
 
@@ -1740,6 +1754,11 @@ pub mod v1 {
                         invocation_id: Some(InvocationId::from(*invocation_id)),
                         invocation_target: Some(InvocationTarget::from(invocation_target)),
                     }),
+                    restate_types::invocation::Source::RestartAsNew(invocation_id) => {
+                        source::Source::RestartAsNew(source::RestartAsNew {
+                            invocation_id: Some(InvocationId::from(*invocation_id)),
+                        })
+                    }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
                 };
 

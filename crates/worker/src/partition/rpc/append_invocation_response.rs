@@ -36,6 +36,7 @@ impl<'a, Proposer: CommandProposer, Storage> RpcHandler<Request>
                 invocation_response.partition_key(),
                 Command::InvocationResponse(invocation_response),
                 replier,
+                PartitionProcessorRpcResponse::Appended,
             )
             .await;
 

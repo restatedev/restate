@@ -332,9 +332,8 @@ impl LeaderState {
         &mut self,
         partition_key: PartitionKey,
         cmd: Command,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
+        reciprocal: RpcReciprocal,
+        success_response: PartitionProcessorRpcResponse,
     ) {
         match self
             .self_proposer
@@ -342,8 +341,11 @@ impl LeaderState {
             .await
         {
             Ok(commit_token) => {
-                self.awaiting_rpc_self_propose
-                    .push(SelfAppendFuture::new(commit_token, reciprocal));
+                self.awaiting_rpc_self_propose.push(SelfAppendFuture::new(
+                    commit_token,
+                    success_response,
+                    reciprocal,
+                ));
             }
             Err(e) => reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
         }
@@ -534,26 +536,23 @@ impl LeaderState {
 
 struct SelfAppendFuture {
     commit_token: CommitToken,
-    response: Option<
-        Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>,
-    >,
+    response: Option<(PartitionProcessorRpcResponse, RpcReciprocal)>,
 }
 
 impl SelfAppendFuture {
     fn new(
         commit_token: CommitToken,
-        response: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
+        success_response: PartitionProcessorRpcResponse,
+        response_reciprocal: RpcReciprocal,
     ) -> Self {
         Self {
             commit_token,
-            response: Some(response),
+            response: Some((success_response, response_reciprocal)),
         }
     }
 
     fn fail_with_internal(&mut self) {
-        if let Some(reciprocal) = self.response.take() {
+        if let Some((_, reciprocal)) = self.response.take() {
             reciprocal.send(Err(PartitionProcessorRpcError::Internal(
                 "error when proposing to bifrost".to_string(),
             )));
@@ -561,7 +560,7 @@ impl SelfAppendFuture {
     }
 
     fn fail_with_lost_leadership(&mut self, this_partition_id: PartitionId) {
-        if let Some(reciprocal) = self.response.take() {
+        if let Some((_, reciprocal)) = self.response.take() {
             reciprocal.send(Err(PartitionProcessorRpcError::LostLeadership(
                 this_partition_id,
             )));
@@ -569,8 +568,8 @@ impl SelfAppendFuture {
     }
 
     fn succeed_with_appended(&mut self) {
-        if let Some(reciprocal) = self.response.take() {
-            reciprocal.send(Ok(PartitionProcessorRpcResponse::Appended));
+        if let Some((success_response, reciprocal)) = self.response.take() {
+            reciprocal.send(Ok(success_response));
         }
     }
 }

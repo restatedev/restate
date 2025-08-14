@@ -579,6 +579,17 @@ impl FromStr for InvocationId {
     }
 }
 
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for InvocationId {
+    fn schema_name() -> String {
+        <String as schemars::JsonSchema>::schema_name()
+    }
+
+    fn json_schema(g: &mut schemars::SchemaGenerator) -> schemars::schema::Schema {
+        <String as schemars::JsonSchema>::json_schema(g)
+    }
+}
+
 #[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct IdempotencyId {
     /// Identifies the invoked service

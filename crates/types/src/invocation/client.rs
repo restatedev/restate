@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use crate::errors::InvocationError;
 use crate::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget};
 use crate::journal_v2::Signal;
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{inner}")]
@@ -111,6 +110,22 @@ pub enum PurgeInvocationResponse {
     NotCompleted,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestartAsNewInvocationResponse {
+    Ok {
+        new_invocation_id: InvocationId,
+    },
+    NotFound,
+    /// The invocation cannot be restarted, because it's still running
+    StillRunning,
+    /// Restart as New is currently unsupported by workflows
+    Unsupported,
+    /// The invocation is missing the input, thus it cannot be restarted
+    MissingInput,
+    /// The initial invocation wasn't started yet (it's enqueued or scheduled)
+    NotStarted,
+}
+
 /// This trait provides the functionalities to interact with Restate invocations.
 pub trait InvocationClient {
     /// Append the invocation to the log, waiting for the PP to emit [`SubmittedInvocationNotification`] when the command is processed.
@@ -183,4 +198,11 @@ pub trait InvocationClient {
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
     ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send;
+
+    /// Restart the given invocation as a new invocation, with a new invocation id.
+    fn restart_as_new_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> impl Future<Output = Result<RestartAsNewInvocationResponse, InvocationClientError>> + Send;
 }
