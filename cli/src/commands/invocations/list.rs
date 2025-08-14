@@ -76,9 +76,9 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let mut post_filters: Vec<String> = vec![];
 
     let order_by = if opts.oldest_first {
-        "ORDER BY inv.created_at ASC"
+        "ORDER BY created_at ASC"
     } else {
-        "ORDER BY inv.created_at DESC"
+        "ORDER BY created_at DESC"
     };
 
     if !opts.service.is_empty() {
@@ -153,7 +153,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
     progress.set_message("Finding invocations...");
 
-    let (mut results, total) = find_active_invocations(
+    let (mut results, min_count) = find_active_invocations(
         &sql_client,
         &active_filter_str,
         &post_filter_str,
@@ -161,6 +161,13 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         opts.limit,
     )
     .await?;
+
+    let total_count = if results.len() < opts.limit {
+        // returned less than limit; we have every row
+        format!("{}", results.len())
+    } else {
+        format!("{min_count}+")
+    };
 
     // Render Output UI
     progress.finish_and_clear();
@@ -177,7 +184,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     c_eprintln!(
         "Showing {}/{} invocations. Query took {:?}",
         results.len(),
-        total,
+        total_count,
         Styled(Style::Notice, start_time.elapsed())
     );
 
