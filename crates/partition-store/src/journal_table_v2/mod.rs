@@ -273,14 +273,6 @@ fn get_command_by_completion_id<S: StorageAccess>(
 }
 
 impl ReadOnlyJournalTable for PartitionStore {
-    async fn has_journal(&mut self, invocation_id: InvocationId) -> Result<bool> {
-        self.assert_partition_key(&invocation_id)?;
-        // TODO this could definitely use key_exists from RocksDB,
-        //  but it's currently not exposed in the rust-rocksdb bindings
-        //  https://github.com/facebook/rocksdb/blob/8f0ab1598effd4b05f6f88310c7bd9aaf5d418c6/java/rocksjni/rocksjni.cc#L1903
-        Ok(self.get_journal_entry(invocation_id, 0).await?.is_some())
-    }
-
     async fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
@@ -353,11 +345,6 @@ impl ScanJournalTable for PartitionStore {
 }
 
 impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
-    async fn has_journal(&mut self, invocation_id: InvocationId) -> Result<bool> {
-        self.assert_partition_key(&invocation_id)?;
-        Ok(self.get_journal_entry(invocation_id, 0).await?.is_some())
-    }
-
     async fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,

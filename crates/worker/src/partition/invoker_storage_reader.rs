@@ -80,19 +80,11 @@ where
         let invocation_status = self.txn.get_invocation_status(invocation_id).await?;
 
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
-            let read_journal_table_v2 = match &invoked_status.pinned_deployment {
-                None => {
-                    // Let's just check if there's anything in journal table v2!
-                    journal_table_v2::ReadOnlyJournalTable::has_journal(
-                        &mut self.txn,
-                        *invocation_id,
-                    )
-                    .await?
-                }
-                Some(pd) => pd.service_protocol_version >= ServiceProtocolVersion::V4,
-            };
-
-            let (journal_metadata, journal_stream) = if read_journal_table_v2 {
+            let (journal_metadata, journal_stream) = if invoked_status
+                .pinned_deployment
+                .as_ref()
+                .is_some_and(|p| p.service_protocol_version >= ServiceProtocolVersion::V4)
+            {
                 // If pinned service protocol version exists and >= V4, we need to read from Journal Table V2!
                 let entries = journal_table_v2::ReadOnlyJournalTable::get_journal(
                     &mut self.txn,

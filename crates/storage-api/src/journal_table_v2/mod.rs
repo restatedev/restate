@@ -21,11 +21,6 @@ use restate_types::journal_v2::{CompletionId, NotificationId};
 use restate_types::storage::StoredRawEntry;
 
 pub trait ReadOnlyJournalTable {
-    fn has_journal(
-        &mut self,
-        invocation_id: InvocationId,
-    ) -> impl Future<Output = Result<bool>> + Send;
-
     fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,

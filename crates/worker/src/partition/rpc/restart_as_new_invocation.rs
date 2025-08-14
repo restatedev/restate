@@ -227,14 +227,6 @@ mod tests {
     }
 
     impl ReadOnlyJournalTable for MockStorage {
-        fn has_journal(
-            &mut self,
-            invocation_id: InvocationId,
-        ) -> impl Future<Output = restate_storage_api::Result<bool>> + Send {
-            assert_eq!(self.expected_invocation_id, invocation_id);
-            ready(Ok(true))
-        }
-
         fn get_journal_entry(
             &mut self,
             invocation_id: InvocationId,
