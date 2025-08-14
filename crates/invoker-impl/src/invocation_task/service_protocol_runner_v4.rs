@@ -56,7 +56,8 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
 use crate::error::{
-    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
+    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerErrorKind,
+    SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
@@ -214,7 +215,7 @@ where
         // Sanity check of the stream decoder
         if self.decoder.has_remaining() {
             warn_it!(
-                InvokerError::WriteAfterEndOfStream,
+                InvokerErrorKind::WriteAfterEndOfStream,
                 "The read buffer is non empty after the stream has been closed."
             );
         }
@@ -383,7 +384,7 @@ where
                         ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()))
+                            return TerminalLoopState::Failed(InvokerErrorKind::SdkV2(SdkInvocationErrorV2::unknown()))
                         }
                     }
                 },
@@ -410,13 +411,13 @@ where
                         ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()))
+                            return TerminalLoopState::Failed(InvokerErrorKind::SdkV2(SdkInvocationErrorV2::unknown()))
                         }
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
                     warn!("Inactivity detected, going to close invocation");
-                    return TerminalLoopState::Failed(InvokerError::AbortTimeoutFired(self.invocation_task.abort_timeout.into()))
+                    return TerminalLoopState::Failed(InvokerErrorKind::AbortTimeoutFired(self.invocation_task.abort_timeout.into()))
                 },
             }
         }
@@ -431,7 +432,7 @@ where
         state_entries: EagerState<I>,
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
-    ) -> Result<(), InvokerError> {
+    ) -> Result<(), InvokerErrorKind> {
         let is_partial = state_entries.is_partial();
 
         // Send the invoke frame
@@ -458,7 +459,7 @@ where
         &mut self,
         http_stream_tx: &mut InvokerRequestStreamSender,
         entry: RawEntry,
-    ) -> Result<(), InvokerError> {
+    ) -> Result<(), InvokerErrorKind> {
         // TODO(slinkydeveloper) could this code be improved a tad bit more introducing something to our magic macro in message_codec?
         match entry {
             RawEntry::Command(cmd) => {
@@ -489,12 +490,12 @@ where
         &mut self,
         http_stream_tx: &mut InvokerRequestStreamSender,
         msg: Message,
-    ) -> Result<(), InvokerError> {
+    ) -> Result<(), InvokerErrorKind> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
         if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
-            return Err(InvokerError::UnexpectedClosedRequestStream);
+            return Err(InvokerErrorKind::UnexpectedClosedRequestStream);
         };
         Ok(())
     }
@@ -504,12 +505,12 @@ where
         http_stream_tx: &mut InvokerRequestStreamSender,
         ty: MessageType,
         buf: Bytes,
-    ) -> Result<(), InvokerError> {
+    ) -> Result<(), InvokerErrorKind> {
         trace!(restate.protocol.message = ?ty, "Sending message");
         let buf = self.encoder.encode_raw(ty, buf);
 
         if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
-            return Err(InvokerError::UnexpectedClosedRequestStream);
+            return Err(InvokerErrorKind::UnexpectedClosedRequestStream);
         };
         Ok(())
     }
@@ -517,19 +518,19 @@ where
     fn handle_response_headers(
         &mut self,
         mut parts: http::response::Parts,
-    ) -> Result<(), InvokerError> {
+    ) -> Result<(), InvokerErrorKind> {
         // if service is running behind a gateway, the service can be down
         // but we still get a response code from the gateway itself. In that
         // case we still need to return the proper error
         if GATEWAY_ERRORS_CODES.contains(&parts.status) {
-            return Err(InvokerError::ServiceUnavailable(parts.status));
+            return Err(InvokerErrorKind::ServiceUnavailable(parts.status));
         }
 
         // otherwise we return generic UnexpectedResponse
         if !parts.status.is_success() {
             // Decorate the error in case of UNSUPPORTED_MEDIA_TYPE, as it probably is the incompatible protocol version
             if parts.status == StatusCode::UNSUPPORTED_MEDIA_TYPE {
-                return Err(InvokerError::BadNegotiatedServiceProtocolVersion(
+                return Err(InvokerErrorKind::BadNegotiatedServiceProtocolVersion(
                     self.service_protocol_version,
                 ));
             }
@@ -537,7 +538,7 @@ where
                 return Err(InvokerError::ContentTooLarge);
             }
 
-            return Err(InvokerError::UnexpectedResponse(parts.status));
+            return Err(InvokerErrorKind::UnexpectedResponse(parts.status));
         }
 
         let content_type = parts.headers.remove(http::header::CONTENT_TYPE);
@@ -548,14 +549,14 @@ where
             {
                 #[allow(clippy::borrow_interior_mutable_const)]
                 if ct != expected_content_type {
-                    return Err(InvokerError::UnexpectedContentType(
+                    return Err(InvokerErrorKind::UnexpectedContentType(
                         Some(ct),
                         expected_content_type,
                     ));
                 }
             }
             None => {
-                return Err(InvokerError::UnexpectedContentType(
+                return Err(InvokerErrorKind::UnexpectedContentType(
                     None,
                     expected_content_type,
                 ));
@@ -566,7 +567,7 @@ where
             self.invocation_task
                 .send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
                     hv.to_str()
-                        .map_err(|e| InvokerError::BadHeader(X_RESTATE_SERVER, e))?
+                        .map_err(|e| InvokerErrorKind::BadHeader(X_RESTATE_SERVER, e))?
                         .to_owned(),
                 ))
         }
@@ -614,11 +615,11 @@ where
         match message {
             // Control messages
             Message::Start { .. } => {
-                TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(MessageType::Start))
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessageV4(MessageType::Start))
             }
-            Message::CommandAck(_) => TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
-                MessageType::CommandAck,
-            )),
+            Message::CommandAck(_) => TerminalLoopState::Failed(
+                InvokerErrorKind::UnexpectedMessageV4(MessageType::CommandAck),
+            ),
             Message::Suspension(suspension) => self.handle_suspension_message(suspension),
             Message::Error(e) => self.handle_error_message(e),
             Message::End(_) => TerminalLoopState::Closed,
@@ -630,7 +631,7 @@ where
                     result: match crate::shortcircuit!(
                         run_completion
                             .result
-                            .ok_or(InvokerError::MalformedProposeRunCompletion)
+                            .ok_or(InvokerErrorKind::MalformedProposeRunCompletion)
                     ) {
                         proto::propose_run_completion_message::Result::Value(b) => {
                             RunResult::Success(b)
@@ -711,11 +712,13 @@ where
                                 span_relation: parent_span_context.as_linked()
                             }
                         )
-                        .map_err(|e| InvokerError::CommandPrecondition(
-                            self.command_index,
-                            EntryType::Command(CommandType::OneWayCall),
-                            e
-                        ))
+                        .map_err(
+                            |e| InvokerErrorKind::CommandPrecondition(
+                                self.command_index,
+                                EntryType::Command(CommandType::OneWayCall),
+                                e
+                            )
+                        )
                     ),
                     invoke_time: cmd.invoke_time.into(),
                     invocation_id_completion_id: cmd.invocation_id_notification_idx,
@@ -746,11 +749,13 @@ where
                                 span_relation: parent_span_context.as_parent()
                             }
                         )
-                        .map_err(|e| InvokerError::CommandPrecondition(
-                            self.command_index,
-                            EntryType::Command(CommandType::Call),
-                            e
-                        ))
+                        .map_err(
+                            |e| InvokerErrorKind::CommandPrecondition(
+                                self.command_index,
+                                EntryType::Command(CommandType::Call),
+                                e
+                            )
+                        )
                     ),
                     invocation_id_completion_id: cmd.invocation_id_notification_idx,
                     result_completion_id: cmd.result_completion_id,
@@ -891,51 +896,57 @@ where
                 TerminalLoopState::Continue(())
             }
             Message::SignalNotification(_) => TerminalLoopState::Failed(
-                InvokerError::UnexpectedMessageV4(MessageType::SignalNotification),
+                InvokerErrorKind::UnexpectedMessageV4(MessageType::SignalNotification),
             ),
             Message::GetInvocationOutputCompletionNotification(_) => {
-                TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessageV4(
                     MessageType::GetInvocationOutputCompletionNotification,
                 ))
             }
             Message::AttachInvocationCompletionNotification(_) => {
-                TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessageV4(
                     MessageType::AttachInvocationCompletionNotification,
                 ))
             }
             Message::RunCompletionNotification(_) => TerminalLoopState::Failed(
-                InvokerError::UnexpectedMessageV4(MessageType::RunCompletionNotification),
+                InvokerErrorKind::UnexpectedMessageV4(MessageType::RunCompletionNotification),
             ),
             Message::CallCompletionNotification(_) => TerminalLoopState::Failed(
-                InvokerError::UnexpectedMessageV4(MessageType::CallCompletionNotification),
+                InvokerErrorKind::UnexpectedMessageV4(MessageType::CallCompletionNotification),
             ),
             Message::CallInvocationIdCompletionNotification(_) => {
-                TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessageV4(
                     MessageType::CallInvocationIdCompletionNotification,
                 ))
             }
             Message::SleepCompletionNotification(_) => TerminalLoopState::Failed(
-                InvokerError::UnexpectedMessageV4(MessageType::SleepCompletionNotification),
+                InvokerErrorKind::UnexpectedMessageV4(MessageType::SleepCompletionNotification),
             ),
             Message::CompletePromiseCompletionNotification(_) => {
-                TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessageV4(
                     MessageType::CompletePromiseCompletionNotification,
                 ))
             }
-            Message::PeekPromiseCompletionNotification(_) => TerminalLoopState::Failed(
-                InvokerError::UnexpectedMessageV4(MessageType::PeekPromiseCompletionNotification),
-            ),
-            Message::GetPromiseCompletionNotification(_) => TerminalLoopState::Failed(
-                InvokerError::UnexpectedMessageV4(MessageType::GetPromiseCompletionNotification),
-            ),
+            Message::PeekPromiseCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessageV4(
+                    MessageType::PeekPromiseCompletionNotification,
+                ))
+            }
+            Message::GetPromiseCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessageV4(
+                    MessageType::GetPromiseCompletionNotification,
+                ))
+            }
             Message::GetLazyStateKeysCompletionNotification(_) => {
-                TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessageV4(
                     MessageType::GetLazyStateKeysCompletionNotification,
                 ))
             }
-            Message::GetLazyStateCompletionNotification(_) => TerminalLoopState::Failed(
-                InvokerError::UnexpectedMessageV4(MessageType::GetLazyStateCompletionNotification),
-            ),
+            Message::GetLazyStateCompletionNotification(_) => {
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessageV4(
+                    MessageType::GetLazyStateCompletionNotification,
+                ))
+            }
             Message::Custom(_, _) => {
                 unimplemented!()
             }
@@ -967,13 +978,13 @@ where
             .collect();
         // We currently don't support empty suspension_indexes set
         if suspension_indexes.is_empty() {
-            return TerminalLoopState::Failed(InvokerError::EmptySuspensionMessage);
+            return TerminalLoopState::Failed(InvokerErrorKind::EmptySuspensionMessage);
         }
         TerminalLoopState::SuspendedV2(suspension_indexes)
     }
 
     fn handle_error_message(&mut self, error: proto::ErrorMessage) -> TerminalLoopState<()> {
-        TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2 {
+        TerminalLoopState::Failed(InvokerErrorKind::SdkV2(SdkInvocationErrorV2 {
             related_command: Some(InvocationErrorRelatedCommandV2 {
                 related_command_index: error.related_command_index,
                 related_command_name: error.related_command_name.clone(),
@@ -1075,9 +1086,9 @@ fn check_workflow_type(
     command_index: CommandIndex,
     entry_type: &EntryType,
     service_type: &ServiceType,
-) -> Result<(), InvokerError> {
+) -> Result<(), InvokerErrorKind> {
     if *service_type != ServiceType::Workflow {
-        return Err(InvokerError::CommandPrecondition(
+        return Err(InvokerErrorKind::CommandPrecondition(
             command_index,
             *entry_type,
             CommandPreconditionError::NoWorkflowOperations,
@@ -1091,9 +1102,9 @@ fn can_read_state(
     command_index: CommandIndex,
     entry_type: &EntryType,
     invocation_target_type: &InvocationTargetType,
-) -> Result<(), InvokerError> {
+) -> Result<(), InvokerErrorKind> {
     if !invocation_target_type.can_read_state() {
-        return Err(InvokerError::CommandPrecondition(
+        return Err(InvokerErrorKind::CommandPrecondition(
             command_index,
             *entry_type,
             CommandPreconditionError::NoStateOperations,
@@ -1107,10 +1118,10 @@ fn can_write_state(
     command_index: CommandIndex,
     entry_type: &EntryType,
     invocation_target_type: &InvocationTargetType,
-) -> Result<(), InvokerError> {
+) -> Result<(), InvokerErrorKind> {
     can_read_state(command_index, entry_type, invocation_target_type)?;
     if !invocation_target_type.can_write_state() {
-        return Err(InvokerError::CommandPrecondition(
+        return Err(InvokerErrorKind::CommandPrecondition(
             command_index,
             *entry_type,
             CommandPreconditionError::NoWriteStateOperations,
