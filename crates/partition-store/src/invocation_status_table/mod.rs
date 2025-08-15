@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 
 use futures::Stream;
 use tokio_stream::StreamExt;
@@ -170,6 +170,13 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     }
 }
 
+fn break_on_err<T, E>(r: std::result::Result<T, E>) -> ControlFlow<std::result::Result<(), E>, T> {
+    match r {
+        Ok(val) => ControlFlow::Continue(val),
+        Err(err) => ControlFlow::Break(Err(err)),
+    }
+}
+
 impl ScanInvocationStatusTable for PartitionStore {
     fn scan_invoked_invocations(
         &self,
@@ -211,6 +218,40 @@ impl ScanInvocationStatusTable for PartitionStore {
             },
         )
         .map_err(|_| StorageError::OperationalError)
+    }
+
+    fn for_each_invocation_status<
+        F: FnMut((InvocationId, InvocationStatus)) -> ControlFlow<()> + Send + Sync + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        let new_status_keys = self
+            .iterator_for_each(
+                "df-for-each-invocation-status",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                {
+                    move |(mut key, mut value)| {
+                        let state_key =
+                            break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                        let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
+
+                        let (partition_key, invocation_uuid) =
+                            break_on_err(state_key.into_inner_ok_or())?;
+
+                        f((
+                            InvocationId::from_parts(partition_key, invocation_uuid),
+                            state_value,
+                        ))
+                        .map_break(Ok)
+                    }
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(new_status_keys)
     }
 }
 
