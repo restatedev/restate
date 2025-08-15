@@ -319,7 +319,9 @@ impl RocksDb {
         priority: Priority,
         initial_action: IterAction,
         mut read_options: rocksdb::ReadOptions,
-        on_item: impl Fn(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
+        mut on_item: impl FnMut(Result<Option<(&[u8], &[u8])>, RocksError>) -> IterAction
+        + Send
+        + 'static,
     ) -> Result<(), ShutdownError> {
         // ensure that we allow blocking IO.
         read_options.set_read_tier(rocksdb::ReadTier::All);

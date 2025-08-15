@@ -70,6 +70,28 @@ impl ScanLocalPartition for StatusScanner {
         partition_store.scan_invocation_statuses(range)
     }
 
+    fn scan_partition_store_mut<
+        O: Send + 'static,
+        F: FnMut(Result<Option<Self::Item>, StorageError>) -> Result<Option<O>, StorageError>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        partition_store: &PartitionStore,
+        range: RangeInclusive<PartitionKey>,
+        _limit: Option<usize>,
+        f: F,
+    ) -> Result<
+        impl Stream<Item = Result<O, StorageError>> + Send + 'static + use<O, F>,
+        StorageError,
+    > {
+        partition_store.scan_invocation_statuses_mut(range, f)
+    }
+
+    fn supports_scan_partition_store_mut() -> bool {
+        true
+    }
+
     fn append_row(
         row_builder: &mut Self::Builder,
         string_buffer: &mut String,
