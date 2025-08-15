@@ -10,6 +10,7 @@
 
 extern crate core;
 
+mod accounting;
 mod error;
 mod handle;
 mod invoker_integration;
@@ -55,6 +56,7 @@ use crate::partition_processor_manager::PartitionProcessorManager;
 
 pub use self::error::*;
 pub use self::handle::*;
+pub use crate::accounting::StorageAccountingTask;
 pub use crate::subscription_controller::SubscriptionController;
 pub use crate::subscription_integration::SubscriptionControllerHandle;
 
