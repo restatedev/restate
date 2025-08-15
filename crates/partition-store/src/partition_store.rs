@@ -389,7 +389,7 @@ impl PartitionStore {
         scan: TableScan<K>,
         f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, rx) = mpsc::channel(8);
         let scan: PhysicalScan = scan.into();
         let on_iter = move |item: Result<(&[u8], &[u8]), RocksError>| -> IterAction {
             let res = match item {
