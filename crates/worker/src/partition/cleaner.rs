@@ -223,6 +223,30 @@ mod tests {
             Ok(stream::iter(self.0.clone()).map(Ok))
         }
 
+        fn for_each_invocation_status<
+            F: FnMut((InvocationId, InvocationStatus)) -> std::ops::ControlFlow<()>
+                + Send
+                + Sync
+                + 'static,
+        >(
+            &self,
+            _: RangeInclusive<PartitionKey>,
+            mut f: F,
+        ) -> restate_storage_api::Result<impl Future<Output = restate_storage_api::Result<()>> + Send>
+        {
+            let inner = self.0.clone();
+            Ok(async move {
+                for (id, status) in inner {
+                    match f((id, status)) {
+                        std::ops::ControlFlow::Continue(()) => continue,
+                        std::ops::ControlFlow::Break(()) => break,
+                    }
+                }
+
+                Ok(())
+            })
+        }
+
         fn scan_invoked_invocations(
             &self,
         ) -> restate_storage_api::Result<

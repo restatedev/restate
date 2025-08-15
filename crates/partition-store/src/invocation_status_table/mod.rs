@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
+use std::sync::Arc;
 
 use futures::Stream;
 use tokio_stream::StreamExt;
@@ -170,6 +171,13 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     }
 }
 
+fn break_on_err<T, E>(r: std::result::Result<T, E>) -> ControlFlow<std::result::Result<(), E>, T> {
+    match r {
+        Ok(val) => ControlFlow::Continue(val),
+        Err(err) => ControlFlow::Break(Err(err)),
+    }
+}
+
 impl ScanInvocationStatusTable for PartitionStore {
     fn scan_invoked_invocations(
         &self,
@@ -211,6 +219,84 @@ impl ScanInvocationStatusTable for PartitionStore {
             },
         )
         .map_err(|_| StorageError::OperationalError)
+    }
+
+    fn for_each_invocation_status<
+        F: FnMut((InvocationId, InvocationStatus)) -> ControlFlow<()> + Send + Sync + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        // these two iterators can run concurrently in theory.
+        // in practice, there are not typically any keys in the first iterator, but rust rightfully forces us to use a mutex to protect the FnMut
+        // the intent here is that iterators race to produce the first row, the winner gets an owned lock guard which it then holds until its done iterating
+        // and then the next iterator is able to get a lock guard.
+
+        let f = Arc::new(tokio::sync::Mutex::new(f));
+
+        let old_status_keys = self
+            .iterator_for_each(
+                "df-for-each-invocation-status-v1",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKeyV1>(range.clone()),
+                {
+                    let f = f.clone();
+                    let mut f_locked = None;
+                    move |(mut key, mut value)| {
+                        let state_key =
+                            break_on_err(InvocationStatusKeyV1::deserialize_from(&mut key))?;
+                        let state_value = break_on_err(InvocationStatusV1::decode(&mut value))?;
+
+                        let (partition_key, invocation_uuid) =
+                            break_on_err(state_key.into_inner_ok_or())?;
+
+                        let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
+
+                        f((
+                            InvocationId::from_parts(partition_key, invocation_uuid),
+                            state_value.0,
+                        ))
+                        .map_break(Ok)
+                    }
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        let new_status_keys = self
+            .iterator_for_each(
+                "df-for-each-invocation-status",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                {
+                    let f = f.clone();
+                    let mut f_locked = None;
+                    move |(mut key, mut value)| {
+                        let state_key =
+                            break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                        let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
+
+                        let (partition_key, invocation_uuid) =
+                            break_on_err(state_key.into_inner_ok_or())?;
+
+                        let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
+
+                        f((
+                            InvocationId::from_parts(partition_key, invocation_uuid),
+                            state_value,
+                        ))
+                        .map_break(Ok)
+                    }
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(async {
+            old_status_keys.await?;
+            new_status_keys.await?;
+
+            Ok(())
+        })
     }
 }
 

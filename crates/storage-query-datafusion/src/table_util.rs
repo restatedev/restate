@@ -14,6 +14,7 @@ use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
 use std::fmt::Write;
 use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
 use tracing::error;
 
 #[macro_export]
@@ -67,4 +68,49 @@ pub(crate) trait Builder {
     fn empty(&self) -> bool;
 
     fn finish(self) -> datafusion::common::Result<RecordBatch>;
+}
+
+pub(crate) struct BatchSender<B: Builder> {
+    projection: SchemaRef,
+    builder: B,
+    tx: Sender<datafusion::error::Result<RecordBatch>>,
+}
+
+impl<B: Builder> BatchSender<B> {
+    pub(crate) fn new(
+        projection: SchemaRef,
+        tx: Sender<datafusion::error::Result<RecordBatch>>,
+    ) -> Self {
+        let builder = B::new(projection.clone());
+        Self {
+            projection,
+            builder,
+            tx,
+        }
+    }
+
+    pub(crate) fn send(
+        &mut self,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<datafusion::error::Result<RecordBatch>>>
+    {
+        let old_builder = std::mem::replace(&mut self.builder, B::new(self.projection.clone()));
+        let result = old_builder.finish();
+        self.tx.blocking_send(result)
+    }
+
+    pub(crate) fn builder_mut(&mut self) -> &mut B {
+        &mut self.builder
+    }
+
+    pub(crate) fn num_rows(&self) -> usize {
+        self.builder.num_rows()
+    }
+}
+
+impl<B: Builder> Drop for BatchSender<B> {
+    fn drop(&mut self) {
+        if !self.builder.empty() {
+            let _ = self.send();
+        }
+    }
 }
