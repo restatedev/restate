@@ -24,6 +24,8 @@ use rocksdb::{
 };
 use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace};
@@ -382,25 +384,24 @@ impl PartitionStore {
         }
     }
 
-    pub fn run_iterator<K: TableKey, O: Send + 'static>(
-        &self,
-        name: &'static str,
-        priority: Priority,
-        scan: TableScan<K>,
+    fn iterator_step<O: Send + 'static>(
+        tx: Sender<Result<O>>,
         f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
-    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
-        let (tx, rx) = mpsc::channel(8);
-        let scan: PhysicalScan = scan.into();
-        let on_iter = move |item: Result<(&[u8], &[u8]), RocksError>| -> IterAction {
+    ) -> impl FnMut(Result<Option<(&[u8], &[u8])>, RocksError>) -> IterAction + Send + 'static {
+        move |item| {
             let res = match item {
                 // apply the caller's function
-                Ok((key, value)) => match f((key, value)) {
+                Ok(Some((key, value))) => match f((key, value)) {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = tx.blocking_send(Err(e));
                         return IterAction::Stop;
                     }
                 },
+                Ok(None) => {
+                    // end of iteration
+                    return IterAction::Stop;
+                }
                 Err(e) => {
                     let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
                     return IterAction::Stop;
@@ -411,7 +412,84 @@ impl PartitionStore {
             }
             // the channel is not closed yet, keep iterating
             IterAction::Next
-        };
+        }
+    }
+
+    fn iterator_step_mut<O: Send + 'static>(
+        tx: Sender<Result<O>>,
+        mut f: impl FnMut(Option<(&[u8], &[u8])>) -> Result<Option<O>> + Send + 'static,
+    ) -> impl FnMut(Result<Option<(&[u8], &[u8])>, RocksError>) -> IterAction + Send + 'static {
+        move |item| {
+            match item {
+                // apply the caller's function
+                Ok(Some((key, value))) => match f(Some((key, value))) {
+                    Ok(None) if tx.is_closed() => IterAction::Stop,
+                    Ok(None) => IterAction::Next,
+                    Ok(Some(v)) => {
+                        if tx.blocking_send(Ok(v)).is_err() {
+                            IterAction::Stop
+                        } else {
+                            IterAction::Next
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(e));
+                        IterAction::Stop
+                    }
+                },
+                // end of iteration
+                Ok(None) => match f(None) {
+                    Ok(None) => IterAction::Stop,
+                    Ok(Some(v)) => {
+                        let _ = tx.blocking_send(Ok(v));
+                        IterAction::Stop
+                    }
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(e));
+                        IterAction::Stop
+                    }
+                },
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
+                    IterAction::Stop
+                }
+            }
+        }
+    }
+
+    pub fn run_iterator_mut<K: TableKey, O: Send + 'static>(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        scan: TableScan<K>,
+        f: impl FnMut(Option<(&[u8], &[u8])>) -> Result<Option<O>> + Send + 'static,
+    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
+        let (tx, rx) = mpsc::channel(1);
+        let on_iter = Self::iterator_step_mut(tx, f);
+        self.run_iterator_internal(name, priority, scan, on_iter, rx)
+    }
+
+    pub fn run_iterator<K: TableKey, O: Send + 'static>(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        scan: TableScan<K>,
+        f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
+    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
+        let (tx, rx) = mpsc::channel(8);
+        let on_iter = Self::iterator_step(tx, f);
+        self.run_iterator_internal(name, priority, scan, on_iter, rx)
+    }
+
+    fn run_iterator_internal<K: TableKey, O: Send + 'static>(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        scan: TableScan<K>,
+        on_iter: impl FnMut(Result<Option<(&[u8], &[u8])>, RocksError>) -> IterAction + Send + 'static,
+        rx: Receiver<Result<O>>,
+    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
+        let scan: PhysicalScan = scan.into();
         match scan {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
                 assert!(table.has_key_kind(&prefix));
