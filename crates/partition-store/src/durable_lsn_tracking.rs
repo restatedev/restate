@@ -114,7 +114,7 @@ impl DurableLsnEventListener {
 }
 
 impl EventListener for DurableLsnEventListener {
-    fn on_flush_completed(&self, flush_job_info: FlushJobInfo) {
+    fn on_flush_completed(&self, flush_job_info: &FlushJobInfo) {
         let Some(shared_state) = self.shared_state.upgrade() else {
             // we have dropped all references to the database, we are not interested in monitoring
             // flushes anymore.
@@ -136,7 +136,13 @@ impl EventListener for DurableLsnEventListener {
                 shared_state.note_durable_lsn(*partition_id, *lsn);
             } else {
                 warn!(
-                    cf_name = flush_job_info.cf_name,
+                    cf_name = std::str::from_utf8(
+                        flush_job_info
+                            .cf_name()
+                            .expect("flush event has a CF")
+                            .as_slice()
+                    )
+                    .expect("is valid string"),
                     ?key,
                     "Failed to decode partition applied LSN from flush event",
                 );

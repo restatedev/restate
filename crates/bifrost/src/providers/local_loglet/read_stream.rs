@@ -84,7 +84,6 @@ impl LocalLogletReadStream {
         // In summary, if loglet reader started before a trim point and data is readable, we should
         // continue reading them. It's the responsibility of the upper layer to decide on a sane
         // value of _from_offset_.
-        read_opts.set_ignore_range_deletions(true);
         read_opts.set_prefix_same_as_start(true);
         read_opts.set_total_order_seek(false);
         let mut serde_buffer = BytesMut::with_capacity(2 * RecordKey::serialized_size());

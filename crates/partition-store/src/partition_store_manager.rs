@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
-use rocksdb::event_listener::EventListenerExt;
 use tracing::{debug, error, info, instrument, warn};
 
 use restate_rocksdb::{CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
