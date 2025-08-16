@@ -50,6 +50,7 @@ bytestring = { workspace = true }
 codederror = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
+gardal = { workspace = true, features = ["tokio"] }
 enumset = { workspace = true }
 humantime = { workspace = true }
 itertools = { workspace = true }
