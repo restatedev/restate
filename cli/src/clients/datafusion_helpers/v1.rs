@@ -452,7 +452,7 @@ struct InvocationRowResult {
     trace_id: Option<String>,
     completion_result: Option<String>,
     completion_failure: Option<String>,
-    full_count: Option<i64>,
+    minimum_count: Option<i64>,
 }
 
 pub async fn find_active_invocations(
@@ -485,7 +485,7 @@ pub async fn find_active_invocations(
         "CAST(NULL as STRING) AS idempotency_key"
     };
 
-    let mut full_count = 0;
+    let mut minimum_count = 0;
     let mut active = vec![];
     let query = format!(
         "WITH invocations AS
@@ -511,10 +511,10 @@ pub async fn find_active_invocations(
             inv.invoked_by_id,
             inv.invoked_by_target,
             inv.trace_id,
+            row_number() over () as row,
             {select_completion_columns}
         FROM sys_invocation inv
         {filter}
-        {order}
         ),
 
         invocations_with_latest_deployment_id AS
@@ -533,9 +533,17 @@ pub async fn find_active_invocations(
         RIGHT JOIN invocations_with_latest_deployment_id inv ON dp.id = inv.pinned_deployment_id
         )
 
-        SELECT *, COUNT(*) OVER() AS full_count from invocations_with_known_deployment_id
+        recent_invocations as
+        (SELECT
+            *
+        FROM invocations_with_known_deployment_id
         {post_filter}
-        LIMIT {limit}"
+        {order}
+        LIMIT {limit}
+        )
+
+        SELECT *, max(row) over () as minimum_count
+        FROM recent_invocations"
     );
     let rows = client
         .run_arrow_query_and_map_results::<InvocationRowResult>(query)
@@ -586,9 +594,9 @@ pub async fn find_active_invocations(
             idempotency_key: row.idempotency_key,
         });
 
-        full_count = row.full_count.expect("full_count") as usize;
+        minimum_count = row.minimum_count.expect("full_count") as usize;
     }
-    Ok((active, full_count))
+    Ok((active, minimum_count))
 }
 
 pub async fn get_service_invocations(
@@ -601,7 +609,7 @@ pub async fn get_service_invocations(
         client,
         &format!("WHERE inv.target_service_name = '{service}'"),
         "",
-        "ORDER BY inv.created_at DESC",
+        "ORDER BY created_at DESC",
         limit_active,
     )
     .await?
