@@ -16,6 +16,7 @@ mod metric_definitions;
 mod quota;
 mod state_machine_manager;
 mod status_store;
+mod throttling;
 
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
@@ -56,6 +57,7 @@ use crate::metric_definitions::{
     INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
     TASK_OP_SUSPENDED,
 };
+use crate::throttling::{ThrottlingBuckets, ThrottlingBucketsMut, TokenState};
 use error::InvokerError;
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
@@ -71,6 +73,8 @@ use restate_types::journal_v2::{
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
+
+pub type TokenBucket<C = gardal::TokioClock> = gardal::TokenBucket<gardal::AtomicStorage, C>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -174,6 +178,7 @@ pub struct Service<IR, EntryEnricher, DeploymentRegistry> {
     // We have this level of indirection to hide the InvocationTaskRunner,
     // which is a rather internal thing we have only for mocking.
     inner: ServiceInner<DefaultInvocationTaskRunner<EntryEnricher, DeploymentRegistry>, IR>,
+    throttling: ThrottlingBuckets,
 }
 
 impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
@@ -192,6 +197,32 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
+
+        // we create a bucket per partition/invoker. This way the operator gets more control over
+        // the invocation rate even in a multi-node setup.
+        //
+        // max-rate = rate * number-of-partitions
+        let invocations_bucket = TokenBucket::from_parts(
+            gardal::RateLimit::per_second_and_burst(
+                options.invocations_throttling.rate,
+                options.invocations_throttling.burst,
+            ),
+            gardal::TokioClock::default(),
+        );
+
+        // start with the burst capacity
+        invocations_bucket.add_tokens(options.invocations_throttling.burst.get());
+
+        let actions_bucket = TokenBucket::from_parts(
+            gardal::RateLimit::per_second_and_burst(
+                options.actions_throttling.rate,
+                options.actions_throttling.burst,
+            ),
+            gardal::TokioClock::default(),
+        );
+
+        // start with the burst capacity
+        actions_bucket.add_tokens(options.actions_throttling.burst.get());
 
         Self {
             input_tx,
@@ -213,6 +244,10 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             },
+            throttling: ThrottlingBuckets::new(
+                TokenState::new(invocations_bucket),
+                TokenState::new(actions_bucket),
+            ),
         }
     }
 
@@ -273,6 +308,7 @@ where
         let Service {
             tmp_dir,
             inner: mut service,
+            throttling: mut throttling_buckets,
             ..
         } = self;
 
@@ -290,7 +326,12 @@ where
         loop {
             let options = updateable_options.live_load();
             if !service
-                .step(options, &mut segmented_input_queue, shutdown.as_mut())
+                .step(
+                    options,
+                    &mut segmented_input_queue,
+                    throttling_buckets.as_mut(),
+                    shutdown.as_mut(),
+                )
                 .await
             {
                 break;
@@ -302,7 +343,6 @@ where
     }
 }
 
-#[derive(Debug)]
 struct ServiceInner<InvocationTaskRunner, SR> {
     input_rx: mpsc::UnboundedReceiver<InputCommand<SR>>,
     status_rx: mpsc::UnboundedReceiver<
@@ -337,6 +377,7 @@ where
         &mut self,
         options: &InvokerOptions,
         segmented_input_queue: &mut SegmentQueue<Box<InvokeCommand>>,
+        mut throttling_buckets: ThrottlingBucketsMut<'_>,
         mut shutdown: Pin<&mut F>,
     ) -> bool
     where
@@ -384,12 +425,20 @@ where
                     }
                 }
             },
-
-            Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
+            true = &mut throttling_buckets.invocations => {
+                // drives the token bucket state machine.
+                // nothing to do here. The bucket state `is_ready()` now should return true.
+            },
+            true = &mut throttling_buckets.actions => {
+                // drives the token bucket state machine.
+                // nothing to do here. The bucket state `is_ready()` now should return true.
+            },
+            Some(invoke_input_command) = segmented_input_queue.dequeue(), if throttling_buckets.invocations.is_ready() && !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
+                throttling_buckets.invocations.consume();
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_epoch, invoke_input_command.invocation_target, invoke_input_command.journal);
             },
-
-            Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
+            Some(invocation_task_msg) = self.invocation_tasks_rx.recv(), if throttling_buckets.actions.is_ready() => {
+                throttling_buckets.actions.consume();
                 let InvocationTaskOutput {
                     invocation_id,
                     partition,
@@ -1384,7 +1433,7 @@ mod tests {
     use super::*;
 
     use std::future::{pending, ready};
-    use std::num::NonZeroUsize;
+    use std::num::{NonZeroU32, NonZeroUsize};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -1419,6 +1468,28 @@ mod tests {
 
     use crate::error::{InvokerError, SdkInvocationErrorV2};
     use crate::quota::InvokerConcurrencyQuota;
+
+    pub fn new_throttling_buckets() -> ThrottlingBuckets {
+        let invocations = gardal::TokenBucket::from_parts(
+            gardal::RateLimit::per_second_and_burst(
+                NonZeroU32::new(100).unwrap(),
+                NonZeroU32::new(10000).unwrap(),
+            ),
+            gardal::TokioClock::default(),
+        );
+        invocations.add_tokens(10000);
+
+        let actions = gardal::TokenBucket::from_parts(
+            gardal::RateLimit::per_second_and_burst(
+                NonZeroU32::new(100).unwrap(),
+                NonZeroU32::new(10000).unwrap(),
+            ),
+            gardal::TokioClock::default(),
+        );
+        actions.add_tokens(10000);
+
+        ThrottlingBuckets::new(TokenState::new(invocations), TokenState::new(actions))
+    }
 
     // -- Mocks
 
@@ -1713,6 +1784,8 @@ mod tests {
         let shutdown = cancel_token.cancelled();
         tokio::pin!(shutdown);
 
+        let mut throttling = new_throttling_buckets();
+
         let invocation_id_1 = InvocationId::mock_random();
         let invocation_id_2 = InvocationId::mock_random();
 
@@ -1743,7 +1816,12 @@ mod tests {
         // Now step the state machine to start the invocation
         assert!(
             service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
+                .step(
+                    &invoker_options,
+                    &mut segment_queue,
+                    throttling.as_mut(),
+                    shutdown.as_mut()
+                )
                 .await
         );
 
@@ -1760,7 +1838,12 @@ mod tests {
         // Step again to remove sid_1 from task queue. This should not invoke sid_2!
         assert!(
             service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
+                .step(
+                    &invoker_options,
+                    &mut segment_queue,
+                    throttling.as_mut(),
+                    shutdown.as_mut()
+                )
                 .await
         );
         assert!(
@@ -1782,7 +1865,12 @@ mod tests {
         // Step now should invoke sid_2
         assert!(
             service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
+                .step(
+                    &invoker_options,
+                    &mut segment_queue,
+                    throttling.as_mut(),
+                    shutdown.as_mut(),
+                )
                 .await
         );
         assert!(
