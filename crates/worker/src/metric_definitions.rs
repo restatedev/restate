@@ -26,6 +26,9 @@ pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
 pub const PARTITION_APPLIED_LSN_LAG: &str = "restate.partition.applied_lsn_lag";
 pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_leader";
 
+pub const USAGE_STATE_STORAGE_BYTES: &str = "restate.usage.state.storage_bytes";
+pub const USAGE_STATE_STORAGE_BYTE_SECONDS: &str = "restate.usage.state.storage_byte_seconds";
+
 pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
 
@@ -79,5 +82,17 @@ pub(crate) fn describe_metrics() {
         PARTITION_APPLIED_LSN_LAG,
         Unit::Count,
         "Number of records between last applied lsn and the log tail"
+    );
+
+    describe_gauge!(
+        USAGE_STATE_STORAGE_BYTES,
+        Unit::Bytes,
+        "Total bytes of state storage used"
+    );
+
+    describe_gauge!(
+        USAGE_STATE_STORAGE_BYTE_SECONDS,
+        Unit::Count,
+        "Cumulative byte-seconds of state storage usage over process lifetime"
     );
 }

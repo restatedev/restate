@@ -21,7 +21,7 @@ use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
-use restate_worker::Worker;
+use restate_worker::{StorageAccountingTask, Worker};
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleError {
@@ -91,9 +91,13 @@ impl WorkerRole {
     }
 
     pub fn start(self) -> anyhow::Result<()> {
+        let query_context = self.worker.storage_query_context().clone();
+
         TaskCenter::spawn(TaskKind::WorkerRole, "worker-service", async {
             self.worker.run().await
         })?;
+
+        StorageAccountingTask::start(query_context, None)?;
 
         Ok(())
     }
