@@ -23,6 +23,7 @@ restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-lo
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-metadata-store = { workspace = true }
+restate-serde-util = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
@@ -59,6 +60,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip", "zstd"] }
 tower = { workspace = true, features = ["load-shed", "limit"] }
+tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
 

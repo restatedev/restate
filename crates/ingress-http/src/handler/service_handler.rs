@@ -140,18 +140,15 @@ where
         };
         let invocation_id = InvocationId::generate(&invocation_target, idempotency_key.as_deref());
 
-        // Prepare the tracing span
-        let runtime_span = tracing::info_span!(
-            "ingress",
-            restate.invocation.id = %invocation_id,
-            restate.invocation.target = %invocation_target.short()
-        );
-
         let result = async move {
             let ingress_span_context =
                 prepare_tracing_span(&invocation_id, &invocation_target, &req);
 
-            debug!("Processing ingress request");
+            debug!(
+                restate.invocation.id = %invocation_id,
+                restate.invocation.target = %invocation_target.short(),
+                "Processing invocation request"
+            );
 
             let (parts, body) = req.into_parts();
 
@@ -221,7 +218,6 @@ where
                 }
             }
         }
-        .instrument(runtime_span)
         .await;
 
         // Note that we only record (mostly) successful requests here. We might want to
