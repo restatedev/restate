@@ -1047,6 +1047,69 @@ pub mod v1 {
             }
         }
 
+        impl TryFrom<crate::invocation_status_table::InvocationStatusV1>
+            for crate::invocation_status_table::InvocationLite
+        {
+            type Error = ConversionError;
+
+            fn try_from(
+                value: crate::invocation_status_table::InvocationStatusV1,
+            ) -> Result<Self, ConversionError> {
+                let lite = match value.0 {
+                    crate::invocation_status_table::InvocationStatus::Scheduled(
+                        scheduled,
+                    ) => Self {
+                        status:
+                            crate::invocation_status_table::InvocationStatusDiscriminants::Scheduled,
+                        invocation_target: scheduled.metadata.invocation_target,
+                        current_invocation_epoch: 0,
+                    },
+                    crate::invocation_status_table::InvocationStatus::Inboxed(
+                        inboxed,
+                    ) => Self {
+                        status:
+                            crate::invocation_status_table::InvocationStatusDiscriminants::Inboxed,
+                        invocation_target: inboxed.metadata.invocation_target,
+                        current_invocation_epoch: 0,
+                    },
+                    crate::invocation_status_table::InvocationStatus::Invoked(
+                        invoked,
+                    ) => Self {
+                        status:
+                            crate::invocation_status_table::InvocationStatusDiscriminants::Invoked,
+                        invocation_target: invoked.invocation_target,
+                        current_invocation_epoch: invoked.current_invocation_epoch,
+                    },
+                    crate::invocation_status_table::InvocationStatus::Suspended {
+                        metadata,
+                        ..
+                    } => Self {
+                        status:
+                            crate::invocation_status_table::InvocationStatusDiscriminants::Suspended,
+                        invocation_target: metadata.invocation_target,
+                        current_invocation_epoch: metadata.current_invocation_epoch,
+                    },
+                    crate::invocation_status_table::InvocationStatus::Completed(
+                        completed,
+                    ) => {
+                        Self {
+                            status:
+                                crate::invocation_status_table::InvocationStatusDiscriminants::Completed,
+                            invocation_target: completed.invocation_target,
+                            current_invocation_epoch: 0,
+                        }
+                    },
+                    crate::invocation_status_table::InvocationStatus::Free => {
+                        panic!(
+                            "Unexpected serialization of Free status. This is a bug of the invocation status table"
+                        )
+                    },
+                };
+
+                Ok(lite)
+            }
+        }
+
         impl From<crate::invocation_status_table::InvocationLite> for InvocationV2Lite {
             fn from(_: crate::invocation_status_table::InvocationLite) -> Self {
                 panic!(

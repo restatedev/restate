@@ -284,6 +284,75 @@ impl ScanInvocationStatusTable for PartitionStore {
             Ok(())
         })
     }
+
+    fn for_each_invocation_lite<
+        F: FnMut((InvocationId, InvocationLite)) -> ControlFlow<()> + Send + Sync + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        let f_one = std::sync::Arc::new(std::sync::Mutex::new(f));
+        let f_two = f_one.clone();
+
+        let old_status_keys = self
+            .iterator_for_each(
+                "df-invocation-lite-v1",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKeyV1>(range.clone()),
+                move |(mut key, mut value)| {
+                    let state_key =
+                        break_on_err(InvocationStatusKeyV1::deserialize_from(&mut key))?;
+                    let state_value = break_on_err(InvocationStatusV1::decode(&mut value))?;
+
+                    let (partition_key, invocation_uuid) =
+                        break_on_err(state_key.into_inner_ok_or())?;
+
+                    let lite = break_on_err(
+                        InvocationLite::try_from(state_value).map_err(StorageError::from),
+                    )?;
+
+                    let mut f_one = f_one.lock().unwrap();
+
+                    f_one((
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        lite,
+                    ))
+                    .map_break(Ok)
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        let new_status_keys = self
+            .iterator_for_each(
+                "df-invocation-lite",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                move |(mut key, mut value)| {
+                    let state_key = break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                    let state_value = break_on_err(InvocationLite::decode(&mut value))?;
+
+                    let (partition_key, invocation_uuid) =
+                        break_on_err(state_key.into_inner_ok_or())?;
+
+                    let mut f_two = f_two.lock().unwrap();
+
+                    f_two((
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        state_value,
+                    ))
+                    .map_break(Ok)
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(async {
+            old_status_keys.await?;
+            new_status_keys.await?;
+
+            Ok(())
+        })
+    }
 }
 
 impl ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'_> {

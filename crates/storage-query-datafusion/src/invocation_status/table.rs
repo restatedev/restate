@@ -14,18 +14,22 @@ use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::invocation_status_table::{InvocationStatus, ScanInvocationStatusTable};
+use restate_storage_api::invocation_status_table::{
+    InvocationLite, InvocationStatus, ScanInvocationStatusTable,
+};
 use restate_types::identifiers::{InvocationId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
-use crate::invocation_status::row::append_invocation_status_row;
+use crate::invocation_status::row::{
+    append_invocation_lite_row, append_invocation_status_row, invocation_lite_fields,
+};
 use crate::invocation_status::schema::{
     SysInvocationStatusBuilder, sys_invocation_status_sort_order,
 };
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartitionInPlace};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
-use crate::table_providers::{PartitionedTableProvider, ScanPartition};
+use crate::table_providers::{PartitionedTableProvider, ScanPartition, ScanPartitionProjection};
 
 const NAME: &str = "sys_invocation_status";
 
@@ -36,9 +40,15 @@ pub(crate) fn register_self(
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
     let local_scanner = local_partition_store_manager.map(|partition_store_manager| {
-        Arc::new(LocalPartitionsScanner::new_in_place(
-            partition_store_manager,
-            StatusScanner,
+        let status_scanner =
+            LocalPartitionsScanner::new_in_place(partition_store_manager.clone(), StatusScanner);
+        let status_lite_scanner =
+            LocalPartitionsScanner::new_in_place(partition_store_manager, StatusLiteScanner);
+
+        Arc::new(ScanPartitionProjection::new(
+            invocation_lite_fields(),
+            status_lite_scanner,
+            status_scanner,
         )) as Arc<dyn ScanPartition>
     });
     let status_table = PartitionedTableProvider::new(
@@ -74,5 +84,29 @@ impl ScanLocalPartitionInPlace for StatusScanner {
         (invocation_id, invocation_status): Self::Item,
     ) {
         append_invocation_status_row(row_builder, string_buffer, invocation_id, invocation_status)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StatusLiteScanner;
+
+impl ScanLocalPartitionInPlace for StatusLiteScanner {
+    type Builder = SysInvocationStatusBuilder;
+    type Item = (InvocationId, InvocationLite);
+
+    fn for_each_row<F: FnMut(Self::Item) -> ControlFlow<()> + Send + Sync + 'static>(
+        partition_store: &PartitionStore,
+        range: RangeInclusive<PartitionKey>,
+        f: F,
+    ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
+        partition_store.for_each_invocation_lite(range, f)
+    }
+
+    fn append_row(
+        row_builder: &mut Self::Builder,
+        string_buffer: &mut String,
+        (invocation_id, invocation_lite): Self::Item,
+    ) {
+        append_invocation_lite_row(row_builder, string_buffer, invocation_id, invocation_lite)
     }
 }

@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 use std::any::Any;
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::arrow::datatypes::{FieldRef, SchemaRef};
 use datafusion::common::DataFusionError;
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::TaskContext;
@@ -43,6 +44,60 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream>;
+}
+
+#[derive(Debug)]
+pub(crate) struct ScanPartitionProjection<S1, S2> {
+    filter_fields: HashMap<String, FieldRef>,
+    scanner: S1,
+    next_scanner: S2,
+}
+
+impl<S1, S2> ScanPartitionProjection<S1, S2> {
+    pub(crate) fn new(
+        filter_fields: impl IntoIterator<Item = FieldRef>,
+        scanner: S1,
+        next_scanner: S2,
+    ) -> Self {
+        Self {
+            filter_fields: filter_fields
+                .into_iter()
+                .map(|f| (f.name().clone(), f.clone()))
+                .collect(),
+            scanner,
+            next_scanner,
+        }
+    }
+}
+
+impl<S1: ScanPartition, S2: ScanPartition> ScanPartition for ScanPartitionProjection<S1, S2> {
+    fn scan_partition(
+        &self,
+        partition_id: PartitionId,
+        range: RangeInclusive<PartitionKey>,
+        projection: SchemaRef,
+        batch_size: usize,
+        limit: Option<usize>,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        let projection_fields = projection.fields();
+
+        if projection_fields.len() <= self.filter_fields.len()
+            && projection_fields.iter().all(|projection_field| {
+                self.filter_fields
+                    .get(projection_field.name())
+                    .is_some_and(|filter_field| {
+                        Arc::ptr_eq(projection_field, filter_field)
+                            || projection_field.contains(filter_field)
+                    })
+            })
+        {
+            self.scanner
+                .scan_partition(partition_id, range, projection, batch_size, limit)
+        } else {
+            self.next_scanner
+                .scan_partition(partition_id, range, projection, batch_size, limit)
+        }
+    }
 }
 
 #[derive(Debug)]

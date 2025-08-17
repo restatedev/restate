@@ -356,7 +356,6 @@ pub enum InvocationStatusDiscriminants {
     Inboxed,
     Invoked,
     Suspended,
-    Killed,
     Completed,
 }
 
@@ -748,6 +747,14 @@ pub trait ScanInvocationStatusTable {
             + Send
             + Sync
             + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
+
+    fn for_each_invocation_lite<
+        F: FnMut((InvocationId, InvocationLite)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
         range: RangeInclusive<PartitionKey>,

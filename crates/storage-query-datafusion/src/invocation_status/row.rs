@@ -10,8 +10,10 @@
 
 use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 use crate::table_util::format_using;
+use datafusion::arrow::datatypes::FieldRef;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
+    InFlightInvocationMetadata, InvocationLite, InvocationStatus, InvocationStatusDiscriminants,
+    JournalMetadata, StatusTimestamps,
 };
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{
@@ -125,6 +127,76 @@ pub(crate) fn append_invocation_status_row(
         }
         InvocationStatus::Free => {
             row.status("free");
+        }
+    };
+}
+
+pub(crate) fn invocation_lite_fields() -> Vec<FieldRef> {
+    SysInvocationStatusBuilder::schema()
+        .fields()
+        .iter()
+        .filter(|field| {
+            matches!(
+                field.name().as_str(),
+                "partition_key"
+                    | "target_service_name"
+                    | "target_service_key"
+                    | "target_handler_name"
+                    | "target"
+                    | "target_service_ty"
+                    | "id"
+                    | "status"
+            )
+        })
+        .cloned()
+        .collect()
+}
+
+#[inline]
+pub(crate) fn append_invocation_lite_row(
+    builder: &mut SysInvocationStatusBuilder,
+    output: &mut String,
+    invocation_id: InvocationId,
+    invocation_lite: InvocationLite,
+) {
+    let mut row = builder.row();
+
+    row.partition_key(invocation_id.partition_key());
+    row.target_service_name(invocation_lite.invocation_target.service_name());
+    if let Some(key) = invocation_lite.invocation_target.key() {
+        row.target_service_key(key);
+    }
+    row.target_handler_name(invocation_lite.invocation_target.handler_name());
+    if row.is_target_defined() {
+        row.target(format_using(output, &invocation_lite.invocation_target));
+    }
+    row.target_service_ty(match invocation_lite.invocation_target.service_ty() {
+        ServiceType::Service => "service",
+        ServiceType::VirtualObject => "virtual_object",
+        ServiceType::Workflow => "workflow",
+    });
+
+    // Invocation id
+    if row.is_id_defined() {
+        row.id(format_using(output, &invocation_id));
+    }
+
+    // Additional invocation metadata
+    match invocation_lite.status {
+        InvocationStatusDiscriminants::Scheduled => {
+            row.status("scheduled");
+        }
+        InvocationStatusDiscriminants::Inboxed => {
+            row.status("inboxed");
+        }
+        InvocationStatusDiscriminants::Invoked => {
+            row.status("invoked");
+        }
+        InvocationStatusDiscriminants::Suspended => {
+            row.status("suspended");
+        }
+        InvocationStatusDiscriminants::Completed => {
+            row.status("completed");
         }
     };
 }
