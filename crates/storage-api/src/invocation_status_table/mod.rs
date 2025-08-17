@@ -744,16 +744,12 @@ pub trait ScanInvocationStatusTable {
     ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
 
     fn scan_invocation_statuses_mut<
-        O: Send + 'static,
-        F: FnMut(Result<Option<(InvocationId, InvocationStatus)>>) -> Result<Option<O>>
-            + Send
-            + Sync
-            + 'static,
+        F: FnMut(Option<Result<(InvocationId, InvocationStatus)>>) -> bool + Send + Sync + 'static,
     >(
         &self,
         range: RangeInclusive<PartitionKey>,
         f: F,
-    ) -> Result<impl Stream<Item = Result<O>> + Send + use<Self, O, F>>;
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
 
     fn scan_invoked_invocations(
         &self,

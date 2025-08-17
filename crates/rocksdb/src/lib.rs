@@ -319,7 +319,7 @@ impl RocksDb {
         priority: Priority,
         initial_action: IterAction,
         mut read_options: rocksdb::ReadOptions,
-        mut on_item: impl FnMut(Result<Option<(&[u8], &[u8])>, RocksError>) -> IterAction
+        mut on_item: impl FnMut(Option<Result<(&[u8], &[u8]), RocksError>>) -> IterAction
         + Send
         + 'static,
     ) -> Result<(), ShutdownError> {
@@ -335,7 +335,7 @@ impl RocksDb {
                 // the total duration includes all the time spent blocking on the tx's capacity.
                 let _x = RocksDbPerfGuard::new(name);
                 let Some(cf) = self.db.cf_handle(cf.as_str()) else {
-                    on_item(Err(RocksError::UnknownColumnFamily(cf)));
+                    on_item(Some(Err(RocksError::UnknownColumnFamily(cf))));
                     return;
                 };
                 let mut iter = RocksIterator::new(

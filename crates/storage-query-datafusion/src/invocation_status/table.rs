@@ -12,8 +12,6 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use futures::Stream;
-
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScanInvocationStatusTable};
@@ -25,7 +23,7 @@ use crate::invocation_status::schema::{
     SysInvocationStatusBuilder, sys_invocation_status_sort_order,
 };
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartitionMut};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
@@ -38,7 +36,7 @@ pub(crate) fn register_self(
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
     let local_scanner = local_partition_store_manager.map(|partition_store_manager| {
-        Arc::new(LocalPartitionsScanner::new(
+        Arc::new(LocalPartitionsScanner::new_mut(
             partition_store_manager,
             StatusScanner,
         )) as Arc<dyn ScanPartition>
@@ -58,38 +56,18 @@ pub(crate) fn register_self(
 #[derive(Debug, Clone)]
 struct StatusScanner;
 
-impl ScanLocalPartition for StatusScanner {
+impl ScanLocalPartitionMut for StatusScanner {
     type Builder = SysInvocationStatusBuilder;
     type Item = (InvocationId, InvocationStatus);
 
-    fn scan_partition_store(
-        partition_store: &PartitionStore,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
-    {
-        partition_store.scan_invocation_statuses(range)
-    }
-
     fn scan_partition_store_mut<
-        O: Send + 'static,
-        F: FnMut(Result<Option<Self::Item>, StorageError>) -> Result<Option<O>, StorageError>
-            + Send
-            + Sync
-            + 'static,
+        F: FnMut(Option<Result<Self::Item, StorageError>>) -> bool + Send + Sync + 'static,
     >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-        _limit: Option<usize>,
         f: F,
-    ) -> Result<
-        impl Stream<Item = Result<O, StorageError>> + Send + 'static + use<O, F>,
-        StorageError,
-    > {
+    ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
         partition_store.scan_invocation_statuses_mut(range, f)
-    }
-
-    fn supports_scan_partition_store_mut() -> bool {
-        true
     }
 
     fn append_row(

@@ -24,8 +24,7 @@ use rocksdb::{
 };
 use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::mpsc::Sender;
+use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace};
@@ -385,25 +384,25 @@ impl PartitionStore {
     }
 
     fn iterator_step<O: Send + 'static>(
-        tx: Sender<Result<O>>,
+        tx: mpsc::Sender<Result<O>>,
         f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
-    ) -> impl FnMut(Result<Option<(&[u8], &[u8])>, RocksError>) -> IterAction + Send + 'static {
+    ) -> impl FnMut(Option<Result<(&[u8], &[u8]), RocksError>>) -> IterAction + Send + 'static {
         move |item| {
             let res = match item {
                 // apply the caller's function
-                Ok(Some((key, value))) => match f((key, value)) {
+                Some(Ok((key, value))) => match f((key, value)) {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = tx.blocking_send(Err(e));
                         return IterAction::Stop;
                     }
                 },
-                Ok(None) => {
-                    // end of iteration
+                Some(Err(e)) => {
+                    let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
                     return IterAction::Stop;
                 }
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
+                None => {
+                    // end of iteration
                     return IterAction::Stop;
                 }
             };
@@ -415,58 +414,66 @@ impl PartitionStore {
         }
     }
 
-    fn iterator_step_mut<O: Send + 'static>(
-        tx: Sender<Result<O>>,
-        mut f: impl FnMut(Option<(&[u8], &[u8])>) -> Result<Option<O>> + Send + 'static,
-    ) -> impl FnMut(Result<Option<(&[u8], &[u8])>, RocksError>) -> IterAction + Send + 'static {
+    fn iterator_step_mut(
+        tx: oneshot::Sender<Result<()>>,
+        mut f: impl FnMut(Option<(&[u8], &[u8])>) -> Result<bool> + Send + 'static,
+    ) -> impl FnMut(Option<Result<(&[u8], &[u8]), RocksError>>) -> IterAction + Send + 'static {
+        let mut tx = Some(tx);
         move |item| {
+            let mut must_send = |v| match tx.take() {
+                Some(tx) => tx.send(v),
+                None => panic!("Iterator continued after IterAction::Stop"),
+            };
+
             match item {
                 // apply the caller's function
-                Ok(Some((key, value))) => match f(Some((key, value))) {
-                    Ok(None) if tx.is_closed() => IterAction::Stop,
-                    Ok(None) => IterAction::Next,
-                    Ok(Some(v)) => {
-                        if tx.blocking_send(Ok(v)).is_err() {
-                            IterAction::Stop
-                        } else {
-                            IterAction::Next
-                        }
-                    }
-                    Err(e) => {
-                        let _ = tx.blocking_send(Err(e));
-                        IterAction::Stop
-                    }
-                },
-                // end of iteration
-                Ok(None) => match f(None) {
-                    Ok(None) => IterAction::Stop,
-                    Ok(Some(v)) => {
-                        let _ = tx.blocking_send(Ok(v));
+                Some(Ok((key, value))) => match f(Some((key, value))) {
+                    Ok(true) => match &mut tx {
+                        Some(tx) if tx.is_closed() => IterAction::Stop,
+                        Some(_) => IterAction::Next,
+                        None => panic!("Iterator continued after IterAction::Stop"),
+                    },
+                    Ok(false) => {
+                        // function doesn't need any more items
+                        let _ = must_send(f(None).map(drop));
                         IterAction::Stop
                     }
                     Err(e) => {
-                        let _ = tx.blocking_send(Err(e));
+                        let _ = must_send(Err(e));
                         IterAction::Stop
                     }
                 },
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
+                Some(Err(e)) => {
+                    let _ = must_send(Err(StorageError::Generic(e.into())));
+                    IterAction::Stop
+                }
+                None => {
+                    // end of iteration
+                    let _ = must_send(f(None).map(drop));
                     IterAction::Stop
                 }
             }
         }
     }
 
-    pub fn run_iterator_mut<K: TableKey, O: Send + 'static>(
+    pub fn run_iterator_mut<K: TableKey>(
         &self,
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        f: impl FnMut(Option<(&[u8], &[u8])>) -> Result<Option<O>> + Send + 'static,
-    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
-        let (tx, rx) = mpsc::channel(1);
+        f: impl FnMut(Option<(&[u8], &[u8])>) -> Result<bool> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+        let (tx, rx) = oneshot::channel();
         let on_iter = Self::iterator_step_mut(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter, rx)
+        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        Ok(async {
+            match rx.await {
+                Ok(result) => result,
+                Err(_recv_err) => Err(StorageError::Generic(anyhow!(
+                    "Mutable iterator was dropped without returning a final value"
+                ))),
+            }
+        })
     }
 
     pub fn run_iterator<K: TableKey, O: Send + 'static>(
@@ -478,17 +485,17 @@ impl PartitionStore {
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter, rx)
+        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        Ok(ReceiverStream::new(rx))
     }
 
-    fn run_iterator_internal<K: TableKey, O: Send + 'static>(
+    fn run_iterator_internal<K: TableKey>(
         &self,
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        on_iter: impl FnMut(Result<Option<(&[u8], &[u8])>, RocksError>) -> IterAction + Send + 'static,
-        rx: Receiver<Result<O>>,
-    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
+        on_iter: impl FnMut(Option<Result<(&[u8], &[u8]), RocksError>>) -> IterAction + Send + 'static,
+    ) -> Result<(), ShutdownError> {
         let scan: PhysicalScan = scan.into();
         match scan {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
@@ -546,7 +553,7 @@ impl PartitionStore {
                 )?;
             }
         }
-        Ok(ReceiverStream::new(rx))
+        Ok(())
     }
 
     pub fn transaction(&mut self) -> PartitionStoreTransaction {

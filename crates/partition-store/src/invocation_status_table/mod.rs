@@ -214,16 +214,12 @@ impl ScanInvocationStatusTable for PartitionStore {
     }
 
     fn scan_invocation_statuses_mut<
-        O: Send + 'static,
-        F: FnMut(Result<Option<(InvocationId, InvocationStatus)>>) -> Result<Option<O>>
-            + Send
-            + Sync
-            + 'static,
+        F: FnMut(Option<Result<(InvocationId, InvocationStatus)>>) -> bool + Send + Sync + 'static,
     >(
         &self,
         range: RangeInclusive<PartitionKey>,
         f: F,
-    ) -> Result<impl Stream<Item = Result<O>> + Send + use<O, F>> {
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
         let f_one = std::sync::Arc::new(std::sync::Mutex::new(f));
         let f_two = f_one.clone();
 
@@ -241,15 +237,15 @@ impl ScanInvocationStatusTable for PartitionStore {
 
                         let mut f_one = f_one.lock().unwrap();
 
-                        f_one(Ok(Some((
+                        Ok(f_one(Some(Ok((
                             InvocationId::from_parts(partition_key, invocation_uuid),
                             state_value.0,
-                        ))))
+                        )))))
                     }
                     None => {
                         let mut f_one = f_one.lock().unwrap();
 
-                        f_one(Ok(None))
+                        Ok(f_one(None))
                     }
                 },
             )
@@ -269,21 +265,26 @@ impl ScanInvocationStatusTable for PartitionStore {
 
                         let mut f_two = f_two.lock().unwrap();
 
-                        f_two(Ok(Some((
+                        Ok(f_two(Some(Ok((
                             InvocationId::from_parts(partition_key, invocation_uuid),
                             state_value,
-                        ))))
+                        )))))
                     }
                     None => {
                         let mut f_two = f_two.lock().unwrap();
 
-                        f_two(Ok(None))
+                        Ok(f_two(None))
                     }
                 },
             )
             .map_err(|_| StorageError::OperationalError)?;
 
-        Ok(old_status_keys.chain(new_status_keys))
+        Ok(async {
+            old_status_keys.await?;
+            new_status_keys.await?;
+
+            Ok(())
+        })
     }
 }
 
