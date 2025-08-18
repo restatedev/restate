@@ -20,6 +20,9 @@ use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::filter_pushdown::{
+    FilterPushdownPhase, FilterPushdownPropagation, PushedDown,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, PlanProperties,
@@ -242,6 +245,10 @@ where
     ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
         let res = filters
             .iter()
+            // if we set this to exact, we might be able to remove a FilterExec higher up the plan.
+            // however, it means that fields we filter on won't end up in our projection, meaning we
+            // have to manage a projected schema and a filter schema - defer this complexity for
+            // future optimization.
             .map(|_| TableProviderFilterPushDown::Inexact)
             .collect();
 
@@ -346,6 +353,46 @@ where
             self.projected_schema.clone(),
             sequential_scanners_stream,
         )))
+    }
+
+    fn handle_child_pushdown_result(
+        &self,
+        phase: datafusion::physical_plan::filter_pushdown::FilterPushdownPhase,
+        child_pushdown_result: datafusion::physical_plan::filter_pushdown::ChildPushdownResult,
+        _config: &datafusion::config::ConfigOptions,
+    ) -> datafusion::error::Result<
+        datafusion::physical_plan::filter_pushdown::FilterPushdownPropagation<
+            Arc<dyn ExecutionPlan>,
+        >,
+    > {
+        if !matches!(phase, FilterPushdownPhase::Post) {
+            return Ok(FilterPushdownPropagation::if_all(child_pushdown_result));
+        }
+
+        let filters = child_pushdown_result
+            .parent_filters
+            .iter()
+            .map(|f| f.filter.clone());
+
+        let predicate = match &self.predicate {
+            Some(predicate) => datafusion::physical_expr::conjunction(
+                std::iter::once(predicate.clone()).chain(filters),
+            ),
+            None => datafusion::physical_expr::conjunction(filters),
+        };
+
+        let mut plan = self.clone();
+        plan.predicate = Some(predicate);
+
+        Ok(FilterPushdownPropagation {
+            // we report all filters as unsupported as we don't guarantee to apply them exactly as there can be a delay before new filters are used
+            filters: child_pushdown_result
+                .parent_filters
+                .iter()
+                .map(|_| PushedDown::No)
+                .collect(),
+            updated_node: Some(Arc::new(plan)),
+        })
     }
 }
 
