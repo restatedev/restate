@@ -20,7 +20,7 @@ ahash = { version = "0.8", features = ["serde"] }
 arrow = { version = "56", features = ["chrono-tz", "prettyprint"] }
 arrow-array = { version = "56", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "56", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "56", features = ["lz4"] }
+arrow-ipc = { version = "56", features = ["lz4", "zstd"] }
 arrow-schema = { version = "56", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
@@ -44,7 +44,7 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
-datafusion-common = { version = "50", default-features = false, features = ["object_store", "recursive_protection"] }
+datafusion-common = { version = "50", default-features = false, features = ["object_store", "parquet", "recursive_protection"] }
 datafusion-expr = { version = "50", default-features = false, features = ["recursive_protection"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
@@ -79,6 +79,7 @@ lexical-util = { version = "1", default-features = false, features = ["format", 
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
+lzma-sys = { version = "0.1", default-features = false, features = ["static"] }
 md-5 = { version = "0.10" }
 memchr = { version = "2" }
 metrics-util = { version = "0.20" }
@@ -135,6 +136,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parki
 typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
+xz2 = { version = "0.1", default-features = false, features = ["static"] }
 zerocopy = { version = "0.7", features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 zstd = { version = "0.13" }
@@ -146,7 +148,7 @@ ahash = { version = "0.8", features = ["serde"] }
 arrow = { version = "56", features = ["chrono-tz", "prettyprint"] }
 arrow-array = { version = "56", default-features = false, features = ["chrono-tz"] }
 arrow-cast = { version = "56", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "56", features = ["lz4"] }
+arrow-ipc = { version = "56", features = ["lz4", "zstd"] }
 arrow-schema = { version = "56", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
@@ -171,7 +173,7 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
-datafusion-common = { version = "50", default-features = false, features = ["object_store", "recursive_protection"] }
+datafusion-common = { version = "50", default-features = false, features = ["object_store", "parquet", "recursive_protection"] }
 datafusion-expr = { version = "50", default-features = false, features = ["recursive_protection"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
@@ -208,6 +210,7 @@ lexical-util = { version = "1", default-features = false, features = ["format", 
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
+lzma-sys = { version = "0.1", default-features = false, features = ["static"] }
 md-5 = { version = "0.10" }
 memchr = { version = "2" }
 metrics-util = { version = "0.20" }
@@ -266,6 +269,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parki
 typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
+xz2 = { version = "0.1", default-features = false, features = ["static"] }
 zerocopy = { version = "0.7", features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 zstd = { version = "0.13" }
