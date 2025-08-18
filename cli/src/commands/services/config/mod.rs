@@ -21,6 +21,8 @@ pub enum Config {
     View(view::View),
     /// Interactively edit the service configuration
     Edit(edit::Edit),
-    /// Patch the service configuration either with a file or with the provided arguments
+    /// Patch the service configuration either with a file or with the provided arguments.
+    ///
+    /// *NOTE:* These changes will apply until the next revision of this service gets discovered and registered.
     Patch(patch::Patch),
 }
