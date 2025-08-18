@@ -9,12 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::{fmt::Debug, ops::ControlFlow};
 
 use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use futures::{Stream, StreamExt};
 
@@ -45,6 +47,7 @@ pub trait ScanLocalPartitionInPlace: Send + Sync + Debug + 'static {
     fn for_each_row<F: FnMut(Self::Item) -> ControlFlow<()> + Send + Sync + 'static>(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>;
 
@@ -156,6 +159,7 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         mut limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
@@ -176,7 +180,7 @@ where
             let mut batch_sender = BatchSender::new(projection.clone(), tx);
             let mut temp = String::new();
 
-            S::for_each_row(&partition_store, range, move |row| {
+            S::for_each_row(&partition_store, range, predicate, move |row| {
                 if let Some(0) = limit {
                     return ControlFlow::Break(());
                 }
@@ -221,6 +225,7 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        _predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
@@ -239,9 +244,17 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        self.scan_partition(partition_id, range, projection, batch_size, limit)
+        self.scan_partition(
+            partition_id,
+            range,
+            projection,
+            predicate,
+            batch_size,
+            limit,
+        )
     }
 }

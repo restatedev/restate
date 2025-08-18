@@ -53,10 +53,59 @@ pub struct RemoteQueryScannerOpen {
     #[bilrost(tag(6))]
     #[serde(default = "default_batch_size")]
     pub batch_size: u64,
+    #[bilrost(tag(7))]
+    #[serde(default)]
+    pub predicate: Option<RemoteQueryScannerInitialPredicate>,
 }
 
 fn default_batch_size() -> u64 {
     64
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Message,
+    bilrost::Oneof,
+)]
+pub enum RemoteQueryScannerInitialPredicate {
+    Unknown,
+    #[bilrost(tag(1))]
+    Static(StaticPredicate),
+    #[bilrost(tag(2))]
+    Dynamic(DynamicPredicate),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+pub struct StaticPredicate {
+    #[bilrost(tag(1), encoding(plainbytes))]
+    pub expr_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+pub struct DynamicPredicate {
+    #[bilrost(tag(1), encoding(plainbytes))]
+    pub expr_bytes: Vec<u8>,
+    #[bilrost(tag(2))]
+    pub columns: Vec<PredicateColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+pub struct PredicateColumn {
+    #[bilrost(tag(1))]
+    pub name: String,
+    #[bilrost(tag(2))]
+    pub index: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+pub struct RemoteQueryScannerPredicateUpdate {
+    #[bilrost(tag(1), encoding(plainbytes))]
+    pub expr_bytes: Vec<u8>,
 }
 
 #[derive(
@@ -83,6 +132,9 @@ pub enum RemoteQueryScannerOpened {
 pub struct RemoteQueryScannerNext {
     #[bilrost(1)]
     pub scanner_id: ScannerId,
+    #[bilrost(tag(2))]
+    #[serde(default)]
+    pub next_predicate: Option<RemoteQueryScannerPredicateUpdate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]

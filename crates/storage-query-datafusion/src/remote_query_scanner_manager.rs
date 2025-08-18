@@ -17,6 +17,7 @@ use anyhow::{anyhow, bail};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 
+use datafusion::physical_plan::PhysicalExpr;
 use restate_core::Metadata;
 use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
@@ -180,6 +181,7 @@ impl ScanPartition for RemotePartitionsScanner {
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
@@ -188,7 +190,14 @@ impl ScanPartition for RemotePartitionsScanner {
                 let scanner = self.manager.local_partition_scanner(&self.table_name).ok_or_else(
                     ||anyhow!("was expecting a local partition to be present on this node. It could be that this partition is being opened right now.")
                 )?;
-                Ok(scanner.scan_partition(partition_id, range, projection, batch_size, limit)?)
+                Ok(scanner.scan_partition(
+                    partition_id,
+                    range,
+                    projection,
+                    predicate,
+                    batch_size,
+                    limit,
+                )?)
             }
             PartitionLocation::Remote { node_id } => Ok(remote_scan_as_datafusion_stream(
                 self.manager.remote_scanner.clone(),
@@ -197,6 +206,7 @@ impl ScanPartition for RemotePartitionsScanner {
                 range,
                 self.table_name.clone(),
                 projection,
+                predicate,
                 batch_size,
                 limit,
             )),

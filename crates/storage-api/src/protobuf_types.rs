@@ -162,15 +162,16 @@ pub mod v1 {
             BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
             Entry, EntryResult, EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata,
             InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
-            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
-            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage,
-            PartitionDurability, Promise, ResponseResult, RestateVersion, SequenceNumber,
-            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
-            SpanRelation, StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
-            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status, invocation_status_v2, invocation_target, journal_entry,
-            outbox_message, promise, response_result, source, span_relation,
-            submit_notification_sink, timer, virtual_object_status,
+            InvocationStatusV2, InvocationTarget, InvocationV2CreationTime, InvocationV2Lite,
+            InvocationV2ModificationTime, JournalCompletionTarget, JournalEntry, JournalEntryIndex,
+            JournalMeta, KvPair, OutboxMessage, PartitionDurability, Promise, ResponseResult,
+            RestateVersion, SequenceNumber, ServiceId, ServiceInvocation,
+            ServiceInvocationResponseSink, Source, SpanContext, SpanRelation, StateMutation,
+            SubmitNotificationSink, Timer, VirtualObjectStatus, enriched_entry_header, entry,
+            entry_result, inbox_entry, invocation_resolution_result, invocation_status,
+            invocation_status_v2, invocation_target, journal_entry, outbox_message, promise,
+            response_result, source, span_relation, submit_notification_sink, timer,
+            virtual_object_status,
         };
         use crate::invocation_status_table::{CompletionRangeEpochMap, JournalMetadata};
         use crate::protobuf_types::ConversionError;
@@ -1098,6 +1099,42 @@ pub mod v1 {
                 };
 
                 Ok(crate::invocation_status_table::InvocationStatusV1(result))
+            }
+        }
+
+        impl TryFrom<InvocationV2CreationTime> for crate::invocation_status_table::InvocationCreationTime {
+            type Error = ConversionError;
+
+            fn try_from(value: InvocationV2CreationTime) -> Result<Self, ConversionError> {
+                Ok(Self(MillisSinceEpoch::new(value.creation_time)))
+            }
+        }
+
+        impl From<crate::invocation_status_table::InvocationCreationTime> for InvocationV2CreationTime {
+            fn from(value: crate::invocation_status_table::InvocationCreationTime) -> Self {
+                Self {
+                    creation_time: value.0.as_u64(),
+                }
+            }
+        }
+
+        impl TryFrom<InvocationV2ModificationTime>
+            for crate::invocation_status_table::InvocationModificationTime
+        {
+            type Error = ConversionError;
+
+            fn try_from(value: InvocationV2ModificationTime) -> Result<Self, ConversionError> {
+                Ok(Self(MillisSinceEpoch::new(value.modification_time)))
+            }
+        }
+
+        impl From<crate::invocation_status_table::InvocationModificationTime>
+            for InvocationV2ModificationTime
+        {
+            fn from(value: crate::invocation_status_table::InvocationModificationTime) -> Self {
+                Self {
+                    modification_time: value.0.as_u64(),
+                }
             }
         }
 

@@ -16,6 +16,9 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_expr::utils::collect_columns;
+use datafusion::physical_expr_common::physical_expr::snapshot_generation;
+use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tracing::debug;
 
@@ -24,11 +27,13 @@ use restate_core::{TaskCenter, TaskCenterFutureExt, TaskKind, task_center};
 use restate_types::NodeId;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::net::remote_query_scanner::{
-    RemoteQueryScannerClose, RemoteQueryScannerNext, RemoteQueryScannerNextResult,
-    RemoteQueryScannerOpen, RemoteQueryScannerOpened, ScannerBatch, ScannerFailure, ScannerId,
+    DynamicPredicate, PredicateColumn, RemoteQueryScannerClose, RemoteQueryScannerInitialPredicate,
+    RemoteQueryScannerNext, RemoteQueryScannerNextResult, RemoteQueryScannerOpen,
+    RemoteQueryScannerOpened, RemoteQueryScannerPredicateUpdate, ScannerBatch, ScannerFailure,
+    ScannerId, StaticPredicate,
 };
 
-use crate::{decode_record_batch, encode_schema};
+use crate::{decode_record_batch, encode_expr, encode_schema};
 
 #[derive(Debug, Clone)]
 pub struct RemoteScanner {
@@ -44,7 +49,10 @@ impl RemoteScanner {
         }
     }
 
-    async fn next_batch(&self) -> Result<RemoteQueryScannerNextResult, DataFusionError> {
+    async fn next_batch(
+        &self,
+        next_predicate: Option<RemoteQueryScannerPredicateUpdate>,
+    ) -> Result<RemoteQueryScannerNextResult, DataFusionError> {
         let Some(ref connection) = self.connection else {
             return Err(DataFusionError::Internal(
                 "connection used after forget()".to_string(),
@@ -65,6 +73,7 @@ impl RemoteScanner {
             .send_rpc(
                 RemoteQueryScannerNext {
                     scanner_id: self.scanner_id,
+                    next_predicate,
                 },
                 None,
             )
@@ -139,6 +148,7 @@ pub fn remote_scan_as_datafusion_stream(
     range: RangeInclusive<PartitionKey>,
     table_name: String,
     projection_schema: SchemaRef,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
     batch_size: usize,
     limit: Option<usize>,
 ) -> SendableRecordBatchStream {
@@ -147,6 +157,33 @@ pub fn remote_scan_as_datafusion_stream(
     let tx = builder.tx();
 
     let task = async move {
+        // get a snapshot of the initial predicate
+        let mut predicate_generation = predicate
+            .as_ref()
+            .map(|expr| snapshot_generation(expr))
+            .unwrap_or(0);
+
+        let initial_predicate = match &predicate {
+            Some(predicate) if predicate_generation == 0 => Some(
+                RemoteQueryScannerInitialPredicate::Static(StaticPredicate {
+                    expr_bytes: encode_expr(predicate)?,
+                }),
+            ),
+            Some(predicate) => Some(RemoteQueryScannerInitialPredicate::Dynamic(
+                DynamicPredicate {
+                    expr_bytes: encode_expr(predicate)?,
+                    columns: collect_columns(predicate)
+                        .into_iter()
+                        .map(|c| PredicateColumn {
+                            name: c.name().into(),
+                            index: u64::try_from(c.index()).expect("column index to fit in u64"),
+                        })
+                        .collect(),
+                },
+            )),
+            None => None,
+        };
+
         //
         // get a scanner id
         //
@@ -156,6 +193,7 @@ pub fn remote_scan_as_datafusion_stream(
             table: table_name,
             projection_schema_bytes: encode_schema(&projection_schema),
             limit: limit.map(|limit| u64::try_from(limit).expect("limit to fit in a u64")),
+            predicate: initial_predicate,
             batch_size: u64::try_from(batch_size).expect("batch_size to fit in a u64"),
         };
 
@@ -165,7 +203,26 @@ pub fn remote_scan_as_datafusion_stream(
         // loop while we have record_batch coming in
         //
         loop {
-            let batch = match remote_scanner.next_batch().await {
+            let next_predicate = if predicate_generation != 0 {
+                // generation 0 means the predicate is static (or we never had one)
+                let predicate = predicate
+                    .as_ref()
+                    .expect("must have a predicate if generation != 0");
+                let current_predicate_generation = snapshot_generation(predicate);
+
+                if current_predicate_generation != predicate_generation {
+                    predicate_generation = current_predicate_generation;
+                    Some(RemoteQueryScannerPredicateUpdate {
+                        expr_bytes: encode_expr(predicate)?,
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let batch = match remote_scanner.next_batch(next_predicate).await {
                 Err(e) => {
                     return Err(e);
                 }

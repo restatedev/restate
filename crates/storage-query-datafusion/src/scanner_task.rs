@@ -12,7 +12,11 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::Context;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::expressions::{Column, DynamicFilterPhysicalExpr};
+use datafusion::prelude::SessionContext;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, warn};
@@ -21,26 +25,33 @@ use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{TaskCenter, TaskKind};
 use restate_types::GenerationalNodeId;
 use restate_types::net::remote_query_scanner::{
-    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, ScannerBatch, ScannerFailure, ScannerId,
+    RemoteQueryScannerInitialPredicate, RemoteQueryScannerNextResult, RemoteQueryScannerOpen,
+    RemoteQueryScannerPredicateUpdate, ScannerBatch, ScannerFailure, ScannerId,
 };
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::remote_query_scanner_server::ScannerMap;
-use crate::{decode_schema, encode_record_batch};
+use crate::{decode_expr, decode_schema, encode_record_batch};
 
 const SCANNER_EXPIRATION: Duration = Duration::from_secs(60);
 
-type NextReciprocal = Reciprocal<Oneshot<RemoteQueryScannerNextResult>>;
+pub(crate) struct NextRequest {
+    pub reciprocal: Reciprocal<Oneshot<RemoteQueryScannerNextResult>>,
+    pub next_predicate: Option<RemoteQueryScannerPredicateUpdate>,
+}
 
-pub(crate) type ScannerHandle = mpsc::UnboundedSender<NextReciprocal>;
+pub(crate) type ScannerHandle = mpsc::UnboundedSender<NextRequest>;
 
 // Tracks a single scanner's lifecycle running in [`RemoteQueryScannerServer`]
 pub(crate) struct ScannerTask {
     peer: GenerationalNodeId,
     scanner_id: ScannerId,
     stream: SendableRecordBatchStream,
-    rx: mpsc::UnboundedReceiver<NextReciprocal>,
+    rx: mpsc::UnboundedReceiver<NextRequest>,
     scanners: Weak<ScannerMap>,
+    ctx: SessionContext,
+    dynamic_predicate: Option<Arc<DynamicFilterPhysicalExpr>>,
+    schema: SchemaRef,
 }
 
 impl ScannerTask {
@@ -56,10 +67,42 @@ impl ScannerTask {
             .local_partition_scanner(&request.table)
             .context("not registered scanner for a table")?;
         let schema = decode_schema(&request.projection_schema_bytes).context("bad schema bytes")?;
+        let ctx = SessionContext::new();
+
+        let mut dynamic_predicate = None;
+        let predicate = match request.predicate {
+            Some(RemoteQueryScannerInitialPredicate::Static(stat)) => {
+                Some(decode_expr(&ctx, &schema, &stat.expr_bytes)?)
+            }
+            Some(RemoteQueryScannerInitialPredicate::Dynamic(dynamic)) => {
+                let dynamic_predicate = dynamic_predicate
+                    .insert(Arc::new(DynamicFilterPhysicalExpr::new(
+                        dynamic
+                            .columns
+                            .into_iter()
+                            .map(|c| {
+                                Arc::new(Column::new(
+                                    &c.name,
+                                    usize::try_from(c.index).expect("column index to fit in usize"),
+                                )) as Arc<dyn PhysicalExpr>
+                            })
+                            .collect(),
+                        decode_expr(&ctx, &schema, &dynamic.expr_bytes)?,
+                    )))
+                    .clone();
+
+                Some(dynamic_predicate as Arc<dyn PhysicalExpr>)
+            }
+            Some(RemoteQueryScannerInitialPredicate::Unknown) | None => None,
+        };
+
+        let schema = Arc::new(schema);
+
         let stream = scanner.scan_partition(
             request.partition_id,
             request.range.clone(),
-            Arc::new(schema),
+            schema.clone(),
+            predicate,
             usize::try_from(request.batch_size).expect("batch_size to fit in a usize"),
             request
                 .limit
@@ -73,6 +116,9 @@ impl ScannerTask {
             stream,
             rx,
             scanners: Arc::downgrade(scanners),
+            ctx,
+            dynamic_predicate,
+            schema,
         };
 
         scanners.insert(scanner_id, tx);
@@ -96,7 +142,7 @@ impl ScannerTask {
         );
 
         loop {
-            let reciprocal = tokio::select! {
+            let request = tokio::select! {
                 _ = &mut watch_fut => {
                     // peer is dead, dispose the scanner
                     debug!("Removing scanner due to peer {} being dead", self.peer);
@@ -120,8 +166,29 @@ impl ScannerTask {
             // connection/request has been closed, don't bother with driving the stream.
             // The scanner will be dropped because we want to make sure that we don't get supurious
             // next messages from the client after.
-            if reciprocal.is_closed() {
+            if request.reciprocal.is_closed() {
                 return;
+            }
+
+            if let Some(predicate) = request.next_predicate {
+                if let Some(dynamic_predicate) = &self.dynamic_predicate {
+                    match decode_expr(&self.ctx, &self.schema, &predicate.expr_bytes) {
+                        Ok(next_predicate) => {
+                            if let Err(err) = dynamic_predicate.update(next_predicate, 0) {
+                                warn!("Failed to update dynamic predicate: {err}");
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Failed to parse the latest predicate update from the scan client: {err}"
+                            );
+                        }
+                    }
+                } else {
+                    warn!(
+                        "Received a predicate update from the scan client but the initial predicate was not dynamic"
+                    );
+                }
             }
 
             let record_batch = match self.stream.next().await {
@@ -129,29 +196,37 @@ impl ScannerTask {
                 Some(Err(e)) => {
                     warn!("Error while scanning {}: {e}", self.scanner_id);
 
-                    reciprocal.send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
-                        scanner_id: self.scanner_id,
-                        message: e.to_string(),
-                    }));
+                    request
+                        .reciprocal
+                        .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
+                            scanner_id: self.scanner_id,
+                            message: e.to_string(),
+                        }));
                     return;
                 }
                 None => {
-                    reciprocal.send(RemoteQueryScannerNextResult::NoMoreRecords(self.scanner_id));
+                    request
+                        .reciprocal
+                        .send(RemoteQueryScannerNextResult::NoMoreRecords(self.scanner_id));
                     return;
                 }
             };
             match encode_record_batch(&self.stream.schema(), record_batch) {
                 Ok(record_batch) => {
-                    reciprocal.send(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
-                        scanner_id: self.scanner_id,
-                        record_batch,
-                    }))
+                    request
+                        .reciprocal
+                        .send(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
+                            scanner_id: self.scanner_id,
+                            record_batch,
+                        }))
                 }
                 Err(e) => {
-                    reciprocal.send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
-                        scanner_id: self.scanner_id,
-                        message: e.to_string(),
-                    }));
+                    request
+                        .reciprocal
+                        .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
+                            scanner_id: self.scanner_id,
+                            message: e.to_string(),
+                        }));
                     break;
                 }
             }

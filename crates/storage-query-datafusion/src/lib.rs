@@ -36,12 +36,17 @@ mod table_macro;
 mod table_providers;
 mod table_util;
 
+use std::sync::Arc;
+
 pub use context::BuildError;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::convert::IpcSchemaEncoder;
 use datafusion::arrow::ipc::writer::DictionaryTracker;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
+use datafusion::physical_plan::PhysicalExpr;
+use datafusion::prelude::SessionContext;
+use prost::Message;
 
 #[cfg(test)]
 pub(crate) mod mocks;
@@ -67,6 +72,31 @@ pub(crate) fn decode_schema(ipc_bytes: &[u8]) -> anyhow::Result<Schema> {
         .map_err(|e| anyhow::anyhow!("unable to decode {}", e))?;
     let schema = datafusion::arrow::ipc::convert::fb_to_schema(ipc_schema);
     Ok(schema)
+}
+
+pub(crate) fn encode_expr(expr: &Arc<dyn PhysicalExpr>) -> Result<Vec<u8>, DataFusionError> {
+    let node = datafusion_proto::physical_plan::to_proto::serialize_physical_expr(
+        expr,
+        &datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {},
+    )?;
+
+    Ok(node.encode_to_vec())
+}
+
+pub(crate) fn decode_expr(
+    ctx: &SessionContext,
+    input_schema: &Schema,
+    proto_bytes: &[u8],
+) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+    let node = datafusion_proto::protobuf::PhysicalExprNode::decode(proto_bytes)
+        .map_err(|err| DataFusionError::External(err.into()))?;
+
+    datafusion_proto::physical_plan::from_proto::parse_physical_expr(
+        &node,
+        ctx,
+        input_schema,
+        &datafusion_proto::physical_plan::DefaultPhysicalExtensionCodec {},
+    )
 }
 
 pub(crate) fn encode_record_batch(

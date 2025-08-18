@@ -737,6 +737,18 @@ pub trait ReadOnlyInvocationStatusTable {
     ) -> impl Future<Output = Result<InvocationStatus>> + Send;
 }
 
+pub enum FilterInvocationTime {
+    Modification,
+    Creation,
+}
+
+pub enum FilterInvocationStatus {
+    Time(
+        FilterInvocationTime,
+        Box<dyn FnMut(MillisSinceEpoch) -> bool + Send + Sync + 'static>,
+    ),
+}
+
 pub trait ScanInvocationStatusTable {
     fn scan_invocation_statuses(
         &self,
@@ -751,6 +763,7 @@ pub trait ScanInvocationStatusTable {
     >(
         &self,
         range: RangeInclusive<PartitionKey>,
+        filters: Option<FilterInvocationStatus>,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 
@@ -895,6 +908,22 @@ pub struct InvocationLite {
 
 impl PartitionStoreProtobufValue for InvocationLite {
     type ProtobufType = crate::protobuf_types::v1::InvocationV2Lite;
+}
+
+/// Creation time of an invocation, to make topk scans more efficient.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct InvocationCreationTime(pub MillisSinceEpoch);
+
+impl PartitionStoreProtobufValue for InvocationCreationTime {
+    type ProtobufType = crate::protobuf_types::v1::InvocationV2CreationTime;
+}
+
+/// Modification time of an invocation, to make topk scans more efficient.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct InvocationModificationTime(pub MillisSinceEpoch);
+
+impl PartitionStoreProtobufValue for InvocationModificationTime {
+    type ProtobufType = crate::protobuf_types::v1::InvocationV2ModificationTime;
 }
 
 // TODO remove this once we remove the old InvocationStatus

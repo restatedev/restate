@@ -62,8 +62,8 @@ message SequenceNumber { uint64 sequence_number = 1; }
 message RestateVersion { string version = 1; }
 
 message PartitionDurability {
-  // The partition has applied this LSN durably to the replica-set and/or has been
-  // persisted in a snapshot in the snapshot repository.
+  // The partition has applied this LSN durably to the replica-set and/or has
+  // been persisted in a snapshot in the snapshot repository.
   SequenceNumber durable_point = 1;
   // Timestamp which the durability point was updated
   uint64 modification_time = 2;
@@ -110,9 +110,7 @@ message Source {
 
   message Subscription { bytes subscription_id = 1; }
 
-  message RestartAsNew {
-    InvocationId invocation_id = 1;
-  }
+  message RestartAsNew { InvocationId invocation_id = 1; }
 
   oneof source {
     Ingress ingress = 9;
@@ -197,6 +195,9 @@ message InvocationV2Lite {
   InvocationTarget invocation_target = 2;
   uint32 current_invocation_epoch = 27;
 }
+
+message InvocationV2CreationTime { uint64 creation_time = 5; }
+message InvocationV2ModificationTime { uint64 modification_time = 6; }
 
 // TODO remove this after 1.1
 message InvocationStatus {

@@ -31,7 +31,8 @@ bytestring = { workspace = true }
 codederror = { workspace = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
-datafusion-functions-json = { version = "0.49.0" }
+datafusion-functions-json = { workspace = true }
+datafusion-proto = { workspace = true }
 derive_more = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }

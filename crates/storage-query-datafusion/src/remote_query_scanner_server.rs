@@ -134,12 +134,19 @@ impl RemoteQueryScannerServer {
         // Note: we trust that the task will remove the scanner from the map on Drop and we will not try to
         // do that again here. If we do, we might end up dead-locking the map because we are holding a
         // reference into it (scanner).
-        if let Err(mpsc::error::SendError(reciprocal)) = scanner.send(reciprocal) {
+        if let Err(mpsc::error::SendError(request)) =
+            scanner.send(super::scanner_task::NextRequest {
+                reciprocal,
+                next_predicate: req.next_predicate,
+            })
+        {
             tracing::info!(
                 "No such scanner {}. This could be an expired scanner due to a slow scan with no activity.",
                 scanner_id
             );
-            reciprocal.send(RemoteQueryScannerNextResult::NoSuchScanner(scanner_id));
+            request
+                .reciprocal
+                .send(RemoteQueryScannerNextResult::NoSuchScanner(scanner_id));
         }
     }
 }

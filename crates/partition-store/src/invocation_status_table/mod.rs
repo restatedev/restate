@@ -11,14 +11,15 @@
 use std::ops::{ControlFlow, RangeInclusive};
 use std::sync::Arc;
 
-use futures::Stream;
+use futures::{FutureExt, Stream};
 use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
-    InvocationStatusV1, InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
-    ScanInvocationStatusTable,
+    FilterInvocationStatus, FilterInvocationTime, InvocationCreationTime, InvocationLite,
+    InvocationModificationTime, InvocationStatus, InvocationStatusDiscriminants,
+    InvocationStatusTable, InvocationStatusV1, InvokedInvocationStatusLite,
+    ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError, Transaction};
@@ -226,6 +227,7 @@ impl ScanInvocationStatusTable for PartitionStore {
     >(
         &self,
         range: RangeInclusive<PartitionKey>,
+        filters: Option<FilterInvocationStatus>,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         // these two iterators can run concurrently in theory.
@@ -263,33 +265,121 @@ impl ScanInvocationStatusTable for PartitionStore {
             )
             .map_err(|_| StorageError::OperationalError)?;
 
-        let new_status_keys = self
-            .iterator_for_each(
-                "df-for-each-invocation-status",
-                Priority::Low,
-                TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
-                {
-                    let f = f.clone();
-                    let mut f_locked = None;
-                    move |(mut key, mut value)| {
-                        let state_key =
-                            break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
-                        let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
+        let new_status_keys = match filters {
+            Some(FilterInvocationStatus::Time(
+                FilterInvocationTime::Modification,
+                mut modification_time_filter,
+            )) => self
+                .iterator_for_each(
+                    "df-for-each-invocation-status",
+                    Priority::Low,
+                    TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                    {
+                        let f = f.clone();
+                        let mut f_locked = None;
 
-                        let (partition_key, invocation_uuid) =
-                            break_on_err(state_key.into_inner_ok_or())?;
+                        move |(mut key, mut value)| {
+                            let mut value_for_filter = value;
+                            let modification_time = break_on_err(
+                                InvocationModificationTime::decode(&mut value_for_filter),
+                            )?;
 
-                        let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
+                            if !modification_time_filter(modification_time.0) {
+                                return ControlFlow::Continue(());
+                            }
 
-                        f((
-                            InvocationId::from_parts(partition_key, invocation_uuid),
-                            state_value,
-                        ))
-                        .map_break(Ok)
-                    }
-                },
-            )
-            .map_err(|_| StorageError::OperationalError)?;
+                            let state_key =
+                                break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                            let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
+
+                            let (partition_key, invocation_uuid) =
+                                break_on_err(state_key.into_inner_ok_or())?;
+
+                            let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
+
+                            f((
+                                InvocationId::from_parts(partition_key, invocation_uuid),
+                                state_value,
+                            ))
+                            .map_break(Ok)
+                        }
+                    },
+                )
+                .map_err(|_| StorageError::OperationalError)?
+                .left_future(),
+            Some(FilterInvocationStatus::Time(
+                FilterInvocationTime::Creation,
+                mut creation_time_filter,
+            )) => self
+                .iterator_for_each(
+                    "df-for-each-invocation-status",
+                    Priority::Low,
+                    TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                    {
+                        let f = f.clone();
+                        let mut f_locked = None;
+
+                        move |(mut key, mut value)| {
+                            let mut value_for_filter = value;
+                            let creation_time = break_on_err(InvocationCreationTime::decode(
+                                &mut value_for_filter,
+                            ))?;
+
+                            if !creation_time_filter(creation_time.0) {
+                                return ControlFlow::Continue(());
+                            }
+
+                            let state_key =
+                                break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                            let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
+
+                            let (partition_key, invocation_uuid) =
+                                break_on_err(state_key.into_inner_ok_or())?;
+
+                            let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
+
+                            f((
+                                InvocationId::from_parts(partition_key, invocation_uuid),
+                                state_value,
+                            ))
+                            .map_break(Ok)
+                        }
+                    },
+                )
+                .map_err(|_| StorageError::OperationalError)?
+                .left_future()
+                .right_future(),
+            None => self
+                .iterator_for_each(
+                    "df-for-each-invocation-status",
+                    Priority::Low,
+                    TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                    {
+                        let f = f.clone();
+                        let mut f_locked = None;
+
+                        move |(mut key, mut value)| {
+                            let state_key =
+                                break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                            let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
+
+                            let (partition_key, invocation_uuid) =
+                                break_on_err(state_key.into_inner_ok_or())?;
+
+                            let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
+
+                            f((
+                                InvocationId::from_parts(partition_key, invocation_uuid),
+                                state_value,
+                            ))
+                            .map_break(Ok)
+                        }
+                    },
+                )
+                .map_err(|_| StorageError::OperationalError)?
+                .right_future()
+                .right_future(),
+        };
 
         Ok(async {
             old_status_keys.await?;

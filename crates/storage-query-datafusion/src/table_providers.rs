@@ -20,9 +20,10 @@ use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::filter_pushdown::{FilterPushdownPhase, FilterPushdownPropagation};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, PlanProperties,
     SendableRecordBatchStream,
 };
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -40,6 +41,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream>;
@@ -185,12 +187,20 @@ where
             partition_plan,
             EmissionType::Incremental,
             Boundedness::Bounded,
+        )
+        .with_scheduling_type(
+            datafusion::physical_plan::execution_plan::SchedulingType::Cooperative,
         );
+
+        let predicate = datafusion::logical_expr::utils::conjunction(filters.iter().cloned());
+        let predicate = predicate
+            .map(|p| datafusion::physical_expr::planner::logical2physical(&p, &self.schema));
 
         Ok(Arc::new(PartitionedExecutionPlan {
             logical_partitions,
             projected_schema,
             limit,
+            predicate,
             scanner: self.partition_scanner.clone(),
             plan,
         }))
@@ -214,6 +224,7 @@ struct PartitionedExecutionPlan<T> {
     logical_partitions: Vec<LogicalPartition>,
     projected_schema: SchemaRef,
     limit: Option<usize>,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
     scanner: T,
     plan: PlanProperties,
 }
@@ -272,6 +283,7 @@ where
                 let scanner = self.scanner.clone();
                 let schema = self.projected_schema.clone();
                 let limit = self.limit;
+                let predicate = self.predicate.clone();
                 let batch_size = context.session_config().batch_size();
                 move |(partition_id, partition)| {
                     scanner
@@ -279,6 +291,7 @@ where
                             partition_id,
                             partition.key_range,
                             schema.clone(),
+                            predicate.clone(),
                             batch_size,
                             limit,
                         )
@@ -291,6 +304,43 @@ where
             self.projected_schema.clone(),
             sequential_scanners_stream,
         )))
+    }
+
+    fn handle_child_pushdown_result(
+        &self,
+        phase: datafusion::physical_plan::filter_pushdown::FilterPushdownPhase,
+        child_pushdown_result: datafusion::physical_plan::filter_pushdown::ChildPushdownResult,
+        _config: &datafusion::config::ConfigOptions,
+    ) -> datafusion::error::Result<
+        datafusion::physical_plan::filter_pushdown::FilterPushdownPropagation<
+            Arc<dyn ExecutionPlan>,
+        >,
+    > {
+        if !matches!(phase, FilterPushdownPhase::Post) {
+            return Ok(FilterPushdownPropagation::all_unsupported(
+                child_pushdown_result,
+            ));
+        }
+
+        let filters = child_pushdown_result
+            .parent_filters
+            .iter()
+            .map(|f| f.filter.clone());
+
+        let predicate = match &self.predicate {
+            Some(predicate) => datafusion::physical_expr::conjunction(
+                std::iter::once(predicate.clone()).chain(filters),
+            ),
+            None => datafusion::physical_expr::conjunction(filters),
+        };
+
+        let mut plan = self.clone();
+        plan.predicate = Some(predicate);
+
+        Ok(
+            FilterPushdownPropagation::all_unsupported(child_pushdown_result)
+                .with_updated_node(Arc::new(plan)),
+        )
     }
 }
 
