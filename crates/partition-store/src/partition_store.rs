@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::ControlFlow;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::slice;
@@ -383,26 +384,22 @@ impl PartitionStore {
         }
     }
 
-    fn iterator_step<O: Send + 'static>(
+    fn iterator_step_map<O: Send + 'static>(
         tx: mpsc::Sender<Result<O>>,
         f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
-    ) -> impl FnMut(Option<Result<(&[u8], &[u8]), RocksError>>) -> IterAction + Send + 'static {
+    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static {
         move |item| {
             let res = match item {
                 // apply the caller's function
-                Some(Ok((key, value))) => match f((key, value)) {
+                Ok((key, value)) => match f((key, value)) {
                     Ok(v) => v,
                     Err(e) => {
                         let _ = tx.blocking_send(Err(e));
                         return IterAction::Stop;
                     }
                 },
-                Some(Err(e)) => {
+                Err(e) => {
                     let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
-                    return IterAction::Stop;
-                }
-                None => {
-                    // end of iteration
                     return IterAction::Stop;
                 }
             };
@@ -414,10 +411,10 @@ impl PartitionStore {
         }
     }
 
-    fn iterator_step_mut(
-        tx: oneshot::Sender<Result<()>>,
-        mut f: impl FnMut(Option<(&[u8], &[u8])>) -> Result<bool> + Send + 'static,
-    ) -> impl FnMut(Option<Result<(&[u8], &[u8]), RocksError>>) -> IterAction + Send + 'static {
+    fn iterator_step_for_each(
+        tx: oneshot::Sender<StorageError>,
+        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
         let mut tx = Some(tx);
         move |item| {
             let mut must_send = |v| match tx.take() {
@@ -427,51 +424,50 @@ impl PartitionStore {
 
             match item {
                 // apply the caller's function
-                Some(Ok((key, value))) => match f(Some((key, value))) {
-                    Ok(true) => match &mut tx {
-                        Some(tx) if tx.is_closed() => IterAction::Stop,
+                Ok((key, value)) => match f((key, value)) {
+                    ControlFlow::Continue(()) => match &mut tx {
+                        Some(tx_inner) if tx_inner.is_closed() => {
+                            tx = None;
+                            IterAction::Stop
+                        }
+                        // the channel is not closed yet, keep iterating
                         Some(_) => IterAction::Next,
                         None => panic!("Iterator continued after IterAction::Stop"),
                     },
-                    Ok(false) => {
+                    ControlFlow::Break(Ok(())) => {
                         // function doesn't need any more items
-                        let _ = must_send(f(None).map(drop));
                         IterAction::Stop
                     }
-                    Err(e) => {
-                        let _ = must_send(Err(e));
+                    ControlFlow::Break(Err(e)) => {
+                        let _ = must_send(e);
                         IterAction::Stop
                     }
                 },
-                Some(Err(e)) => {
-                    let _ = must_send(Err(StorageError::Generic(e.into())));
-                    IterAction::Stop
-                }
-                None => {
-                    // end of iteration
-                    let _ = must_send(f(None).map(drop));
+                Err(e) => {
+                    let _ = must_send(StorageError::Generic(e.into()));
                     IterAction::Stop
                 }
             }
         }
     }
 
-    pub fn run_iterator_mut<K: TableKey>(
+    pub fn iterator_for_each<K: TableKey>(
         &self,
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        f: impl FnMut(Option<(&[u8], &[u8])>) -> Result<bool> + Send + 'static,
+        f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_mut(tx, f);
+        let on_iter = Self::iterator_step_for_each(tx, f);
         self.run_iterator_internal(name, priority, scan, on_iter)?;
         Ok(async {
             match rx.await {
-                Ok(result) => result,
-                Err(_recv_err) => Err(StorageError::Generic(anyhow!(
-                    "Mutable iterator was dropped without returning a final value"
-                ))),
+                Ok(storage_err) => Err(storage_err),
+                Err(_recv_err) => {
+                    // iterator was dropped without sending an error; this is actually a success condition
+                    Ok(())
+                }
             }
         })
     }
@@ -484,7 +480,7 @@ impl PartitionStore {
         f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
-        let on_iter = Self::iterator_step(tx, f);
+        let on_iter = Self::iterator_step_map(tx, f);
         self.run_iterator_internal(name, priority, scan, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
@@ -494,7 +490,7 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        on_iter: impl FnMut(Option<Result<(&[u8], &[u8]), RocksError>>) -> IterAction + Send + 'static,
+        on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
         let scan: PhysicalScan = scan.into();
         match scan {

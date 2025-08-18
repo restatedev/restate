@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 
 use futures::Stream;
 use tokio_stream::StreamExt;
@@ -170,6 +170,13 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     }
 }
 
+fn break_on_err<T, E>(r: std::result::Result<T, E>) -> ControlFlow<std::result::Result<(), E>, T> {
+    match r {
+        Ok(val) => ControlFlow::Continue(val),
+        Err(err) => ControlFlow::Break(Err(err)),
+    }
+}
+
 impl ScanInvocationStatusTable for PartitionStore {
     fn scan_invoked_invocations(
         &self,
@@ -213,8 +220,8 @@ impl ScanInvocationStatusTable for PartitionStore {
         .map_err(|_| StorageError::OperationalError)
     }
 
-    fn scan_invocation_statuses_mut<
-        F: FnMut(Option<Result<(InvocationId, InvocationStatus)>>) -> bool + Send + Sync + 'static,
+    fn for_each_invocation_status<
+        F: FnMut((InvocationId, InvocationStatus)) -> ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
         range: RangeInclusive<PartitionKey>,
@@ -224,57 +231,48 @@ impl ScanInvocationStatusTable for PartitionStore {
         let f_two = f_one.clone();
 
         let old_status_keys = self
-            .run_iterator_mut(
-                "df-invocation-status-v1",
+            .iterator_for_each(
+                "df-for-each-invocation-status-v1",
                 Priority::Low,
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKeyV1>(range.clone()),
-                move |item| match item {
-                    Some((mut key, mut value)) => {
-                        let state_key = InvocationStatusKeyV1::deserialize_from(&mut key)?;
-                        let state_value = InvocationStatusV1::decode(&mut value)?;
+                move |(mut key, mut value)| {
+                    let state_key =
+                        break_on_err(InvocationStatusKeyV1::deserialize_from(&mut key))?;
+                    let state_value = break_on_err(InvocationStatusV1::decode(&mut value))?;
 
-                        let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
+                    let (partition_key, invocation_uuid) =
+                        break_on_err(state_key.into_inner_ok_or())?;
 
-                        let mut f_one = f_one.lock().unwrap();
+                    let mut f_one = f_one.lock().unwrap();
 
-                        Ok(f_one(Some(Ok((
-                            InvocationId::from_parts(partition_key, invocation_uuid),
-                            state_value.0,
-                        )))))
-                    }
-                    None => {
-                        let mut f_one = f_one.lock().unwrap();
-
-                        Ok(f_one(None))
-                    }
+                    f_one((
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        state_value.0,
+                    ))
+                    .map_break(Ok)
                 },
             )
             .map_err(|_| StorageError::OperationalError)?;
 
         let new_status_keys = self
-            .run_iterator_mut(
-                "df-invocation-status",
+            .iterator_for_each(
+                "df-for-each-invocation-status",
                 Priority::Low,
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
-                move |item| match item {
-                    Some((mut key, mut value)) => {
-                        let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
-                        let state_value = InvocationStatus::decode(&mut value)?;
+                move |(mut key, mut value)| {
+                    let state_key = break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                    let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
 
-                        let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
+                    let (partition_key, invocation_uuid) =
+                        break_on_err(state_key.into_inner_ok_or())?;
 
-                        let mut f_two = f_two.lock().unwrap();
+                    let mut f_two = f_two.lock().unwrap();
 
-                        Ok(f_two(Some(Ok((
-                            InvocationId::from_parts(partition_key, invocation_uuid),
-                            state_value,
-                        )))))
-                    }
-                    None => {
-                        let mut f_two = f_two.lock().unwrap();
-
-                        Ok(f_two(None))
-                    }
+                    f_two((
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        state_value,
+                    ))
+                    .map_break(Ok)
                 },
             )
             .map_err(|_| StorageError::OperationalError)?;

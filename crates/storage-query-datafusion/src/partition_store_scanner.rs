@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
 use std::ops::RangeInclusive;
+use std::{fmt::Debug, ops::ControlFlow};
 
 use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -23,6 +23,7 @@ use restate_storage_api::StorageError;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 
 use crate::table_providers::ScanPartition;
+use crate::table_util::BatchSender;
 
 pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     type Builder: crate::table_util::Builder + Send;
@@ -36,13 +37,12 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item);
 }
 
-pub trait ScanLocalPartitionMut: Send + Sync + Debug + 'static {
+// ScanLocalPartitionInPlace can be used for large or performance sensitive tables to build batches on io threads (instead of sending rows cross-thread)
+pub trait ScanLocalPartitionInPlace: Send + Sync + Debug + 'static {
     type Builder: crate::table_util::Builder + Send;
     type Item: Send;
 
-    fn scan_partition_store_mut<
-        F: FnMut(Option<Result<Self::Item, StorageError>>) -> bool + Send + Sync + 'static,
-    >(
+    fn for_each_row<F: FnMut(Self::Item) -> ControlFlow<()> + Send + Sync + 'static>(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
         f: F,
@@ -51,17 +51,17 @@ pub trait ScanLocalPartitionMut: Send + Sync + Debug + 'static {
     fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item);
 }
 
-pub struct ScanMut;
-pub struct NoScanMut;
+pub struct ScanStream;
+pub struct ScanInPlace;
 
 #[derive(Clone, derive_more::Debug)]
-pub struct LocalPartitionsScanner<S, M = NoScanMut> {
+pub struct LocalPartitionsScanner<S, M = ScanStream> {
     #[debug(skip)]
     partition_store_manager: PartitionStoreManager,
     _marker: std::marker::PhantomData<(S, M)>,
 }
 
-impl<S> LocalPartitionsScanner<S, NoScanMut>
+impl<S> LocalPartitionsScanner<S, ScanStream>
 where
     S: ScanLocalPartition,
 {
@@ -73,11 +73,11 @@ where
     }
 }
 
-impl<S> LocalPartitionsScanner<S, ScanMut>
+impl<S> LocalPartitionsScanner<S, ScanInPlace>
 where
-    S: ScanLocalPartitionMut,
+    S: ScanLocalPartitionInPlace,
 {
-    pub fn new_mut(partition_store_manager: PartitionStoreManager, _scanner: S) -> Self {
+    pub fn new_in_place(partition_store_manager: PartitionStoreManager, _scanner: S) -> Self {
         Self {
             partition_store_manager,
             _marker: std::marker::PhantomData,
@@ -85,7 +85,7 @@ where
     }
 }
 
-impl<S, RB, T> LocalPartitionsScanner<S, NoScanMut>
+impl<S, RB, T> LocalPartitionsScanner<S, ScanStream>
 where
     S: ScanLocalPartition<Builder = RB, Item = T>,
     RB: crate::table_util::Builder + Send + Sync + 'static,
@@ -144,9 +144,9 @@ where
     }
 }
 
-impl<S, RB, T> LocalPartitionsScanner<S, ScanMut>
+impl<S, RB, T> LocalPartitionsScanner<S, ScanInPlace>
 where
-    S: ScanLocalPartitionMut<Builder = RB, Item = T>,
+    S: ScanLocalPartitionInPlace<Builder = RB, Item = T>,
     RB: crate::table_util::Builder + Send + Sync + 'static,
     T: Send,
 {
@@ -170,50 +170,47 @@ where
                 DataFusionError::External(err.into())
             })?;
 
-            let mut builder = S::Builder::new(projection.clone());
+            // will send the last batch on Drop.
+            let mut batch_sender = BatchSender::new(projection.clone(), tx);
             let mut temp = String::new();
 
-            let scan_fut = S::scan_partition_store_mut(&partition_store, range, move |item| {
-                if let Some(Ok(row)) = item {
-                    S::append_row(&mut builder, &mut temp, row);
-                    if let Some(limit) = &mut limit {
-                        *limit -= 1;
+            S::for_each_row(&partition_store, range, move |row| {
+                if let Some(0) = limit {
+                    return ControlFlow::Break(());
+                }
+                S::append_row(batch_sender.builder_mut(), &mut temp, row);
+
+                if batch_sender.full() {
+                    if batch_sender.send().is_err() {
+                        // the other side has hung up on us.
+                        return ControlFlow::Break(());
                     }
-                    if builder.full() {
-                        let old_builder =
-                            std::mem::replace(&mut builder, S::Builder::new(projection.clone()));
-                        let batch = old_builder.finish();
-                        if tx.blocking_send(batch).is_err() {
-                            // not sure what to do here?
-                            // the other side has hung up on us.
-                            // we probably don't want to panic, is it will cause the entire process to exit
-                            return false;
+                }
+
+                match &mut limit {
+                    Some(limit) => {
+                        *limit -= 1; // we already checked for 0 above
+                        if *limit == 0 {
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
                         }
-                        builder = S::Builder::new(projection.clone());
                     }
+                    None => ControlFlow::Continue(()),
                 }
-
-                if !builder.empty() {
-                    let old_builder =
-                        std::mem::replace(&mut builder, S::Builder::new(projection.clone()));
-                    let result = old_builder.finish();
-                    let _ = tx.blocking_send(result);
-                }
-
-                limit.is_none_or(|limit| limit > 0)
             })
+            .map_err(|err| DataFusionError::External(err.into()))?
+            .await
             .map_err(|err| DataFusionError::External(err.into()))?;
 
-            scan_fut
-                .await
-                .map_err(|err| DataFusionError::External(err.into()))
+            Ok(())
         };
         stream_builder.spawn(background_task);
         Ok(stream_builder.build())
     }
 }
 
-impl<S, RB, T> ScanPartition for LocalPartitionsScanner<S, NoScanMut>
+impl<S, RB, T> ScanPartition for LocalPartitionsScanner<S, ScanStream>
 where
     S: ScanLocalPartition<Builder = RB, Item = T>,
     RB: crate::table_util::Builder + Send + Sync + 'static,
@@ -230,9 +227,9 @@ where
     }
 }
 
-impl<S, RB, T> ScanPartition for LocalPartitionsScanner<S, ScanMut>
+impl<S, RB, T> ScanPartition for LocalPartitionsScanner<S, ScanInPlace>
 where
-    S: ScanLocalPartitionMut<Builder = RB, Item = T>,
+    S: ScanLocalPartitionInPlace<Builder = RB, Item = T>,
     RB: crate::table_util::Builder + Send + Sync + 'static,
     T: Send,
 {

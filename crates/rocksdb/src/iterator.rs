@@ -51,7 +51,7 @@ pub struct RocksIterator<'a, F> {
 
 impl<'a, F> RocksIterator<'a, F>
 where
-    F: FnMut(Option<Result<(&[u8], &[u8]), RocksError>>) -> IterAction + Send + 'static,
+    F: FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
 {
     pub fn new(iterator: DBRawIteratorWithThreadMode<'a, DB>, next_step: IterAction, f: F) -> Self {
         Self {
@@ -90,8 +90,6 @@ where
         let Some((key, value)) = iterator.item() else {
             match iterator.status() {
                 Ok(()) => {
-                    let _ = (self.f)(None);
-
                     self.state = State::Terminated;
                     return Disposition::Stop;
                 }
@@ -102,7 +100,7 @@ where
                     // todo: perhaps in the future we can allow the user to decide
                     // to retry on IO errors. But for now, we ignore the returned
                     // action and always terminate.
-                    let _ = (self.f)(Some(Err(RocksError::from(e))));
+                    let _ = (self.f)(Err(RocksError::from(e)));
                     self.state = State::Terminated;
                     return Disposition::Stop;
                 }
@@ -110,7 +108,7 @@ where
         };
 
         // call the user's function
-        *next_step = (self.f)(Some(Ok((key, value))));
+        *next_step = (self.f)(Ok((key, value)));
         Disposition::Continue
     }
 }

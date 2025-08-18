@@ -743,8 +743,11 @@ pub trait ScanInvocationStatusTable {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
 
-    fn scan_invocation_statuses_mut<
-        F: FnMut(Option<Result<(InvocationId, InvocationStatus)>>) -> bool + Send + Sync + 'static,
+    fn for_each_invocation_status<
+        F: FnMut((InvocationId, InvocationStatus)) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
     >(
         &self,
         range: RangeInclusive<PartitionKey>,
