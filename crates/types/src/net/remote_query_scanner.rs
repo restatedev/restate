@@ -53,10 +53,22 @@ pub struct RemoteQueryScannerOpen {
     #[bilrost(tag(6))]
     #[serde(default = "default_batch_size")]
     pub batch_size: u64,
+    #[bilrost(tag(7))]
+    #[serde(default)]
+    pub predicate: Option<RemoteQueryScannerPredicate>,
 }
 
 fn default_batch_size() -> u64 {
     64
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+pub struct RemoteQueryScannerPredicate {
+    // We ship the expression passed to scan() over the wire to filter records before sending
+    // them back
+    // see `encode_expr` / `decode_expr` in storage-query-datafusion/src/lib.rs
+    #[bilrost(tag(1), encoding(plainbytes))]
+    pub serialized_physical_expression: Vec<u8>,
 }
 
 #[derive(

@@ -414,7 +414,7 @@ impl QueryContext {
         sql: &str,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
         let state = self.datafusion_context.state();
-        let statement = state.sql_to_statement(sql, "postgres")?;
+        let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
         let plan = state.statement_to_plan(statement).await?;
         self.sql_options.verify_plan(&plan)?;
         let df = self.datafusion_context.execute_logical_plan(plan).await?;

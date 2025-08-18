@@ -22,7 +22,7 @@ use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, PlanProperties,
     SendableRecordBatchStream,
 };
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -40,6 +40,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream>;
@@ -148,6 +149,11 @@ where
             None => self.schema.clone(),
         };
 
+        let predicate = datafusion::logical_expr::utils::conjunction(filters.iter().cloned());
+        // as report our filter pushdown as inexact, all columns needed for the filters will be in the projection
+        let predicate = predicate
+            .map(|p| datafusion::physical_expr::planner::logical2physical(&p, &projected_schema));
+
         let partition_keys = self
             .partition_key_extractor
             .try_extract(filters)
@@ -223,6 +229,7 @@ where
             logical_partitions,
             projected_schema,
             limit,
+            predicate,
             scanner: self.partition_scanner.clone(),
             plan,
             statistics: self.statistics.clone().project(projection),
@@ -247,6 +254,7 @@ struct PartitionedExecutionPlan<T> {
     logical_partitions: Vec<LogicalPartition>,
     projected_schema: SchemaRef,
     limit: Option<usize>,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
     scanner: T,
     plan: PlanProperties,
     statistics: Statistics,
@@ -317,6 +325,7 @@ where
                 let scanner = self.scanner.clone();
                 let schema = self.projected_schema.clone();
                 let limit = self.limit;
+                let predicate = self.predicate.clone();
                 let batch_size = context.session_config().batch_size();
                 move |(partition_id, partition)| {
                     scanner
@@ -324,6 +333,7 @@ where
                             partition_id,
                             partition.key_range,
                             schema.clone(),
+                            predicate.clone(),
                             batch_size,
                             limit,
                         )

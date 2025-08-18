@@ -16,8 +16,8 @@ use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
-use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 use tokio::sync::mpsc::Sender;
 
 use restate_invoker_api::{InvocationStatusReport, StatusHandle};
@@ -97,6 +97,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         partition_id: PartitionId,
         _range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        _predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
