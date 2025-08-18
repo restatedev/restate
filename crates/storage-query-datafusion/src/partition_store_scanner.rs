@@ -96,6 +96,7 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
@@ -122,7 +123,7 @@ where
             tokio::pin!(rows);
             while let Some(Ok(row)) = rows.next().await {
                 S::append_row(&mut builder, &mut temp, row);
-                if builder.full() {
+                if builder.num_rows() >= batch_size {
                     let batch = builder.finish();
                     if tx.send(batch).await.is_err() {
                         // not sure what to do here?
@@ -155,6 +156,7 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        batch_size: usize,
         mut limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let partition_store_manager = self.partition_store_manager.clone();
@@ -180,7 +182,7 @@ where
                 }
                 S::append_row(batch_sender.builder_mut(), &mut temp, row);
 
-                if batch_sender.full() {
+                if batch_sender.num_rows() >= batch_size {
                     if batch_sender.send().is_err() {
                         // the other side has hung up on us.
                         return ControlFlow::Break(());
@@ -221,9 +223,10 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        self.scan_partition(partition_id, range, projection, limit)
+        self.scan_partition(partition_id, range, projection, batch_size, limit)
     }
 }
 
@@ -238,8 +241,9 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        self.scan_partition(partition_id, range, projection, limit)
+        self.scan_partition(partition_id, range, projection, batch_size, limit)
     }
 }

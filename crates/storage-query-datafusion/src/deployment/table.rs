@@ -47,6 +47,7 @@ impl<DMR: DeploymentResolver + Sync + Send + 'static> Scan for DeploymentMetadat
         &self,
         projection: SchemaRef,
         _filters: &[Expr],
+        batch_size: usize,
         _limit: Option<usize>,
     ) -> SendableRecordBatchStream {
         let schema = projection.clone();
@@ -55,7 +56,7 @@ impl<DMR: DeploymentResolver + Sync + Send + 'static> Scan for DeploymentMetadat
 
         let rows = self.0.pinned().get_deployments();
         stream_builder.spawn(async move {
-            for_each_state(schema, tx, rows).await;
+            for_each_state(schema, tx, rows, batch_size).await;
             Ok(())
         });
         stream_builder.build()
@@ -66,12 +67,13 @@ async fn for_each_state(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     rows: Vec<(Deployment, Vec<(String, ServiceRevision)>)>,
+    batch_size: usize,
 ) {
     let mut builder = SysDeploymentBuilder::new(schema.clone());
     let mut temp = String::new();
     for (deployment, _) in rows {
         append_deployment_row(&mut builder, &mut temp, deployment);
-        if builder.full() {
+        if builder.num_rows() >= batch_size {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {
                 // not sure what to do here?

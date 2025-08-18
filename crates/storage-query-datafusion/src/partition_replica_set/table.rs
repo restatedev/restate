@@ -59,6 +59,7 @@ impl Scan for ReplicaSetScanner {
         &self,
         projection: SchemaRef,
         _filters: &[Expr],
+        batch_size: usize,
         _limit: Option<usize>,
     ) -> SendableRecordBatchStream {
         let schema = projection.clone();
@@ -76,6 +77,7 @@ impl Scan for ReplicaSetScanner {
                 partition_table,
                 cluster_state,
                 replica_set_states,
+                batch_size,
             )
             .await;
             Ok(())
@@ -90,6 +92,7 @@ async fn for_each_partition(
     partition_table: Arc<PartitionTable>,
     cluster_state: ClusterState,
     replica_set_states: PartitionReplicaSetStates,
+    batch_size: usize,
 ) {
     let mut builder = PartitionReplicaSetBuilder::new(schema.clone());
 
@@ -104,7 +107,7 @@ async fn for_each_partition(
             partition,
         );
 
-        if builder.full() {
+        if builder.num_rows() >= batch_size {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {
                 // not sure what to do here?

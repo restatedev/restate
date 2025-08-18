@@ -49,6 +49,7 @@ impl Scan for PartitionStateScanner {
         &self,
         projection: SchemaRef,
         _filters: &[Expr],
+        batch_size: usize,
         _limit: Option<usize>,
     ) -> SendableRecordBatchStream {
         let schema = projection.clone();
@@ -57,7 +58,7 @@ impl Scan for PartitionStateScanner {
 
         let state = self.watch.borrow().clone();
         stream_builder.spawn(async move {
-            for_each_partition(schema, tx, &state).await;
+            for_each_partition(schema, tx, &state, batch_size).await;
             Ok(())
         });
         stream_builder.build()
@@ -68,6 +69,7 @@ async fn for_each_partition(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     state: &LegacyClusterState,
+    batch_size: usize,
 ) {
     let mut builder = PartitionStateBuilder::new(schema.clone());
     let mut output = String::new();
@@ -80,7 +82,7 @@ async fn for_each_partition(
                 *partition_id,
                 partition_status,
             );
-            if builder.full() {
+            if builder.num_rows() >= batch_size {
                 let batch = builder.finish();
                 if tx.send(batch).await.is_err() {
                     // not sure what to do here?

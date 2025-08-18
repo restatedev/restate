@@ -55,6 +55,7 @@ impl Scan for NodesScanner {
         &self,
         projection: SchemaRef,
         _filters: &[Expr],
+        batch_size: usize,
         _limit: Option<usize>,
     ) -> SendableRecordBatchStream {
         let schema = projection.clone();
@@ -64,7 +65,7 @@ impl Scan for NodesScanner {
         let nodes_config = self.metadata.nodes_config_snapshot();
         let cluster_state = self.cluster_state.clone();
         stream_builder.spawn(async move {
-            for_each_state(schema, tx, nodes_config, cluster_state).await;
+            for_each_state(schema, tx, nodes_config, cluster_state, batch_size).await;
             Ok(())
         });
         stream_builder.build()
@@ -76,6 +77,7 @@ async fn for_each_state(
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     nodes_config: Arc<NodesConfiguration>,
     cluster_state: ClusterState,
+    batch_size: usize,
 ) {
     let mut builder = NodeBuilder::new(schema.clone());
     let mut output = String::new();
@@ -90,7 +92,7 @@ async fn for_each_state(
             node_state,
         );
 
-        if builder.full() {
+        if builder.num_rows() >= batch_size {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {
                 // not sure what to do here?
