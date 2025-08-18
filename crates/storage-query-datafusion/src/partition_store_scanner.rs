@@ -77,7 +77,7 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
-        _predicate: Option<Arc<dyn PhysicalExpr>>,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         mut limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
@@ -95,7 +95,7 @@ where
             })?;
 
             // will send the last batch on Drop.
-            let mut batch_sender = BatchSender::new(projection.clone(), tx);
+            let mut batch_sender = BatchSender::new(projection.clone(), predicate, batch_size, tx);
 
             S::for_each_row(&partition_store, range, move |row| {
                 if let Some(0) = limit {
