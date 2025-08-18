@@ -242,7 +242,10 @@ impl ServiceRevision {
             deployment_id,
             revision: self.revision,
             public: self.public,
-            idempotency_retention: self.idempotency_retention,
+            idempotency_retention: Some(
+                self.idempotency_retention
+                    .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION),
+            ),
             workflow_completion_retention: if self.ty == ServiceType::Workflow {
                 Some(
                     self.handlers
@@ -255,7 +258,10 @@ impl ServiceRevision {
             } else {
                 None
             },
-            journal_retention: clamp_journal_retention(self.journal_retention),
+            journal_retention: clamp_journal_retention(
+                self.journal_retention
+                    .or(Configuration::pinned().invocation.default_journal_retention),
+            ),
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
