@@ -95,6 +95,9 @@ pub enum RemoteQueryScannerOpened {
 pub struct RemoteQueryScannerNext {
     #[bilrost(1)]
     pub scanner_id: ScannerId,
+    #[bilrost(tag(2))]
+    #[serde(default)]
+    pub next_predicate: Option<RemoteQueryScannerPredicate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
