@@ -62,7 +62,7 @@ pub(crate) fn format_using<'a>(output: &'a mut String, what: &impl std::fmt::Dis
 pub(crate) trait Builder {
     fn new(projected_schema: SchemaRef) -> Self;
 
-    fn full(&self) -> bool;
+    fn num_rows(&self) -> usize;
 
     fn empty(&self) -> bool;
 

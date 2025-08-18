@@ -60,6 +60,7 @@ impl ScannerTask {
             request.partition_id,
             request.range.clone(),
             Arc::new(schema),
+            usize::try_from(request.batch_size).expect("batch_size to fit in a usize"),
             request
                 .limit
                 .map(|limit| usize::try_from(limit).expect("limit to fit in a usize")),

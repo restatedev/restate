@@ -66,6 +66,7 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
@@ -92,7 +93,7 @@ where
             tokio::pin!(rows);
             while let Some(Ok(row)) = rows.next().await {
                 S::append_row(&mut builder, &mut temp, row);
-                if builder.full() {
+                if builder.num_rows() >= batch_size {
                     let batch = builder.finish();
                     if tx.send(batch).await.is_err() {
                         // not sure what to do here?

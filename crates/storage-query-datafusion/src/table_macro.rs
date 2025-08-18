@@ -397,13 +397,8 @@ macro_rules! document_type {
 ///     }
 ///
 ///     #[inline]
-///     pub fn default_capacity() -> usize {
-///         1024
-///     }
-///
-///     #[inline]
-///     pub fn full(&self) -> bool {
-///         self.rows_inserted_so_far >= Self::default_capacity()
+///     pub fn num_rows(&self) -> usize {
+///         self.rows_inserted_so_far
 ///     }
 ///
 ///     pub fn empty(&self) -> bool {
@@ -562,11 +557,6 @@ macro_rules! define_table {
                     ])
                 )
             }
-
-            #[inline]
-            pub fn default_capacity() -> usize {
-                64
-            }
         }
 
         #[automatically_derived]
@@ -582,8 +572,8 @@ macro_rules! define_table {
             }
 
             #[inline]
-            fn full(&self) -> bool {
-                self.rows_inserted_so_far >= Self::default_capacity()
+            fn num_rows(&self) -> usize {
+                self.rows_inserted_so_far
             }
 
             fn empty(&self) -> bool {

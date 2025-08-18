@@ -40,6 +40,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream>;
 }
@@ -257,7 +258,7 @@ where
     fn execute(
         &self,
         partition: usize,
-        _context: Arc<TaskContext>,
+        context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
         let physical_partitions = self
             .logical_partitions
@@ -271,9 +272,16 @@ where
                 let scanner = self.scanner.clone();
                 let schema = self.projected_schema.clone();
                 let limit = self.limit;
+                let batch_size = context.session_config().batch_size();
                 move |(partition_id, partition)| {
                     scanner
-                        .scan_partition(partition_id, partition.key_range, schema.clone(), limit)
+                        .scan_partition(
+                            partition_id,
+                            partition.key_range,
+                            schema.clone(),
+                            batch_size,
+                            limit,
+                        )
                         .map_err(|e| DataFusionError::External(e.into()))
                 }
             })
@@ -309,6 +317,7 @@ pub(crate) trait Scan: Debug + Send + Sync + 'static {
         &self,
         projection: SchemaRef,
         filters: &[Expr],
+        batch_size: usize,
         limit: Option<usize>,
     ) -> SendableRecordBatchStream;
 }
@@ -446,11 +455,14 @@ impl ExecutionPlan for GenericExecutionPlan {
     fn execute(
         &self,
         _partition: usize,
-        _context: Arc<TaskContext>,
+        context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        let stream = self
-            .scanner
-            .scan(self.projected_schema.clone(), &self.filters, self.limit);
+        let stream = self.scanner.scan(
+            self.projected_schema.clone(),
+            &self.filters,
+            context.session_config().batch_size(),
+            self.limit,
+        );
         Ok(stream)
     }
 }

@@ -47,6 +47,7 @@ impl<SMR: ServiceMetadataResolver + Sync + Send + 'static> Scan for ServiceMetad
         &self,
         projection: SchemaRef,
         _filters: &[Expr],
+        batch_size: usize,
         _limit: Option<usize>,
     ) -> SendableRecordBatchStream {
         let schema = projection.clone();
@@ -55,7 +56,7 @@ impl<SMR: ServiceMetadataResolver + Sync + Send + 'static> Scan for ServiceMetad
 
         let rows = self.0.pinned().list_services();
         stream_builder.spawn(async move {
-            for_each_state(schema, tx, rows).await;
+            for_each_state(schema, tx, rows, batch_size).await;
             Ok(())
         });
         stream_builder.build()
@@ -66,12 +67,13 @@ async fn for_each_state(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     rows: Vec<ServiceMetadata>,
+    batch_size: usize,
 ) {
     let mut builder = SysServiceBuilder::new(schema.clone());
     let mut temp = String::new();
     for service in rows {
         append_service_row(&mut builder, &mut temp, service);
-        if builder.full() {
+        if builder.num_rows() >= batch_size {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {
                 // not sure what to do here?
