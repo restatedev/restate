@@ -93,6 +93,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         partition_id: PartitionId,
         _range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let status = self.status_handle.clone();
@@ -105,9 +106,17 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
             let range = partition_key_range(partition_store_manager, partition_id).await?;
             match limit {
                 Some(limit) => {
-                    for_each_state(schema, tx, status.read_status(range).await.take(limit)).await
+                    for_each_state(
+                        schema,
+                        tx,
+                        status.read_status(range).await.take(limit),
+                        batch_size,
+                    )
+                    .await
                 }
-                None => for_each_state(schema, tx, status.read_status(range).await).await,
+                None => {
+                    for_each_state(schema, tx, status.read_status(range).await, batch_size).await
+                }
             }
             Ok(())
         };
@@ -121,6 +130,7 @@ async fn for_each_state<'a, I>(
     schema: SchemaRef,
     tx: Sender<datafusion::common::Result<RecordBatch>>,
     rows: I,
+    batch_size: usize,
 ) where
     I: Iterator<Item = InvocationStatusReport> + 'a,
 {
@@ -128,7 +138,7 @@ async fn for_each_state<'a, I>(
     let mut temp = String::new();
     for row in rows {
         append_invocation_state_row(&mut builder, &mut temp, row);
-        if builder.full() {
+        if builder.num_rows() >= batch_size {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {
                 // not sure what to do here?
