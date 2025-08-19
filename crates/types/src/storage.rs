@@ -82,9 +82,9 @@ impl TryFrom<u8> for StorageCodecKind {
     type Error = StorageDecodeError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        StorageCodecKind::from_repr(value).ok_or(StorageDecodeError::ReadingCodec(format!(
-            "unknown discriminant '{value}'"
-        )))
+        StorageCodecKind::from_repr(value).ok_or_else(|| {
+            StorageDecodeError::ReadingCodec(format!("unknown discriminant '{value}'"))
+        })
     }
 }
 
