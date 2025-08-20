@@ -119,7 +119,9 @@ pub(crate) fn append_invocation_status_row(
                 }
                 ResponseResult::Failure(failure) => {
                     row.completion_result("failure");
-                    row.completion_failure(format_using(output, &failure));
+                    if row.is_completion_failure_defined() {
+                        row.completion_failure(format_using(output, &failure));
+                    }
                 }
             }
         }
@@ -137,7 +139,9 @@ fn fill_in_flight_invocation_metadata(
     row.created_using_restate_version(meta.created_using_restate_version.as_str());
     // journal_metadata and stats are filled by other functions
     if let Some(pinned_deployment) = meta.pinned_deployment {
-        row.pinned_deployment_id(pinned_deployment.deployment_id.to_string());
+        if row.is_pinned_deployment_id_defined() {
+            row.pinned_deployment_id(format_using(output, &pinned_deployment.deployment_id));
+        }
         row.pinned_service_protocol_version(
             pinned_deployment
                 .service_protocol_version
@@ -174,11 +178,15 @@ fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, output: &mut String,
         }
         Source::Subscription(sub_id) => {
             row.invoked_by("subscription");
-            row.invoked_by_subscription_id(format_using(output, &sub_id))
+            if row.is_invoked_by_subscription_id_defined() {
+                row.invoked_by_subscription_id(format_using(output, &sub_id))
+            }
         }
         Source::RestartAsNew(invocation_id) => {
             row.invoked_by("restart_as_new");
-            row.restarted_from(format_using(output, &invocation_id))
+            if row.is_restarted_from_defined() {
+                row.restarted_from(format_using(output, &invocation_id))
+            }
         }
     }
 }
