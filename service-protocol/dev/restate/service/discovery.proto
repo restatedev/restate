@@ -23,4 +23,6 @@ enum ServiceDiscoveryProtocolVersion {
   V2 = 2;
   // add options for private service, journal retention, idempotency retention, workflow completion retention, inactivity timeout, abort timeout, enable lazy state
   V3 = 3;
+  // add lambda compression
+  V4 = 4;
 }

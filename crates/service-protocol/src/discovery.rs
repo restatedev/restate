@@ -33,7 +33,7 @@ use restate_types::endpoint_manifest;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::LambdaARN;
 use restate_types::retries::{RetryIter, RetryPolicy};
-use restate_types::schema::deployment::ProtocolType;
+use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType};
 use restate_types::service_discovery::{
     MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION, MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,
     ServiceDiscoveryProtocolVersion,
@@ -54,6 +54,8 @@ const SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v2+json";
 const SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v3+json";
+const SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE: &str =
+    "application/vnd.restate.endpointmanifest.v4+json";
 static SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS: LazyLock<HeaderValue> = LazyLock::new(|| {
     let supported_versions = ServiceDiscoveryProtocolVersion::iter()
         .skip_while(|version| version < &MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION)
@@ -76,6 +78,7 @@ fn service_discovery_protocol_to_content_type(
         ServiceDiscoveryProtocolVersion::V1 => SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE,
         ServiceDiscoveryProtocolVersion::V2 => SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE,
         ServiceDiscoveryProtocolVersion::V3 => SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE,
+        ServiceDiscoveryProtocolVersion::V4 => SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE,
     }
 }
 
@@ -86,6 +89,7 @@ fn parse_service_discovery_protocol_version_from_content_type(
         SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V1),
         SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V2),
         SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V3),
+        SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V4),
         _ => None,
     }
 }
@@ -125,7 +129,11 @@ impl DiscoverEndpoint {
 #[derive(Clone, Debug)]
 pub enum DiscoveredEndpoint {
     Http(Uri, Version),
-    Lambda(LambdaARN, Option<ByteString>),
+    Lambda(
+        LambdaARN,
+        Option<ByteString>,
+        Option<EndpointLambdaCompression>,
+    ),
 }
 
 #[derive(Debug)]
@@ -257,7 +265,8 @@ impl ServiceDiscovery {
             }
             ServiceDiscoveryProtocolVersion::V1
             | ServiceDiscoveryProtocolVersion::V2
-            | ServiceDiscoveryProtocolVersion::V3 => {
+            | ServiceDiscoveryProtocolVersion::V3
+            | ServiceDiscoveryProtocolVersion::V4 => {
                 serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?
             }
         };
@@ -413,9 +422,17 @@ impl ServiceDiscovery {
         Ok(DiscoveredMetadata {
             endpoint: match endpoint {
                 Endpoint::Http(uri, _) => DiscoveredEndpoint::Http(uri, response_http_version),
-                Endpoint::Lambda(arn, assume_role_arn) => {
-                    DiscoveredEndpoint::Lambda(arn, assume_role_arn)
-                }
+                Endpoint::Lambda(arn, assume_role_arn, _) => DiscoveredEndpoint::Lambda(
+                    arn,
+                    assume_role_arn,
+                    endpoint_response
+                        .lambda_compression
+                        .map(|compression| match compression {
+                            endpoint_manifest::EndpointLambdaCompression::Zstd => {
+                                EndpointLambdaCompression::Zstd
+                            }
+                        }),
+                ),
             },
             headers,
             protocol_type,
@@ -510,6 +527,7 @@ mod tests {
     #[test]
     fn fail_on_invalid_min_protocol_version_with_bad_response() {
         let response = endpoint_manifest::Endpoint {
+            lambda_compression: None,
             min_protocol_version: NonZeroU64::MAX,
             max_protocol_version: NonZeroU64::MAX,
             services: Vec::new(),
@@ -531,6 +549,7 @@ mod tests {
     #[test]
     fn fail_on_bidirectional_with_lambda() {
         let response = endpoint_manifest::Endpoint {
+            lambda_compression: None,
             min_protocol_version: NonZeroU64::MIN,
             max_protocol_version: NonZeroU64::MIN,
             services: Vec::new(),
@@ -543,6 +562,7 @@ mod tests {
                     "arn:partition:lambda:region:account_id:function:name:version"
                         .parse()
                         .unwrap(),
+                    None,
                     None
                 ),
                 HashMap::default(),
@@ -557,6 +577,7 @@ mod tests {
     #[test]
     fn fail_on_invalid_max_protocol_version_with_bad_response() {
         let response = endpoint_manifest::Endpoint {
+            lambda_compression: None,
             min_protocol_version: NonZeroU64::MIN,
             max_protocol_version: NonZeroU64::MAX,
             services: Vec::new(),
@@ -578,6 +599,7 @@ mod tests {
     #[test]
     fn fail_on_max_protocol_version_smaller_than_min_protocol_version_with_bad_response() {
         let response = endpoint_manifest::Endpoint {
+            lambda_compression: None,
             min_protocol_version: NonZeroU64::new(10).unwrap(),
             max_protocol_version: NonZeroU64::new(9).unwrap(),
             services: Vec::new(),
@@ -600,6 +622,7 @@ mod tests {
     fn fail_with_unsupported_protocol_version() {
         let unsupported_version = MAX_SERVICE_PROTOCOL_VERSION.as_repr() + 1;
         let response = endpoint_manifest::Endpoint {
+            lambda_compression: None,
             min_protocol_version: NonZeroU64::new(unsupported_version as u64).unwrap(),
             max_protocol_version: NonZeroU64::new(unsupported_version as u64).unwrap(),
             services: Vec::new(),

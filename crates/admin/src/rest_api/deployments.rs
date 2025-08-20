@@ -104,6 +104,7 @@ pub async fn create_deployment<V, IC>(
                         MetaApiError::InvalidField("arn", e.to_string())
                     })?,
                     assume_role_arn.map(Into::into),
+                    None,
                 ),
                 additional_headers.unwrap_or_default().into(),
             ),
@@ -331,6 +332,7 @@ pub async fn update_deployment<V, IC>(
                         MetaApiError::InvalidField("arn", e.to_string())
                     })?,
                     assume_role_arn.map(Into::into),
+                    None,
                 ),
                 additional_headers.unwrap_or_default().into(),
             ),
@@ -395,10 +397,12 @@ fn to_deployment_response(
         DeploymentType::Lambda {
             arn,
             assume_role_arn,
+            compression,
         } => DeploymentResponse::Lambda {
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
+            compression,
             additional_headers: delivery_options.additional_headers.into(),
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
@@ -446,10 +450,12 @@ fn to_detailed_deployment_response(
         DeploymentType::Lambda {
             arn,
             assume_role_arn,
+            compression,
         } => DetailedDeploymentResponse::Lambda {
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
+            compression,
             additional_headers: delivery_options.additional_headers.into(),
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),

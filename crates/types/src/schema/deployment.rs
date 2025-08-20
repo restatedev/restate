@@ -67,6 +67,13 @@ pub struct DeploymentMetadata {
     pub created_at: MillisSinceEpoch,
 }
 
+/// Lambda compression
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum EndpointLambdaCompression {
+    Zstd,
+}
+
 // TODO this type is serde because it represents how data is stored in the schema registry
 //  re-evaluate whether we should use another ad-hoc data structure for storage representation after schema v2 migration.
 #[serde_as]
@@ -83,6 +90,8 @@ pub enum DeploymentType {
     Lambda {
         arn: LambdaARN,
         assume_role_arn: Option<ByteString>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compression: Option<EndpointLambdaCompression>,
     },
 }
 
@@ -122,6 +131,8 @@ mod serde_hacks {
         Lambda {
             arn: LambdaARN,
             assume_role_arn: Option<ByteString>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            compression: Option<EndpointLambdaCompression>,
         },
     }
 
@@ -143,9 +154,11 @@ mod serde_hacks {
                 DeploymentType::Lambda {
                     arn,
                     assume_role_arn,
+                    compression,
                 } => Self::Lambda {
                     arn,
                     assume_role_arn,
+                    compression,
                 },
             }
         }
@@ -273,6 +286,7 @@ impl DeploymentMetadata {
     pub fn new_lambda(
         arn: LambdaARN,
         assume_role_arn: Option<ByteString>,
+        compression: Option<EndpointLambdaCompression>,
         delivery_options: DeliveryOptions,
         supported_protocol_versions: RangeInclusive<i32>,
         sdk_version: Option<String>,
@@ -281,6 +295,7 @@ impl DeploymentMetadata {
             ty: DeploymentType::Lambda {
                 arn,
                 assume_role_arn,
+                compression,
             },
             delivery_options,
             created_at: MillisSinceEpoch::now(),

@@ -24,6 +24,11 @@
       "maximum": 2147483647,
       "description": "Maximum supported protocol version"
     },
+    "lambdaCompression": {
+      "type": "string",
+      "enum": ["zstd"],
+      "description": "Compression used when the endpoint is a Lambda. This is unsupported if the endpoint is a regular HTTP endpoint."
+    },
     "services": {
       "type": "array",
       "items": {

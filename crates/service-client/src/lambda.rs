@@ -31,6 +31,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
 use restate_types::config::AwsOptions;
 use restate_types::identifiers::LambdaARN;
+use restate_types::schema::deployment::EndpointLambdaCompression;
 use serde::ser::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -137,11 +138,13 @@ impl LambdaClient {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn invoke<B>(
         &self,
         arn: LambdaARN,
         method: Method,
         assume_role_arn: Option<ByteString>,
+        _compression: Option<EndpointLambdaCompression>,
         body: B,
         path: PathAndQuery,
         headers: HeaderMap<HeaderValue>,

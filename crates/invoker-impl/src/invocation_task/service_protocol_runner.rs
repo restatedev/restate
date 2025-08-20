@@ -266,7 +266,8 @@ where
             DeploymentType::Lambda {
                 arn,
                 assume_role_arn,
-            } => Endpoint::Lambda(arn, assume_role_arn),
+                compression,
+            } => Endpoint::Lambda(arn, assume_role_arn, compression),
             DeploymentType::Http {
                 address,
                 http_version,
