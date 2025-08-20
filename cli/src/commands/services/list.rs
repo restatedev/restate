@@ -22,7 +22,7 @@ use restate_types::identifiers::DeploymentId;
 use restate_types::schema::service::HandlerMetadata;
 
 use crate::cli_env::CliEnv;
-use crate::clients::AdminClientInterface;
+use crate::clients::{AdminClientInterface, Deployment};
 use crate::ui::deployments::{render_deployment_type, render_deployment_url};
 use crate::ui::service_handlers::{icon_for_is_public, icon_for_service_type};
 
@@ -94,7 +94,8 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
             .get(&svc.deployment_id)
             .with_context(|| format!("Deployment {} was not found!", svc.deployment_id))?;
 
-        let (deployment_id, deployment, _) = deployment.clone().into_parts();
+        let (deployment_id, deployment, _) =
+            Deployment::from_deployment_response(deployment.clone());
 
         let mut row = vec![
             public.to_string(),

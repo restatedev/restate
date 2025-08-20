@@ -14,7 +14,7 @@ use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
 
-use restate_admin_rest_model::deployments::{Deployment, ServiceNameRevPair};
+use restate_admin_rest_model::deployments::ServiceNameRevPair;
 use restate_cli_util::c_error;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
@@ -23,8 +23,8 @@ use restate_types::identifiers::DeploymentId;
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
-use crate::clients::AdminClientInterface;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
+use crate::clients::{AdminClientInterface, Deployment};
 use crate::console::c_println;
 use crate::ui::deployments::{
     DeploymentStatus, calculate_deployment_status, render_active_invocations,
@@ -95,7 +95,8 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     )> = Vec::with_capacity(deployments.len());
 
     for deployment in deployments {
-        let (deployment_id, deployment, services) = deployment.into_parts();
+        let (deployment_id, deployment, services) =
+            Deployment::from_deployment_response(deployment);
 
         // calculate status and counters.
         let active_inv = count_deployment_active_inv(&sql_client, &deployment_id).await?;

@@ -23,7 +23,7 @@ use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
-use crate::clients::{AdminClient, AdminClientInterface};
+use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::ui::deployments::{
     add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
     render_deployment_status,
@@ -63,7 +63,8 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .into_body()
         .await?;
 
-    let (deployment_id, deployment, services) = deployment.into_parts();
+    let (deployment_id, deployment, services) =
+        Deployment::from_detailed_deployment_response(deployment);
 
     let sql_client = crate::clients::DataFusionHttpClient::from(client);
     let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment_id).await?;

@@ -10,6 +10,7 @@
 
 use super::error::*;
 use crate::state::AdminServiceState;
+use std::time::SystemTime;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
@@ -22,7 +23,9 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
-use restate_types::identifiers::{DeploymentId, InvalidLambdaARN};
+use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
+use restate_types::schema::deployment::{Deployment, DeploymentMetadata, DeploymentType};
+use restate_types::schema::service::ServiceMetadata;
 use restate_types::schema::updater;
 use serde::Deserialize;
 
@@ -175,7 +178,7 @@ pub async fn get_deployment<V, IC>(
     Ok(
         restate_admin_rest_model::converters::convert_detailed_deployment_response(
             version,
-            DetailedDeploymentResponse::new(deployment.id, deployment.metadata.into(), services),
+            to_detailed_deployment_response(deployment, services),
         )
         .into(),
     )
@@ -195,16 +198,7 @@ pub async fn list_deployments<V, IC>(
         .schema_registry
         .list_deployments()
         .into_iter()
-        .map(|(deployment, services)| {
-            DeploymentResponse::new(
-                deployment.id,
-                deployment.metadata.into(),
-                services
-                    .into_iter()
-                    .map(|(name, revision)| ServiceNameRevPair { name, revision })
-                    .collect(),
-            )
-        })
+        .map(|(deployment, services)| to_deployment_response(deployment, services))
         .collect();
 
     ListDeploymentsResponse { deployments }.into()
@@ -359,7 +353,109 @@ pub async fn update_deployment<V, IC>(
     Ok(Json(
         restate_admin_rest_model::converters::convert_detailed_deployment_response(
             version,
-            DetailedDeploymentResponse::new(deployment.id, deployment.metadata.into(), services),
+            to_detailed_deployment_response(deployment, services),
         ),
     ))
+}
+
+fn to_deployment_response(
+    Deployment {
+        id,
+        metadata:
+            DeploymentMetadata {
+                ty,
+                delivery_options,
+                supported_protocol_versions,
+                sdk_version,
+                created_at,
+            },
+    }: Deployment,
+    services: Vec<(String, ServiceRevision)>,
+) -> DeploymentResponse {
+    match ty {
+        DeploymentType::Http {
+            http_version,
+            protocol_type,
+            address,
+        } => DeploymentResponse::Http {
+            id,
+            uri: address,
+            protocol_type,
+            http_version,
+            additional_headers: delivery_options.additional_headers.into(),
+            created_at: SystemTime::from(created_at).into(),
+            min_protocol_version: *supported_protocol_versions.start(),
+            max_protocol_version: *supported_protocol_versions.end(),
+            sdk_version,
+            services: services
+                .into_iter()
+                .map(|(name, revision)| ServiceNameRevPair { name, revision })
+                .collect(),
+        },
+        DeploymentType::Lambda {
+            arn,
+            assume_role_arn,
+        } => DeploymentResponse::Lambda {
+            id,
+            arn,
+            assume_role_arn: assume_role_arn.map(Into::into),
+            additional_headers: delivery_options.additional_headers.into(),
+            created_at: SystemTime::from(created_at).into(),
+            min_protocol_version: *supported_protocol_versions.start(),
+            max_protocol_version: *supported_protocol_versions.end(),
+            sdk_version,
+            services: services
+                .into_iter()
+                .map(|(name, revision)| ServiceNameRevPair { name, revision })
+                .collect(),
+        },
+    }
+}
+
+fn to_detailed_deployment_response(
+    Deployment {
+        id,
+        metadata:
+            DeploymentMetadata {
+                ty,
+                delivery_options,
+                supported_protocol_versions,
+                sdk_version,
+                created_at,
+            },
+    }: Deployment,
+    services: Vec<ServiceMetadata>,
+) -> DetailedDeploymentResponse {
+    match ty {
+        DeploymentType::Http {
+            http_version,
+            protocol_type,
+            address,
+        } => DetailedDeploymentResponse::Http {
+            id,
+            uri: address,
+            protocol_type,
+            http_version,
+            additional_headers: delivery_options.additional_headers.into(),
+            created_at: SystemTime::from(created_at).into(),
+            min_protocol_version: *supported_protocol_versions.start(),
+            max_protocol_version: *supported_protocol_versions.end(),
+            sdk_version,
+            services,
+        },
+        DeploymentType::Lambda {
+            arn,
+            assume_role_arn,
+        } => DetailedDeploymentResponse::Lambda {
+            id,
+            arn,
+            assume_role_arn: assume_role_arn.map(Into::into),
+            additional_headers: delivery_options.additional_headers.into(),
+            created_at: SystemTime::from(created_at).into(),
+            min_protocol_version: *supported_protocol_versions.start(),
+            max_protocol_version: *supported_protocol_versions.end(),
+            sdk_version,
+            services,
+        },
+    }
 }

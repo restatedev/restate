@@ -12,7 +12,8 @@ use std::collections::HashMap;
 
 use comfy_table::{Cell, Color, Table};
 
-use restate_admin_rest_model::deployments::{Deployment, ServiceNameRevPair};
+use crate::clients::Deployment;
+use restate_admin_rest_model::deployments::ServiceNameRevPair;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::identifiers::DeploymentId;
 use restate_types::schema::deployment::ProtocolType;
