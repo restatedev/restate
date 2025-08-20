@@ -201,7 +201,8 @@ mod tests {
     use restate_storage_api::StorageError;
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
-        InvokedInvocationStatusLite, JournalMetadata, ScanInvocationStatusTable,
+        InvocationStatusAccessor, InvocationStatusDynAccessor, InvokedInvocationStatusLite,
+        JournalMetadata, ScanInvocationStatusTable,
     };
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
@@ -223,7 +224,10 @@ mod tests {
         }
 
         fn for_each_invocation_status<
-            F: FnMut((InvocationId, InvocationStatus)) -> std::ops::ControlFlow<()>
+            E: Into<anyhow::Error>,
+            F: for<'a> FnMut(
+                    (InvocationId, InvocationStatusDynAccessor<'a>),
+                ) -> std::ops::ControlFlow<std::result::Result<(), E>>
                 + Send
                 + Sync
                 + 'static,
@@ -236,9 +240,13 @@ mod tests {
             let inner = self.0.clone();
             Ok(async move {
                 for (id, status) in inner {
-                    match f((id, status)) {
+                    match f((id, InvocationStatusAccessor::from(status).downcast())) {
                         std::ops::ControlFlow::Continue(()) => continue,
-                        std::ops::ControlFlow::Break(()) => break,
+                        std::ops::ControlFlow::Break(result) => {
+                            return result.map_err(|err| {
+                                restate_storage_api::StorageError::Conversion(err.into())
+                            });
+                        }
                     }
                 }
 

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -62,18 +62,27 @@ struct VirtualObjectStatusScanner;
 impl ScanLocalPartition for VirtualObjectStatusScanner {
     type Builder = SysKeyedServiceStatusBuilder;
     type Item<'a> = (ServiceId, VirtualObjectStatus);
+    type ConversionError = std::convert::Infallible;
 
     fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
+            + Send
+            + Sync
+            + 'static,
     >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-        f: F,
+        mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_virtual_object_status(range, f)
+        partition_store
+            .for_each_virtual_object_status(range, move |item| f(item).map_break(Result::unwrap))
     }
 
-    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>) {
-        append_virtual_object_status_row(row_builder, value.0, value.1)
+    fn append_row<'a>(
+        row_builder: &mut Self::Builder,
+        value: Self::Item<'a>,
+    ) -> Result<(), Self::ConversionError> {
+        append_virtual_object_status_row(row_builder, value.0, value.1);
+        Ok(())
     }
 }

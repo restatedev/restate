@@ -57,19 +57,27 @@ struct IdempotencyScanner;
 impl ScanLocalPartition for IdempotencyScanner {
     type Builder = SysIdempotencyBuilder;
     type Item<'a> = (IdempotencyId, IdempotencyMetadata);
+    type ConversionError = std::convert::Infallible;
 
-    fn for_each_row<F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
+    fn for_each_row<
+        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
+            + Send
+            + Sync
+            + 'static,
+    >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-        f: F,
+        mut f: F,
     ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
-        partition_store.for_each_idempotency_metadata(range, f)
+        partition_store
+            .for_each_idempotency_metadata(range, move |item| f(item).map_break(Result::unwrap))
     }
 
     fn append_row<'a>(
         row_builder: &mut Self::Builder,
         (idempotency_id, idempotency_metadata): Self::Item<'a>,
-    ) {
+    ) -> Result<(), Self::ConversionError> {
         append_idempotency_row(row_builder, idempotency_id, idempotency_metadata);
+        Ok(())
     }
 }

@@ -66,8 +66,14 @@ struct JournalScanner;
 impl ScanLocalPartition for JournalScanner {
     type Builder = SysJournalBuilder;
     type Item<'a> = (JournalEntryId, ScannedEntry);
+    type ConversionError = std::convert::Infallible;
 
-    fn for_each_row<F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
+    fn for_each_row<
+        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
+            + Send
+            + Sync
+            + 'static,
+    >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
         f: F,
@@ -90,7 +96,7 @@ impl ScanLocalPartition for JournalScanner {
                             .expect("we only take f_v1 once")
                             .blocking_lock_owned()
                     });
-                    f((id, ScannedEntry::V1(entry)))
+                    f((id, ScannedEntry::V1(entry))).map_break(Result::unwrap)
                 }
             })?;
 
@@ -102,7 +108,7 @@ impl ScanLocalPartition for JournalScanner {
                             .expect("we only take f_v2 once")
                             .blocking_lock_owned()
                     });
-                    f((id, ScannedEntry::V2(entry)))
+                    f((id, ScannedEntry::V2(entry))).map_break(Result::unwrap)
                 }
             })?;
 
@@ -116,7 +122,10 @@ impl ScanLocalPartition for JournalScanner {
         })
     }
 
-    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>) {
+    fn append_row<'a>(
+        row_builder: &mut Self::Builder,
+        value: Self::Item<'a>,
+    ) -> Result<(), Self::ConversionError> {
         match value.1 {
             ScannedEntry::V1(v1) => {
                 append_journal_row(row_builder, value.0, v1);
@@ -125,5 +134,7 @@ impl ScanLocalPartition for JournalScanner {
                 append_journal_row_v2(row_builder, value.0, v2);
             }
         }
+
+        Ok(())
     }
 }

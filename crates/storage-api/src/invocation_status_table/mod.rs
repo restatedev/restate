@@ -9,23 +9,27 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::future::Future;
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
+use opentelemetry::trace::TraceId;
 use rangemap::RangeInclusiveMap;
 
 use restate_types::RestateVersion;
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{InvocationId, PartitionKey};
+use restate_types::errors::ConversionError;
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, SubscriptionId};
 use restate_types::invocation::{
     Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
+use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
 
 use crate::Result;
@@ -744,7 +748,10 @@ pub trait ScanInvocationStatusTable {
     ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
 
     fn for_each_invocation_status<
-        F: FnMut((InvocationId, InvocationStatus)) -> std::ops::ControlFlow<()>
+        E: Into<anyhow::Error>,
+        F: for<'a> FnMut(
+                (InvocationId, InvocationStatusDynAccessor<'a>),
+            ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync
             + 'static,
@@ -903,6 +910,356 @@ pub struct InvocationStatusV1(pub InvocationStatus);
 
 impl PartitionStoreProtobufValue for InvocationStatusV1 {
     type ProtobufType = crate::protobuf_types::v1::InvocationStatus;
+}
+
+pub enum InvocationStatusAccessor<
+    PreFlightInvocationMetadataAccessor,
+    InFlightInvocationMetadataAccessor,
+    CompletedInvocationAccessor,
+> {
+    Scheduled(PreFlightInvocationMetadataAccessor),
+    Inboxed(PreFlightInvocationMetadataAccessor),
+    Invoked(InFlightInvocationMetadataAccessor),
+    Suspended(InFlightInvocationMetadataAccessor),
+    Completed(CompletedInvocationAccessor),
+    Free,
+}
+
+pub type InvocationStatusDynAccessor<'a> = InvocationStatusAccessor<
+    &'a dyn PreFlightInvocationMetadataAccessor,
+    &'a dyn InFlightInvocationMetadataAccessor,
+    &'a dyn CompletedInvocationMetadataAccessor,
+>;
+
+impl From<InvocationStatus>
+    for InvocationStatusAccessor<
+        PreFlightInvocationMetadata,
+        InFlightInvocationMetadata,
+        CompletedInvocation,
+    >
+{
+    fn from(value: InvocationStatus) -> Self {
+        match value {
+            InvocationStatus::Scheduled(s) => Self::Scheduled(s.metadata),
+            InvocationStatus::Inboxed(i) => Self::Inboxed(i.metadata),
+            InvocationStatus::Invoked(metadata) => Self::Invoked(metadata),
+            InvocationStatus::Suspended { metadata, .. } => Self::Suspended(metadata),
+            InvocationStatus::Completed(c) => Self::Completed(c),
+            InvocationStatus::Free => Self::Free,
+        }
+    }
+}
+
+impl<
+    P: PreFlightInvocationMetadataAccessor,
+    I: InFlightInvocationMetadataAccessor,
+    C: CompletedInvocationMetadataAccessor,
+> InvocationStatusAccessor<P, I, C>
+{
+    pub fn downcast<'a>(&'a self) -> InvocationStatusDynAccessor<'a> {
+        match self {
+            InvocationStatusAccessor::Scheduled(s) => {
+                InvocationStatusAccessor::Scheduled(s as &dyn PreFlightInvocationMetadataAccessor)
+            }
+            InvocationStatusAccessor::Inboxed(i) => {
+                InvocationStatusAccessor::Inboxed(i as &dyn PreFlightInvocationMetadataAccessor)
+            }
+            InvocationStatusAccessor::Invoked(i) => {
+                InvocationStatusAccessor::Invoked(i as &dyn InFlightInvocationMetadataAccessor)
+            }
+            InvocationStatusAccessor::Suspended(s) => {
+                InvocationStatusAccessor::Suspended(s as &dyn InFlightInvocationMetadataAccessor)
+            }
+            InvocationStatusAccessor::Completed(c) => {
+                InvocationStatusAccessor::Completed(c as &dyn CompletedInvocationMetadataAccessor)
+            }
+            InvocationStatusAccessor::Free => InvocationStatusAccessor::Free,
+        }
+    }
+
+    pub fn invocation_target(
+        &self,
+    ) -> std::result::Result<Option<InvocationTargetRef>, restate_types::errors::ConversionError>
+    {
+        match self {
+            Self::Scheduled(metadata) | Self::Inboxed(metadata) => {
+                Ok(Some(metadata.invocation_target()?))
+            }
+            Self::Invoked(metadata) | Self::Suspended(metadata) => {
+                Ok(Some(metadata.invocation_target()?))
+            }
+            Self::Completed(completed) => Ok(Some(completed.invocation_target()?)),
+            _ => Ok(None),
+        }
+    }
+
+    pub fn source(&self) -> std::result::Result<Option<SourceRef>, ConversionError> {
+        Ok(match self {
+            Self::Scheduled(metadata) | Self::Inboxed(metadata) => Some(metadata.source()?),
+            Self::Invoked(metadata) | Self::Suspended(metadata) => Some(metadata.source()?),
+            Self::Completed(completed) => Some(completed.source()?),
+            _ => None,
+        })
+    }
+
+    pub fn execution_time(&self) -> Option<MillisSinceEpoch> {
+        match self {
+            Self::Scheduled(metadata) | Self::Inboxed(metadata) => metadata.execution_time(),
+            _ => None,
+        }
+    }
+
+    pub fn idempotency_key(&self) -> Option<&str> {
+        match self {
+            Self::Scheduled(metadata) | Self::Inboxed(metadata) => metadata.idempotency_key(),
+            Self::Invoked(metadata) | Self::Suspended(metadata) => metadata.idempotency_key(),
+            Self::Completed(completed) => completed.idempotency_key(),
+            _ => None,
+        }
+    }
+}
+
+pub trait PreFlightInvocationMetadataAccessor: InvocationMetadataAccessor {}
+
+impl<T: PreFlightInvocationMetadataAccessor + ?Sized> PreFlightInvocationMetadataAccessor for &T {}
+
+pub trait JournalMetadataAccessor {
+    fn trace_id(&self) -> std::result::Result<TraceId, ConversionError>;
+    fn length(&self) -> u32;
+    fn commands(&self) -> u32;
+}
+
+impl<T: JournalMetadataAccessor + ?Sized> JournalMetadataAccessor for &T {
+    fn trace_id(&self) -> std::result::Result<TraceId, ConversionError> {
+        (*self).trace_id()
+    }
+    fn length(&self) -> u32 {
+        (*self).length()
+    }
+    fn commands(&self) -> u32 {
+        (*self).commands()
+    }
+}
+
+pub trait InFlightInvocationMetadataAccessor:
+    InvocationMetadataAccessor + JournalMetadataAccessor
+{
+    fn deployment_id(&self) -> std::result::Result<Option<DeploymentId>, ConversionError>;
+    fn service_protocol_version(
+        &self,
+    ) -> std::result::Result<Option<ServiceProtocolVersion>, ConversionError>;
+}
+
+impl<
+    T: InFlightInvocationMetadataAccessor
+        + InvocationMetadataAccessor
+        + JournalMetadataAccessor
+        + ?Sized,
+> InFlightInvocationMetadataAccessor for &T
+{
+    fn deployment_id(&self) -> std::result::Result<Option<DeploymentId>, ConversionError> {
+        (*self).deployment_id()
+    }
+    fn service_protocol_version(
+        &self,
+    ) -> std::result::Result<Option<ServiceProtocolVersion>, ConversionError> {
+        (*self).service_protocol_version()
+    }
+}
+
+pub trait CompletedInvocationMetadataAccessor:
+    InvocationMetadataAccessor + JournalMetadataAccessor
+{
+    fn response_result<'a>(&'a self)
+    -> std::result::Result<ResponseResultRef<'a>, ConversionError>;
+}
+
+pub enum ResponseResultRef<'a> {
+    Success,
+    Failure {
+        code: restate_types::errors::InvocationErrorCode,
+        message: BytesOrStr<'a>,
+    },
+}
+
+#[derive(derive_more::From)]
+pub enum BytesOrStr<'a> {
+    Str(&'a str),
+    Bytes(Bytes),
+}
+
+impl<'a> BytesOrStr<'a> {
+    pub fn as_str(&self, field_name: &'static str) -> std::result::Result<&str, ConversionError> {
+        match self {
+            BytesOrStr::Str(s) => Ok(s),
+            BytesOrStr::Bytes(bytes) => str::from_utf8(bytes.as_ref())
+                .map_err(|_| ConversionError::invalid_data(field_name)),
+        }
+    }
+}
+
+impl<T: CompletedInvocationMetadataAccessor + ?Sized> CompletedInvocationMetadataAccessor for &T {
+    fn response_result<'a>(
+        &'a self,
+    ) -> std::result::Result<ResponseResultRef<'a>, ConversionError> {
+        (*self).response_result()
+    }
+}
+
+pub trait InvocationMetadataAccessor: Send + Sync {
+    fn invocation_target(&self) -> std::result::Result<InvocationTargetRef, ConversionError>;
+    fn idempotency_key(&self) -> Option<&str>;
+
+    fn creation_time(&self) -> MillisSinceEpoch;
+    fn modification_time(&self) -> MillisSinceEpoch;
+    fn inboxed_transition_time(&self) -> Option<MillisSinceEpoch>;
+    fn scheduled_transition_time(&self) -> Option<MillisSinceEpoch>;
+    fn running_transition_time(&self) -> Option<MillisSinceEpoch>;
+    fn completed_transition_time(&self) -> Option<MillisSinceEpoch>;
+
+    fn created_using_restate_version(&self) -> &str;
+    fn source(&self) -> std::result::Result<SourceRef, ConversionError>;
+    fn execution_time(&self) -> Option<MillisSinceEpoch>;
+    fn completion_retention_duration(&self) -> std::result::Result<Duration, ConversionError>;
+    fn journal_retention_duration(&self) -> std::result::Result<Duration, ConversionError>;
+}
+
+pub enum SourceRef {
+    Ingress,
+    Subscription(SubscriptionId),
+    Service(InvocationId, InvocationTargetRef),
+    RestartAsNew(InvocationId),
+    Internal,
+}
+
+impl<'a> From<&'a Source> for SourceRef {
+    fn from(value: &'a Source) -> Self {
+        match value {
+            Source::Ingress(_) => Self::Ingress,
+            Source::Subscription(id) => Self::Subscription(*id),
+            Source::Service(id, target) => Self::Service(*id, target.into()),
+            Source::RestartAsNew(id) => Self::RestartAsNew(*id),
+            Source::Internal => Self::Internal,
+        }
+    }
+}
+
+impl<T: InvocationMetadataAccessor + ?Sized> InvocationMetadataAccessor for &T {
+    fn invocation_target(
+        &self,
+    ) -> std::result::Result<InvocationTargetRef, restate_types::errors::ConversionError> {
+        (*self).invocation_target()
+    }
+    fn idempotency_key(&self) -> Option<&str> {
+        (*self).idempotency_key()
+    }
+    fn creation_time(&self) -> MillisSinceEpoch {
+        (*self).creation_time()
+    }
+    fn modification_time(&self) -> MillisSinceEpoch {
+        (*self).modification_time()
+    }
+    fn inboxed_transition_time(&self) -> Option<MillisSinceEpoch> {
+        (*self).inboxed_transition_time()
+    }
+    fn scheduled_transition_time(&self) -> Option<MillisSinceEpoch> {
+        (*self).scheduled_transition_time()
+    }
+    fn running_transition_time(&self) -> Option<MillisSinceEpoch> {
+        (*self).running_transition_time()
+    }
+    fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
+        (*self).completed_transition_time()
+    }
+    fn created_using_restate_version(&self) -> &str {
+        (*self).created_using_restate_version()
+    }
+    fn source(&self) -> std::result::Result<SourceRef, restate_types::errors::ConversionError> {
+        (*self).source()
+    }
+    fn execution_time(&self) -> Option<MillisSinceEpoch> {
+        (*self).execution_time()
+    }
+    fn completion_retention_duration(
+        &self,
+    ) -> std::result::Result<std::time::Duration, restate_types::errors::ConversionError> {
+        (*self).completion_retention_duration()
+    }
+    fn journal_retention_duration(
+        &self,
+    ) -> std::result::Result<std::time::Duration, restate_types::errors::ConversionError> {
+        (*self).journal_retention_duration()
+    }
+}
+
+pub struct InvocationTargetRef {
+    pub service_name: Bytes,
+    pub key: Bytes,
+    pub handler_name: Bytes,
+    pub service_ty: restate_types::invocation::ServiceType,
+}
+
+impl InvocationTargetRef {
+    pub fn service_name(
+        &self,
+    ) -> std::result::Result<&str, restate_types::errors::ConversionError> {
+        str::from_utf8(self.service_name.as_ref())
+            .map_err(|_| restate_types::errors::ConversionError::invalid_data("name"))
+    }
+    pub fn key(&self) -> std::result::Result<Option<&str>, restate_types::errors::ConversionError> {
+        if !self.service_ty().is_keyed() {
+            return Ok(None);
+        }
+
+        let key = str::from_utf8(self.key.as_ref())
+            .map_err(|_| restate_types::errors::ConversionError::invalid_data("key"))?;
+
+        Ok(Some(key))
+    }
+    pub fn handler_name(
+        &self,
+    ) -> std::result::Result<&str, restate_types::errors::ConversionError> {
+        str::from_utf8(self.handler_name.as_ref())
+            .map_err(|_| restate_types::errors::ConversionError::invalid_data("name"))
+    }
+    pub fn service_ty(&self) -> restate_types::invocation::ServiceType {
+        self.service_ty
+    }
+
+    pub fn target_fmt<'a>(
+        &'a self,
+    ) -> std::result::Result<TargetFormatter<'a>, restate_types::errors::ConversionError> {
+        let service_name = self.service_name()?;
+        let key = self.key()?;
+        let handler_name = self.handler_name()?;
+        Ok(TargetFormatter(service_name, key, handler_name))
+    }
+}
+
+pub struct TargetFormatter<'a>(&'a str, Option<&'a str>, &'a str);
+
+impl<'a> Display for TargetFormatter<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(key) = self.1 {
+            write!(f, "{}/{}/{}", self.0, key, self.2)
+        } else {
+            write!(f, "{}/{}", self.0, self.2)
+        }
+    }
+}
+
+impl From<&InvocationTarget> for InvocationTargetRef {
+    fn from(value: &InvocationTarget) -> Self {
+        Self {
+            service_name: value.service_name().as_bytes().clone(),
+            key: match value.key() {
+                Some(key) => key.as_bytes().clone(),
+                None => Bytes::new(),
+            },
+            handler_name: value.handler_name().as_bytes().clone(),
+            service_ty: value.service_ty(),
+        }
+    }
 }
 
 #[cfg(test)]
