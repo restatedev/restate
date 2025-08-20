@@ -217,18 +217,18 @@ impl InvocationError {
         }
     }
 
-    pub fn new(code: impl Into<InvocationErrorCode>, message: impl fmt::Display) -> Self {
+    pub fn new(code: impl Into<InvocationErrorCode>, message: impl Into<String>) -> Self {
         Self {
             code: code.into(),
-            message: Cow::Owned(message.to_string()),
+            message: Cow::Owned(message.into()),
             stacktrace: None,
         }
     }
 
-    pub fn internal(message: impl fmt::Display) -> Self {
+    pub fn internal(message: impl Into<String>) -> Self {
         Self {
             code: codes::INTERNAL,
-            message: Cow::Owned(message.to_string()),
+            message: Cow::Owned(message.into()),
             stacktrace: None,
         }
     }
@@ -261,13 +261,13 @@ impl InvocationError {
         self
     }
 
-    pub fn with_message(mut self, message: impl fmt::Display) -> InvocationError {
-        self.message = Cow::Owned(message.to_string());
+    pub fn with_message(mut self, message: impl Into<String>) -> InvocationError {
+        self.message = Cow::Owned(message.into());
         self
     }
 
-    pub fn with_stacktrace(mut self, stacktrace: impl fmt::Display) -> InvocationError {
-        self.stacktrace = Some(Cow::Owned(stacktrace.to_string()));
+    pub fn with_stacktrace(mut self, stacktrace: impl Into<String>) -> InvocationError {
+        self.stacktrace = Some(Cow::Owned(stacktrace.into()));
         self
     }
 
@@ -282,11 +282,15 @@ impl InvocationError {
     pub fn stacktrace(&self) -> Option<&str> {
         self.stacktrace.as_deref()
     }
+
+    pub fn into_stacktrace(self) -> Option<Cow<'static, str>> {
+        self.stacktrace
+    }
 }
 
 impl From<anyhow::Error> for InvocationError {
     fn from(error: anyhow::Error) -> Self {
-        InvocationError::internal(error)
+        InvocationError::internal(error.to_string())
     }
 }
 

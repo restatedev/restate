@@ -64,7 +64,7 @@ where
         span_relation: SpanRelation,
     ) -> Result<CallEnrichmentResult, InvocationError> {
         let entry = Codec::deserialize(entry_type, serialized_entry.clone())
-            .map_err(InvocationError::internal)?;
+            .map_err(|e| InvocationError::internal(e.to_string()))?;
         let request = request_extractor(entry);
 
         let meta = self
@@ -252,7 +252,7 @@ where
             PlainEntryHeader::CompleteAwakeable { .. } => {
                 let entry =
                     Codec::deserialize(EntryType::CompleteAwakeable, serialized_entry.clone())
-                        .map_err(InvocationError::internal)?;
+                        .map_err(|e| InvocationError::internal(e.to_string()))?;
                 let_assert!(Entry::CompleteAwakeable(CompleteAwakeableEntry { id, .. }) = entry);
 
                 let (invocation_id, entry_index) = if let Ok(old_awk_id) =
@@ -288,7 +288,7 @@ where
                 // Validate the invocation id is valid
                 let entry =
                     Codec::deserialize(EntryType::CancelInvocation, serialized_entry.clone())
-                        .map_err(InvocationError::internal)?;
+                        .map_err(|e| InvocationError::internal(e.to_string()))?;
                 let_assert!(Entry::CancelInvocation(CancelInvocationEntry { target }) = entry);
                 if let CancelInvocationTarget::InvocationId(id) = target {
                     if let Err(e) = id.parse::<InvocationId>() {
@@ -305,7 +305,7 @@ where
                 // Validate the invocation id is valid
                 let entry =
                     Codec::deserialize(EntryType::AttachInvocation, serialized_entry.clone())
-                        .map_err(InvocationError::internal)?;
+                        .map_err(|e| InvocationError::internal(e.to_string()))?;
                 let_assert!(Entry::AttachInvocation(AttachInvocationEntry { target, .. }) = entry);
                 if let AttachInvocationTarget::InvocationId(id) = target {
                     if let Err(e) = id.parse::<InvocationId>() {
@@ -322,7 +322,7 @@ where
                 // Validate the invocation id is valid
                 let entry =
                     Codec::deserialize(EntryType::GetInvocationOutput, serialized_entry.clone())
-                        .map_err(InvocationError::internal)?;
+                        .map_err(|e| InvocationError::internal(e.to_string()))?;
                 let_assert!(
                     Entry::GetInvocationOutput(GetInvocationOutputEntry { target, .. }) = entry
                 );
