@@ -128,7 +128,7 @@ impl KafkaIngressEvent {
             invocation_target,
             restate_types::invocation::Source::Subscription(subscription.id()),
         ));
-        service_invocation.with_related_span(SpanRelation::Parent(ingress_span_context));
+        service_invocation.with_related_span(SpanRelation::parent(ingress_span_context));
         service_invocation.argument = payload;
         service_invocation.headers = headers;
         service_invocation.with_retention(invocation_retention);
@@ -240,7 +240,7 @@ pub(crate) fn prepare_tracing_span(
     let inbound_span = tracing_context.span();
 
     let relation = if inbound_span.span_context().is_valid() {
-        SpanRelation::Parent(inbound_span.span_context().clone())
+        SpanRelation::parent(inbound_span.span_context())
     } else {
         SpanRelation::None
     };

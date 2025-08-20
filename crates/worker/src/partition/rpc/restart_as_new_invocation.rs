@@ -168,9 +168,8 @@ where
             completion_retention: completed_invocation.completion_retention_duration,
             journal_retention: completed_invocation.journal_retention_duration,
         });
-        invocation_request_header.with_related_span(SpanRelation::Parent(
-            restart_as_new_span.span_context().clone(),
-        ));
+        invocation_request_header
+            .with_related_span(SpanRelation::parent(restart_as_new_span.span_context()));
 
         // Final bundling of the service invocation
         let invocation_request =
