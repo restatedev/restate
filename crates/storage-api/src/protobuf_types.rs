@@ -3845,10 +3845,13 @@ pub mod v1 {
                         restate_types::invocation::ResponseResult::Success(success.value)
                     }
                     response_result::ResponseResult::ResponseFailure(failure) => {
+                        // we should be able to turn the incoming Bytes into a String without a copy
+                        let failure_message = Vec::<u8>::from(failure.failure_message);
+                        let failure_message = String::from_utf8(failure_message)
+                            .map_err(ConversionError::invalid_data)?;
                         restate_types::invocation::ResponseResult::Failure(InvocationError::new(
                             failure.failure_code,
-                            ByteString::try_from(failure.failure_message)
-                                .map_err(ConversionError::invalid_data)?,
+                            failure_message,
                         ))
                     }
                 };

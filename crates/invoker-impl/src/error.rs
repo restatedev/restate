@@ -231,15 +231,15 @@ impl InvokerError {
                     e.message()
                 );
                 let mut err = InvocationError::new(e.code(), msg);
-                if let Some(desc) = e.stacktrace() {
+                if let Some(desc) = e.into_stacktrace() {
                     err = err.with_stacktrace(desc);
                 }
                 err
             }
             e @ InvokerError::BadNegotiatedServiceProtocolVersion(_) => {
-                InvocationError::new(codes::UNSUPPORTED_MEDIA_TYPE, e)
+                InvocationError::new(codes::UNSUPPORTED_MEDIA_TYPE, e.to_string())
             }
-            e => InvocationError::internal(e),
+            e => InvocationError::internal(e.to_string()),
         }
     }
 
