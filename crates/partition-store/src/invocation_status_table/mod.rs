@@ -16,9 +16,9 @@ use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
-    InvocationStatusV1, InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
-    ScanInvocationStatusTable,
+    InvocationLite, InvocationStatus, InvocationStatusAccessor, InvocationStatusDiscriminants,
+    InvocationStatusDynAccessor, InvocationStatusTable, InvocationStatusV1,
+    InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError, Transaction};
@@ -222,7 +222,13 @@ impl ScanInvocationStatusTable for PartitionStore {
     }
 
     fn for_each_invocation_status<
-        F: FnMut((InvocationId, InvocationStatus)) -> ControlFlow<()> + Send + Sync + 'static,
+        E: Into<anyhow::Error>,
+        F: for<'a> FnMut(
+                (InvocationId, InvocationStatusDynAccessor<'a>),
+            ) -> ControlFlow<std::result::Result<(), E>>
+            + Send
+            + Sync
+            + 'static,
     >(
         &self,
         range: RangeInclusive<PartitionKey>,
@@ -247,17 +253,25 @@ impl ScanInvocationStatusTable for PartitionStore {
                         let state_key =
                             break_on_err(InvocationStatusKeyV1::deserialize_from(&mut key))?;
                         let state_value = break_on_err(InvocationStatusV1::decode(&mut value))?;
+                        let accessor = InvocationStatusAccessor::from(state_value.0);
 
                         let (partition_key, invocation_uuid) =
                             break_on_err(state_key.into_inner_ok_or())?;
 
                         let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
 
-                        f((
+                        let result = f((
                             InvocationId::from_parts(partition_key, invocation_uuid),
-                            state_value.0,
-                        ))
-                        .map_break(Ok)
+                            accessor.downcast(),
+                        ));
+
+                        match result {
+                            ControlFlow::Continue(()) => ControlFlow::Continue(()),
+                            ControlFlow::Break(Ok(())) => ControlFlow::Break(Ok(())),
+                            ControlFlow::Break(Err(err)) => {
+                                ControlFlow::Break(Err(StorageError::Conversion(err.into())))
+                            }
+                        }
                     }
                 },
             )
@@ -274,18 +288,41 @@ impl ScanInvocationStatusTable for PartitionStore {
                     move |(mut key, mut value)| {
                         let state_key =
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
-                        let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
+
+                        let inv_status_v2 = break_on_err(
+                            restate_types::storage::StorageCodec::decode::<
+                                restate_storage_api::protobuf_types::ProtobufStorageWrapper<
+                                    restate_storage_api::protobuf_types::v1::InvocationStatusV2,
+                                >,
+                                _,
+                            >(&mut value)
+                            .map_err(|err| StorageError::Conversion(err.into())),
+                        )?;
+
+                        let accessor = break_on_err(
+                            inv_status_v2
+                                .0
+                                .accessor()
+                                .map_err(|err| StorageError::Conversion(err.into())),
+                        )?;
 
                         let (partition_key, invocation_uuid) =
                             break_on_err(state_key.into_inner_ok_or())?;
 
                         let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
 
-                        f((
+                        let result = f((
                             InvocationId::from_parts(partition_key, invocation_uuid),
-                            state_value,
-                        ))
-                        .map_break(Ok)
+                            accessor,
+                        ));
+
+                        match result {
+                            ControlFlow::Continue(()) => ControlFlow::Continue(()),
+                            ControlFlow::Break(Ok(())) => ControlFlow::Break(Ok(())),
+                            ControlFlow::Break(Err(err)) => {
+                                ControlFlow::Break(Err(StorageError::Conversion(err.into())))
+                            }
+                        }
                     }
                 },
             )

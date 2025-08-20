@@ -14,7 +14,10 @@ use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::invocation_status_table::{InvocationStatus, ScanInvocationStatusTable};
+use restate_storage_api::invocation_status_table::{
+    InvocationStatusDynAccessor, ScanInvocationStatusTable,
+};
+use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
@@ -58,9 +61,15 @@ struct StatusScanner;
 
 impl ScanLocalPartitionInPlace for StatusScanner {
     type Builder = SysInvocationStatusBuilder;
-    type Item = (InvocationId, InvocationStatus);
+    type Item<'a> = (InvocationId, InvocationStatusDynAccessor<'a>);
+    type ConversionError = ConversionError;
 
-    fn for_each_row<F: FnMut(Self::Item) -> ControlFlow<()> + Send + Sync + 'static>(
+    fn for_each_row<
+        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), ConversionError>>
+            + Send
+            + Sync
+            + 'static,
+    >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
         f: F,
@@ -68,7 +77,10 @@ impl ScanLocalPartitionInPlace for StatusScanner {
         partition_store.for_each_invocation_status(range, f)
     }
 
-    fn append_row(row_builder: &mut Self::Builder, (invocation_id, invocation_status): Self::Item) {
+    fn append_row<'a>(
+        row_builder: &mut Self::Builder,
+        (invocation_id, invocation_status): Self::Item<'a>,
+    ) -> Result<(), ConversionError> {
         append_invocation_status_row(row_builder, invocation_id, invocation_status)
     }
 }
