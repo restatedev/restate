@@ -3845,10 +3845,13 @@ pub mod v1 {
                         restate_types::invocation::ResponseResult::Success(success.value)
                     }
                     response_result::ResponseResult::ResponseFailure(failure) => {
+                        let message_bytes: Vec<u8> = failure.failure_message.into();
+                        let message = String::from_utf8(message_bytes)
+                            .map_err(ConversionError::invalid_data)?;
+
                         restate_types::invocation::ResponseResult::Failure(InvocationError::new(
                             failure.failure_code,
-                            ByteString::try_from(failure.failure_message)
-                                .map_err(ConversionError::invalid_data)?,
+                            message,
                         ))
                     }
                 };
