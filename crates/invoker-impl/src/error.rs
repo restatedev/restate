@@ -29,8 +29,25 @@ use std::ops::RangeInclusive;
 use std::time::Duration;
 use tokio::task::JoinError;
 
+#[derive(Debug)]
+pub struct InvokerError {
+    pub kind: InvokerErrorKind,
+    // Deployment ID associated with the error, if any.
+    #[allow(dead_code)]
+    pub deployment_id: Option<DeploymentId>,
+}
+
+impl From<InvokerErrorKind> for InvokerError {
+    fn from(source: InvokerErrorKind) -> Self {
+        Self {
+            kind: source,
+            deployment_id: None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub(crate) enum InvokerError {
+pub(crate) enum InvokerErrorKind {
     #[error("no deployment was found to process the invocation")]
     #[code(restate_errors::RT0011)]
     NoDeploymentForService,
@@ -172,14 +189,21 @@ pub(crate) enum InvokerError {
     ServiceUnavailable(http::StatusCode),
 }
 
-impl InvokerError {
+impl InvokerErrorKind {
+    pub(crate) fn into_invoker_error(self, deployment_id: DeploymentId) -> InvokerError {
+        InvokerError {
+            kind: self,
+            deployment_id: Some(deployment_id),
+        }
+    }
+
     pub(crate) fn error_stacktrace(&self) -> Option<&str> {
         match self {
-            InvokerError::Sdk(s) => s
+            InvokerErrorKind::Sdk(s) => s
                 .error
                 .stacktrace()
                 .and_then(|s| if s.is_empty() { None } else { Some(s) }),
-            InvokerError::SdkV2(s) => s
+            InvokerErrorKind::SdkV2(s) => s
                 .error
                 .stacktrace()
                 .and_then(|s| if s.is_empty() { None } else { Some(s) }),
@@ -188,30 +212,30 @@ impl InvokerError {
     }
 
     pub(crate) fn is_transient(&self) -> bool {
-        !matches!(self, InvokerError::NotInvoked)
+        !matches!(self, InvokerErrorKind::NotInvoked)
     }
 
     pub(crate) fn should_bump_start_message_retry_count_since_last_stored_entry(&self) -> bool {
         !matches!(
             self,
-            InvokerError::NotInvoked
-                | InvokerError::JournalReader(_)
-                | InvokerError::StateReader(_)
-                | InvokerError::NoDeploymentForService
-                | InvokerError::BadNegotiatedServiceProtocolVersion(_)
-                | InvokerError::UnknownDeployment(_)
-                | InvokerError::ResumeWithWrongServiceProtocolVersion(_)
-                | InvokerError::IncompatibleServiceEndpoint(_, _)
+            InvokerErrorKind::NotInvoked
+                | InvokerErrorKind::JournalReader(_)
+                | InvokerErrorKind::StateReader(_)
+                | InvokerErrorKind::NoDeploymentForService
+                | InvokerErrorKind::BadNegotiatedServiceProtocolVersion(_)
+                | InvokerErrorKind::UnknownDeployment(_)
+                | InvokerErrorKind::ResumeWithWrongServiceProtocolVersion(_)
+                | InvokerErrorKind::IncompatibleServiceEndpoint(_, _)
         )
     }
 
     pub(crate) fn next_retry_interval_override(&self) -> Option<Duration> {
         match self {
-            InvokerError::Sdk(SdkInvocationError {
+            InvokerErrorKind::Sdk(SdkInvocationError {
                 next_retry_interval_override,
                 ..
             }) => *next_retry_interval_override,
-            InvokerError::SdkV2(SdkInvocationErrorV2 {
+            InvokerErrorKind::SdkV2(SdkInvocationErrorV2 {
                 next_retry_interval_override,
                 ..
             }) => *next_retry_interval_override,
@@ -221,9 +245,9 @@ impl InvokerError {
 
     pub(crate) fn into_invocation_error(self) -> InvocationError {
         match self {
-            InvokerError::Sdk(sdk_error) => sdk_error.error,
-            InvokerError::SdkV2(sdk_error) => sdk_error.error,
-            InvokerError::EntryEnrichment(entry_index, entry_type, e) => {
+            InvokerErrorKind::Sdk(sdk_error) => sdk_error.error,
+            InvokerErrorKind::SdkV2(sdk_error) => sdk_error.error,
+            InvokerErrorKind::EntryEnrichment(entry_index, entry_type, e) => {
                 let msg = format!(
                     "Error when processing entry {} of type {}: {}",
                     entry_index,
@@ -236,7 +260,7 @@ impl InvokerError {
                 }
                 err
             }
-            e @ InvokerError::BadNegotiatedServiceProtocolVersion(_) => {
+            e @ InvokerErrorKind::BadNegotiatedServiceProtocolVersion(_) => {
                 InvocationError::new(codes::UNSUPPORTED_MEDIA_TYPE, e)
             }
             e => InvocationError::internal(e),
@@ -246,11 +270,11 @@ impl InvokerError {
     pub(crate) fn into_invocation_error_report(mut self) -> InvocationErrorReport {
         let doc_error_code = codederror::CodedError::code(&self);
         let maybe_related_entry = match self {
-            InvokerError::Sdk(SdkInvocationError {
+            InvokerErrorKind::Sdk(SdkInvocationError {
                 ref mut related_entry,
                 ..
             }) => related_entry.take(),
-            InvokerError::SdkV2(SdkInvocationErrorV2 {
+            InvokerErrorKind::SdkV2(SdkInvocationErrorV2 {
                 related_command: ref mut related_entry,
                 ..
             }) => related_entry

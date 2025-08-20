@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::Notification;
-use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
+use crate::error::{InvocationErrorRelatedEntry, InvokerErrorKind, SdkInvocationError};
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
     ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
@@ -202,7 +202,7 @@ where
         // Sanity check of the stream decoder
         if self.decoder.has_remaining() {
             warn_it!(
-                InvokerError::WriteAfterEndOfStream,
+                InvokerErrorKind::WriteAfterEndOfStream,
                 "The read buffer is non empty after the stream has been closed."
             );
         }
@@ -371,7 +371,7 @@ where
                         ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()))
+                            return TerminalLoopState::Failed(InvokerErrorKind::Sdk(SdkInvocationError::unknown()))
                         }
                     }
                 },
@@ -398,13 +398,13 @@ where
                         ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()) )
+                            return TerminalLoopState::Failed(InvokerErrorKind::Sdk(SdkInvocationError::unknown()))
                         }
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
                     warn!("Inactivity detected, going to close invocation");
-                    return TerminalLoopState::Failed(InvokerError::AbortTimeoutFired(self.invocation_task.abort_timeout.into()))
+                    return TerminalLoopState::Failed(InvokerErrorKind::AbortTimeoutFired(self.invocation_task.abort_timeout.into()))
                 },
             }
         }
@@ -419,7 +419,7 @@ where
         state_entries: EagerState<I>,
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
-    ) -> Result<(), InvokerError> {
+    ) -> Result<(), InvokerErrorKind> {
         let is_partial = state_entries.is_partial();
 
         // Send the invoke frame
@@ -446,12 +446,12 @@ where
         &mut self,
         http_stream_tx: &mut InvokerRequestStreamSender,
         msg: ProtocolMessage,
-    ) -> Result<(), InvokerError> {
+    ) -> Result<(), InvokerErrorKind> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
         if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
-            return Err(InvokerError::UnexpectedClosedRequestStream);
+            return Err(InvokerErrorKind::UnexpectedClosedRequestStream);
         };
         Ok(())
     }
@@ -459,24 +459,24 @@ where
     fn handle_response_headers(
         &mut self,
         mut parts: http::response::Parts,
-    ) -> Result<(), InvokerError> {
+    ) -> Result<(), InvokerErrorKind> {
         // if service is running behind a gateway, the service can be down
         // but we still get a response code from the gateway itself. In that
         // case we still need to return the proper error
         if GATEWAY_ERRORS_CODES.contains(&parts.status) {
-            return Err(InvokerError::ServiceUnavailable(parts.status));
+            return Err(InvokerErrorKind::ServiceUnavailable(parts.status));
         }
 
         // otherwise we return generic UnexpectedResponse
         if !parts.status.is_success() {
             // Decorate the error in case of UNSUPPORTED_MEDIA_TYPE, as it probably is the incompatible protocol version
             if parts.status == StatusCode::UNSUPPORTED_MEDIA_TYPE {
-                return Err(InvokerError::BadNegotiatedServiceProtocolVersion(
+                return Err(InvokerErrorKind::BadNegotiatedServiceProtocolVersion(
                     self.service_protocol_version,
                 ));
             }
 
-            return Err(InvokerError::UnexpectedResponse(parts.status));
+            return Err(InvokerErrorKind::UnexpectedResponse(parts.status));
         }
 
         let content_type = parts.headers.remove(http::header::CONTENT_TYPE);
@@ -487,14 +487,14 @@ where
             {
                 #[allow(clippy::borrow_interior_mutable_const)]
                 if ct != expected_content_type {
-                    return Err(InvokerError::UnexpectedContentType(
+                    return Err(InvokerErrorKind::UnexpectedContentType(
                         Some(ct),
                         expected_content_type,
                     ));
                 }
             }
             None => {
-                return Err(InvokerError::UnexpectedContentType(
+                return Err(InvokerErrorKind::UnexpectedContentType(
                     None,
                     expected_content_type,
                 ));
@@ -505,7 +505,7 @@ where
             self.invocation_task
                 .send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
                     hv.to_str()
-                        .map_err(|e| InvokerError::BadHeader(X_RESTATE_SERVER, e))?
+                        .map_err(|e| InvokerErrorKind::BadHeader(X_RESTATE_SERVER, e))?
                         .to_owned(),
                 ))
         }
@@ -536,23 +536,23 @@ where
         trace!(restate.protocol.message_header = ?mh, restate.protocol.message = ?message, "Received message");
         match message {
             ProtocolMessage::Start { .. } => {
-                TerminalLoopState::Failed(InvokerError::UnexpectedMessage(MessageType::Start))
+                TerminalLoopState::Failed(InvokerErrorKind::UnexpectedMessage(MessageType::Start))
             }
-            ProtocolMessage::Completion(_) => {
-                TerminalLoopState::Failed(InvokerError::UnexpectedMessage(MessageType::Completion))
-            }
-            ProtocolMessage::EntryAck(_) => {
-                TerminalLoopState::Failed(InvokerError::UnexpectedMessage(MessageType::EntryAck))
-            }
+            ProtocolMessage::Completion(_) => TerminalLoopState::Failed(
+                InvokerErrorKind::UnexpectedMessage(MessageType::Completion),
+            ),
+            ProtocolMessage::EntryAck(_) => TerminalLoopState::Failed(
+                InvokerErrorKind::UnexpectedMessage(MessageType::EntryAck),
+            ),
             ProtocolMessage::Suspension(suspension) => {
                 let suspension_indexes = HashSet::from_iter(suspension.entry_indexes);
                 // We currently don't support empty suspension_indexes set
                 if suspension_indexes.is_empty() {
-                    return TerminalLoopState::Failed(InvokerError::EmptySuspensionMessage);
+                    return TerminalLoopState::Failed(InvokerErrorKind::EmptySuspensionMessage);
                 }
                 // Sanity check on the suspension indexes
                 if *suspension_indexes.iter().max().unwrap() >= self.next_journal_index {
-                    return TerminalLoopState::Failed(InvokerError::BadSuspensionMessage(
+                    return TerminalLoopState::Failed(InvokerErrorKind::BadSuspensionMessage(
                         suspension_indexes,
                         self.next_journal_index,
                     ));
@@ -560,7 +560,7 @@ where
                 TerminalLoopState::Suspended(suspension_indexes)
             }
             ProtocolMessage::Error(e) => {
-                TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError {
+                TerminalLoopState::Failed(InvokerErrorKind::Sdk(SdkInvocationError {
                     related_entry: Some(InvocationErrorRelatedEntry {
                         related_entry_index: e.related_entry_index,
                         related_entry_name: e.related_entry_name.clone(),
@@ -588,7 +588,7 @@ where
                             &self.invocation_task.invocation_target,
                             parent_span_context
                         )
-                        .map_err(|e| InvokerError::EntryEnrichment(
+                        .map_err(|e| InvokerErrorKind::EntryEnrichment(
                             self.next_journal_index,
                             entry_type,
                             e
