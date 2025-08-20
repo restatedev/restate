@@ -26,14 +26,16 @@ pub struct RestateVersionError(#[from] semver::Error);
 pub struct RestateVersion(Cow<'static, str>);
 
 impl RestateVersion {
+    pub const UNKNOWN_STR: &str = "0.0.0-unknown";
+
     /// The current version of the currently running binary
     pub fn current() -> Self {
         Self(Cow::Borrowed(env!("CARGO_PKG_VERSION")))
     }
 
-    pub fn unknown() -> Self {
+    pub const fn unknown() -> Self {
         // We still provide a semver valid version here
-        Self(Cow::Borrowed("0.0.0-unknown"))
+        Self(Cow::Borrowed(Self::UNKNOWN_STR))
     }
 
     pub fn new(s: String) -> Self {

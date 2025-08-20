@@ -132,7 +132,7 @@ pub mod v1 {
         use restate_types::deployment::PinnedDeployment;
         use restate_types::errors::InvocationError;
         use restate_types::identifiers::{
-            PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
+            DeploymentId, PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
         };
         use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
@@ -233,6 +233,17 @@ pub mod v1 {
                 Ok(restate_types::identifiers::InvocationId::from_parts(
                     value.partition_key,
                     try_bytes_into_invocation_uuid(value.invocation_uuid)?,
+                ))
+            }
+        }
+
+        impl TryFrom<&InvocationId> for restate_types::identifiers::InvocationId {
+            type Error = ConversionError;
+
+            fn try_from(value: &InvocationId) -> Result<Self, ConversionError> {
+                Ok(restate_types::identifiers::InvocationId::from_parts(
+                    value.partition_key,
+                    try_bytes_into_invocation_uuid(&value.invocation_uuid)?,
                 ))
             }
         }
@@ -620,6 +631,232 @@ pub mod v1 {
                         value.status,
                     )),
                 }
+            }
+        }
+
+        impl InvocationStatusV2 {
+            pub fn accessor<'a>(
+                &'a self,
+            ) -> Result<
+                crate::invocation_status_table::InvocationStatusDynAccessor<'a>,
+                ConversionError,
+            > {
+                use crate::invocation_status_table::{
+                    CompletedInvocationMetadataAccessor, InFlightInvocationMetadataAccessor,
+                    InvocationStatusAccessor, PreFlightInvocationMetadataAccessor,
+                };
+                match self.status() {
+                    invocation_status_v2::Status::Scheduled => {
+                        Ok(InvocationStatusAccessor::Scheduled(
+                            self as &dyn PreFlightInvocationMetadataAccessor,
+                        ))
+                    }
+                    invocation_status_v2::Status::Inboxed => Ok(InvocationStatusAccessor::Inboxed(
+                        self as &dyn PreFlightInvocationMetadataAccessor,
+                    )),
+                    invocation_status_v2::Status::Invoked => Ok(InvocationStatusAccessor::Invoked(
+                        self as &dyn InFlightInvocationMetadataAccessor,
+                    )),
+                    invocation_status_v2::Status::Suspended => {
+                        Ok(InvocationStatusAccessor::Suspended(
+                            self as &dyn InFlightInvocationMetadataAccessor,
+                        ))
+                    }
+                    invocation_status_v2::Status::Completed => {
+                        Ok(InvocationStatusAccessor::Completed(
+                            self as &dyn CompletedInvocationMetadataAccessor,
+                        ))
+                    }
+                    _ => Err(ConversionError::unexpected_enum_variant(
+                        "status",
+                        self.status,
+                    )),
+                }
+            }
+        }
+
+        impl crate::invocation_status_table::PreFlightInvocationMetadataAccessor for InvocationStatusV2 {}
+        impl crate::invocation_status_table::InFlightInvocationMetadataAccessor for InvocationStatusV2 {
+            fn deployment_id(
+                &self,
+            ) -> std::result::Result<Option<DeploymentId>, restate_types::errors::ConversionError>
+            {
+                use restate_types::errors::ConversionError;
+
+                match self.deployment_id.as_deref() {
+                    Some(deployment_id) => deployment_id
+                        .parse()
+                        .map_err(|_| ConversionError::invalid_data("deployment_id"))
+                        .map(Some),
+                    None => Ok(None),
+                }
+            }
+
+            fn service_protocol_version(
+                &self,
+            ) -> std::result::Result<
+                std::option::Option<ServiceProtocolVersion>,
+                restate_types::errors::ConversionError,
+            > {
+                match self.service_protocol_version {
+                    Some(service_protocol_version) => {
+                        ServiceProtocolVersion::try_from(service_protocol_version)
+                            .map_err(|_| {
+                                restate_types::errors::ConversionError::invalid_data(
+                                    "service_protocol_version",
+                                )
+                            })
+                            .map(Some)
+                    }
+                    None => Ok(None),
+                }
+            }
+        }
+
+        impl crate::invocation_status_table::CompletedInvocationMetadataAccessor for InvocationStatusV2 {
+            fn response_result<'a>(
+                &'a self,
+            ) -> Result<
+                crate::invocation_status_table::ResponseResultRef<'a>,
+                restate_types::errors::ConversionError,
+            > {
+                use restate_types::errors::ConversionError;
+
+                let result = self.result.as_ref();
+                let result = expect_or_fail!(result)?;
+
+                let response_result = result.response_result.as_ref();
+                let response_result = expect_or_fail!(response_result)?;
+
+                match response_result {
+                    response_result::ResponseResult::ResponseSuccess(_) => {
+                        Ok(crate::invocation_status_table::ResponseResultRef::Success)
+                    }
+                    response_result::ResponseResult::ResponseFailure(failure) => {
+                        Ok(crate::invocation_status_table::ResponseResultRef::Failure {
+                            code: failure.failure_code.into(),
+                            message: failure.failure_message.clone().into(),
+                        })
+                    }
+                }
+            }
+        }
+
+        impl crate::invocation_status_table::InvocationMetadataAccessor for InvocationStatusV2 {
+            fn invocation_target(
+                &self,
+            ) -> Result<
+                crate::invocation_status_table::InvocationTargetRef,
+                restate_types::errors::ConversionError,
+            > {
+                use restate_types::errors::ConversionError;
+
+                let invocation_target = self.invocation_target.as_ref();
+                let invocation_target = expect_or_fail!(invocation_target)?;
+
+                invocation_target.clone().try_into()
+            }
+
+            fn idempotency_key(&self) -> Option<&str> {
+                self.idempotency_key.as_deref()
+            }
+
+            fn creation_time(&self) -> MillisSinceEpoch {
+                MillisSinceEpoch::new(self.creation_time)
+            }
+
+            fn modification_time(&self) -> MillisSinceEpoch {
+                MillisSinceEpoch::new(self.modification_time)
+            }
+
+            fn inboxed_transition_time(&self) -> Option<MillisSinceEpoch> {
+                self.inboxed_transition_time.map(MillisSinceEpoch::new)
+            }
+
+            fn scheduled_transition_time(&self) -> Option<MillisSinceEpoch> {
+                self.scheduled_transition_time.map(MillisSinceEpoch::new)
+            }
+
+            fn running_transition_time(&self) -> Option<MillisSinceEpoch> {
+                self.running_transition_time.map(MillisSinceEpoch::new)
+            }
+
+            fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
+                self.completed_transition_time.map(MillisSinceEpoch::new)
+            }
+
+            fn created_using_restate_version(&self) -> &str {
+                if self.created_using_restate_version.is_empty() {
+                    restate_types::RestateVersion::UNKNOWN_STR
+                } else {
+                    self.created_using_restate_version.as_str()
+                }
+            }
+
+            fn source(
+                &self,
+            ) -> Result<
+                crate::invocation_status_table::SourceRef,
+                restate_types::errors::ConversionError,
+            > {
+                use restate_types::errors::ConversionError;
+
+                let source = self.source.as_ref();
+                let source = expect_or_fail!(source)?;
+
+                crate::invocation_status_table::SourceRef::try_from(source)
+            }
+
+            fn execution_time(&self) -> Option<MillisSinceEpoch> {
+                self.execution_time.map(MillisSinceEpoch::new)
+            }
+
+            fn completion_retention_duration(
+                &self,
+            ) -> Result<std::time::Duration, restate_types::errors::ConversionError> {
+                self.completion_retention_duration
+                    .unwrap_or_default()
+                    .try_into()
+                    .map_err(|_| {
+                        restate_types::errors::ConversionError::invalid_data(
+                            "completion_retention_duration",
+                        )
+                    })
+            }
+
+            fn journal_retention_duration(
+                &self,
+            ) -> Result<std::time::Duration, restate_types::errors::ConversionError> {
+                self.journal_retention_duration
+                    .unwrap_or_default()
+                    .try_into()
+                    .map_err(|_| {
+                        restate_types::errors::ConversionError::invalid_data(
+                            "journal_retention_duration",
+                        )
+                    })
+            }
+        }
+
+        impl crate::invocation_status_table::JournalMetadataAccessor for InvocationStatusV2 {
+            fn trace_id(
+                &self,
+            ) -> Result<opentelemetry::trace::TraceId, restate_types::errors::ConversionError>
+            {
+                use restate_types::errors::ConversionError;
+                let span_context = self.span_context.as_ref();
+                let span_context = expect_or_fail!(span_context)?;
+                let trace_id = try_bytes_into_trace_id(span_context.trace_id.as_ref())
+                    .map_err(|_| ConversionError::InvalidData("trace_id"))?;
+                Ok(trace_id)
+            }
+
+            fn length(&self) -> u32 {
+                self.journal_length
+            }
+
+            fn commands(&self) -> u32 {
+                self.commands
             }
         }
 
@@ -1698,6 +1935,55 @@ pub mod v1 {
             }
         }
 
+        impl<'a> TryFrom<&'a Source> for crate::invocation_status_table::SourceRef {
+            type Error = restate_types::errors::ConversionError;
+
+            fn try_from(value: &'a Source) -> Result<Self, restate_types::errors::ConversionError> {
+                use restate_types::errors::ConversionError;
+
+                let source = match value
+                    .source
+                    .as_ref()
+                    .ok_or(ConversionError::missing_field("source"))?
+                {
+                    source::Source::Ingress(_) => Self::Ingress,
+                    source::Source::Subscription(subscription) => Self::Subscription(
+                        restate_types::identifiers::SubscriptionId::from_slice(
+                            &subscription.subscription_id,
+                        )
+                        .map_err(|_| ConversionError::invalid_data("subscription_id"))?,
+                    ),
+                    source::Source::Service(service) => Self::Service(
+                        restate_types::identifiers::InvocationId::try_from(
+                            service
+                                .invocation_id
+                                .as_ref()
+                                .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        )
+                        .map_err(|_| ConversionError::InvalidData("invocation_id"))?,
+                        service
+                            .invocation_target
+                            .as_ref()
+                            .ok_or(ConversionError::missing_field("invocation_target"))?
+                            .clone()
+                            .try_into()?,
+                    ),
+                    source::Source::RestartAsNew(service) => Self::RestartAsNew(
+                        restate_types::identifiers::InvocationId::try_from(
+                            service
+                                .invocation_id
+                                .as_ref()
+                                .ok_or(ConversionError::missing_field("invocation_id"))?,
+                        )
+                        .map_err(|_| ConversionError::InvalidData("invocation_id"))?,
+                    ),
+                    source::Source::Internal(_) => Self::Internal,
+                };
+
+                Ok(source)
+            }
+        }
+
         impl From<restate_types::invocation::Source> for Source {
             fn from(value: restate_types::invocation::Source) -> Self {
                 let source = match value {
@@ -2122,6 +2408,38 @@ pub mod v1 {
             }
         }
 
+        impl TryFrom<InvocationTarget> for crate::invocation_status_table::InvocationTargetRef {
+            type Error = restate_types::errors::ConversionError;
+
+            fn try_from(value: InvocationTarget) -> Result<Self, Self::Error> {
+                use restate_types::invocation::ServiceType;
+                let service_ty = match invocation_target::Ty::try_from(value.service_and_handler_ty)
+                {
+                    Ok(invocation_target::Ty::Service) => ServiceType::Service,
+                    Ok(
+                        invocation_target::Ty::VirtualObjectExclusive
+                        | invocation_target::Ty::VirtualObjectShared,
+                    ) => ServiceType::VirtualObject,
+                    Ok(
+                        invocation_target::Ty::WorkflowWorkflow
+                        | invocation_target::Ty::WorkflowShared,
+                    ) => ServiceType::Workflow,
+                    _ => {
+                        return Err(restate_types::errors::ConversionError::invalid_data(
+                            "service_and_handler_ty",
+                        ));
+                    }
+                };
+
+                Ok(Self {
+                    service_name: value.name,
+                    key: value.key,
+                    handler_name: value.handler,
+                    service_ty,
+                })
+            }
+        }
+
         impl From<restate_types::invocation::InvocationTarget> for InvocationTarget {
             fn from(value: restate_types::invocation::InvocationTarget) -> Self {
                 match value {
@@ -2251,7 +2569,7 @@ pub mod v1 {
         }
 
         fn try_bytes_into_invocation_uuid(
-            bytes: Bytes,
+            bytes: impl AsRef<[u8]>,
         ) -> Result<restate_types::identifiers::InvocationUuid, ConversionError> {
             restate_types::identifiers::InvocationUuid::from_slice(bytes.as_ref())
                 .map_err(ConversionError::invalid_data)
@@ -2380,9 +2698,9 @@ pub mod v1 {
         }
 
         fn try_bytes_into_trace_id(
-            mut bytes: Bytes,
+            mut bytes: impl Buf,
         ) -> Result<opentelemetry::trace::TraceId, ConversionError> {
-            if bytes.len() != 16 {
+            if bytes.remaining() != 16 {
                 return Err(ConversionError::InvalidData(anyhow!(
                     "trace id pb definition needs to contain exactly 16 bytes"
                 )));
