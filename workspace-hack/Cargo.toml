@@ -72,8 +72,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
+itertools = { version = "0.14" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
@@ -198,8 +197,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
 indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
+itertools = { version = "0.14" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
