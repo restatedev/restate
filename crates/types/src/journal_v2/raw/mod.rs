@@ -228,6 +228,10 @@ impl RawEvent {
     pub fn into_inner(self) -> (EventType, Option<Bytes>, Bytes) {
         (self.ty, self.deduplication_hash, self.value)
     }
+
+    pub fn bytes(&self) -> &Bytes {
+        &self.value
+    }
 }
 
 impl EntryMetadata for RawEvent {

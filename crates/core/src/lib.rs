@@ -19,7 +19,7 @@
 mod error;
 mod identification;
 mod metadata;
-mod metric_definitions;
+pub mod metric_definitions;
 pub mod network;
 pub mod partitions;
 pub mod protobuf;

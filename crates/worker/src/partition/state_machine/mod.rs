@@ -16,6 +16,7 @@ mod utils;
 pub use actions::{Action, ActionCollector};
 
 use std::borrow::Cow;
+use std::cmp::max;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
@@ -28,9 +29,10 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use enumset::EnumSet;
 use futures::{StreamExt, TryStreamExt};
-use metrics::histogram;
+use metrics::{counter, histogram};
 use tracing::{Instrument, Span, debug, error, trace, warn};
 
+use restate_core::Metadata;
 use restate_invoker_api::InvokeInputJournal;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -94,6 +96,7 @@ use restate_types::journal_v2::{
     CommandType, CompletionId, EntryMetadata, NotificationId, Signal, SignalResult,
 };
 use restate_types::message::MessageIndex;
+use restate_types::partition_table::FindPartition;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
@@ -104,7 +107,10 @@ use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
 
 use self::utils::SpanExt;
-use crate::metric_definitions::PARTITION_APPLY_COMMAND;
+use crate::metric_definitions::{
+    PARTITION_APPLY_COMMAND, USAGE_LEADER_INFLIGHT_BYTE_MS,
+    USAGE_LEADER_INFLIGHT_CALCULATION_DURATION_SECONDS, USAGE_LEADER_RETAINED_BYTE_MS,
+};
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 
@@ -2001,6 +2007,23 @@ impl<S> StateMachineApplyContext<'_, S> {
             + StateTable
             + journal_table_v2::JournalTable,
     {
+        if self.is_leader {
+            if let Ok(partition_id) = Metadata::with_current(|m| {
+                m.partition_table_snapshot()
+                    .find_partition_id(invocation_id.partition_key())
+            }) {
+                let byte_ms = self
+                    .calculate_inflight_byte_ms(&invocation_id, &invocation_metadata)
+                    .await;
+
+                counter!(
+                    USAGE_LEADER_INFLIGHT_BYTE_MS,
+                    "partition" => partition_id.to_string(),
+                )
+                .increment(byte_ms);
+            }
+        }
+
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
         let completion_retention = invocation_metadata.completion_retention_duration;
@@ -2095,6 +2118,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 invocation_id,
                 journal_length,
                 should_remove_journal_table_v2,
+                Some(self.record_created_at),
             )
             .await?;
         }
@@ -2103,6 +2127,121 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.consume_inbox(&invocation_target).await?;
 
         Ok(())
+    }
+
+    async fn calculate_inflight_byte_ms(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_metadata: &InFlightInvocationMetadata,
+    ) -> u64
+    where
+        S: journal_table_v2::ReadOnlyJournalTable,
+    {
+        let start_time = Instant::now();
+
+        let creation_time = invocation_metadata.timestamps.creation_time();
+        let completion_time = self.record_created_at;
+        let journal_length = invocation_metadata.journal_metadata.length;
+
+        // todo(pavel): investigate the runtime cost of this
+        let journal_stream =
+            match <S as restate_storage_api::journal_table_v2::ReadOnlyJournalTable>::get_journal(
+                self.storage,
+                *invocation_id,
+                journal_length,
+            ) {
+                Ok(stream) => stream,
+                Err(_) => return 0,
+            };
+        futures::pin_mut!(journal_stream);
+
+        let mut total_byte_ms: u64 = 0;
+        let mut cumulative_bytes: u64 = 0;
+        let mut prev_time = creation_time;
+
+        while let Some(entry_result) = futures::StreamExt::next(&mut journal_stream).await {
+            let (_entry_index, stored_entry) = match entry_result {
+                Ok(entry) => entry,
+                Err(_) => return total_byte_ms, // todo: log?
+            };
+
+            let entry_time = stored_entry.header().append_time;
+            let entry_ms = entry_time.as_u64().saturating_sub(prev_time.as_u64());
+            let duration_ms = max(entry_ms, 1); // minimum duration 1ms
+            total_byte_ms += cumulative_bytes * duration_ms;
+
+            let entry_size = match &stored_entry.inner {
+                restate_types::journal_v2::raw::RawEntry::Command(cmd) => {
+                    cmd.serialized_content.len()
+                }
+                restate_types::journal_v2::raw::RawEntry::Notification(notif) => {
+                    notif.serialized_content().len()
+                }
+                restate_types::journal_v2::raw::RawEntry::Event(event) => event.bytes().len(),
+            } as u64;
+
+            cumulative_bytes += entry_size;
+            prev_time = entry_time;
+        }
+
+        let final_entry_ms = completion_time.as_u64().saturating_sub(prev_time.as_u64());
+        let final_duration_ms = max(final_entry_ms, 1);
+        total_byte_ms += cumulative_bytes * final_duration_ms;
+
+        histogram!(USAGE_LEADER_INFLIGHT_CALCULATION_DURATION_SECONDS)
+            .record(start_time.elapsed().as_secs_f64());
+        total_byte_ms
+    }
+
+    async fn calculate_retained_byte_ms(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_length: EntryIndex,
+        invoke_end_at: MillisSinceEpoch,
+    ) -> u64
+    where
+        S: journal_table_v2::ReadOnlyJournalTable,
+    {
+        let deleted_at = self.record_created_at;
+
+        let journal_stream =
+            match <S as restate_storage_api::journal_table_v2::ReadOnlyJournalTable>::get_journal(
+                self.storage,
+                *invocation_id,
+                journal_length,
+            ) {
+                Ok(stream) => stream,
+                Err(_) => return 0,
+            };
+        futures::pin_mut!(journal_stream);
+
+        let mut total_bytes: u64 = 0;
+
+        while let Some(entry_result) = futures::StreamExt::next(&mut journal_stream).await {
+            let (_entry_index, stored_entry) = match entry_result {
+                Ok(entry) => entry,
+                Err(_) => return total_bytes,
+            };
+
+            let entry_size = match &stored_entry.inner {
+                restate_types::journal_v2::raw::RawEntry::Command(cmd) => {
+                    cmd.serialized_content.len()
+                }
+                restate_types::journal_v2::raw::RawEntry::Notification(notif) => {
+                    notif.serialized_content().len()
+                }
+                restate_types::journal_v2::raw::RawEntry::Event(event) => {
+                    event.clone().into_inner().2.len()
+                }
+            } as u64;
+
+            total_bytes += entry_size;
+        }
+
+        let retained_ms = deleted_at.as_u64().saturating_sub(invoke_end_at.as_u64());
+        let duration_ms = max(retained_ms, 1); // minimum 1ms
+
+        total_bytes * duration_ms
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3939,6 +4078,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: InvocationId,
         journal_length: EntryIndex,
         should_remove_journal_table_v2: bool,
+        invocation_completion_time: Option<MillisSinceEpoch>,
     ) -> Result<(), Error>
     where
         S: JournalTable + journal_table_v2::JournalTable,
@@ -3948,6 +4088,27 @@ impl<S> StateMachineApplyContext<'_, S> {
             restate.journal.length = journal_length,
             "Effect: Drop journal"
         );
+
+        if self.is_leader && invocation_completion_time.is_some() {
+            if let Ok(partition_id) = Metadata::with_current(|m| {
+                m.partition_table_snapshot()
+                    .find_partition_id(invocation_id.partition_key())
+            }) {
+                let byte_ms = self
+                    .calculate_retained_byte_ms(
+                        &invocation_id,
+                        journal_length,
+                        invocation_completion_time.unwrap(),
+                    )
+                    .await;
+
+                counter!(
+                    USAGE_LEADER_RETAINED_BYTE_MS,
+                    "partition" => partition_id.to_string(),
+                )
+                .increment(byte_ms);
+            }
+        }
 
         if should_remove_journal_table_v2 {
             journal_table_v2::JournalTable::delete_journal(
