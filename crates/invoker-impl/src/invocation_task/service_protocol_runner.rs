@@ -254,7 +254,9 @@ where
                 if let Ok(header_value) = HeaderValue::try_from(header_value) {
                     headers.insert("traceparent", header_value);
                 }
-                if let Ok(tracestate) = HeaderValue::try_from(span_context.trace_state().header()) {
+                if let Ok(tracestate) =
+                    HeaderValue::from_str(span_context.trace_state().header().as_ref())
+                {
                     headers.insert("tracestate", tracestate);
                 }
             }

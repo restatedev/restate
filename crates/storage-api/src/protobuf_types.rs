@@ -124,12 +124,10 @@ pub mod v1 {
 
     pub mod pb_conversion {
         use std::collections::HashSet;
-        use std::str::FromStr;
 
         use anyhow::anyhow;
         use bytes::{Buf, Bytes};
         use bytestring::ByteString;
-        use opentelemetry::trace::TraceState;
 
         use restate_types::deployment::PinnedDeployment;
         use restate_types::errors::InvocationError;
@@ -2278,9 +2276,6 @@ pub mod v1 {
                     u8::try_from(trace_flags).map_err(ConversionError::invalid_data)?,
                 );
 
-                let trace_state =
-                    TraceState::from_str(&trace_state).map_err(ConversionError::invalid_data)?;
-
                 let span_relation = span_relation
                     .map(|span_relation| span_relation.try_into())
                     .transpose()
@@ -2288,12 +2283,12 @@ pub mod v1 {
 
                 Ok(
                     restate_types::invocation::ServiceInvocationSpanContext::new(
-                        opentelemetry::trace::SpanContext::new(
+                        restate_types::invocation::SpanContextDef::new(
                             trace_id,
                             span_id,
                             trace_flags,
                             is_remote,
-                            trace_state,
+                            restate_types::invocation::TraceStateDef::new_header(trace_state),
                         ),
                         span_relation,
                     ),
@@ -2303,15 +2298,14 @@ pub mod v1 {
 
         impl From<restate_types::invocation::ServiceInvocationSpanContext> for SpanContext {
             fn from(value: restate_types::invocation::ServiceInvocationSpanContext) -> Self {
-                let span_context = value.span_context();
-                let trace_state = span_context.trace_state().header();
+                let (span_context, span_cause) = value.into_span_context_and_cause();
                 let span_id = u64::from_be_bytes(span_context.span_id().to_bytes());
                 let trace_flags = u32::from(span_context.trace_flags().to_u8());
                 let trace_id = Bytes::copy_from_slice(&span_context.trace_id().to_bytes());
                 let is_remote = span_context.is_remote();
-                let span_relation = value
-                    .span_cause()
-                    .map(|span_relation| SpanRelation::from(span_relation.clone()));
+                let trace_state = span_context.into_trace_state().into_header();
+                let span_relation =
+                    span_cause.map(|span_relation| SpanRelation::from(span_relation.clone()));
 
                 SpanContext {
                     trace_state,
@@ -2327,7 +2321,7 @@ pub mod v1 {
         impl From<&restate_types::invocation::ServiceInvocationSpanContext> for SpanContext {
             fn from(value: &restate_types::invocation::ServiceInvocationSpanContext) -> Self {
                 let span_context = value.span_context();
-                let trace_state = span_context.trace_state().header();
+                let trace_state = span_context.trace_state().header().into_owned();
                 let span_id = u64::from_be_bytes(span_context.span_id().to_bytes());
                 let trace_flags = u32::from(span_context.trace_flags().to_u8());
                 let trace_id = Bytes::copy_from_slice(&span_context.trace_id().to_bytes());

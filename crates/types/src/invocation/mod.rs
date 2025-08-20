@@ -24,7 +24,8 @@ use crate::{GenerationalNodeId, RestateVersion};
 use bytes::Bytes;
 use bytestring::ByteString;
 use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
-use serde_with::{FromInto, serde_as};
+use serde_with::{DisplayFromStr, FromInto, serde_as};
+use std::borrow::Cow;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::str::FromStr;
@@ -684,13 +685,12 @@ impl Source {
 #[serde_as]
 #[derive(Debug, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ServiceInvocationSpanContext {
-    #[serde_as(as = "FromInto<SpanContextDef>")]
-    span_context: SpanContext,
+    span_context: SpanContextDef,
     cause: Option<SpanRelationCause>,
 }
 
 impl ServiceInvocationSpanContext {
-    pub fn new(span_context: SpanContext, cause: Option<SpanRelationCause>) -> Self {
+    pub fn new(span_context: SpanContextDef, cause: Option<SpanRelationCause>) -> Self {
         Self {
             span_context,
             cause,
@@ -699,7 +699,7 @@ impl ServiceInvocationSpanContext {
 
     pub fn empty() -> Self {
         Self {
-            span_context: SpanContext::empty_context(),
+            span_context: SpanContextDef::empty_context(),
             cause: None,
         }
     }
@@ -719,11 +719,11 @@ impl ServiceInvocationSpanContext {
             return ServiceInvocationSpanContext::empty();
         }
 
-        let (cause, new_span_context) = match &related_span {
+        let (cause, new_span_context) = match related_span {
             SpanRelation::Linked(linked_span_context) => {
                 // create a span context with a new trace that will be used for any actions as part of the background invocation
                 // a span will be emitted using these details when its finished (so we know how long the invocation took)
-                let new_span_context = SpanContext::new(
+                let new_span_context = SpanContextDef::new(
                     // use invocation id as the new trace id; this allows you to follow cause -> new trace in jaeger
                     // trace ids are 128 bits and 'worldwide unique'
                     invocation_id.invocation_uuid().into(),
@@ -734,7 +734,7 @@ impl ServiceInvocationSpanContext {
                     linked_span_context.trace_flags(),
                     // this would never be set to true for a span created in this binary
                     false,
-                    TraceState::default(),
+                    TraceStateDef::default(),
                 );
 
                 let cause = SpanRelationCause::Linked(
@@ -747,7 +747,8 @@ impl ServiceInvocationSpanContext {
             SpanRelation::Parent(parent_span_context) => {
                 // create a span context as part of the existing trace, which will be used for any actions
                 // of the invocation. a span will be emitted with these details when its finished
-                let new_span_context = SpanContext::new(
+                let cause = SpanRelationCause::Parent(parent_span_context.span_id());
+                let new_span_context = SpanContextDef::new(
                     // use parent trace id
                     parent_span_context.trace_id(),
                     // use part of the invocation id as the new span id
@@ -755,9 +756,8 @@ impl ServiceInvocationSpanContext {
                     // use sampling decision of parent trace; this is default otel behaviour
                     parent_span_context.trace_flags(),
                     false,
-                    parent_span_context.trace_state().clone(),
+                    parent_span_context.trace_state,
                 );
-                let cause = SpanRelationCause::Parent(parent_span_context.span_id());
                 (Some(cause), new_span_context)
             }
             SpanRelation::None => {
@@ -765,7 +765,7 @@ impl ServiceInvocationSpanContext {
                 // or an ingress task leading to the invocation
 
                 // create a span context with a new trace
-                let new_span_context = SpanContext::new(
+                let new_span_context = SpanContextDef::new(
                     // use invocation id as the new trace id and span id
                     invocation_id.invocation_uuid().into(),
                     invocation_id.invocation_uuid().into(),
@@ -773,7 +773,7 @@ impl ServiceInvocationSpanContext {
                     // as this should only happen in tests anyway
                     TraceFlags::SAMPLED,
                     false,
-                    TraceState::default(),
+                    TraceStateDef::default(),
                 );
                 (None, new_span_context)
             }
@@ -789,7 +789,7 @@ impl ServiceInvocationSpanContext {
         match self.cause {
             None => SpanRelation::None,
             Some(SpanRelationCause::Parent(span_id)) => {
-                SpanRelation::Parent(SpanContext::new(
+                SpanRelation::Parent(SpanContextDef::new(
                     // in invoke case, trace id of cause matches that of child
                     self.span_context.trace_id(),
                     // use stored span id
@@ -805,7 +805,7 @@ impl ServiceInvocationSpanContext {
                 ))
             }
             Some(SpanRelationCause::Linked(trace_id, span_id)) => {
-                SpanRelation::Linked(SpanContext::new(
+                SpanRelation::Linked(SpanContextDef::new(
                     // use stored trace id
                     trace_id,
                     // use stored span id
@@ -815,14 +815,18 @@ impl ServiceInvocationSpanContext {
                     // this will be ignored; is_remote is not propagated
                     false,
                     // this will be ignored; trace state is not propagated to links
-                    TraceState::default(),
+                    TraceStateDef::default(),
                 ))
             }
         }
     }
 
-    pub fn span_context(&self) -> &SpanContext {
+    pub fn span_context(&self) -> &SpanContextDef {
         &self.span_context
+    }
+
+    pub fn into_span_context_and_cause(self) -> (SpanContextDef, Option<SpanRelationCause>) {
+        (self.span_context, self.cause)
     }
 
     pub fn span_cause(&self) -> Option<&SpanRelationCause> {
@@ -838,11 +842,11 @@ impl ServiceInvocationSpanContext {
     }
 
     pub fn is_sampled(&self) -> bool {
-        self.span_context.trace_flags().is_sampled()
+        self.span_context.trace_flags.is_sampled()
     }
 
     pub fn trace_id(&self) -> TraceId {
-        self.span_context.trace_id()
+        self.span_context.trace_id
     }
 }
 
@@ -852,7 +856,7 @@ impl Default for ServiceInvocationSpanContext {
     }
 }
 
-impl From<ServiceInvocationSpanContext> for SpanContext {
+impl From<ServiceInvocationSpanContext> for SpanContextDef {
     fn from(value: ServiceInvocationSpanContext) -> Self {
         value.span_context
     }
@@ -894,11 +898,19 @@ pub enum SpanRelationCause {
 pub enum SpanRelation {
     #[default]
     None,
-    Parent(SpanContext),
-    Linked(SpanContext),
+    Parent(SpanContextDef),
+    Linked(SpanContextDef),
 }
 
 impl SpanRelation {
+    pub fn parent(ctx: impl Into<SpanContextDef>) -> Self {
+        Self::Parent(ctx.into())
+    }
+
+    pub fn linked(ctx: impl Into<SpanContextDef>) -> Self {
+        Self::Linked(ctx.into())
+    }
+
     fn is_sampled(&self) -> bool {
         match self {
             SpanRelation::None => false,
@@ -951,26 +963,89 @@ pub struct PurgeInvocationRequest {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
-// A hack to allow spancontext to be serialized.
-// Details in https://github.com/open-telemetry/opentelemetry-rust/issues/576#issuecomment-1253396100
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SpanContextDef {
-    trace_id: [u8; 16],
-    span_id: [u8; 8],
-    trace_flags: u8,
+// We use this struct instead of SpanContext as it is serialisable and allows us to use TraceStateDef
+#[serde_as]
+#[derive(Debug, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SpanContextDef {
+    #[serde_as(as = "FromInto<TraceIdDef>")]
+    trace_id: TraceId,
+    #[serde_as(as = "FromInto<SpanIdDef>")]
+    span_id: SpanId,
+    #[serde_as(as = "FromInto<TraceFlagsDef>")]
+    trace_flags: TraceFlags,
     is_remote: bool,
-    trace_state: String,
+    #[serde_as(as = "DisplayFromStr")]
+    trace_state: TraceStateDef,
+}
+
+impl SpanContextDef {
+    pub fn new(
+        trace_id: TraceId,
+        span_id: SpanId,
+        trace_flags: TraceFlags,
+        is_remote: bool,
+        trace_state: TraceStateDef,
+    ) -> Self {
+        Self {
+            trace_id,
+            span_id,
+            trace_flags,
+            is_remote,
+            trace_state,
+        }
+    }
+
+    const fn empty_context() -> Self {
+        Self {
+            trace_id: TraceId::INVALID,
+            span_id: SpanId::INVALID,
+            trace_flags: TraceFlags::NOT_SAMPLED,
+            is_remote: false,
+            trace_state: TraceStateDef::new_header(String::new()),
+        }
+    }
+    pub fn trace_id(&self) -> TraceId {
+        self.trace_id
+    }
+
+    pub fn span_id(&self) -> SpanId {
+        self.span_id
+    }
+
+    pub fn trace_flags(&self) -> TraceFlags {
+        self.trace_flags
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.trace_id != TraceId::INVALID && self.span_id != SpanId::INVALID
+    }
+
+    pub fn is_remote(&self) -> bool {
+        self.is_remote
+    }
+
+    pub fn trace_state(&self) -> &TraceStateDef {
+        &self.trace_state
+    }
+
+    pub fn into_trace_state(self) -> TraceStateDef {
+        self.trace_state
+    }
+
+    fn is_sampled(&self) -> bool {
+        self.trace_flags().is_sampled()
+    }
 }
 
 // Provide a conversion to construct the remote type.
 impl From<SpanContextDef> for SpanContext {
     fn from(def: SpanContextDef) -> Self {
         SpanContext::new(
-            TraceId::from_bytes(def.trace_id),
-            SpanId::from_bytes(def.span_id),
-            TraceFlags::new(def.trace_flags),
+            def.trace_id,
+            def.span_id,
+            def.trace_flags,
             def.is_remote,
-            TraceState::from_str(&def.trace_state).unwrap(),
+            def.trace_state.into_trace_state().unwrap_or_default(),
         )
     }
 }
@@ -978,11 +1053,23 @@ impl From<SpanContextDef> for SpanContext {
 impl From<SpanContext> for SpanContextDef {
     fn from(ctx: SpanContext) -> Self {
         Self {
-            trace_id: ctx.trace_id().to_bytes(),
-            span_id: ctx.span_id().to_bytes(),
-            trace_flags: ctx.trace_flags().to_u8(),
+            trace_id: ctx.trace_id(),
+            span_id: ctx.span_id(),
+            trace_flags: ctx.trace_flags(),
             is_remote: ctx.is_remote(),
-            trace_state: ctx.trace_state().header(),
+            trace_state: TraceStateDef::new_trace_state(ctx.trace_state().clone()),
+        }
+    }
+}
+
+impl From<&SpanContext> for SpanContextDef {
+    fn from(ctx: &SpanContext) -> Self {
+        Self {
+            trace_id: ctx.trace_id(),
+            span_id: ctx.span_id(),
+            trace_flags: ctx.trace_flags(),
+            is_remote: ctx.is_remote(),
+            trace_state: TraceStateDef::new_trace_state(ctx.trace_state().clone()),
         }
     }
 }
@@ -1016,6 +1103,102 @@ impl From<TraceId> for TraceIdDef {
         TraceIdDef(def.to_bytes())
     }
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TraceFlagsDef(u8);
+
+impl From<TraceFlagsDef> for TraceFlags {
+    fn from(def: TraceFlagsDef) -> Self {
+        TraceFlags::new(def.0)
+    }
+}
+
+impl From<TraceFlags> for TraceFlagsDef {
+    fn from(tf: TraceFlags) -> Self {
+        TraceFlagsDef(tf.to_u8())
+    }
+}
+
+// TraceStateDef allows us to accept either header strings (from storage) or parsed TraceStates (from the otel libraries) and pass them on without being forced to parse/format
+// It uses oncelock to ensure that the fairly expensive parse/format steps are only done once.
+#[derive(Debug, Clone)]
+pub enum TraceStateDef {
+    TraceState(TraceState),
+    Header(String),
+}
+
+pub struct InvalidTraceState;
+
+impl TraceStateDef {
+    pub const fn new_header(state: String) -> Self {
+        Self::Header(state)
+    }
+
+    pub const fn new_trace_state(ts: TraceState) -> Self {
+        Self::TraceState(ts)
+    }
+
+    pub fn into_header(self) -> String {
+        match self {
+            TraceStateDef::TraceState(ts) => ts.header(),
+            TraceStateDef::Header(header) => header,
+        }
+    }
+
+    pub fn header<'a>(&'a self) -> Cow<'a, str> {
+        match self {
+            TraceStateDef::TraceState(ts) => Cow::Owned(ts.header()),
+            TraceStateDef::Header(header) => Cow::Borrowed(header),
+        }
+    }
+
+    pub fn into_trace_state(self) -> Result<TraceState, opentelemetry::trace::TraceError> {
+        match self {
+            TraceStateDef::TraceState(ts) => Ok(ts),
+            TraceStateDef::Header(header) => TraceState::from_str(&header),
+        }
+    }
+
+    pub fn trace_state(&self) -> Result<TraceState, opentelemetry::trace::TraceError> {
+        match self {
+            TraceStateDef::TraceState(ts) => Ok(ts.clone()),
+            TraceStateDef::Header(header) => TraceState::from_str(header),
+        }
+    }
+}
+
+impl Default for TraceStateDef {
+    fn default() -> Self {
+        Self::Header(String::default())
+    }
+}
+
+impl std::fmt::Display for TraceStateDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.header())
+    }
+}
+
+impl FromStr for TraceStateDef {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self::new_header(s.to_owned()))
+    }
+}
+
+impl PartialEq for TraceStateDef {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::TraceState(l), Self::TraceState(r)) => l == r,
+            (Self::Header(l), Self::Header(r)) => l == r,
+            (Self::TraceState(l), Self::Header(r)) => &l.header() == r,
+            (Self::Header(l), Self::TraceState(r)) => l == &r.header(),
+        }
+    }
+}
+
+impl Eq for TraceStateDef {}
 
 /// Defines how to query the invocation.
 /// This is used in some commands, such as [AttachInvocationRequest], to uniquely address an existing invocation.
@@ -1564,6 +1747,63 @@ mod tests {
             assert_eq!(old_response.id, caller_id);
             assert_eq!(old_response.entry_index, caller_completion_id);
             assert_eq!(old_response.result, result);
+        }
+    }
+
+    mod span_context {
+        use std::str::FromStr;
+
+        use opentelemetry::trace::{SpanId, TraceFlags, TraceId, TraceState};
+
+        use crate::invocation::{
+            ServiceInvocationSpanContext, SpanContextDef, SpanRelationCause, TraceStateDef,
+        };
+
+        #[test]
+        fn roundtrip_invocation_span_context() {
+            let ctx = ServiceInvocationSpanContext::new(
+                SpanContextDef::new(
+                    TraceId::from_bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+                    SpanId::from_bytes([1, 2, 3, 4, 5, 6, 7, 8]),
+                    TraceFlags::SAMPLED,
+                    false,
+                    TraceStateDef::new_trace_state(
+                        TraceState::from_str("vendorname1=opaqueValue1,vendorname2=opaqueValue2")
+                            .unwrap(),
+                    ),
+                ),
+                Some(SpanRelationCause::Linked(
+                    TraceId::from_bytes([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+                    SpanId::from_bytes([1, 2, 3, 4, 5, 6, 7, 8]),
+                )),
+            );
+
+            let encoded_ctx = serde_json::to_string(&ctx).unwrap();
+
+            assert_eq!(
+                encoded_ctx,
+                r#"{"span_context":{"trace_id":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],"span_id":[1,2,3,4,5,6,7,8],"trace_flags":1,"is_remote":false,"trace_state":"vendorname1=opaqueValue1,vendorname2=opaqueValue2"},"cause":{"Linked":[[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],[1,2,3,4,5,6,7,8]]}}"#
+            );
+
+            let decoded_ctx = serde_json::from_str(&encoded_ctx).unwrap();
+
+            assert_eq!(ctx, decoded_ctx)
+        }
+
+        #[test]
+        fn trace_state_def_eq() {
+            assert_eq!(
+                TraceStateDef::new_trace_state(
+                    TraceState::from_str("vendorname1=opaqueValue1,vendorname2=opaqueValue2")
+                        .unwrap(),
+                ),
+                TraceStateDef::Header("vendorname1=opaqueValue1,vendorname2=opaqueValue2".into())
+            );
+
+            assert_eq!(
+                TraceStateDef::new_trace_state(TraceState::from_str("").unwrap(),),
+                TraceStateDef::Header("".into())
+            );
         }
     }
 }

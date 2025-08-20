@@ -546,15 +546,15 @@ macro_rules! invocation_span {
                     .clone(),
             )];
 
-            if let SpanRelation::Linked(ref ctx) = $relation {
-                links.push(Link::new(ctx.clone(), vec![KeyValue::new("restate.runtime", true)], 0));
-            }
-
-            let builder = builder.with_links(links);
-
             let span = match $relation {
-                SpanRelation::None | SpanRelation::Linked(_) => builder.start(&tracer),
-                SpanRelation::Parent(ctx) => builder.start_with_context(&tracer,&Context::new().with_remote_span_context(ctx)),
+                SpanRelation::None => {
+                    builder.with_links(links).start(&tracer)
+                }
+                SpanRelation::Linked(ctx) => {
+                     links.push(Link::new(ctx.into(), vec![KeyValue::new("restate.runtime", true)], 0));
+                     builder.with_links(links).start(&tracer)
+                }
+                SpanRelation::Parent(ctx) => builder.with_links(links).start_with_context(&tracer,&Context::new().with_remote_span_context(ctx.into())),
             };
 
             span

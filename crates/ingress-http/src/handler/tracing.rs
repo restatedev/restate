@@ -38,7 +38,7 @@ pub(crate) fn prepare_tracing_span<B>(
     // if the inbound span is set (`traceparent`) we use that as
     // parent to the ingress span.
     let relation = if inbound_span.span_context().is_valid() {
-        SpanRelation::Parent(inbound_span.span_context().clone())
+        SpanRelation::parent(inbound_span.span_context())
     } else {
         SpanRelation::None
     };

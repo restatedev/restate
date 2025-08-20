@@ -2733,7 +2733,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 );
 
                 if let SpanRelation::Linked(ctx) = span_context.causing_span_relation() {
-                    span.add_link(ctx, Vec::default());
+                    span.add_link(ctx.into(), Vec::default());
                 }
 
                 let service_invocation = Box::new(ServiceInvocation {
