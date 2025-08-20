@@ -45,6 +45,7 @@ thiserror = { workspace = true }
 tower = { workspace = true }
 tower-service = { version = "0.3" }
 tracing = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 googletest = { workspace = true }

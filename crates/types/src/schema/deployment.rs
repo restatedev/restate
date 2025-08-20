@@ -68,10 +68,18 @@ pub struct DeploymentMetadata {
 }
 
 /// Lambda compression
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum EndpointLambdaCompression {
     Zstd,
+}
+
+impl EndpointLambdaCompression {
+    pub fn http_name(&self) -> &'static str {
+        match self {
+            EndpointLambdaCompression::Zstd => "zstd",
+        }
+    }
 }
 
 // TODO this type is serde because it represents how data is stored in the schema registry

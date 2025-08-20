@@ -21,12 +21,12 @@ use aws_sdk_lambda::operation::invoke::InvokeError;
 use aws_sdk_lambda::primitives::Blob;
 use base64::Engine;
 use base64::display::Base64Display;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use bytestring::ByteString;
 use futures::future::{BoxFuture, Shared};
 use futures::{FutureExt, TryFutureExt};
 use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderValue, Method, Response};
+use http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
 use restate_types::config::AwsOptions;
@@ -144,10 +144,10 @@ impl LambdaClient {
         arn: LambdaARN,
         method: Method,
         assume_role_arn: Option<ByteString>,
-        _compression: Option<EndpointLambdaCompression>,
+        compression: Option<EndpointLambdaCompression>,
         body: B,
         path: PathAndQuery,
-        headers: HeaderMap<HeaderValue>,
+        mut headers: HeaderMap<HeaderValue>,
     ) -> impl Future<Output = Result<Response<Full<Bytes>>, LambdaError>> + Send + 'static
     where
         B: Body + Send + Unpin + 'static,
@@ -157,10 +157,32 @@ impl LambdaClient {
         let function_name = arn.to_string();
         let region = Region::new(arn.region().to_string());
         let inner = self.inner.clone();
+
+        // Add encoding headers
+        if let Some(compression) = compression {
+            headers.insert(
+                http::header::CONTENT_ENCODING,
+                HeaderValue::from_static(compression.http_name()),
+            );
+            headers.insert(
+                http::header::ACCEPT_ENCODING,
+                HeaderValue::from_static(compression.http_name()),
+            );
+        }
+
         let body = body
             .map_err(|e| LambdaError::Body(Box::new(e)))
             .collect()
-            .map_ok(|b| b.to_bytes());
+            .and_then(move |b| {
+                std::future::ready(match compression {
+                    None => Ok(b.to_bytes()),
+                    Some(EndpointLambdaCompression::Zstd) => {
+                        zstd::stream::encode_all(b.aggregate().reader(), 3)
+                            .map(Bytes::from)
+                            .map_err(|e| LambdaError::Body(Box::new(e)))
+                    }
+                })
+            });
 
         async move {
             let (body, inner): (Result<Bytes, LambdaError>, Arc<LambdaClientInner>) =
@@ -358,17 +380,38 @@ impl TryFrom<ApiGatewayProxyResponse> for Response<Full<Bytes>> {
             Bytes::default()
         };
 
-        let builder = Response::builder().status(response.status_code);
+        // Figure out if the response body is compressed
+        let mut compression: Option<EndpointLambdaCompression> = None;
+        if let Some(content_encoding_header) = response
+            .headers
+            .as_ref()
+            .and_then(|hm| hm.get(http::header::CONTENT_ENCODING))
+        {
+            if content_encoding_header.to_str().is_ok_and(|hv| {
+                hv.trim()
+                    .eq_ignore_ascii_case(EndpointLambdaCompression::Zstd.http_name())
+            }) {
+                compression = Some(EndpointLambdaCompression::Zstd);
+            }
+        }
 
-        let builder = if let Some(headers) = response.headers {
-            headers
-                .iter()
-                .fold(builder, |builder, (k, v)| builder.header(k, v))
-        } else {
-            builder
+        // Run compression if needed
+        let final_body = match compression {
+            None => body,
+            Some(EndpointLambdaCompression::Zstd) => zstd::stream::decode_all(body.reader())
+                .map(Bytes::from)
+                .map_err(|e| LambdaError::Body(Box::new(e)))?,
         };
 
-        Ok(builder.body(body.into()).expect("response must be created"))
+        // And prepare the http response to give back
+        let mut http_response = Response::new(final_body.into());
+        *http_response.status_mut() =
+            StatusCode::from_u16(response.status_code).unwrap_or_default();
+        if let Some(headers) = response.headers {
+            *http_response.headers_mut() = headers;
+        }
+
+        Ok(http_response)
     }
 }
 
