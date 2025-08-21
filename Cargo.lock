@@ -6492,6 +6492,7 @@ dependencies = [
  "restate-core",
  "restate-errors",
  "restate-metadata-store",
+ "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol",
  "restate-storage-query-datafusion",
@@ -6509,6 +6510,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tower 0.5.2",
+ "tower-http",
  "tracing",
  "urlencoding",
 ]

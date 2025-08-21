@@ -102,7 +102,7 @@ pub enum Error {
     level = "error",
     name = "server",
     skip_all,
-    fields(server_name = %server_name, uds.path = tracing::field::Empty, net.host.addr = tracing::field::Empty, net.host.port = tracing::field::Empty)
+    fields(server_name = %server_name, uds.path = tracing::field::Empty, server.address = tracing::field::Empty, server.port = tracing::field::Empty, network.transport = tracing::field::Empty)
 )]
 pub async fn run_hyper_server<S, B>(
     bind_address: &BindAddress,
@@ -134,6 +134,7 @@ where
             })?;
 
             Span::current().record("uds.path", uds_path.display().to_string());
+            Span::current().record("network.transport", "unix");
             info!("Server listening");
             on_bind();
 
@@ -153,8 +154,9 @@ where
                 source: err,
             })?;
 
-            Span::current().record("net.host.addr", local_addr.ip().to_string());
-            Span::current().record("net.host.port", local_addr.port());
+            Span::current().record("server.address", local_addr.ip().to_string());
+            Span::current().record("server.port", local_addr.port());
+            Span::current().record("network.transport", "tcp");
             info!("Server listening");
             on_bind();
 
