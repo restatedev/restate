@@ -11,11 +11,12 @@
 use std::ops::{ControlFlow, RangeInclusive};
 
 use futures::Stream;
+use restate_storage_api::protobuf_types::v1::InvocationStatusV2;
 use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusDynAccessor,
+    InvocationLite, InvocationStatus, InvocationStatusAccessor, InvocationStatusDiscriminants,
     InvocationStatusTable, InvocationStatusV1, InvokedInvocationStatusLite,
     ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
 };
@@ -170,7 +171,17 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     }
 }
 
+pub type ScanInvocationStatusAccessor<'a> = InvocationStatusAccessor<
+    &'a InvocationStatusV2,
+    &'a InvocationStatusV2,
+    &'a InvocationStatusV2,
+>;
+
 impl ScanInvocationStatusTable for PartitionStore {
+    type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
+    type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
+    type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
+
     fn scan_invoked_invocations(
         &self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
@@ -216,7 +227,14 @@ impl ScanInvocationStatusTable for PartitionStore {
     fn for_each_invocation_status<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
-                (InvocationId, InvocationStatusDynAccessor<'a>),
+                (
+                    InvocationId,
+                    InvocationStatusAccessor<
+                        Self::PreFlightInvocationMetadataAccessor<'a>,
+                        Self::InFlightInvocationMetadataAccessor<'a>,
+                        Self::CompletedInvocationMetadataAccessor<'a>,
+                    >,
+                ),
             ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync

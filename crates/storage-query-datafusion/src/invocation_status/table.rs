@@ -12,11 +12,10 @@ use std::fmt::Debug;
 use std::ops::{ControlFlow, RangeInclusive};
 use std::sync::Arc;
 
+use restate_partition_store::invocation_status_table::ScanInvocationStatusAccessor;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::invocation_status_table::{
-    InvocationStatusDynAccessor, ScanInvocationStatusTable,
-};
+use restate_storage_api::invocation_status_table::ScanInvocationStatusTable;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 
@@ -61,7 +60,7 @@ struct StatusScanner;
 
 impl ScanLocalPartition for StatusScanner {
     type Builder = SysInvocationStatusBuilder;
-    type Item<'a> = (InvocationId, InvocationStatusDynAccessor<'a>);
+    type Item<'a> = (InvocationId, ScanInvocationStatusAccessor<'a>);
     type ConversionError = ConversionError;
 
     fn for_each_row<

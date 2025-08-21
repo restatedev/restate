@@ -352,6 +352,25 @@ impl InvocationStatus {
             InvocationStatus::Free => None,
         }
     }
+
+    pub fn accessor(
+        &self,
+    ) -> InvocationStatusAccessor<
+        &PreFlightInvocationMetadata,
+        &InFlightInvocationMetadata,
+        &CompletedInvocation,
+    > {
+        match self {
+            InvocationStatus::Scheduled(s) => InvocationStatusAccessor::Scheduled(&s.metadata),
+            InvocationStatus::Inboxed(i) => InvocationStatusAccessor::Inboxed(&i.metadata),
+            InvocationStatus::Invoked(metadata) => InvocationStatusAccessor::Invoked(metadata),
+            InvocationStatus::Suspended { metadata, .. } => {
+                InvocationStatusAccessor::Suspended(metadata)
+            }
+            InvocationStatus::Completed(c) => InvocationStatusAccessor::Completed(c),
+            InvocationStatus::Free => InvocationStatusAccessor::Free,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -742,6 +761,10 @@ pub trait ReadOnlyInvocationStatusTable {
 }
 
 pub trait ScanInvocationStatusTable {
+    type PreFlightInvocationMetadataAccessor<'a>: PreFlightInvocationMetadataAccessor;
+    type InFlightInvocationMetadataAccessor<'a>: InFlightInvocationMetadataAccessor;
+    type CompletedInvocationMetadataAccessor<'a>: CompletedInvocationMetadataAccessor;
+
     fn scan_invocation_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
@@ -750,7 +773,14 @@ pub trait ScanInvocationStatusTable {
     fn for_each_invocation_status<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
-                (InvocationId, InvocationStatusDynAccessor<'a>),
+                (
+                    InvocationId,
+                    InvocationStatusAccessor<
+                        Self::PreFlightInvocationMetadataAccessor<'a>,
+                        Self::InFlightInvocationMetadataAccessor<'a>,
+                        Self::CompletedInvocationMetadataAccessor<'a>,
+                    >,
+                ),
             ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync
@@ -915,39 +945,14 @@ impl PartitionStoreProtobufValue for InvocationStatusV1 {
 pub enum InvocationStatusAccessor<
     PreFlightInvocationMetadataAccessor,
     InFlightInvocationMetadataAccessor,
-    CompletedInvocationAccessor,
+    CompletedInvocationMetadataAccessor,
 > {
     Scheduled(PreFlightInvocationMetadataAccessor),
     Inboxed(PreFlightInvocationMetadataAccessor),
     Invoked(InFlightInvocationMetadataAccessor),
     Suspended(InFlightInvocationMetadataAccessor),
-    Completed(CompletedInvocationAccessor),
+    Completed(CompletedInvocationMetadataAccessor),
     Free,
-}
-
-pub type InvocationStatusDynAccessor<'a> = InvocationStatusAccessor<
-    &'a dyn PreFlightInvocationMetadataAccessor,
-    &'a dyn InFlightInvocationMetadataAccessor,
-    &'a dyn CompletedInvocationMetadataAccessor,
->;
-
-impl From<InvocationStatus>
-    for InvocationStatusAccessor<
-        PreFlightInvocationMetadata,
-        InFlightInvocationMetadata,
-        CompletedInvocation,
-    >
-{
-    fn from(value: InvocationStatus) -> Self {
-        match value {
-            InvocationStatus::Scheduled(s) => Self::Scheduled(s.metadata),
-            InvocationStatus::Inboxed(i) => Self::Inboxed(i.metadata),
-            InvocationStatus::Invoked(metadata) => Self::Invoked(metadata),
-            InvocationStatus::Suspended { metadata, .. } => Self::Suspended(metadata),
-            InvocationStatus::Completed(c) => Self::Completed(c),
-            InvocationStatus::Free => Self::Free,
-        }
-    }
 }
 
 impl<
@@ -956,27 +961,6 @@ impl<
     C: CompletedInvocationMetadataAccessor,
 > InvocationStatusAccessor<P, I, C>
 {
-    pub fn downcast<'a>(&'a self) -> InvocationStatusDynAccessor<'a> {
-        match self {
-            InvocationStatusAccessor::Scheduled(s) => {
-                InvocationStatusAccessor::Scheduled(s as &dyn PreFlightInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Inboxed(i) => {
-                InvocationStatusAccessor::Inboxed(i as &dyn PreFlightInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Invoked(i) => {
-                InvocationStatusAccessor::Invoked(i as &dyn InFlightInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Suspended(s) => {
-                InvocationStatusAccessor::Suspended(s as &dyn InFlightInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Completed(c) => {
-                InvocationStatusAccessor::Completed(c as &dyn CompletedInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Free => InvocationStatusAccessor::Free,
-        }
-    }
-
     pub fn invocation_target(
         &self,
     ) -> std::result::Result<Option<InvocationTargetRef>, restate_types::errors::ConversionError>
@@ -1021,7 +1005,10 @@ impl<
 
 pub trait PreFlightInvocationMetadataAccessor: InvocationMetadataAccessor {}
 
-impl<T: PreFlightInvocationMetadataAccessor + ?Sized> PreFlightInvocationMetadataAccessor for &T {}
+impl<T: PreFlightInvocationMetadataAccessor + InvocationMetadataAccessor + ?Sized>
+    PreFlightInvocationMetadataAccessor for &T
+{
+}
 
 pub trait JournalMetadataAccessor {
     fn trace_id(&self) -> std::result::Result<TraceId, ConversionError>;

@@ -635,37 +635,28 @@ pub mod v1 {
         }
 
         impl InvocationStatusV2 {
-            pub fn accessor<'a>(
-                &'a self,
+            pub fn accessor(
+                &self,
             ) -> Result<
-                crate::invocation_status_table::InvocationStatusDynAccessor<'a>,
+                crate::invocation_status_table::InvocationStatusAccessor<&Self, &Self, &Self>,
                 ConversionError,
             > {
-                use crate::invocation_status_table::{
-                    CompletedInvocationMetadataAccessor, InFlightInvocationMetadataAccessor,
-                    InvocationStatusAccessor, PreFlightInvocationMetadataAccessor,
-                };
+                use crate::invocation_status_table::InvocationStatusAccessor;
                 match self.status() {
                     invocation_status_v2::Status::Scheduled => {
-                        Ok(InvocationStatusAccessor::Scheduled(
-                            self as &dyn PreFlightInvocationMetadataAccessor,
-                        ))
+                        Ok(InvocationStatusAccessor::Scheduled(self))
                     }
-                    invocation_status_v2::Status::Inboxed => Ok(InvocationStatusAccessor::Inboxed(
-                        self as &dyn PreFlightInvocationMetadataAccessor,
-                    )),
-                    invocation_status_v2::Status::Invoked => Ok(InvocationStatusAccessor::Invoked(
-                        self as &dyn InFlightInvocationMetadataAccessor,
-                    )),
+                    invocation_status_v2::Status::Inboxed => {
+                        Ok(InvocationStatusAccessor::Inboxed(self))
+                    }
+                    invocation_status_v2::Status::Invoked => {
+                        Ok(InvocationStatusAccessor::Invoked(self))
+                    }
                     invocation_status_v2::Status::Suspended => {
-                        Ok(InvocationStatusAccessor::Suspended(
-                            self as &dyn InFlightInvocationMetadataAccessor,
-                        ))
+                        Ok(InvocationStatusAccessor::Suspended(self))
                     }
                     invocation_status_v2::Status::Completed => {
-                        Ok(InvocationStatusAccessor::Completed(
-                            self as &dyn CompletedInvocationMetadataAccessor,
-                        ))
+                        Ok(InvocationStatusAccessor::Completed(self))
                     }
                     _ => Err(ConversionError::unexpected_enum_variant(
                         "status",
