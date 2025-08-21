@@ -40,28 +40,30 @@ pub(crate) fn append_invocation_status_row<
         || row.is_target_handler_name_defined()
         || row.is_target_defined()
         || row.is_target_service_ty_defined())
-        && let Some(invocation_target) = invocation_status.invocation_target()? {
-            if row.is_target_service_name_defined() {
-                row.target_service_name(invocation_target.service_name()?);
-            }
-            if row.is_target_service_key_defined()
-                && let Some(key) = invocation_target.key()? {
-                    row.target_service_key(key);
-                }
-            if row.is_target_handler_name_defined() {
-                row.target_handler_name(invocation_target.handler_name()?);
-            }
-            if row.is_target_defined() {
-                row.fmt_target(invocation_target.target_fmt()?);
-            }
-            if row.is_target_service_ty_defined() {
-                row.target_service_ty(match invocation_target.service_ty() {
-                    ServiceType::Service => "service",
-                    ServiceType::VirtualObject => "virtual_object",
-                    ServiceType::Workflow => "workflow",
-                });
-            }
+        && let Some(invocation_target) = invocation_status.invocation_target()?
+    {
+        if row.is_target_service_name_defined() {
+            row.target_service_name(invocation_target.service_name()?);
         }
+        if row.is_target_service_key_defined()
+            && let Some(key) = invocation_target.key()?
+        {
+            row.target_service_key(key);
+        }
+        if row.is_target_handler_name_defined() {
+            row.target_handler_name(invocation_target.handler_name()?);
+        }
+        if row.is_target_defined() {
+            row.fmt_target(invocation_target.target_fmt()?);
+        }
+        if row.is_target_service_ty_defined() {
+            row.target_service_ty(match invocation_target.service_ty() {
+                ServiceType::Service => "service",
+                ServiceType::VirtualObject => "virtual_object",
+                ServiceType::Workflow => "workflow",
+            });
+        }
+    }
 
     // Invocation id
     if row.is_id_defined() {
@@ -87,9 +89,10 @@ pub(crate) fn append_invocation_status_row<
                 fill_invoked_by(&mut row, scheduled.source()?)?;
             }
             if row.is_scheduled_at_defined()
-                && let Some(execution_time) = scheduled.execution_time() {
-                    row.scheduled_start_at(execution_time.as_u64() as i64)
-                }
+                && let Some(execution_time) = scheduled.execution_time()
+            {
+                row.scheduled_start_at(execution_time.as_u64() as i64)
+            }
             if row.is_completion_retention_defined() {
                 row.completion_retention(
                     scheduled.completion_retention_duration()?.as_millis() as i64
@@ -110,9 +113,10 @@ pub(crate) fn append_invocation_status_row<
                 fill_invoked_by(&mut row, inboxed.source()?)?;
             }
             if row.is_scheduled_at_defined()
-                && let Some(execution_time) = inboxed.execution_time() {
-                    row.scheduled_start_at(execution_time.as_u64() as i64)
-                }
+                && let Some(execution_time) = inboxed.execution_time()
+            {
+                row.scheduled_start_at(execution_time.as_u64() as i64)
+            }
             if row.is_completion_retention_defined() {
                 row.completion_retention(
                     inboxed.completion_retention_duration()?.as_millis() as i64
@@ -148,9 +152,10 @@ pub(crate) fn append_invocation_status_row<
                 fill_invoked_by(&mut row, completed.source()?)?;
             }
             if row.is_scheduled_at_defined()
-                && let Some(execution_time) = completed.execution_time() {
-                    row.scheduled_start_at(execution_time.as_u64() as i64)
-                }
+                && let Some(execution_time) = completed.execution_time()
+            {
+                row.scheduled_start_at(execution_time.as_u64() as i64)
+            }
             if row.is_completion_retention_defined() {
                 row.completion_retention(
                     completed.completion_retention_duration()?.as_millis() as i64
@@ -195,20 +200,23 @@ fn fill_in_flight_invocation_metadata(
     }
     // journal_metadata and stats are filled by other functions
     if row.is_pinned_deployment_id_defined()
-        && let Some(deployment_id) = meta.deployment_id()? {
-            row.fmt_pinned_deployment_id(deployment_id);
-        }
+        && let Some(deployment_id) = meta.deployment_id()?
+    {
+        row.fmt_pinned_deployment_id(deployment_id);
+    }
     if row.is_pinned_service_protocol_version_defined()
-        && let Some(service_protocol_version) = meta.service_protocol_version()? {
-            row.pinned_service_protocol_version(service_protocol_version.as_repr().unsigned_abs());
-        }
+        && let Some(service_protocol_version) = meta.service_protocol_version()?
+    {
+        row.pinned_service_protocol_version(service_protocol_version.as_repr().unsigned_abs());
+    }
     if needs_invoked_by(row) {
         fill_invoked_by(row, meta.source()?)?;
     }
     if row.is_scheduled_at_defined()
-        && let Some(execution_time) = meta.execution_time() {
-            row.scheduled_start_at(execution_time.as_u64() as i64)
-        }
+        && let Some(execution_time) = meta.execution_time()
+    {
+        row.scheduled_start_at(execution_time.as_u64() as i64)
+    }
     if row.is_completion_retention_defined() {
         row.completion_retention(meta.completion_retention_duration()?.as_millis() as i64);
     }
