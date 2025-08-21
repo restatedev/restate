@@ -204,7 +204,7 @@ mod tests {
         InvocationStatusAccessor, InvokedInvocationStatusLite, JournalMetadata,
         ScanInvocationStatusTable,
     };
-    use restate_storage_api::protobuf_types::v1::InvocationStatusV2;
+    use restate_storage_api::protobuf_types::v1::InvocationStatusV2Lazy;
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::partition_table::{FindPartition, PartitionTable};
@@ -214,9 +214,9 @@ mod tests {
     struct MockInvocationStatusReader(Vec<(InvocationId, InvocationStatus)>);
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
-        type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
-        type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
-        type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
+        type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
+        type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
+        type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
 
         fn scan_invocation_statuses(
             &self,
@@ -234,9 +234,9 @@ mod tests {
                     (
                         InvocationId,
                         InvocationStatusAccessor<
-                            Self::PreFlightInvocationMetadataAccessor<'static>,
-                            Self::InFlightInvocationMetadataAccessor<'static>,
-                            Self::CompletedInvocationMetadataAccessor<'static>,
+                            Self::PreFlightInvocationMetadataAccessor<'a>,
+                            Self::InFlightInvocationMetadataAccessor<'a>,
+                            Self::CompletedInvocationMetadataAccessor<'a>,
                         >,
                     ),
                 ) -> std::ops::ControlFlow<std::result::Result<(), E>>
