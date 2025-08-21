@@ -993,12 +993,12 @@ impl<
         }
     }
 
-    pub fn idempotency_key(&self) -> Option<&str> {
+    pub fn idempotency_key(&self) -> std::result::Result<Option<&str>, ConversionError> {
         match self {
             Self::Scheduled(metadata) | Self::Inboxed(metadata) => metadata.idempotency_key(),
             Self::Invoked(metadata) | Self::Suspended(metadata) => metadata.idempotency_key(),
             Self::Completed(completed) => completed.idempotency_key(),
-            _ => None,
+            _ => Ok(None),
         }
     }
 
@@ -1260,7 +1260,7 @@ impl JournalMetadataAccessor for CompletedInvocation {
 
 pub trait InvocationMetadataAccessor: Send + Sync {
     fn invocation_target(&self) -> std::result::Result<InvocationTargetRef, ConversionError>;
-    fn idempotency_key(&self) -> Option<&str>;
+    fn idempotency_key(&self) -> std::result::Result<Option<&str>, ConversionError>;
 
     fn creation_time(&self) -> MillisSinceEpoch;
     fn modification_time(&self) -> MillisSinceEpoch;
@@ -1269,7 +1269,7 @@ pub trait InvocationMetadataAccessor: Send + Sync {
     fn running_transition_time(&self) -> Option<MillisSinceEpoch>;
     fn completed_transition_time(&self) -> Option<MillisSinceEpoch>;
 
-    fn created_using_restate_version(&self) -> &str;
+    fn created_using_restate_version(&self) -> std::result::Result<&str, ConversionError>;
     fn source(&self) -> std::result::Result<SourceRef, ConversionError>;
     fn execution_time(&self) -> Option<MillisSinceEpoch>;
     fn completion_retention_duration(&self) -> std::result::Result<Duration, ConversionError>;
@@ -1282,7 +1282,7 @@ impl<L: InvocationMetadataAccessor, R: InvocationMetadataAccessor> InvocationMet
     fn invocation_target(&self) -> std::result::Result<InvocationTargetRef, ConversionError> {
         either_match!(self, invocation_target())
     }
-    fn idempotency_key(&self) -> Option<&str> {
+    fn idempotency_key(&self) -> std::result::Result<Option<&str>, ConversionError> {
         either_match!(self, idempotency_key())
     }
     fn creation_time(&self) -> MillisSinceEpoch {
@@ -1303,7 +1303,7 @@ impl<L: InvocationMetadataAccessor, R: InvocationMetadataAccessor> InvocationMet
     fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
         either_match!(self, completed_transition_time())
     }
-    fn created_using_restate_version(&self) -> &str {
+    fn created_using_restate_version(&self) -> std::result::Result<&str, ConversionError> {
         either_match!(self, created_using_restate_version())
     }
     fn source(&self) -> std::result::Result<SourceRef, ConversionError> {
@@ -1346,7 +1346,10 @@ impl<T: InvocationMetadataAccessor + ?Sized> InvocationMetadataAccessor for &T {
     ) -> std::result::Result<InvocationTargetRef, restate_types::errors::ConversionError> {
         (*self).invocation_target()
     }
-    fn idempotency_key(&self) -> Option<&str> {
+    fn idempotency_key(
+        &self,
+    ) -> std::result::Result<std::option::Option<&str>, restate_types::errors::ConversionError>
+    {
         (*self).idempotency_key()
     }
     fn creation_time(&self) -> MillisSinceEpoch {
@@ -1367,7 +1370,9 @@ impl<T: InvocationMetadataAccessor + ?Sized> InvocationMetadataAccessor for &T {
     fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
         (*self).completed_transition_time()
     }
-    fn created_using_restate_version(&self) -> &str {
+    fn created_using_restate_version(
+        &self,
+    ) -> std::result::Result<&str, restate_types::errors::ConversionError> {
         (*self).created_using_restate_version()
     }
     fn source(&self) -> std::result::Result<SourceRef, restate_types::errors::ConversionError> {
@@ -1394,8 +1399,11 @@ impl InvocationMetadataAccessor for PreFlightInvocationMetadata {
     ) -> std::result::Result<InvocationTargetRef, restate_types::errors::ConversionError> {
         Ok((&self.invocation_target).into())
     }
-    fn idempotency_key(&self) -> Option<&str> {
-        self.idempotency_key.as_deref()
+    fn idempotency_key(
+        &self,
+    ) -> std::result::Result<std::option::Option<&str>, restate_types::errors::ConversionError>
+    {
+        Ok(self.idempotency_key.as_deref())
     }
     fn creation_time(&self) -> MillisSinceEpoch {
         self.timestamps.creation_time()
@@ -1415,8 +1423,10 @@ impl InvocationMetadataAccessor for PreFlightInvocationMetadata {
     fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
         self.timestamps.completed_transition_time()
     }
-    fn created_using_restate_version(&self) -> &str {
-        self.created_using_restate_version.as_str()
+    fn created_using_restate_version(
+        &self,
+    ) -> std::result::Result<&str, restate_types::errors::ConversionError> {
+        Ok(self.created_using_restate_version.as_str())
     }
     fn source(&self) -> std::result::Result<SourceRef, restate_types::errors::ConversionError> {
         Ok(SourceRef::from(&self.source))
@@ -1442,8 +1452,11 @@ impl InvocationMetadataAccessor for InFlightInvocationMetadata {
     ) -> std::result::Result<InvocationTargetRef, restate_types::errors::ConversionError> {
         Ok((&self.invocation_target).into())
     }
-    fn idempotency_key(&self) -> Option<&str> {
-        self.idempotency_key.as_deref()
+    fn idempotency_key(
+        &self,
+    ) -> std::result::Result<std::option::Option<&str>, restate_types::errors::ConversionError>
+    {
+        Ok(self.idempotency_key.as_deref())
     }
     fn creation_time(&self) -> MillisSinceEpoch {
         self.timestamps.creation_time()
@@ -1463,8 +1476,10 @@ impl InvocationMetadataAccessor for InFlightInvocationMetadata {
     fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
         self.timestamps.completed_transition_time()
     }
-    fn created_using_restate_version(&self) -> &str {
-        self.created_using_restate_version.as_str()
+    fn created_using_restate_version(
+        &self,
+    ) -> std::result::Result<&str, restate_types::errors::ConversionError> {
+        Ok(self.created_using_restate_version.as_str())
     }
     fn source(&self) -> std::result::Result<SourceRef, restate_types::errors::ConversionError> {
         Ok(SourceRef::from(&self.source))
@@ -1490,8 +1505,11 @@ impl InvocationMetadataAccessor for CompletedInvocation {
     ) -> std::result::Result<InvocationTargetRef, restate_types::errors::ConversionError> {
         Ok((&self.invocation_target).into())
     }
-    fn idempotency_key(&self) -> Option<&str> {
-        self.idempotency_key.as_deref()
+    fn idempotency_key(
+        &self,
+    ) -> std::result::Result<std::option::Option<&str>, restate_types::errors::ConversionError>
+    {
+        Ok(self.idempotency_key.as_deref())
     }
     fn creation_time(&self) -> MillisSinceEpoch {
         self.timestamps.creation_time()
@@ -1511,8 +1529,10 @@ impl InvocationMetadataAccessor for CompletedInvocation {
     fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
         self.timestamps.completed_transition_time()
     }
-    fn created_using_restate_version(&self) -> &str {
-        self.created_using_restate_version.as_str()
+    fn created_using_restate_version(
+        &self,
+    ) -> std::result::Result<&str, restate_types::errors::ConversionError> {
+        Ok(self.created_using_restate_version.as_str())
     }
     fn source(&self) -> std::result::Result<SourceRef, restate_types::errors::ConversionError> {
         Ok(SourceRef::from(&self.source))

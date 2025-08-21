@@ -12,7 +12,7 @@ use std::ops::{ControlFlow, RangeInclusive};
 use std::sync::Arc;
 
 use futures::Stream;
-use restate_storage_api::protobuf_types::v1::InvocationStatusV2;
+use restate_storage_api::protobuf_types::v1::InvocationStatusV2Lazy;
 use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
@@ -181,18 +181,18 @@ fn break_on_err<T, E>(r: std::result::Result<T, E>) -> ControlFlow<std::result::
 }
 
 pub type ScanInvocationStatusAccessor<'a> = InvocationStatusAccessor<
-    EitherAccessor<&'a PreFlightInvocationMetadata, &'a InvocationStatusV2>,
-    EitherAccessor<&'a InFlightInvocationMetadata, &'a InvocationStatusV2>,
-    EitherAccessor<&'a CompletedInvocation, &'a InvocationStatusV2>,
+    EitherAccessor<&'a PreFlightInvocationMetadata, &'a InvocationStatusV2Lazy>,
+    EitherAccessor<&'a InFlightInvocationMetadata, &'a InvocationStatusV2Lazy>,
+    EitherAccessor<&'a CompletedInvocation, &'a InvocationStatusV2Lazy>,
 >;
 
 impl ScanInvocationStatusTable for PartitionStore {
     type PreFlightInvocationMetadataAccessor<'a> =
-        EitherAccessor<&'a PreFlightInvocationMetadata, &'a InvocationStatusV2>;
+        EitherAccessor<&'a PreFlightInvocationMetadata, &'a InvocationStatusV2Lazy>;
     type InFlightInvocationMetadataAccessor<'a> =
-        EitherAccessor<&'a InFlightInvocationMetadata, &'a InvocationStatusV2>;
+        EitherAccessor<&'a InFlightInvocationMetadata, &'a InvocationStatusV2Lazy>;
     type CompletedInvocationMetadataAccessor<'a> =
-        EitherAccessor<&'a CompletedInvocation, &'a InvocationStatusV2>;
+        EitherAccessor<&'a CompletedInvocation, &'a InvocationStatusV2Lazy>;
 
     fn scan_invoked_invocations(
         &self,
@@ -314,7 +314,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                         let inv_status_v2 = break_on_err(
                             restate_types::storage::StorageCodec::decode::<
                                 restate_storage_api::protobuf_types::ProtobufStorageWrapper<
-                                    restate_storage_api::protobuf_types::v1::InvocationStatusV2,
+                                    restate_storage_api::protobuf_types::v1::InvocationStatusV2Lazy,
                                 >,
                                 _,
                             >(&mut value)

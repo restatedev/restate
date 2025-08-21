@@ -62,8 +62,8 @@ message SequenceNumber { uint64 sequence_number = 1; }
 message RestateVersion { string version = 1; }
 
 message PartitionDurability {
-  // The partition has applied this LSN durably to the replica-set and/or has been
-  // persisted in a snapshot in the snapshot repository.
+  // The partition has applied this LSN durably to the replica-set and/or has
+  // been persisted in a snapshot in the snapshot repository.
   SequenceNumber durable_point = 1;
   // Timestamp which the durability point was updated
   uint64 modification_time = 2;
@@ -110,9 +110,30 @@ message Source {
 
   message Subscription { bytes subscription_id = 1; }
 
-  message RestartAsNew {
-    InvocationId invocation_id = 1;
+  message RestartAsNew { InvocationId invocation_id = 1; }
+
+  oneof source {
+    Ingress ingress = 9;
+    Service service = 10;
+    google.protobuf.Empty internal = 11;
+    Subscription subscription = 12;
+    RestartAsNew restart_as_new = 13;
   }
+}
+
+// A somewhat slimmer version of Source with nested InvocationTarget left
+// unparsed
+message SourceLazy {
+  message Ingress {}
+
+  message Service {
+    InvocationId invocation_id = 1;
+    optional bytes invocation_target_lazy = 2;
+  }
+
+  message Subscription { bytes subscription_id = 1; }
+
+  message RestartAsNew { InvocationId invocation_id = 1; }
 
   oneof source {
     Ingress ingress = 9;
@@ -196,6 +217,43 @@ message InvocationV2Lite {
   InvocationStatusV2.Status status = 1;
   InvocationTarget invocation_target = 2;
   uint32 current_invocation_epoch = 27;
+}
+
+// A somewhat slimmer version of InvocationStatusV2 with nested messages left
+// unparsed and utf8 left unvalidated.
+message InvocationStatusV2Lazy {
+  InvocationStatusV2.Status status = 1;
+
+  // Common
+  optional bytes invocation_target_lazy = 2;
+  optional bytes source_lazy = 3;
+  optional bytes span_context_lazy = 4;
+  Duration completion_retention_duration = 11;
+  Duration journal_retention_duration = 29;
+  bytes created_using_restate_version = 30;
+
+  // Timestamps
+  uint64 creation_time = 5;
+  uint64 modification_time = 6;
+  optional uint64 inboxed_transition_time = 19;
+  optional uint64 scheduled_transition_time = 20;
+  optional uint64 running_transition_time = 21;
+  optional uint64 completed_transition_time = 22;
+
+  // Scheduled/Inboxed
+  optional bytes argument = 8;
+  optional uint64 execution_time = 10;
+  optional bytes idempotency_key = 12;
+
+  // Invoked/Suspended
+  uint32 journal_length = 14;
+  uint32 commands = 26;
+  optional bytes deployment_id = 15;
+  optional dev.restate.service.protocol.ServiceProtocolVersion
+      service_protocol_version = 16;
+
+  // Completed
+  optional bytes result_lazy = 18;
 }
 
 // TODO remove this after 1.1
@@ -304,6 +362,8 @@ message SpanContext {
   string trace_state = 5;
   optional SpanRelation span_relation = 6;
 }
+
+message SpanContextLite { bytes trace_id = 1; }
 
 message SpanRelation {
   message Parent { uint64 span_id = 1; }
