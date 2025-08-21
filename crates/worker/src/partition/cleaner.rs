@@ -202,8 +202,8 @@ mod tests {
     use restate_storage_api::StorageError;
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
-        InvocationStatusAccessor, InvocationStatusDynAccessor, InvokedInvocationStatusLite,
-        JournalMetadata, ScanInvocationStatusTable,
+        InvocationStatusAccessor, InvokedInvocationStatusLite, JournalMetadata,
+        PreFlightInvocationMetadata, ScanInvocationStatusTable,
     };
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
@@ -214,6 +214,10 @@ mod tests {
     struct MockInvocationStatusReader(Vec<(InvocationId, InvocationStatus)>);
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
+        type PreFlightInvocationMetadataAccessor = PreFlightInvocationMetadata;
+        type InFlightInvocationMetadataAccessor = InFlightInvocationMetadata;
+        type CompletedInvocationMetadataAccessor = CompletedInvocation;
+
         fn scan_invocation_statuses(
             &self,
             _: RangeInclusive<PartitionKey>,
@@ -227,7 +231,14 @@ mod tests {
         fn for_each_invocation_status<
             E: Into<anyhow::Error>,
             F: for<'a> FnMut(
-                    (InvocationId, InvocationStatusDynAccessor<'a>),
+                    (
+                        InvocationId,
+                        InvocationStatusAccessor<
+                            Self::PreFlightInvocationMetadataAccessor,
+                            Self::InFlightInvocationMetadataAccessor,
+                            Self::CompletedInvocationMetadataAccessor,
+                        >,
+                    ),
                 ) -> std::ops::ControlFlow<std::result::Result<(), E>>
                 + Send
                 + Sync
@@ -241,7 +252,7 @@ mod tests {
             let inner = self.0.clone();
             Ok(async move {
                 for (id, status) in inner {
-                    match f((id, InvocationStatusAccessor::from(status).downcast())) {
+                    match f((id, InvocationStatusAccessor::from(status))) {
                         std::ops::ControlFlow::Continue(()) => continue,
                         std::ops::ControlFlow::Break(result) => {
                             return result.map_err(|err| {

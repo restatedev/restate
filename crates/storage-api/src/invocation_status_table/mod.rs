@@ -352,6 +352,25 @@ impl InvocationStatus {
             InvocationStatus::Free => None,
         }
     }
+
+    pub fn accessor(
+        &self,
+    ) -> InvocationStatusAccessor<
+        &PreFlightInvocationMetadata,
+        &InFlightInvocationMetadata,
+        &CompletedInvocation,
+    > {
+        match self {
+            InvocationStatus::Scheduled(s) => InvocationStatusAccessor::Scheduled(&s.metadata),
+            InvocationStatus::Inboxed(i) => InvocationStatusAccessor::Inboxed(&i.metadata),
+            InvocationStatus::Invoked(metadata) => InvocationStatusAccessor::Invoked(metadata),
+            InvocationStatus::Suspended { metadata, .. } => {
+                InvocationStatusAccessor::Suspended(metadata)
+            }
+            InvocationStatus::Completed(c) => InvocationStatusAccessor::Completed(c),
+            InvocationStatus::Free => InvocationStatusAccessor::Free,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -742,6 +761,10 @@ pub trait ReadOnlyInvocationStatusTable {
 }
 
 pub trait ScanInvocationStatusTable {
+    type PreFlightInvocationMetadataAccessor<'a>: PreFlightInvocationMetadataAccessor;
+    type InFlightInvocationMetadataAccessor<'a>: InFlightInvocationMetadataAccessor;
+    type CompletedInvocationMetadataAccessor<'a>: CompletedInvocationMetadataAccessor;
+
     fn scan_invocation_statuses(
         &self,
         range: RangeInclusive<PartitionKey>,
@@ -750,7 +773,14 @@ pub trait ScanInvocationStatusTable {
     fn for_each_invocation_status<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
-                (InvocationId, InvocationStatusDynAccessor<'a>),
+                (
+                    InvocationId,
+                    InvocationStatusAccessor<
+                        Self::PreFlightInvocationMetadataAccessor<'a>,
+                        Self::InFlightInvocationMetadataAccessor<'a>,
+                        Self::CompletedInvocationMetadataAccessor<'a>,
+                    >,
+                ),
             ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync
@@ -915,39 +945,14 @@ impl PartitionStoreProtobufValue for InvocationStatusV1 {
 pub enum InvocationStatusAccessor<
     PreFlightInvocationMetadataAccessor,
     InFlightInvocationMetadataAccessor,
-    CompletedInvocationAccessor,
+    CompletedInvocationMetadataAccessor,
 > {
     Scheduled(PreFlightInvocationMetadataAccessor),
     Inboxed(PreFlightInvocationMetadataAccessor),
     Invoked(InFlightInvocationMetadataAccessor),
     Suspended(InFlightInvocationMetadataAccessor),
-    Completed(CompletedInvocationAccessor),
+    Completed(CompletedInvocationMetadataAccessor),
     Free,
-}
-
-pub type InvocationStatusDynAccessor<'a> = InvocationStatusAccessor<
-    &'a dyn PreFlightInvocationMetadataAccessor,
-    &'a dyn InFlightInvocationMetadataAccessor,
-    &'a dyn CompletedInvocationMetadataAccessor,
->;
-
-impl From<InvocationStatus>
-    for InvocationStatusAccessor<
-        PreFlightInvocationMetadata,
-        InFlightInvocationMetadata,
-        CompletedInvocation,
-    >
-{
-    fn from(value: InvocationStatus) -> Self {
-        match value {
-            InvocationStatus::Scheduled(s) => Self::Scheduled(s.metadata),
-            InvocationStatus::Inboxed(i) => Self::Inboxed(i.metadata),
-            InvocationStatus::Invoked(metadata) => Self::Invoked(metadata),
-            InvocationStatus::Suspended { metadata, .. } => Self::Suspended(metadata),
-            InvocationStatus::Completed(c) => Self::Completed(c),
-            InvocationStatus::Free => Self::Free,
-        }
-    }
 }
 
 impl<
@@ -956,27 +961,6 @@ impl<
     C: CompletedInvocationMetadataAccessor,
 > InvocationStatusAccessor<P, I, C>
 {
-    pub fn downcast(&self) -> InvocationStatusDynAccessor {
-        match self {
-            InvocationStatusAccessor::Scheduled(s) => {
-                InvocationStatusAccessor::Scheduled(s as &dyn PreFlightInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Inboxed(i) => {
-                InvocationStatusAccessor::Inboxed(i as &dyn PreFlightInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Invoked(i) => {
-                InvocationStatusAccessor::Invoked(i as &dyn InFlightInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Suspended(s) => {
-                InvocationStatusAccessor::Suspended(s as &dyn InFlightInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Completed(c) => {
-                InvocationStatusAccessor::Completed(c as &dyn CompletedInvocationMetadataAccessor)
-            }
-            InvocationStatusAccessor::Free => InvocationStatusAccessor::Free,
-        }
-    }
-
     pub fn invocation_target(
         &self,
     ) -> std::result::Result<Option<InvocationTargetRef>, restate_types::errors::ConversionError>
@@ -1017,15 +1001,83 @@ impl<
             _ => None,
         }
     }
+
+    pub fn left_accessor<RP, RI, RC>(
+        self,
+    ) -> InvocationStatusAccessor<EitherAccessor<P, RP>, EitherAccessor<I, RI>, EitherAccessor<C, RC>>
+    {
+        match self {
+            InvocationStatusAccessor::Scheduled(s) => {
+                InvocationStatusAccessor::Scheduled(EitherAccessor::Left(s))
+            }
+            InvocationStatusAccessor::Inboxed(i) => {
+                InvocationStatusAccessor::Inboxed(EitherAccessor::Left(i))
+            }
+            InvocationStatusAccessor::Invoked(i) => {
+                InvocationStatusAccessor::Invoked(EitherAccessor::Left(i))
+            }
+            InvocationStatusAccessor::Suspended(s) => {
+                InvocationStatusAccessor::Suspended(EitherAccessor::Left(s))
+            }
+            InvocationStatusAccessor::Completed(c) => {
+                InvocationStatusAccessor::Completed(EitherAccessor::Left(c))
+            }
+            InvocationStatusAccessor::Free => InvocationStatusAccessor::Free,
+        }
+    }
+
+    pub fn right_accessor<LP, LI, LC>(
+        self,
+    ) -> InvocationStatusAccessor<EitherAccessor<LP, P>, EitherAccessor<LI, I>, EitherAccessor<LC, C>>
+    {
+        match self {
+            InvocationStatusAccessor::Scheduled(s) => {
+                InvocationStatusAccessor::Scheduled(EitherAccessor::Right(s))
+            }
+            InvocationStatusAccessor::Inboxed(i) => {
+                InvocationStatusAccessor::Inboxed(EitherAccessor::Right(i))
+            }
+            InvocationStatusAccessor::Invoked(i) => {
+                InvocationStatusAccessor::Invoked(EitherAccessor::Right(i))
+            }
+            InvocationStatusAccessor::Suspended(s) => {
+                InvocationStatusAccessor::Suspended(EitherAccessor::Right(s))
+            }
+            InvocationStatusAccessor::Completed(c) => {
+                InvocationStatusAccessor::Completed(EitherAccessor::Right(c))
+            }
+            InvocationStatusAccessor::Free => InvocationStatusAccessor::Free,
+        }
+    }
+}
+
+pub enum EitherAccessor<L, R> {
+    Left(L),
+    Right(R),
+}
+
+macro_rules! either_match {
+    ($base:ident, $method:ident()) => {
+        match $base {
+            EitherAccessor::Left(l) => l.$method(),
+            EitherAccessor::Right(r) => r.$method(),
+        }
+    };
 }
 
 pub trait PreFlightInvocationMetadataAccessor: InvocationMetadataAccessor {}
 
-impl PreFlightInvocationMetadataAccessor for PreFlightInvocationMetadata {}
 impl<T: PreFlightInvocationMetadataAccessor + InvocationMetadataAccessor + ?Sized>
     PreFlightInvocationMetadataAccessor for &T
 {
 }
+
+impl<L: PreFlightInvocationMetadataAccessor, R: PreFlightInvocationMetadataAccessor>
+    PreFlightInvocationMetadataAccessor for EitherAccessor<L, R>
+{
+}
+
+impl PreFlightInvocationMetadataAccessor for PreFlightInvocationMetadata {}
 
 pub trait JournalMetadataAccessor {
     fn trace_id(&self) -> std::result::Result<TraceId, ConversionError>;
@@ -1042,6 +1094,22 @@ impl<T: JournalMetadataAccessor + ?Sized> JournalMetadataAccessor for &T {
     }
     fn commands(&self) -> u32 {
         (*self).commands()
+    }
+}
+
+impl<L: JournalMetadataAccessor, R: JournalMetadataAccessor> JournalMetadataAccessor
+    for EitherAccessor<L, R>
+{
+    fn trace_id(&self) -> std::result::Result<TraceId, ConversionError> {
+        either_match!(self, trace_id())
+    }
+
+    fn length(&self) -> u32 {
+        either_match!(self, length())
+    }
+
+    fn commands(&self) -> u32 {
+        either_match!(self, commands())
     }
 }
 
@@ -1068,6 +1136,20 @@ impl<
         &self,
     ) -> std::result::Result<Option<ServiceProtocolVersion>, ConversionError> {
         (*self).service_protocol_version()
+    }
+}
+
+impl<L: InFlightInvocationMetadataAccessor, R: InFlightInvocationMetadataAccessor>
+    InFlightInvocationMetadataAccessor for EitherAccessor<L, R>
+{
+    fn deployment_id(&self) -> std::result::Result<Option<DeploymentId>, ConversionError> {
+        either_match!(self, deployment_id())
+    }
+
+    fn service_protocol_version(
+        &self,
+    ) -> std::result::Result<Option<ServiceProtocolVersion>, ConversionError> {
+        either_match!(self, service_protocol_version())
     }
 }
 
@@ -1108,6 +1190,16 @@ pub trait CompletedInvocationMetadataAccessor:
 {
     fn response_result<'a>(&'a self)
     -> std::result::Result<ResponseResultRef<'a>, ConversionError>;
+}
+
+impl<L: CompletedInvocationMetadataAccessor, R: CompletedInvocationMetadataAccessor>
+    CompletedInvocationMetadataAccessor for EitherAccessor<L, R>
+{
+    fn response_result<'a>(
+        &'a self,
+    ) -> std::result::Result<ResponseResultRef<'a>, ConversionError> {
+        either_match!(self, response_result())
+    }
 }
 
 pub enum ResponseResultRef<'a> {
@@ -1182,6 +1274,50 @@ pub trait InvocationMetadataAccessor: Send + Sync {
     fn execution_time(&self) -> Option<MillisSinceEpoch>;
     fn completion_retention_duration(&self) -> std::result::Result<Duration, ConversionError>;
     fn journal_retention_duration(&self) -> std::result::Result<Duration, ConversionError>;
+}
+
+impl<L: InvocationMetadataAccessor, R: InvocationMetadataAccessor> InvocationMetadataAccessor
+    for EitherAccessor<L, R>
+{
+    fn invocation_target(&self) -> std::result::Result<InvocationTargetRef, ConversionError> {
+        either_match!(self, invocation_target())
+    }
+    fn idempotency_key(&self) -> Option<&str> {
+        either_match!(self, idempotency_key())
+    }
+    fn creation_time(&self) -> MillisSinceEpoch {
+        either_match!(self, creation_time())
+    }
+    fn modification_time(&self) -> MillisSinceEpoch {
+        either_match!(self, modification_time())
+    }
+    fn inboxed_transition_time(&self) -> Option<MillisSinceEpoch> {
+        either_match!(self, inboxed_transition_time())
+    }
+    fn scheduled_transition_time(&self) -> Option<MillisSinceEpoch> {
+        either_match!(self, scheduled_transition_time())
+    }
+    fn running_transition_time(&self) -> Option<MillisSinceEpoch> {
+        either_match!(self, running_transition_time())
+    }
+    fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
+        either_match!(self, completed_transition_time())
+    }
+    fn created_using_restate_version(&self) -> &str {
+        either_match!(self, created_using_restate_version())
+    }
+    fn source(&self) -> std::result::Result<SourceRef, ConversionError> {
+        either_match!(self, source())
+    }
+    fn execution_time(&self) -> Option<MillisSinceEpoch> {
+        either_match!(self, execution_time())
+    }
+    fn completion_retention_duration(&self) -> std::result::Result<Duration, ConversionError> {
+        either_match!(self, completion_retention_duration())
+    }
+    fn journal_retention_duration(&self) -> std::result::Result<Duration, ConversionError> {
+        either_match!(self, journal_retention_duration())
+    }
 }
 
 pub enum SourceRef {

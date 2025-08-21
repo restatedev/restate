@@ -12,13 +12,15 @@ use std::ops::{ControlFlow, RangeInclusive};
 use std::sync::Arc;
 
 use futures::Stream;
+use restate_storage_api::protobuf_types::v1::InvocationStatusV2;
 use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusAccessor, InvocationStatusDiscriminants,
-    InvocationStatusDynAccessor, InvocationStatusTable, InvocationStatusV1,
-    InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
+    CompletedInvocation, EitherAccessor, InFlightInvocationMetadata, InvocationLite,
+    InvocationStatus, InvocationStatusAccessor, InvocationStatusDiscriminants,
+    InvocationStatusTable, InvocationStatusV1, InvokedInvocationStatusLite,
+    PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError, Transaction};
@@ -178,7 +180,20 @@ fn break_on_err<T, E>(r: std::result::Result<T, E>) -> ControlFlow<std::result::
     }
 }
 
+pub type ScanInvocationStatusAccessor<'a> = InvocationStatusAccessor<
+    EitherAccessor<&'a PreFlightInvocationMetadata, &'a InvocationStatusV2>,
+    EitherAccessor<&'a InFlightInvocationMetadata, &'a InvocationStatusV2>,
+    EitherAccessor<&'a CompletedInvocation, &'a InvocationStatusV2>,
+>;
+
 impl ScanInvocationStatusTable for PartitionStore {
+    type PreFlightInvocationMetadataAccessor<'a> =
+        EitherAccessor<&'a PreFlightInvocationMetadata, &'a InvocationStatusV2>;
+    type InFlightInvocationMetadataAccessor<'a> =
+        EitherAccessor<&'a InFlightInvocationMetadata, &'a InvocationStatusV2>;
+    type CompletedInvocationMetadataAccessor<'a> =
+        EitherAccessor<&'a CompletedInvocation, &'a InvocationStatusV2>;
+
     fn scan_invoked_invocations(
         &self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
@@ -224,7 +239,14 @@ impl ScanInvocationStatusTable for PartitionStore {
     fn for_each_invocation_status<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
-                (InvocationId, InvocationStatusDynAccessor<'a>),
+                (
+                    InvocationId,
+                    InvocationStatusAccessor<
+                        Self::PreFlightInvocationMetadataAccessor<'a>,
+                        Self::InFlightInvocationMetadataAccessor<'a>,
+                        Self::CompletedInvocationMetadataAccessor<'a>,
+                    >,
+                ),
             ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync
@@ -253,7 +275,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                         let state_key =
                             break_on_err(InvocationStatusKeyV1::deserialize_from(&mut key))?;
                         let state_value = break_on_err(InvocationStatusV1::decode(&mut value))?;
-                        let accessor = InvocationStatusAccessor::from(state_value.0);
+                        let accessor = state_value.0.accessor();
 
                         let (partition_key, invocation_uuid) =
                             break_on_err(state_key.into_inner_ok_or())?;
@@ -262,7 +284,7 @@ impl ScanInvocationStatusTable for PartitionStore {
 
                         let result = f((
                             InvocationId::from_parts(partition_key, invocation_uuid),
-                            accessor.downcast(),
+                            accessor.left_accessor(),
                         ));
 
                         match result {
@@ -313,7 +335,7 @@ impl ScanInvocationStatusTable for PartitionStore {
 
                         let result = f((
                             InvocationId::from_parts(partition_key, invocation_uuid),
-                            accessor,
+                            accessor.right_accessor(),
                         ));
 
                         match result {
