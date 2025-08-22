@@ -155,7 +155,7 @@ impl AdminClientInterface for AdminClient {
     }
 }
 
-// Helper type used around here
+// Helper type used within the cli crate
 #[derive(Clone, Debug)]
 pub enum Deployment {
     Http {
