@@ -10,12 +10,13 @@
 
 //! Resource identifier helpers and core structures
 
-use std::fmt::Write;
 use std::str::FromStr;
 
 use num_traits::PrimInt;
 
-use crate::base62_util::{base62_encode_fixed_width, base62_max_length_for_type};
+use crate::base62_util::{
+    base62_encode_fixed_width_u64, base62_encode_fixed_width_u128, base62_max_length_for_type,
+};
 use crate::errors::IdDecodeError;
 use crate::identifiers::ResourceId;
 use crate::macros::prefixed_ids;
@@ -51,7 +52,7 @@ prefixed_ids! {
 }
 
 impl IdSchemeVersion {
-    const fn as_char(&self) -> char {
+    pub const fn as_char(&self) -> char {
         match self {
             Self::V1 => '1',
         }
@@ -175,58 +176,53 @@ impl<'a> IdDecoder<'a> {
     }
 }
 
-pub struct IdEncoder<T: ?Sized> {
-    buf: String,
+pub struct IdEncoder<T: ?Sized, W = String> {
+    buf: W,
     _marker: std::marker::PhantomData<T>,
 }
 
-impl<T: ResourceId + ?Sized> Default for IdEncoder<T> {
-    fn default() -> Self {
-        let mut buf = String::with_capacity(Self::estimate_buf_capacity());
-        // prefix token
-        buf.write_str(T::RESOURCE_TYPE.as_str()).unwrap();
-        // Separator
-        buf.write_char(ID_RESOURCE_SEPARATOR).unwrap();
-
-        // ID Scheme Version
-        buf.write_char(IdSchemeVersion::default().as_char())
-            .unwrap();
-
-        Self {
-            buf,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<T: ResourceId + ?Sized> IdEncoder<T> {
-    /// Create a new encoder already filled with the provided buffer and resource type.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Appends a value as a padded base62 encoded string to the underlying buffer
-    pub fn encode_fixed_width<U>(&mut self, i: U)
-    where
-        U: Into<u128> + PrimInt,
-    {
-        base62_encode_fixed_width(i, &mut self.buf);
-    }
-
+impl<T: ResourceId + ?Sized, W> IdEncoder<T, W> {
     /// Estimates the capacity of string buffer needed to encode this ResourceId
     pub const fn estimate_buf_capacity() -> usize {
         T::RESOURCE_TYPE.as_str().len() + /* separator =*/1 + /* version =*/ 1 + T::STRING_CAPACITY_HINT
     }
+}
+
+impl<T: ResourceId + ?Sized, W: std::fmt::Write> IdEncoder<T, W> {
+    pub fn new_fmt(mut buf: W) -> Result<IdEncoder<T, W>, std::fmt::Error> {
+        // prefix token
+        buf.write_str(T::RESOURCE_TYPE.as_str())?;
+        // Separator
+        buf.write_char(ID_RESOURCE_SEPARATOR)?;
+
+        // ID Scheme Version
+        buf.write_char(IdSchemeVersion::default().as_char())?;
+
+        Ok(Self {
+            buf,
+            _marker: std::marker::PhantomData,
+        })
+    }
+
+    /// Appends a u64 value as a padded base62 encoded string to the underlying buffer
+    pub fn encode_fixed_width_u64(&mut self, i: u64) -> std::fmt::Result {
+        base62_encode_fixed_width_u64(i, &mut self.buf)
+    }
+
+    /// Appends a u128 value as a padded base62 encoded string to the underlying buffer
+    pub fn encode_fixed_width_u128(&mut self, i: u128) -> std::fmt::Result {
+        base62_encode_fixed_width_u128(i, &mut self.buf)
+    }
 
     /// Adds the given string to the end of the buffer
-    pub fn push_str<S>(&mut self, i: S)
+    pub fn push_str<S>(&mut self, i: S) -> std::fmt::Result
     where
         S: AsRef<str>,
     {
-        self.buf.push_str(i.as_ref());
+        self.buf.write_str(i.as_ref())
     }
 
-    pub fn finalize(self) -> String {
+    pub fn finalize(self) -> W {
         self.buf
     }
 }
