@@ -23,7 +23,7 @@ use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
-use crate::clients::{AdminClient, AdminClientInterface};
+use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::console::c_println;
 use crate::ui::deployments::{
     add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
@@ -55,7 +55,8 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         .await?
         .into_body()
         .await?;
-    let (deployment_id, deployment, deployment_services) = deployment.into_parts();
+    let (deployment_id, deployment, deployment_services) =
+        Deployment::from_detailed_deployment_response(deployment);
     let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment_id).await?;
 
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();

@@ -17,7 +17,7 @@ use restate_cli_util::{c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
-use crate::clients::{AdminClient, AdminClientInterface};
+use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::ui::deployments::{
     add_deployment_to_kv_table, render_active_invocations, render_deployment_type,
     render_deployment_url,
@@ -57,7 +57,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .await?
         .into_body()
         .await?;
-    let (_, deployment, _) = deployment.into_parts();
+    let (_, deployment, _) = Deployment::from_detailed_deployment_response(deployment);
     add_deployment_to_kv_table(&deployment, &mut table);
 
     c_title!("📜", "Service Information");
@@ -88,7 +88,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .deployments
         .into_iter()
         .filter_map(|e| {
-            let (other_deployment_id, other_deployment, other_deployment_services) = e.into_parts();
+            let (other_deployment_id, other_deployment, other_deployment_services) = Deployment::from_deployment_response(e);
 
             // endpoints that serve the same service.
             let service_match: Vec<_> = other_deployment_services

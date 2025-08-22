@@ -18,7 +18,7 @@ use comfy_table::Table;
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
 
-use restate_admin_rest_model::deployments::{Deployment, RegisterDeploymentRequest};
+use restate_admin_rest_model::deployments::RegisterDeploymentRequest;
 use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
@@ -26,7 +26,7 @@ use restate_types::identifiers::LambdaARN;
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};
+use crate::clients::{AdminClient, AdminClientInterface, Deployment, MetasClientError};
 use crate::console::c_println;
 use crate::ui::deployments::render_deployment_url;
 use crate::ui::service_handlers::{
@@ -392,7 +392,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     // The following services will be removed/forgotten:
     if let Some(existing_deployment) = existing_deployment {
-        let (_, _, services) = existing_deployment.into_parts();
+        let (_, _, services) = Deployment::from_detailed_deployment_response(existing_deployment);
 
         // The following services will be removed/forgotten:
         let services_removed = services
@@ -472,7 +472,7 @@ async fn resolve_deployment(
         .await
         .ok()
         .map(|endpoint| {
-            let (_, deployment, _) = endpoint.into_parts();
+            let (_, deployment, _) = Deployment::from_detailed_deployment_response(endpoint);
             cache.insert(deployment_id.to_string(), deployment.clone());
             Some(deployment)
         })?;

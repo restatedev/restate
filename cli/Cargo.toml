@@ -54,6 +54,7 @@ figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
 http = { workspace = true }
 hyper = { workspace = true }
+humantime = { workspace = true }
 indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }
