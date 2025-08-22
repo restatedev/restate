@@ -35,7 +35,10 @@ pub struct AwsLambdaOptions {
 
     /// # Request Compression threshold
     ///
-    /// Request minimum size to enable compression. Default: 4MB
+    /// Request minimum size to enable compression.
+    /// The request size includes the total of the journal replay and its framing using Restate service protocol, without accounting for the json envelope and the base 64 encoding.
+    ///
+    /// Default: 4MB (The default AWS Lambda Limit is 6MB, 4MB roughly accounts for +33% of Base64 and the json envelope).
     pub request_compression_threshold: Option<ByteCount>,
 }
 
