@@ -23,13 +23,12 @@ use base64::Engine;
 use base64::display::Base64Display;
 use bytes::{Buf, Bytes};
 use bytestring::ByteString;
-use futures::future::{BoxFuture, Shared};
-use futures::{FutureExt, TryFutureExt};
+use futures::future::{BoxFuture, FutureExt, Shared};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
-use restate_types::config::AwsOptions;
+use restate_types::config::AwsLambdaOptions;
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::deployment::EndpointLambdaCompression;
 use serde::ser::Error as _;
@@ -79,12 +78,14 @@ struct LambdaClientInner {
     role_to_lambda_clients: Option<ArcSwap<HashMap<String, aws_sdk_lambda::Client>>>,
     /// External id to set on assume role requests
     assume_role_external_id: Option<String>,
+    request_compression_threshold: usize,
 }
 
 impl LambdaClient {
     pub fn new(
         profile_name: Option<String>,
         assume_role_external_id: Option<String>,
+        request_compression_threshold: Option<usize>,
         assume_role_cache_mode: AssumeRoleCacheMode,
     ) -> Self {
         // create client for a default region, region can be overridden per request
@@ -119,6 +120,7 @@ impl LambdaClient {
                 lambda_client_builder,
                 role_to_lambda_clients,
                 assume_role_external_id,
+                request_compression_threshold: request_compression_threshold.unwrap_or_default(),
             })
         }
         .boxed()
@@ -128,12 +130,15 @@ impl LambdaClient {
     }
 
     pub fn from_options(
-        options: &AwsOptions,
+        options: &AwsLambdaOptions,
         assume_role_cache_mode: AssumeRoleCacheMode,
     ) -> LambdaClient {
         LambdaClient::new(
             options.aws_profile.clone(),
             options.aws_assume_role_external_id.clone(),
+            options
+                .request_compression_threshold
+                .map(|bc| bc.as_usize()),
             assume_role_cache_mode,
         )
     }
@@ -144,7 +149,7 @@ impl LambdaClient {
         arn: LambdaARN,
         method: Method,
         assume_role_arn: Option<ByteString>,
-        compression: Option<EndpointLambdaCompression>,
+        negotiated_compression: Option<EndpointLambdaCompression>,
         body: B,
         path: PathAndQuery,
         mut headers: HeaderMap<HeaderValue>,
@@ -158,41 +163,51 @@ impl LambdaClient {
         let region = Region::new(arn.region().to_string());
         let inner = self.inner.clone();
 
-        // Add encoding headers
-        if let Some(compression) = compression {
-            headers.insert(
-                http::header::CONTENT_ENCODING,
-                HeaderValue::from_static(compression.http_name()),
-            );
-            headers.insert(
-                http::header::ACCEPT_ENCODING,
-                HeaderValue::from_static(compression.http_name()),
-            );
-        }
-
-        let body = body
-            .map_err(|e| LambdaError::Body(Box::new(e)))
-            .collect()
-            .and_then(move |b| {
-                std::future::ready(match compression {
-                    None => Ok(b.to_bytes()),
-                    Some(EndpointLambdaCompression::Zstd) => {
-                        zstd::stream::encode_all(b.aggregate().reader(), 3)
-                            .map(Bytes::from)
-                            .map_err(|e| LambdaError::Body(Box::new(e)))
-                    }
-                })
-            });
-
         async move {
-            let (body, inner): (Result<Bytes, LambdaError>, Arc<LambdaClientInner>) =
-                futures::future::join(body, inner).await;
+            let inner = inner.await;
 
+            // If compression is enabled, add the accept-encoding header
+            if let Some(compression) = negotiated_compression {
+                headers.insert(
+                    http::header::ACCEPT_ENCODING,
+                    HeaderValue::from_static(compression.http_name()),
+                );
+            }
+
+            // Aggregate the request body from upper layer
+            let mut aggregated_request_body_buf = body
+                .map_err(|e| LambdaError::Body(Box::new(e)))
+                .collect()
+                .await?
+                .aggregate();
+
+            // Decide whether to compress or not based on the threshold
+            let request_compression =
+                if aggregated_request_body_buf.remaining() < inner.request_compression_threshold {
+                    None
+                } else {
+                    negotiated_compression
+                };
+
+            // Prepare the final request body
+            let final_request_body = match request_compression {
+                None => aggregated_request_body_buf
+                    .copy_to_bytes(aggregated_request_body_buf.remaining()),
+                Some(compression @ EndpointLambdaCompression::Zstd) => {
+                    headers.insert(
+                        http::header::CONTENT_ENCODING,
+                        HeaderValue::from_static(compression.http_name()),
+                    );
+                    zstd::stream::encode_all(aggregated_request_body_buf.reader(), 3)
+                        .map(Bytes::from)
+                        .map_err(|e| LambdaError::Body(Box::new(e)))?
+                }
+            };
             let payload = ApiGatewayProxyRequest {
                 path: Some(path.path()),
                 http_method: method,
                 headers,
-                body: body?,
+                body: final_request_body,
                 is_base64_encoded: true,
             };
 
