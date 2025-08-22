@@ -20,7 +20,7 @@ use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
-    PurgeInvocationResponse,
+    PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_wal_protocol::{Command, Envelope};
@@ -368,4 +368,56 @@ where
             RestartAsNewInvocationNotStartedError(invocation_id.to_string()),
         )?,
     }
+}
+
+generate_meta_api_error!(ResumeInvocationError: [
+    InvocationNotFoundError,
+    InvocationClientError,
+    InvalidFieldError,
+    ResumeInvocationNotStartedError,
+    ResumeInvocationCompletedError
+]);
+
+/// Resume an invocation
+#[openapi(
+    summary = "Resume an invocation",
+    description = "Resume the given invocation. In case the invocation is backing-off, this will immediately trigger the retry timer. If the invocation is suspended or paused, this will resume it.",
+    operation_id = "resume_invocation",
+    tags = "invocation",
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    ))
+)]
+pub async fn resume_invocation<V, IC>(
+    State(state): State<AdminServiceState<V, IC>>,
+    Path(invocation_id): Path<String>,
+) -> Result<(), ResumeInvocationError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .resume_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .await
+        .map_err(InvocationClientError)?
+    {
+        ResumeInvocationResponse::Ok => {}
+        ResumeInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        ResumeInvocationResponse::NotStarted => {
+            Err(ResumeInvocationNotStartedError(invocation_id.to_string()))?
+        }
+        ResumeInvocationResponse::Completed => {
+            Err(ResumeInvocationCompletedError(invocation_id.to_string()))?
+        }
+    };
+
+    Ok(())
 }

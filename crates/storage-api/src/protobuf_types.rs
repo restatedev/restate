@@ -587,6 +587,42 @@ pub mod v1 {
                                 .collect(),
                         },
                     ),
+                    invocation_status_v2::Status::Paused => {
+                        Ok(crate::invocation_status_table::InvocationStatus::Paused(
+                            crate::invocation_status_table::InFlightInvocationMetadata {
+                                response_sinks,
+                                timestamps,
+                                invocation_target,
+                                created_using_restate_version,
+                                journal_metadata: crate::invocation_status_table::JournalMetadata {
+                                    length: journal_length,
+                                    commands,
+                                    span_context: expect_or_fail!(span_context)?.try_into()?,
+                                },
+                                pinned_deployment: derive_pinned_deployment(
+                                    deployment_id,
+                                    service_protocol_version,
+                                )?,
+                                source,
+                                execution_time: execution_time.map(MillisSinceEpoch::new),
+                                completion_retention_duration: completion_retention_duration
+                                    .unwrap_or_default()
+                                    .try_into()?,
+                                journal_retention_duration: journal_retention_duration
+                                    .unwrap_or_default()
+                                    .try_into()?,
+                                idempotency_key: idempotency_key.map(ByteString::from),
+                                hotfix_apply_cancellation_after_deployment_is_pinned,
+                                current_invocation_epoch,
+                                completion_range_epoch_map:
+                                    CompletionRangeEpochMap::from_trim_points(
+                                        trim_points.into_iter().map(|trim_point| {
+                                            (trim_point.completion_id, trim_point.invocation_epoch)
+                                        }),
+                                    ),
+                            },
+                        ))
+                    }
                     invocation_status_v2::Status::Completed => {
                         Ok(crate::invocation_status_table::InvocationStatus::Completed(
                             crate::invocation_status_table::CompletedInvocation {
@@ -615,10 +651,9 @@ pub mod v1 {
                             },
                         ))
                     }
-                    _ => Err(ConversionError::unexpected_enum_variant(
-                        "status",
-                        value.status,
-                    )),
+                    invocation_status_v2::Status::UnknownStatus => Err(
+                        ConversionError::unexpected_enum_variant("status", value.status),
+                    ),
                 }
             }
         }
@@ -926,6 +961,85 @@ pub mod v1 {
                                 .collect(),
                         }
                     }
+                    crate::invocation_status_table::InvocationStatus::Paused(
+                        crate::invocation_status_table::InFlightInvocationMetadata {
+                            invocation_target,
+                            created_using_restate_version,
+                            journal_metadata,
+                            pinned_deployment,
+                            response_sinks,
+                            timestamps,
+                            source,
+                            execution_time,
+                            completion_retention_duration,
+                            journal_retention_duration,
+                            idempotency_key,
+                            hotfix_apply_cancellation_after_deployment_is_pinned,
+                            current_invocation_epoch,
+                            completion_range_epoch_map,
+                        },
+                    ) => {
+                        let (deployment_id, service_protocol_version) = match pinned_deployment {
+                            None => (None, None),
+                            Some(pinned_deployment) => (
+                                Some(pinned_deployment.deployment_id.to_string()),
+                                Some(pinned_deployment.service_protocol_version.as_repr()),
+                            ),
+                        };
+
+                        InvocationStatusV2 {
+                            status: invocation_status_v2::Status::Paused.into(),
+                            invocation_target: Some(invocation_target.into()),
+                            source: Some(source.into()),
+                            span_context: Some(journal_metadata.span_context.into()),
+                            creation_time: timestamps.creation_time().as_u64(),
+                            created_using_restate_version: created_using_restate_version
+                                .into_string(),
+                            modification_time: timestamps.modification_time().as_u64(),
+                            inboxed_transition_time: timestamps
+                                .inboxed_transition_time()
+                                .map(|t| t.as_u64()),
+                            scheduled_transition_time: timestamps
+                                .scheduled_transition_time()
+                                .map(|t| t.as_u64()),
+                            running_transition_time: timestamps
+                                .running_transition_time()
+                                .map(|t| t.as_u64()),
+                            completed_transition_time: timestamps
+                                .completed_transition_time()
+                                .map(|t| t.as_u64()),
+                            response_sinks: response_sinks
+                                .into_iter()
+                                .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                                .collect(),
+                            argument: None,
+                            headers: vec![],
+                            execution_time: execution_time.map(|t| t.as_u64()),
+                            completion_retention_duration: Some(
+                                completion_retention_duration.into(),
+                            ),
+                            journal_retention_duration: Some(journal_retention_duration.into()),
+                            idempotency_key: idempotency_key.map(|key| key.to_string()),
+                            inbox_sequence_number: None,
+                            journal_length: journal_metadata.length,
+                            commands: journal_metadata.commands,
+                            deployment_id,
+                            service_protocol_version,
+                            waiting_for_completions: vec![],
+                            waiting_for_signal_indexes: vec![],
+                            waiting_for_signal_names: vec![],
+                            result: None,
+                            hotfix_apply_cancellation_after_deployment_is_pinned,
+                            current_invocation_epoch,
+                            trim_points: completion_range_epoch_map
+                                .into_trim_points_iter()
+                                .map(|(completion_id, invocation_epoch)| JournalTrimPoint {
+                                    completion_id,
+                                    invocation_epoch,
+                                })
+                                .collect(),
+                        }
+                    }
                     crate::invocation_status_table::InvocationStatus::Completed(
                         crate::invocation_status_table::CompletedInvocation {
                             invocation_target,
@@ -1029,7 +1143,10 @@ pub mod v1 {
                     invocation_status_v2::Status::Completed => {
                         crate::invocation_status_table::InvocationStatusDiscriminants::Completed
                     }
-                    _ => {
+                    invocation_status_v2::Status::Paused => {
+                        crate::invocation_status_table::InvocationStatusDiscriminants::Paused
+                    }
+                    invocation_status_v2::Status::UnknownStatus => {
                         return Err(ConversionError::unexpected_enum_variant(
                             "status",
                             value.status,
@@ -1142,7 +1259,8 @@ pub mod v1 {
                     crate::invocation_status_table::InvocationStatus::Free => {
                         invocation_status::Status::Free(invocation_status::Free {})
                     }
-                    crate::invocation_status_table::InvocationStatus::Scheduled(_) => {
+                    crate::invocation_status_table::InvocationStatus::Scheduled(_)
+                    | crate::invocation_status_table::InvocationStatus::Paused(_) => {
                         panic!(
                             "Unexpected conversion to old InvocationStatus when using Scheduled variant. This is a bug in the table implementation."
                         )
@@ -3478,6 +3596,7 @@ pub mod v1 {
             fn from(value: journal_v2::EventType) -> Self {
                 match value {
                     journal_v2::EventType::TransientError => entry::EventType::TransientError,
+                    journal_v2::EventType::Paused => entry::EventType::Paused,
                     journal_v2::EventType::Unknown => entry::EventType::UnknownEvent,
                 }
             }
@@ -3487,6 +3606,7 @@ pub mod v1 {
             fn from(value: entry::EventType) -> Self {
                 match value {
                     entry::EventType::TransientError => journal_v2::EventType::TransientError,
+                    entry::EventType::Paused => journal_v2::EventType::Paused,
                     entry::EventType::UnknownEvent => journal_v2::EventType::Unknown,
                 }
             }

@@ -13,6 +13,7 @@ mod describe;
 mod list;
 mod purge;
 mod restart_as_new;
+mod resume;
 
 use cling::prelude::*;
 
@@ -28,4 +29,6 @@ pub enum Invocations {
     Purge(purge::Purge),
     /// Restart a completed invocation, or a set of invocations. This command affects only completed invocations. Note: this command doesn't work on workflows yet.
     RestartAsNew(restart_as_new::RestartAsNew),
+    /// Resume an invocation, or a set of invocations.
+    Resume(resume::Resume),
 }

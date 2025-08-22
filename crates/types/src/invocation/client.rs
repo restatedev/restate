@@ -126,6 +126,16 @@ pub enum RestartAsNewInvocationResponse {
     NotStarted,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeInvocationResponse {
+    Ok,
+    NotFound,
+    /// The invocation isn't started yet (it's enqueued or scheduled)
+    NotStarted,
+    /// Invocation is completed
+    Completed,
+}
+
 /// This trait provides the functionalities to interact with Restate invocations.
 pub trait InvocationClient {
     /// Append the invocation to the log, waiting for the PP to emit [`SubmittedInvocationNotification`] when the command is processed.
@@ -205,4 +215,11 @@ pub trait InvocationClient {
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
     ) -> impl Future<Output = Result<RestartAsNewInvocationResponse, InvocationClientError>> + Send;
+
+    /// Resume the given invocation.
+    fn resume_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> impl Future<Output = Result<ResumeInvocationResponse, InvocationClientError>> + Send;
 }

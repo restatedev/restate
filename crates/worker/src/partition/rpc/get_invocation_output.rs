@@ -34,10 +34,10 @@ pub(super) struct Request {
     pub(super) response_mode: GetInvocationOutputResponseMode,
 }
 
-impl<'a, Proposer, Storage> RpcContext<'a, Proposer, Storage>
+impl<'a, TActuator, TStorage> RpcContext<'a, TActuator, TStorage>
 where
-    Proposer: CommandProposer,
-    Storage:
+    TActuator: Actuator,
+    TStorage:
         ReadOnlyInvocationStatusTable + ReadOnlyVirtualObjectStatusTable + ReadOnlyIdempotencyTable,
 {
     async fn get_invocation_output(
@@ -95,8 +95,7 @@ where
     }
 }
 
-impl<'a, Proposer: CommandProposer, Storage> RpcHandler<Request>
-    for RpcContext<'a, Proposer, Storage>
+impl<'a, Proposer: Actuator, Storage> RpcHandler<Request> for RpcContext<'a, Proposer, Storage>
 where
     Storage:
         ReadOnlyInvocationStatusTable + ReadOnlyVirtualObjectStatusTable + ReadOnlyIdempotencyTable,

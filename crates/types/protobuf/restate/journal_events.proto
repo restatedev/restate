@@ -44,3 +44,7 @@ message TransientErrorEvent {
   optional string related_command_name = 6;
   optional CommandType related_command_type = 7;
 }
+
+message PausedEvent {
+  TransientErrorEvent last_failure = 1;
+}
