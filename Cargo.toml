@@ -250,6 +250,7 @@ url = { version = "2.5" }
 urlencoding = { version = "2.1" }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zstd = {version = "0.13"}
 
 [patch.crates-io.restate-workspace-hack]
 path = "workspace-hack"

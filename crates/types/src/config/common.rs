@@ -21,7 +21,7 @@ use serde_with::serde_as;
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 
 use super::{
-    AwsOptions, GossipOptions, HttpOptions, InvalidConfigurationError, ObjectStoreOptions,
+    AwsLambdaOptions, GossipOptions, HttpOptions, InvalidConfigurationError, ObjectStoreOptions,
     PerfStatsLevel, RocksDbOptions,
 };
 use crate::PlainNodeId;
@@ -484,7 +484,7 @@ pub struct ServiceClientOptions {
     #[serde(flatten)]
     pub http: HttpOptions,
     #[serde(flatten)]
-    pub lambda: AwsOptions,
+    pub lambda: AwsLambdaOptions,
 
     /// # Request identity private key PEM file
     ///

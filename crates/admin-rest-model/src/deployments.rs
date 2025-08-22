@@ -13,7 +13,7 @@ use http::Version;
 use restate_serde_util::SerdeableHeaderHashMap;
 use restate_types::identifiers::ServiceRevision;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
-use restate_types::schema::deployment::ProtocolType;
+use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType};
 use restate_types::schema::service::ServiceMetadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -241,15 +241,19 @@ pub enum DeploymentResponse {
         /// # Assume role ARN
         ///
         /// Assume role ARN used to invoke this deployment. Check https://docs.restate.dev/category/aws-lambda for more details.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         assume_role_arn: Option<String>,
+
+        /// # Compression
+        ///
+        /// Compression algorithm used for invoking Lambda.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compression: Option<EndpointLambdaCompression>,
 
         /// # Additional headers
         ///
         /// Additional headers used to invoke this service deployment.
-        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
@@ -269,8 +273,7 @@ pub enum DeploymentResponse {
         /// # SDK version
         ///
         /// SDK library and version declared during registration.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         sdk_version: Option<String>,
 
         /// # Services
@@ -326,8 +329,7 @@ pub enum DetailedDeploymentResponse {
         /// # Additional headers
         ///
         /// Additional headers used to invoke this service deployment.
-        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
@@ -347,8 +349,7 @@ pub enum DetailedDeploymentResponse {
         /// # SDK version
         ///
         /// SDK library and version declared during registration.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         sdk_version: Option<String>,
 
         /// # Services
@@ -375,15 +376,19 @@ pub enum DetailedDeploymentResponse {
         /// # Assume role ARN
         ///
         /// Assume role ARN used to invoke this deployment. Check https://docs.restate.dev/category/aws-lambda for more details.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         assume_role_arn: Option<String>,
+
+        /// # Compression
+        ///
+        /// Compression algorithm used for invoking Lambda.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compression: Option<EndpointLambdaCompression>,
 
         /// # Additional headers
         ///
         /// Additional headers used to invoke this service deployment.
-        #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]

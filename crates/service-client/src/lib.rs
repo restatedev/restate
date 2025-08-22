@@ -27,6 +27,7 @@ use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Response, Uri};
 use restate_types::config::ServiceClientOptions;
 use restate_types::identifiers::LambdaARN;
+use restate_types::schema::deployment::EndpointLambdaCompression;
 use std::error::Error;
 use std::fmt::Formatter;
 use std::future;
@@ -139,11 +140,12 @@ impl ServiceClient {
                 }
                 .left_future()
             }
-            Endpoint::Lambda(arn, assume_role_arn) => {
+            Endpoint::Lambda(arn, assume_role_arn, compression) => {
                 let fut = self.lambda.invoke(
                     arn.clone(),
                     parts.method.into(),
                     assume_role_arn,
+                    compression,
                     body,
                     parts.path,
                     parts.headers,
@@ -255,14 +257,18 @@ impl Parts {
 #[derive(Clone, Debug)]
 pub enum Endpoint {
     Http(Uri, Option<Version>),
-    Lambda(LambdaARN, Option<ByteString>),
+    Lambda(
+        LambdaARN,
+        Option<ByteString>,
+        Option<EndpointLambdaCompression>,
+    ),
 }
 
 impl fmt::Display for Endpoint {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Http(uri, _) => uri.fmt(f),
-            Self::Lambda(arn, _) => write!(f, "lambda://{arn}"),
+            Self::Lambda(arn, _, _) => write!(f, "lambda://{arn}"),
         }
     }
 }

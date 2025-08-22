@@ -110,13 +110,16 @@ impl<V> SchemaRegistry<V> {
                 discovered_metadata.supported_protocol_versions,
                 discovered_metadata.sdk_version,
             ),
-            DiscoveredEndpoint::Lambda(arn, assume_role_arn) => DeploymentMetadata::new_lambda(
-                arn,
-                assume_role_arn,
-                DeliveryOptions::new(discovered_metadata.headers),
-                discovered_metadata.supported_protocol_versions,
-                discovered_metadata.sdk_version,
-            ),
+            DiscoveredEndpoint::Lambda(arn, assume_role_arn, compression) => {
+                DeploymentMetadata::new_lambda(
+                    arn,
+                    assume_role_arn,
+                    compression,
+                    DeliveryOptions::new(discovered_metadata.headers),
+                    discovered_metadata.supported_protocol_versions,
+                    discovered_metadata.sdk_version,
+                )
+            }
         };
 
         let (deployment, services) = if !apply_mode.should_apply() {
@@ -248,13 +251,16 @@ impl<V> SchemaRegistry<V> {
                 discovered_metadata.supported_protocol_versions,
                 discovered_metadata.sdk_version,
             ),
-            DiscoveredEndpoint::Lambda(arn, assume_role_arn) => DeploymentMetadata::new_lambda(
-                arn,
-                assume_role_arn,
-                DeliveryOptions::new(discovered_metadata.headers),
-                discovered_metadata.supported_protocol_versions,
-                discovered_metadata.sdk_version,
-            ),
+            DiscoveredEndpoint::Lambda(arn, assume_role_arn, compression) => {
+                DeploymentMetadata::new_lambda(
+                    arn,
+                    assume_role_arn,
+                    compression,
+                    DeliveryOptions::new(discovered_metadata.headers),
+                    discovered_metadata.supported_protocol_versions,
+                    discovered_metadata.sdk_version,
+                )
+            }
         };
 
         if !apply_mode.should_apply() {
