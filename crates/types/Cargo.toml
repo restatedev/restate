@@ -26,7 +26,8 @@ restate-utoipa = { workspace = true }
 ahash = {workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-base62 = { version = "2.0.2" }
+# pending https://github.com/fbernier/base62/pull/25 and https://github.com/fbernier/base62/pull/26
+base62 = { git = "https://github.com/restatedev/base62", branch = "vectorise" }
 base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
