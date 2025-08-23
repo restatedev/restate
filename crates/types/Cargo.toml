@@ -115,3 +115,7 @@ jsonptr = "0.7.1"
 [[bench]]
 name = "network_serialization"
 harness = false
+
+[[bench]]
+name = "id_encoding"
+harness = false
