@@ -10,7 +10,6 @@
 
 use crate::journal::schema::SysJournalBuilder;
 use crate::log_data_corruption_error;
-use crate::table_util::format_using;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
@@ -26,7 +25,6 @@ use restate_types::storage::StoredRawEntry;
 #[inline]
 pub(crate) fn append_journal_row(
     builder: &mut SysJournalBuilder,
-    output: &mut String,
     journal_entry_id: JournalEntryId,
     journal_entry: JournalEntry,
 ) {
@@ -35,14 +33,14 @@ pub(crate) fn append_journal_row(
 
     row.partition_key(journal_entry_id.partition_key());
     if row.is_id_defined() {
-        row.id(format_using(output, &journal_entry_id.invocation_id()));
+        row.fmt_id(journal_entry_id.invocation_id());
     }
 
     row.index(journal_entry_id.journal_index());
 
     match journal_entry {
         JournalEntry::Entry(entry) => {
-            row.entry_type(format_using(output, &entry.header().as_entry_type()));
+            row.fmt_entry_type(entry.header().as_entry_type());
 
             if let Some(completed) = entry.header().is_completed() {
                 row.completed(completed);
@@ -74,13 +72,10 @@ pub(crate) fn append_journal_row(
                     enrichment_result, ..
                 } => {
                     if row.is_invoked_id_defined() {
-                        row.invoked_id(format_using(output, &enrichment_result.invocation_id));
+                        row.fmt_invoked_id(enrichment_result.invocation_id);
                     }
                     if row.is_invoked_target_defined() {
-                        row.invoked_target(format_using(
-                            output,
-                            &enrichment_result.invocation_target,
-                        ));
+                        row.fmt_invoked_target(&enrichment_result.invocation_target);
                     }
                 }
                 EnrichedEntryHeader::GetPromise { .. }
@@ -142,7 +137,6 @@ pub(crate) fn append_journal_row(
 #[inline]
 pub(crate) fn append_journal_row_v2(
     builder: &mut SysJournalBuilder,
-    output: &mut String,
     journal_entry_id: JournalEntryId,
     raw_entry: StoredRawEntry,
 ) {
@@ -151,12 +145,12 @@ pub(crate) fn append_journal_row_v2(
 
     row.partition_key(journal_entry_id.partition_key());
     if row.is_id_defined() {
-        row.id(format_using(output, &journal_entry_id.invocation_id()));
+        row.fmt_id(journal_entry_id.invocation_id());
     }
 
     row.index(journal_entry_id.journal_index());
     if row.is_entry_type_defined() {
-        row.entry_type(format_using(output, &raw_entry.ty()));
+        row.fmt_entry_type(raw_entry.ty());
     }
 
     row.appended_at(raw_entry.header().append_time.as_u64() as i64);

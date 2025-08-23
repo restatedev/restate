@@ -83,12 +83,10 @@ async fn for_each_partition(
 ) {
     let mut builder = PartitionBuilder::new(schema.clone());
 
-    let mut output = String::new();
     for (_, partition) in partition_table.iter() {
         let membership = replica_set_states.membership_state(partition.partition_id);
         append_partition_row(
             &mut builder,
-            &mut output,
             membership,
             partition_table.version(),
             partition,

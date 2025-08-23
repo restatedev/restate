@@ -96,16 +96,9 @@ async fn for_each_partition(
 ) {
     let mut builder = PartitionReplicaSetBuilder::new(schema.clone());
 
-    let mut output = String::new();
     for (_, partition) in partition_table.iter() {
         let membership = replica_set_states.membership_state(partition.partition_id);
-        append_replica_set_row(
-            &mut builder,
-            &mut output,
-            membership,
-            &cluster_state,
-            partition,
-        );
+        append_replica_set_row(&mut builder, membership, &cluster_state, partition);
 
         if builder.num_rows() >= batch_size {
             let batch = builder.finish();

@@ -70,14 +70,8 @@ impl ScanLocalPartition for IdempotencyScanner {
 
     fn append_row(
         row_builder: &mut Self::Builder,
-        string_buffer: &mut String,
         (idempotency_id, idempotency_metadata): Self::Item,
     ) {
-        append_idempotency_row(
-            row_builder,
-            string_buffer,
-            idempotency_id,
-            idempotency_metadata,
-        );
+        append_idempotency_row(row_builder, idempotency_id, idempotency_metadata);
     }
 }

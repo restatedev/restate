@@ -70,9 +70,8 @@ async fn for_each_state(
     batch_size: usize,
 ) {
     let mut builder = SysServiceBuilder::new(schema.clone());
-    let mut temp = String::new();
     for service in rows {
-        append_service_row(&mut builder, &mut temp, service);
+        append_service_row(&mut builder, service);
         if builder.num_rows() >= batch_size {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {

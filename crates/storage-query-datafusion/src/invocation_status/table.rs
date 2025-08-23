@@ -70,11 +70,7 @@ impl ScanLocalPartition for StatusScanner {
         partition_store.scan_invocation_statuses(range)
     }
 
-    fn append_row(
-        row_builder: &mut Self::Builder,
-        string_buffer: &mut String,
-        (invocation_id, invocation_status): Self::Item,
-    ) {
-        append_invocation_status_row(row_builder, string_buffer, invocation_id, invocation_status)
+    fn append_row(row_builder: &mut Self::Builder, (invocation_id, invocation_status): Self::Item) {
+        append_invocation_status_row(row_builder, invocation_id, invocation_status)
     }
 }

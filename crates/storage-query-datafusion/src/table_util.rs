@@ -12,9 +12,7 @@ use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
-use std::fmt::Write;
 use std::sync::Arc;
-use tracing::error;
 
 #[macro_export]
 macro_rules! log_data_corruption_error {
@@ -48,15 +46,6 @@ pub(crate) fn make_ordering(columns: Vec<Arc<dyn PhysicalExpr>>) -> Vec<Physical
             options: Default::default(),
         })
         .collect()
-}
-
-#[inline]
-pub(crate) fn format_using<'a>(output: &'a mut String, what: &impl std::fmt::Display) -> &'a str {
-    output.clear();
-    if let Err(e) = write!(output, "{what}") {
-        error!(error = %e, "Cannot format the string")
-    }
-    output
 }
 
 pub(crate) trait Builder {

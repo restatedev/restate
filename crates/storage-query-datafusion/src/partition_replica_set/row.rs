@@ -14,11 +14,9 @@ use restate_types::partitions::state::{MemberState, MembershipState};
 use restate_types::{Version, partition_table::Partition};
 
 use super::schema::PartitionReplicaSetBuilder;
-use crate::table_util::format_using;
 
 pub(crate) fn append_replica_set_row(
     builder: &mut PartitionReplicaSetBuilder,
-    output: &mut String,
     membership: MembershipState,
     cluster_state: &ClusterState,
     partition: &Partition,
@@ -34,17 +32,17 @@ pub(crate) fn append_replica_set_row(
             if member.durable_lsn != Lsn::INVALID {
                 row.durable_lsn(member.durable_lsn.into());
             }
-            row.plain_node_id(format_using(output, &member.node_id));
+            row.fmt_plain_node_id(member.node_id);
 
             if let Some((gen_node_id, node_state)) =
                 cluster_state.get_node_state_and_generation(member.node_id)
             {
                 if node_state.is_alive() {
-                    row.alive_gen_node_id(format_using(output, &gen_node_id));
+                    row.fmt_alive_gen_node_id(gen_node_id);
                 }
                 if leadership.current_leader == gen_node_id {
                     row.is_leader(true);
-                    row.leader_epoch(format_using(output, &leadership.current_leader_epoch));
+                    row.fmt_leader_epoch(leadership.current_leader_epoch);
                 }
             }
         }

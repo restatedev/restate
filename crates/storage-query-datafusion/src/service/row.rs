@@ -10,21 +10,19 @@
 
 use super::schema::SysServiceBuilder;
 
-use crate::table_util::format_using;
 use restate_types::invocation::ServiceType;
 use restate_types::schema::service::ServiceMetadata;
 
 #[inline]
 pub(crate) fn append_service_row(
     builder: &mut SysServiceBuilder,
-    output: &mut String,
     service_metadata: ServiceMetadata,
 ) {
     let mut row = builder.row();
     row.name(service_metadata.name);
     row.revision(service_metadata.revision as u64);
     row.public(service_metadata.public);
-    row.deployment_id(format_using(output, &service_metadata.deployment_id));
+    row.fmt_deployment_id(service_metadata.deployment_id);
     row.ty(match service_metadata.ty {
         ServiceType::Service => "service",
         ServiceType::VirtualObject => "virtual_object",

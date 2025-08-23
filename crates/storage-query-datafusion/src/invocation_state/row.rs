@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use crate::invocation_state::schema::SysInvocationStateBuilder;
-use crate::table_util::format_using;
 use restate_invoker_api::InvocationStatusReport;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::service_protocol::ServiceProtocolVersion;
@@ -18,7 +17,6 @@ use restate_types::time::MillisSinceEpoch;
 #[inline]
 pub(crate) fn append_invocation_state_row(
     builder: &mut SysInvocationStateBuilder,
-    output: &mut String,
     status_row: InvocationStatusReport,
 ) {
     let mut row = builder.row();
@@ -27,7 +25,7 @@ pub(crate) fn append_invocation_state_row(
 
     row.partition_key(invocation_id.partition_key());
     if row.is_id_defined() {
-        row.id(format_using(output, &invocation_id));
+        row.fmt_id(invocation_id);
     }
     row.in_flight(status_row.in_flight());
     row.retry_count(status_row.retry_count() as u64);
@@ -43,7 +41,7 @@ pub(crate) fn append_invocation_state_row(
         row.next_retry_at(MillisSinceEpoch::as_u64(&next_retry_at.into()) as i64);
     }
     if let Some(last_retry_attempt_failure) = status_row.last_retry_attempt_failure() {
-        row.last_failure(format_using(output, &last_retry_attempt_failure.err));
+        row.fmt_last_failure(&last_retry_attempt_failure.err);
         if let Some(doc_error_code) = last_retry_attempt_failure.doc_error_code {
             row.last_failure_error_code(doc_error_code.code())
         }
@@ -65,10 +63,7 @@ pub(crate) fn append_invocation_state_row(
                 if row.is_last_failure_related_entry_type_defined() {
                     if let Some(related_entry_type) = &last_retry_attempt_failure.related_entry_type
                     {
-                        row.last_failure_related_entry_type(format_using(
-                            output,
-                            related_entry_type,
-                        ));
+                        row.fmt_last_failure_related_entry_type(related_entry_type);
                     }
                 }
             }
@@ -86,10 +81,7 @@ pub(crate) fn append_invocation_state_row(
                     if let Some(related_command_type) =
                         &last_retry_attempt_failure.related_entry_type
                     {
-                        row.last_failure_related_command_type(format_using(
-                            output,
-                            related_command_type,
-                        ));
+                        row.fmt_last_failure_related_command_type(related_command_type);
                     }
                 }
             }

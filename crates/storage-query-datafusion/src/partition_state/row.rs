@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::table_util::format_using;
-
 use super::schema::PartitionStateBuilder;
 use restate_types::{
     GenerationalNodeId, cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId,
@@ -18,7 +16,6 @@ use restate_types::{
 #[inline]
 pub(crate) fn append_partition_row(
     builder: &mut PartitionStateBuilder,
-    output: &mut String,
     node_id: GenerationalNodeId,
     partition_id: PartitionId,
     state: &PartitionProcessorStatus,
@@ -26,11 +23,11 @@ pub(crate) fn append_partition_row(
     let mut row = builder.row();
 
     row.partition_id(partition_id.into());
-    row.plain_node_id(format_using(output, &node_id.as_plain()));
-    row.gen_node_id(format_using(output, &node_id));
-    row.target_mode(format_using(output, &state.planned_mode));
+    row.fmt_plain_node_id(node_id.as_plain());
+    row.fmt_gen_node_id(node_id);
+    row.fmt_target_mode(state.planned_mode);
 
-    row.effective_mode(format_using(output, &state.effective_mode));
+    row.fmt_effective_mode(state.effective_mode);
 
     row.updated_at(state.updated_at.as_u64() as i64);
     if let Some(epoch) = state.last_observed_leader_epoch {
@@ -38,7 +35,7 @@ pub(crate) fn append_partition_row(
     }
 
     if let Some(leader) = &state.last_observed_leader_node {
-        row.leader(format_using(output, leader));
+        row.fmt_leader(leader);
     }
 
     if let Some(lsn) = state.last_applied_log_lsn {
@@ -49,7 +46,7 @@ pub(crate) fn append_partition_row(
         row.last_record_applied_at(ts.as_u64() as i64);
     }
 
-    row.replay_status(format_using(output, &state.replay_status));
+    row.fmt_replay_status(state.replay_status);
     if let Some(lsn) = state.last_persisted_log_lsn {
         row.durable_log_lsn(lsn.into());
     }

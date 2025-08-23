@@ -67,7 +67,6 @@ async fn for_each_log(
     batch_size: usize,
 ) {
     let mut builder = LogBuilder::new(schema.clone());
-    let mut output = String::new();
     for (id, chain) in logs.iter() {
         for segment in chain.iter() {
             let loglet_id = LogletId::new(*id, segment.index());
@@ -75,7 +74,6 @@ async fn for_each_log(
 
             append_segment_row(
                 &mut builder,
-                &mut output,
                 logs.version(),
                 *id,
                 &segment,
