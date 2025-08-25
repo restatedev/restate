@@ -56,4 +56,6 @@ pub(crate) trait Builder {
     fn empty(&self) -> bool;
 
     fn finish(self) -> datafusion::common::Result<RecordBatch>;
+
+    fn finish_and_new(&mut self) -> datafusion::common::Result<RecordBatch>;
 }

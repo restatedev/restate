@@ -45,6 +45,70 @@ macro_rules! define_builder {
     };
 }
 
+pub(crate) trait BuilderCapacity: datafusion::arrow::array::ArrayBuilder {
+    type Size;
+    fn len(&self) -> Self::Size;
+    fn with_capacity(capacity: Self::Size) -> Self;
+
+    fn finish_and_new(&mut self) -> datafusion::arrow::array::ArrayRef
+    where
+        Self: Sized,
+    {
+        let len = BuilderCapacity::len(self);
+        let batch = ::datafusion::arrow::array::ArrayBuilder::finish(self);
+        *self = BuilderCapacity::with_capacity(len);
+        batch
+    }
+}
+
+pub(crate) struct ByteBuilderSize {
+    item: usize,
+    data: usize,
+}
+
+impl<T: datafusion::arrow::datatypes::ByteArrayType> BuilderCapacity
+    for datafusion::arrow::array::GenericByteBuilder<T>
+{
+    type Size = ByteBuilderSize;
+
+    fn len(&self) -> Self::Size {
+        let item = datafusion::arrow::array::ArrayBuilder::len(self);
+        let data = datafusion::arrow::array::GenericByteBuilder::values_slice(self).len();
+
+        ByteBuilderSize { item, data }
+    }
+
+    fn with_capacity(capacity: Self::Size) -> Self {
+        Self::with_capacity(capacity.item, capacity.data)
+    }
+}
+
+impl<T: datafusion::arrow::datatypes::ArrowPrimitiveType> BuilderCapacity
+    for datafusion::arrow::array::PrimitiveBuilder<T>
+{
+    type Size = usize;
+
+    fn len(&self) -> Self::Size {
+        datafusion::arrow::array::ArrayBuilder::len(self)
+    }
+
+    fn with_capacity(capacity: Self::Size) -> Self {
+        Self::with_capacity(capacity)
+    }
+}
+
+impl BuilderCapacity for datafusion::arrow::array::BooleanBuilder {
+    type Size = usize;
+
+    fn len(&self) -> Self::Size {
+        datafusion::arrow::array::ArrayBuilder::len(self)
+    }
+
+    fn with_capacity(capacity: Self::Size) -> Self {
+        Self::with_capacity(capacity)
+    }
+}
+
 macro_rules! define_fmt {
     ($element:ident, $name:ident, DataType::Utf8) => {
         #[inline]
@@ -95,6 +159,18 @@ impl TimestampMillisecondUTCBuilder {
     #[inline]
     pub fn append_null(&mut self) {
         self.0.append_null();
+    }
+}
+
+impl BuilderCapacity for TimestampMillisecondUTCBuilder {
+    type Size = usize;
+
+    fn len(&self) -> Self::Size {
+        datafusion::arrow::array::ArrayBuilder::len(self)
+    }
+
+    fn with_capacity(capacity: Self::Size) -> Self {
+        Self(::datafusion::arrow::array::TimestampMillisecondBuilder::with_capacity(capacity))
     }
 }
 
@@ -352,7 +428,7 @@ macro_rules! document_type {
 ///     }
 /// }
 /// impl UserArrayBuilder {
-///     fn new(projected_schema: &SchemaRef) -> Self {
+///     fn new(projected_schema: &Schema) -> Self {
 ///         Self {
 ///             name: Self::new_builder(&projected_schema, &stringify!( name )),
 ///             age: Self::new_builder(&projected_schema, &stringify!( age )),
@@ -361,7 +437,7 @@ macro_rules! document_type {
 ///         }
 ///     }
 ///
-///     fn new_builder<T: ArrayBuilder + Default>(projected_schema: &SchemaRef, me: &str) -> Option<T> {
+///     fn new_builder<T: ArrayBuilder + Default>(projected_schema: &Schema, me: &str) -> Option<T> {
 ///         if projected_schema.column_with_name(me).is_some() {
 ///             Some(T::default())
 ///         } else {
@@ -374,23 +450,43 @@ macro_rules! document_type {
 ///         let arrays = [
 ///             {
 ///                 self.name.as_mut().map(|e| {
-///                     let builder: &mut dyn ArrayBuilder = e;
-///                     builder.finish()
+///                     ::datafusion::arrow::array::ArrayBuilder::finish(e)
 ///                 })
 ///             }, {
 ///                 self.age.as_mut().map(|e| {
-///                     let builder: &mut dyn ArrayBuilder = e;
-///                     builder.finish()
+///                     ::datafusion::arrow::array::ArrayBuilder::finish(e)
 ///                 })
 ///             }, {
 ///                 self.secret.as_mut().map(|e| {
-///                     let builder: &mut dyn ArrayBuilder = e;
-///                     builder.finish()
+///                     ::datafusion::arrow::array::ArrayBuilder::finish(e)
 ///                 })
 ///             }, {
 ///                 self.birth_date.as_mut().map(|e| {
-///                     let builder: &mut dyn ArrayBuilder = e;
-///                     builder.finish()
+///                     ::datafusion::arrow::array::ArrayBuilder::finish(e)
+///                 })
+///             },
+///         ];
+///
+///         arrays.into_iter().flatten().collect()
+///     }
+///
+///     fn finish_and_new(&mut self) -> Vec<ArrayRef> {
+///         let arrays = [
+///             {
+///                 self.name.as_mut().map(|e| {
+///                     BuilderCapacity::finish_and_new(e)
+///                 })
+///             }, {
+///                 self.age.as_mut().map(|e| {
+///                     BuilderCapacity::finish_and_new(e)
+///                 })
+///             }, {
+///                 self.secret.as_mut().map(|e| {
+///                     BuilderCapacity::finish_and_new(e)
+///                 })
+///             }, {
+///                 self.birth_date.as_mut().map(|e| {
+///                     BuilderCapacity::finish_and_new(e)
 ///                 })
 ///             },
 ///         ];
@@ -399,7 +495,7 @@ macro_rules! document_type {
 ///     }
 /// }
 /// impl UserBuilder {
-///     pub fn new(projected_schema: SchemaRef) -> Self {
+///     pub fn new(projected_schema: &Schema) -> Self {
 ///         Self {
 ///             rows_inserted_so_far: 0,
 ///             arrays: UserArrayBuilder::new(&projected_schema),
@@ -440,6 +536,11 @@ macro_rules! document_type {
 ///
 ///     pub fn finish(self) -> RecordBatch {
 ///         let arrays = self.arrays.finish();
+///         RecordBatch::try_new(self.projected_schema, arrays).unwrap()
+///     }
+///
+///     pub fn finish_and_new(&mut self) -> RecordBatch {
+///         let arrays = self.arrays.finish_and_new();
 ///         RecordBatch::try_new(self.projected_schema, arrays).unwrap()
 ///     }
 /// }
@@ -536,13 +637,13 @@ macro_rules! define_table {
         #[allow(clippy::all)]
         impl [< $table_name:camel ArrayBuilder >] {
 
-             fn new(projected_schema: &::datafusion::arrow::datatypes::SchemaRef) -> Self {
+             fn new(projected_schema: &::datafusion::arrow::datatypes::Schema) -> Self {
                 Self {
                     $($element : Self::new_builder(&projected_schema, &stringify!($element)) ,)+
                 }
             }
 
-             fn new_builder<T: ::datafusion::arrow::array::ArrayBuilder + Default>(projected_schema: &::datafusion::arrow::datatypes::SchemaRef, me: &str) -> Option<T> {
+             fn new_builder<T: ::datafusion::arrow::array::ArrayBuilder + Default>(projected_schema: &::datafusion::arrow::datatypes::Schema, me: &str) -> Option<T> {
                     if projected_schema.column_with_name(me).is_some() {
                        Some(T::default())
                     } else {
@@ -550,13 +651,25 @@ macro_rules! define_table {
                     }
              }
 
-
              fn finish(mut self) -> Vec<::datafusion::arrow::array::ArrayRef> {
                 let arrays = [
                     $(  {
                         self.$element.as_mut().map(|e| {
-                            let builder: &mut dyn ::datafusion::arrow::array::ArrayBuilder = e;
-                            builder.finish()
+                            ::datafusion::arrow::array::ArrayBuilder::finish(e)
+                        })
+
+                        },
+                    )+
+                ];
+
+                arrays.into_iter().flatten().collect()
+            }
+
+            fn finish_and_new(&mut self) -> Vec<::datafusion::arrow::array::ArrayRef> {
+                let arrays = [
+                    $(  {
+                        self.$element.as_mut().map(|e| {
+                            $crate::table_macro::BuilderCapacity::finish_and_new(e)
                         })
 
                         },
@@ -620,7 +733,17 @@ macro_rules! define_table {
                 // We add the row count as it wouldn't otherwise work with queries that
                 // just run aggregate functions (e.g. COUNT(*)) without selecting fields.
                 let options = ::datafusion::arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(self.rows_inserted_so_far));
-                Ok(::datafusion::arrow::record_batch::RecordBatch::try_new_with_options(self.projected_schema, arrays, &options)?)
+                Ok(::datafusion::arrow::record_batch::RecordBatch::try_new_with_options(self.projected_schema.clone(), arrays, &options)?)
+            }
+
+            fn finish_and_new(&mut self) -> ::datafusion::common::Result<::datafusion::arrow::record_batch::RecordBatch> {
+                let rows_inserted_so_far = self.rows_inserted_so_far;
+                self.rows_inserted_so_far = 0;
+                let arrays = self.arrays.finish_and_new();
+                // We add the row count as it wouldn't otherwise work with queries that
+                // just run aggregate functions (e.g. COUNT(*)) without selecting fields.
+                let options = ::datafusion::arrow::record_batch::RecordBatchOptions::new().with_row_count(Some(rows_inserted_so_far));
+                Ok(::datafusion::arrow::record_batch::RecordBatch::try_new_with_options(self.projected_schema.clone(), arrays, &options)?)
             }
         }
 
