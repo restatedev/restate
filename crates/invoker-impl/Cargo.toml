@@ -30,6 +30,7 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 futures = { workspace = true }
+gardal = { workspace = true }
 humantime = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
@@ -38,10 +39,12 @@ tokio-stream = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
+pin-project-lite = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-hrtime = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

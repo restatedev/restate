@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -299,6 +299,16 @@ pub struct InvokerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     experimental_features_propose_events: bool,
+
+    /// # Invocation throttling
+    ///
+    /// Throttling options for invocations per invoker.
+    pub invocations_throttling: ThrottlingOptions,
+
+    /// # Actions throttling
+    ///
+    /// Throttling options for actions per invoker.
+    pub actions_throttling: ThrottlingOptions,
 }
 
 impl InvokerOptions {
@@ -344,6 +354,8 @@ impl Default for InvokerOptions {
             concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
             disable_eager_state: false,
             experimental_features_propose_events: false,
+            invocations_throttling: Default::default(),
+            actions_throttling: Default::default(),
         }
     }
 }
@@ -565,5 +577,36 @@ impl SnapshotsOptions {
 
     pub fn snapshots_dir(&self, partition_id: PartitionId) -> PathBuf {
         super::data_dir("db-snapshots").join(partition_id.to_string())
+    }
+}
+
+/// # Throttling options
+///
+/// Throttling options per invoker.
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "ThrottlingOptions", default))]
+#[builder(default)]
+#[serde(rename_all = "kebab-case")]
+pub struct ThrottlingOptions {
+    /// # Burst capacity
+    ///
+    /// The maximum number of tokens the bucket can hold.
+    /// Default: 1M
+    pub burst: NonZeroU32,
+
+    /// # Replenishment rate
+    ///
+    /// The rate in seconds at which the tokens are replenished.
+    /// Default: 100k
+    pub rate: NonZeroU32,
+}
+
+impl Default for ThrottlingOptions {
+    fn default() -> Self {
+        Self {
+            burst: NonZeroU32::new(1000000).unwrap(),
+            rate: NonZeroU32::new(100000).unwrap(),
+        }
     }
 }
