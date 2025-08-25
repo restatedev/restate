@@ -179,26 +179,26 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         }
     };
 
-    if let Some(mut renderer) = Arc::into_inner(tunnel_renderer) {
-        if let Some(local) = renderer.local.take() {
-            // dropping the renderer will exit the alt screen
-            let (tunnel_url, tunnel_name, port) = local.into_tunnel_details();
-            drop(renderer);
-            let remote_ports = if opts.remote_port.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " --remote-port {}",
-                    opts.remote_port
-                        .iter()
-                        .map(|port| u16::from(*port))
-                        .join(" --remote-port ")
-                )
-            };
-            eprintln!(
-                "To retry with the same endpoint:\nrestate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}{remote_ports}"
-            );
-        }
+    if let Some(mut renderer) = Arc::into_inner(tunnel_renderer)
+        && let Some(local) = renderer.local.take()
+    {
+        // dropping the renderer will exit the alt screen
+        let (tunnel_url, tunnel_name, port) = local.into_tunnel_details();
+        drop(renderer);
+        let remote_ports = if opts.remote_port.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " --remote-port {}",
+                opts.remote_port
+                    .iter()
+                    .map(|port| u16::from(*port))
+                    .join(" --remote-port ")
+            )
+        };
+        eprintln!(
+            "To retry with the same endpoint:\nrestate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}{remote_ports}"
+        );
     };
 
     match res {

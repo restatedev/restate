@@ -293,7 +293,7 @@ impl PartitionStore {
         self.db.partition().key_range.contains(&key)
     }
 
-    fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily> {
+    fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
         self.db.cf_handle()
     }
 
@@ -471,7 +471,7 @@ impl PartitionStore {
         Ok(ReceiverStream::new(rx))
     }
 
-    pub fn transaction(&mut self) -> PartitionStoreTransaction {
+    pub fn transaction(&mut self) -> PartitionStoreTransaction<'_> {
         self.transaction_with_isolation(IsolationLevel::Committed)
     }
 
@@ -507,7 +507,7 @@ impl PartitionStore {
     pub fn transaction_with_isolation(
         &mut self,
         isolation_level: IsolationLevel,
-    ) -> PartitionStoreTransaction {
+    ) -> PartitionStoreTransaction<'_> {
         // An optimization to avoid looking up the cf handle everytime, if we split into more
         // column families, we will need to cache those cfs here as well.
         let data_cf_handle = self.db.cf_handle();
@@ -563,14 +563,12 @@ impl PartitionStore {
             .map_err(|e| StorageError::SnapshotExport(e.into()))?
             .ok_or(StorageError::DataIntegrityError)?; // if PartitionStore::get_applied_lsn returns None
 
-        if let Some(min_target_lsn) = min_target_lsn {
-            if applied_lsn < min_target_lsn {
-                return Err(StorageError::PreconditionFailed(anyhow!(
-                    "Applied LSN below the target LSN: {} < {}",
-                    applied_lsn,
-                    min_target_lsn
-                )));
-            }
+        if let Some(min_target_lsn) = min_target_lsn
+            && applied_lsn < min_target_lsn
+        {
+            return Err(StorageError::PreconditionFailed(anyhow!(
+                "Applied LSN below the target LSN: {applied_lsn} < {min_target_lsn}",
+            )));
         };
 
         // RocksDB will create the snapshot directory but the parent must exist first:
@@ -664,7 +662,7 @@ impl StorageAccess for PartitionStore {
     }
 
     #[inline]
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
+    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>> {
         let table = self.table_handle(table);
         self.db
             .rocksdb()
@@ -678,7 +676,7 @@ impl StorageAccess for PartitionStore {
         &self,
         table: TableKind,
         key: K,
-    ) -> Result<Option<DBPinnableSlice>> {
+    ) -> Result<Option<DBPinnableSlice<'_>>> {
         let table = self.table_handle(table);
         let mut read_opts = ReadOptions::default();
         read_opts.set_read_tier(rocksdb::ReadTier::Persisted);
@@ -755,7 +753,7 @@ impl PartitionStoreTransaction<'_> {
         table: TableKind,
         _key_kind: KeyKind,
         prefix: Bytes,
-    ) -> Result<DBIterator> {
+    ) -> Result<DBIterator<'_>> {
         let table = self.table_handle(table);
         let mut opts = self.read_options();
         opts.set_iterate_range(PrefixRange(prefix.clone()));
@@ -779,7 +777,7 @@ impl PartitionStoreTransaction<'_> {
         scan_mode: ScanMode,
         from: Bytes,
         to: Bytes,
-    ) -> Result<DBIterator> {
+    ) -> Result<DBIterator<'_>> {
         let table = self.table_handle(table);
         let mut opts = self.read_options();
         // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
@@ -797,7 +795,7 @@ impl PartitionStoreTransaction<'_> {
         Ok(it)
     }
 
-    pub(crate) fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily> {
+    pub(crate) fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
         // Right now, everything is in one cf, return a reference and save CPU.
         self.data_cf_handle
     }
@@ -917,7 +915,7 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     }
 
     #[inline]
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>> {
+    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>> {
         let table = self.table_handle(table);
         self.write_batch_with_index
             .get_pinned_from_batch_and_db_cf(
@@ -933,7 +931,7 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
         &self,
         _table: TableKind,
         _key: K,
-    ) -> Result<Option<DBPinnableSlice>> {
+    ) -> Result<Option<DBPinnableSlice<'_>>> {
         unreachable!("ReadTier::Persisted is not meant to be used in WBI");
     }
 
@@ -971,7 +969,7 @@ pub(crate) trait StorageAccess {
 
     fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
 
-    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice>>;
+    fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>>;
 
     /// Forces a read from persistent storage, bypassing memtables and block cache.
     ///
@@ -981,7 +979,7 @@ pub(crate) trait StorageAccess {
         &self,
         table: TableKind,
         key: K,
-    ) -> Result<Option<DBPinnableSlice>>;
+    ) -> Result<Option<DBPinnableSlice<'_>>>;
 
     fn put_cf(
         &mut self,

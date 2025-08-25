@@ -301,14 +301,11 @@ impl ConnectionManager {
 
         // check cluster fingerprint if it's set on the hello message *and* our nodes config has it
         // set as well.
-        if let Ok(incoming_fingerprint) = ClusterFingerprint::try_from(hello.cluster_fingerprint) {
-            if let Some(cluster_fingerprint) = nodes_config.cluster_fingerprint() {
-                if incoming_fingerprint != cluster_fingerprint {
-                    return Err(
-                        HandshakeError::Failed("Cluster fingerprint mismatch".to_owned()).into(),
-                    );
-                }
-            }
+        if let Ok(incoming_fingerprint) = ClusterFingerprint::try_from(hello.cluster_fingerprint)
+            && let Some(cluster_fingerprint) = nodes_config.cluster_fingerprint()
+            && incoming_fingerprint != cluster_fingerprint
+        {
+            return Err(HandshakeError::Failed("Cluster fingerprint mismatch".to_owned()).into());
         }
 
         // NodeId **must** be generational at this layer, we may support accepting connections from

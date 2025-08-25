@@ -401,13 +401,12 @@ impl TryFrom<ApiGatewayProxyResponse> for Response<Full<Bytes>> {
             .headers
             .as_ref()
             .and_then(|hm| hm.get(http::header::CONTENT_ENCODING))
-        {
-            if content_encoding_header.to_str().is_ok_and(|hv| {
+            && content_encoding_header.to_str().is_ok_and(|hv| {
                 hv.trim()
                     .eq_ignore_ascii_case(EndpointLambdaCompression::Zstd.http_name())
-            }) {
-                compression = Some(EndpointLambdaCompression::Zstd);
-            }
+            })
+        {
+            compression = Some(EndpointLambdaCompression::Zstd);
         }
 
         // Run compression if needed

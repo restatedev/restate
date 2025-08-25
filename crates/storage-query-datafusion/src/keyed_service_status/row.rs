@@ -27,9 +27,9 @@ pub(crate) fn append_virtual_object_status_row(
     row.service_key(&service_id.key);
 
     // Invocation id
-    if row.is_invocation_id_defined() {
-        if let VirtualObjectStatus::Locked(invocation_id) = status {
-            row.invocation_id(format_using(output, &invocation_id));
-        }
+    if row.is_invocation_id_defined()
+        && let VirtualObjectStatus::Locked(invocation_id) = status
+    {
+        row.invocation_id(format_using(output, &invocation_id));
     }
 }

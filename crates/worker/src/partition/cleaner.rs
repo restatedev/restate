@@ -129,28 +129,27 @@ where
             let now = SystemTime::now();
             if let Some(status_expiration_time) = SystemTime::from(completed_time)
                 .checked_add(completed_invocation.completion_retention_duration)
+                && now >= status_expiration_time
             {
-                if now >= status_expiration_time {
-                    restate_bifrost::append_to_bifrost(
-                        bifrost,
-                        Arc::new(Envelope {
-                            header: Header {
-                                source: bifrost_envelope_source.clone(),
-                                dest: Destination::Processor {
-                                    partition_key: invocation_id.partition_key(),
-                                    dedup: None,
-                                },
+                restate_bifrost::append_to_bifrost(
+                    bifrost,
+                    Arc::new(Envelope {
+                        header: Header {
+                            source: bifrost_envelope_source.clone(),
+                            dest: Destination::Processor {
+                                partition_key: invocation_id.partition_key(),
+                                dedup: None,
                             },
-                            command: Command::PurgeInvocation(PurgeInvocationRequest {
-                                invocation_id,
-                                response_sink: None,
-                            }),
+                        },
+                        command: Command::PurgeInvocation(PurgeInvocationRequest {
+                            invocation_id,
+                            response_sink: None,
                         }),
-                    )
-                    .await
-                    .context("Cannot append to bifrost purge invocation")?;
-                    continue;
-                }
+                    }),
+                )
+                .await
+                .context("Cannot append to bifrost purge invocation")?;
+                continue;
             }
 
             // We don't cleanup the status yet, let's check if there's a journal to cleanup

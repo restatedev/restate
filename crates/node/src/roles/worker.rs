@@ -11,40 +11,17 @@
 use codederror::CodedError;
 
 use restate_bifrost::Bifrost;
+use restate_core::TaskKind;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{MetadataWriter, TaskCenter};
-use restate_core::{ShutdownError, TaskKind};
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_worker::Worker;
-
-#[derive(Debug, thiserror::Error, CodedError)]
-pub enum WorkerRoleError {
-    #[error("worker failed: {0}")]
-    Worker(
-        #[from]
-        #[code]
-        restate_worker::Error,
-    ),
-    #[error(transparent)]
-    #[code(unknown)]
-    Shutdown(#[from] ShutdownError),
-}
-
-#[derive(Debug, thiserror::Error, CodedError)]
-pub enum SchemaError {
-    #[error("failed to fetch schema updates: {0}")]
-    #[code(unknown)]
-    Fetch(#[from] tonic::Status),
-    #[error("failed updating subscriptions: {0}")]
-    #[code(unknown)]
-    Subscription(#[from] restate_worker::WorkerHandleError),
-}
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum WorkerRoleBuildError {

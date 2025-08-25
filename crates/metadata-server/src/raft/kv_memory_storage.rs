@@ -260,12 +260,6 @@ impl KvMemoryStorage {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum CreateSnapshotError {
-    #[error(transparent)]
-    Protobuf(#[from] prost::EncodeError),
-}
-
 #[serde_with::serde_as]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct KvSnapshot {

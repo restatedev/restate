@@ -48,12 +48,12 @@ use restate_core::network::{
 };
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{
-    Metadata, MetadataWriter, ShutdownError, TaskCenterFutureExt, TaskHandle, TaskKind,
-    cancellation_watcher, my_node_id,
+    Metadata, MetadataWriter, TaskCenterFutureExt, TaskHandle, TaskKind, cancellation_watcher,
+    my_node_id,
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
-use restate_invoker_impl::{BuildError, ChannelStatusReader};
+use restate_invoker_impl::ChannelStatusReader;
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
@@ -141,16 +141,6 @@ type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
 struct PendingSnapshotTask {
     snapshot_id: SnapshotId,
     sender: Option<oneshot::Sender<SnapshotResult>>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Shutdown(#[from] ShutdownError),
-    #[error("failed updating the metadata store: {0}")]
-    MetadataStore(#[from] ReadModifyWriteError),
-    #[error(transparent)]
-    InvokerBuild(#[from] BuildError),
 }
 
 enum RestartDelay {
@@ -456,18 +446,17 @@ impl PartitionProcessorManager {
                                         *delay,
                                     );
                                     // check whether we need to obtain a new leader epoch
-                                    if *target_run_mode == RunMode::Leader {
-                                        if let Some(leader_epoch_token) = new_state.run_as_leader()
-                                        {
-                                            Self::obtain_new_leader_epoch(
-                                                partition_id,
-                                                leader_epoch_token,
-                                                self.metadata_writer
-                                                    .raw_metadata_store_client()
-                                                    .clone(),
-                                                &mut self.asynchronous_operations,
-                                            );
-                                        }
+                                    if *target_run_mode == RunMode::Leader
+                                        && let Some(leader_epoch_token) = new_state.run_as_leader()
+                                    {
+                                        Self::obtain_new_leader_epoch(
+                                            partition_id,
+                                            leader_epoch_token,
+                                            self.metadata_writer
+                                                .raw_metadata_store_client()
+                                                .clone(),
+                                            &mut self.asynchronous_operations,
+                                        );
                                     }
 
                                     *processor_state = new_state;
@@ -970,10 +959,11 @@ impl PartitionProcessorManager {
         snapshot_repository: SnapshotRepository,
         sender: Option<oneshot::Sender<SnapshotResult>>,
     ) {
-        if let Some(snapshot) = self.latest_snapshots.get(&partition_id) {
-            if min_target_lsn.is_some_and(|target_lsn| snapshot.min_applied_lsn >= target_lsn) {
-                if let Some(sender) = sender {
-                    sender
+        if let Some(snapshot) = self.latest_snapshots.get(&partition_id)
+            && min_target_lsn.is_some_and(|target_lsn| snapshot.min_applied_lsn >= target_lsn)
+            && let Some(sender) = sender
+        {
+            sender
                         .send(Ok(snapshot.clone()))
                         .inspect_err(|err| {
                             debug!(
@@ -986,9 +976,8 @@ impl PartitionProcessorManager {
                             )
                         })
                         .ok();
-                }
-                return;
-            }
+
+            return;
         }
 
         match self.pending_snapshots.entry(partition_id) {

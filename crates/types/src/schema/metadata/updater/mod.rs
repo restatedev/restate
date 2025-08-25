@@ -1128,18 +1128,17 @@ impl Handler {
         schema: endpoint_manifest::OutputPayload,
     ) -> Result<OutputRules, ServiceError> {
         Ok(if let Some(ct) = schema.content_type {
-            if let Some(schema) = &schema.json_schema {
-                if let Err(e) = jsonschema::options()
+            if let Some(schema) = &schema.json_schema
+                && let Err(e) = jsonschema::options()
                     .with_retriever(UnsupportedExternalRefRetriever)
                     .build(schema)
-                {
-                    return Err(ServiceError::BadJsonSchema {
-                        service: svc_name.to_owned(),
-                        handler: handler_name.to_owned(),
-                        position: "output",
-                        error: Box::new(e),
-                    });
-                }
+            {
+                return Err(ServiceError::BadJsonSchema {
+                    service: svc_name.to_owned(),
+                    handler: handler_name.to_owned(),
+                    position: "output",
+                    error: Box::new(e),
+                });
             }
 
             OutputRules {

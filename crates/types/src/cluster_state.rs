@@ -153,7 +153,7 @@ impl ClusterStateUpdater {
         ClusterState { inner: self.inner }
     }
     /// Acquire a write lock to mutate cluster state node map membership
-    pub fn write(&mut self) -> ClusterStateUpdateWriteGuard {
+    pub fn write(&mut self) -> ClusterStateUpdateWriteGuard<'_> {
         ClusterStateUpdateWriteGuard {
             guard: self.inner.nodes.write(),
             global_notify: &self.inner.global_notify,
@@ -161,7 +161,7 @@ impl ClusterStateUpdater {
     }
 
     /// Acquire an updater that can update individual states but won't change node map membership
-    pub fn read(&mut self) -> ClusterStateUpdateReadGuard {
+    pub fn read(&mut self) -> ClusterStateUpdateReadGuard<'_> {
         ClusterStateUpdateReadGuard {
             guard: self.inner.nodes.read(),
             global_notify: &self.inner.global_notify,

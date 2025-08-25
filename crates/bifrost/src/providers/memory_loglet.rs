@@ -313,12 +313,12 @@ impl Stream for MemoryReadStream {
                 .next();
 
             // If this is a filtered record, skip it.
-            if let Some(data_record) = next_record.as_record() {
-                if !data_record.matches_key_query(&self.filter) {
-                    // read_pointer is already advanced, just don't return the
-                    // record and fast-forward.
-                    continue;
-                }
+            if let Some(data_record) = next_record.as_record()
+                && !data_record.matches_key_query(&self.filter)
+            {
+                // read_pointer is already advanced, just don't return the
+                // record and fast-forward.
+                continue;
             }
 
             return Poll::Ready(Some(Ok(next_record)));

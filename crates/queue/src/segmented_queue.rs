@@ -306,10 +306,10 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> Segment<T> {
     }
 
     fn pre_load_from_disk(&mut self, path: PathBuf) {
-        if let StoringToDisk { id, len, handle } = self {
-            if handle.is_finished() {
-                *self = OnDisk { id: *id, len: *len }
-            }
+        if let StoringToDisk { id, len, handle } = self
+            && handle.is_finished()
+        {
+            *self = OnDisk { id: *id, len: *len }
         }
         if let OnDisk { id, len } = self {
             let load_handle = tokio::spawn(io::consume_segment_infallible(path, *id));

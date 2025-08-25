@@ -25,9 +25,11 @@ pub trait ConnectionTracking {
 }
 
 /// Null tracker
+#[cfg(feature = "test-util")]
 #[derive(Clone, Copy, Default)]
 pub struct NoopTracker;
 
+#[cfg(feature = "test-util")]
 impl ConnectionTracking for NoopTracker {
     fn connection_draining(&self, _conn: &Connection) {}
     fn connection_created(&self, _conn: &Connection, _is_dedicated: bool) {}

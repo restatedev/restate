@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -30,7 +29,6 @@ use restate_types::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMe
 use restate_types::schema::subscriptions::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
 };
-use restate_types::schema::updater::ServiceError;
 use restate_types::schema::{Schema, updater};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -487,37 +485,6 @@ where
             .expect("subscription was just added");
 
         Ok(subscription)
-    }
-}
-
-/// Newtype for service names
-#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
-#[display("{}", _0)]
-pub struct ServiceName(String);
-
-impl TryFrom<String> for ServiceName {
-    type Error = ServiceError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.to_lowercase().starts_with("restate")
-            || value.to_lowercase().eq_ignore_ascii_case("openapi")
-        {
-            Err(ServiceError::ReservedName(value))
-        } else {
-            Ok(ServiceName(value))
-        }
-    }
-}
-
-impl AsRef<str> for ServiceName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Borrow<String> for ServiceName {
-    fn borrow(&self) -> &String {
-        &self.0
     }
 }
 

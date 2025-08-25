@@ -107,10 +107,10 @@ where
     }
 
     fn call(&mut self, uri: Uri) -> Self::Future {
-        if let Some(host) = uri.host() {
-            if self.no_proxy(host) {
-                return self.connector.call(uri);
-            }
+        if let Some(host) = uri.host()
+            && self.no_proxy(host)
+        {
+            return self.connector.call(uri);
         }
         self.connector.call(match &self.proxy {
             Some(proxy) => proxy.dst(uri),
