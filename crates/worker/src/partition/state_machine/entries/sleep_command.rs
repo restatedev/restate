@@ -29,18 +29,21 @@ where
             .expect("In-Flight invocation metadata must be present");
 
         // Create the instrumentation span
-        let _span = instrumentation::info_invocation_span!(
-            relation = invocation_metadata
-                .journal_metadata
-                .span_context
-                .as_parent(),
-            id = self.invocation_id,
-            name = "sleep",
-            tags = (rpc.service = invocation_metadata
-                .invocation_target
-                .service_name()
-                .to_string())
-        );
+        if ctx.is_leader {
+            let _span = instrumentation::info_invocation_span!(
+                relation = invocation_metadata
+                    .journal_metadata
+                    .span_context
+                    .as_parent(),
+                id = self.invocation_id,
+                name = "sleep",
+                tags = (rpc.service = invocation_metadata
+                    .invocation_target
+                    .service_name()
+                    .to_string()),
+                fields = (with_end_time = self.entry.wake_up_time)
+            );
+        }
 
         ctx.register_timer(
             TimerKeyValue::complete_journal_entry(

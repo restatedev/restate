@@ -21,9 +21,30 @@ mod get_lazy_state_keys_command;
 mod get_promise_command;
 mod notification;
 mod peek_promise_command;
+mod run_command;
 mod send_signal_command;
 mod set_state_command;
 mod sleep_command;
+
+use std::collections::VecDeque;
+
+use tracing::debug;
+
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::journal_table as journal_table_v1;
+use restate_storage_api::journal_table_v2::JournalTable;
+use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::promise_table::PromiseTable;
+use restate_storage_api::state_table::StateTable;
+use restate_storage_api::timer_table::TimerTable;
+use restate_types::identifiers::InvocationId;
+use restate_types::journal_v2::raw::RawEntry;
+use restate_types::journal_v2::{
+    Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType,
+};
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::entries::attach_invocation_command::ApplyAttachInvocationCommand;
@@ -41,28 +62,12 @@ use crate::partition::state_machine::entries::get_lazy_state_keys_command::Apply
 use crate::partition::state_machine::entries::get_promise_command::ApplyGetPromiseCommand;
 use crate::partition::state_machine::entries::notification::ApplyNotificationCommand;
 use crate::partition::state_machine::entries::peek_promise_command::ApplyPeekPromiseCommand;
+use crate::partition::state_machine::entries::run_command::ApplyRunCommand;
 use crate::partition::state_machine::entries::send_signal_command::ApplySendSignalCommand;
 use crate::partition::state_machine::entries::set_state_command::ApplySetStateCommand;
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
 use crate::partition::state_machine::lifecycle::VerifyOrMigrateJournalTableToV2Command;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
-use restate_storage_api::journal_table as journal_table_v1;
-use restate_storage_api::journal_table_v2::JournalTable;
-use restate_storage_api::outbox_table::OutboxTable;
-use restate_storage_api::promise_table::PromiseTable;
-use restate_storage_api::state_table::StateTable;
-use restate_storage_api::timer_table::TimerTable;
-use restate_types::identifiers::InvocationId;
-use restate_types::journal_v2::raw::RawEntry;
-use restate_types::journal_v2::{
-    Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType,
-};
-use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
-use std::collections::VecDeque;
-use tracing::debug;
 
 pub(super) struct OnJournalEntryCommand {
     pub(super) invocation_id: InvocationId,
@@ -146,10 +151,20 @@ where
                     match cmd {
                         Command::Input(_)
                         | Command::Output(_)
-                        | Command::Run(_)
                         | Command::GetEagerState(_)
                         | Command::GetEagerStateKeys(_) => {
                             // For these entries, we don't need to perform operations, we just need to store them
+                        }
+
+                        Command::Run(entry) => {
+                            ApplyRunCommand {
+                                invocation_id: self.invocation_id,
+                                invocation_status: &self.invocation_status,
+                                entry,
+                                completions_to_process: &mut entries,
+                            }
+                            .apply(ctx)
+                            .await?;
                         }
 
                         Command::GetLazyState(entry) => {
