@@ -114,7 +114,7 @@ pub async fn get_service_openapi<V, IC>(
 /// Modify a service
 #[openapi(
     summary = "Modify a service",
-    description = "Modify a registered service configuration. NOTE: These changes will apply until the next revision for this service gets discovered and registered.",
+    description = "Modify a registered service configuration. NOTE: Service re-discovery will update the settings based on the service endpoint configuration.",
     operation_id = "modify_service",
     tags = "service",
     parameters(path(

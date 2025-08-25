@@ -1561,7 +1561,7 @@ mod endpoint_manifest_options_propagation {
             })
         );
 
-        //6. Operator registers a new version that doesn't declare the journal retention, now value should be E = 20 seconds
+        // 6. Operator registers a new version that doesn't declare journal retention, value should revert to the default E = 20 seconds
         let mut deployment = Deployment::mock_with_uri("http://localhost:9082");
         let (deployment_id, schema) = SchemaUpdater::update_and_return(schema, move |updater| {
             updater.add_deployment(

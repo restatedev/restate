@@ -67,7 +67,7 @@ fn write_out_edit_toml(w: &mut impl io::Write, service_type: ServiceType) -> Res
     writeln!(w, "# -- Service configuration changes\n")?;
     writeln!(
         w,
-        "# NOTE: These changes will apply until the next revision of this service gets discovered and registered.\n\n"
+        "# NOTE: Service re-discovery will update the settings based on the service endpoint configuration.\n\n"
     )?;
 
     write_prefixed_lines(w, "# ", super::view::PUBLIC_DESCRIPTION)?;
