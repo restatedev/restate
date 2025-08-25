@@ -609,6 +609,16 @@ macro_rules! info_invocation_span {
             fields = ()
         )
     };
+    (relation=$relation:expr, id= $id:expr, name= $name:expr, tags=($($($key:ident).+ = $value:expr),*), fields=($($field:ident = $field_value:expr),*)) => {
+        $crate::invocation_span!(
+            level = ::tracing::Level::INFO,
+            relation = $relation,
+            id = $id,
+            name = $name,
+            tags = ($($($key).+ = $value),*),
+            fields=($($field = $field_value),*)
+        )
+    };
     (relation=$relation:expr, id= $id:expr, name= $name:expr, tags=($($($key:ident).+ = $value:expr),*)) => {
         $crate::invocation_span!(
             level = ::tracing::Level::INFO,

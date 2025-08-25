@@ -8,26 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::state_table::StateTable;
 use restate_tracing_instrumentation as instrumentation;
-use restate_types::journal_v2::{ClearStateCommand, EntryMetadata};
-use tracing::warn;
+use restate_types::journal_v2::RunCommand;
 
-pub(super) type ApplyClearStateCommand<'e> = ApplyJournalCommandEffect<'e, ClearStateCommand>;
+pub(super) type ApplyRunCommand<'e> = ApplyJournalCommandEffect<'e, RunCommand>;
 
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
-    for ApplyClearStateCommand<'e>
-where
-    S: StateTable,
+    for ApplyRunCommand<'e>
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self
             .invocation_status
             .get_invocation_metadata()
             .expect("In-Flight invocation metadata must be present");
+
+        // todo(azmy): avoid "format!" if tracing is not enabled?
+
+        // todo(azmy): completable commands like Run and Sleep should have their span
+        // created when the completion is received.
 
         if ctx.is_leader {
             let _span = instrumentation::info_invocation_span!(
@@ -36,29 +36,11 @@ where
                     .span_context
                     .as_parent(),
                 id = self.invocation_id,
-                name = "clear-state",
+                name = format!("run {}", self.entry.name),
                 tags = (rpc.service = invocation_metadata
                     .invocation_target
                     .service_name()
                     .to_string())
-            );
-        }
-
-        if let Some(service_id) = invocation_metadata.invocation_target.as_keyed_service_id() {
-            debug_if_leader!(
-                ctx.is_leader,
-                restate.state.key = ?self.entry.key,
-                "Clear state"
-            );
-
-            ctx.storage
-                .delete_user_state(&service_id, &self.entry.key)
-                .await
-                .map_err(Error::Storage)?;
-        } else {
-            warn!(
-                "Trying to process entry {} for a target that has no state",
-                self.entry.ty()
             );
         }
 

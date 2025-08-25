@@ -29,18 +29,20 @@ where
             .get_invocation_metadata()
             .expect("In-Flight invocation metadata must be present");
 
-        let _span = instrumentation::info_invocation_span!(
-            relation = invocation_metadata
-                .journal_metadata
-                .span_context
-                .as_parent(),
-            id = self.invocation_id,
-            name = format!("set-state {:?}", self.entry.key),
-            tags = (rpc.service = invocation_metadata
-                .invocation_target
-                .service_name()
-                .to_string())
-        );
+        if ctx.is_leader {
+            let _span = instrumentation::info_invocation_span!(
+                relation = invocation_metadata
+                    .journal_metadata
+                    .span_context
+                    .as_parent(),
+                id = self.invocation_id,
+                name = format!("set-state {:?}", self.entry.key),
+                tags = (rpc.service = invocation_metadata
+                    .invocation_target
+                    .service_name()
+                    .to_string())
+            );
+        }
 
         if let Some(service_id) = invocation_metadata.invocation_target.as_keyed_service_id() {
             debug_if_leader!(
