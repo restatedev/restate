@@ -20,13 +20,15 @@ use crate::journal_v2::{CommandIndex, CommandType, Encoder, Entry, EntryMetadata
 #[derive(Debug, Copy, Clone, PartialEq, Eq, EnumString, strum::Display, Serialize, Deserialize)]
 pub enum EventType {
     TransientError,
+    Paused,
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
 #[serde(tag = "ty")]
 pub enum Event {
     TransientError(TransientErrorEvent),
+    Paused(PausedEvent),
     /// This is used when it's not possible to parse in this Restate version the event.
     Unknown,
 }
@@ -113,4 +115,11 @@ impl TransientErrorEvent {
 
         result.to_vec().into()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PausedEvent {
+    /// This is potentially empty if the service was manually paused
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<TransientErrorEvent>,
 }

@@ -56,6 +56,7 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: ReadOnlyJournalTable>
             .ok_or_else(|| Error::BadEntryVariant(EntryType::Event))?;
 
         if last_event.event_type() == new_event.event_type()
+            && last_event.deduplication_hash().is_some()
             && last_event.deduplication_hash() == new_event.deduplication_hash()
         {
             trace!(

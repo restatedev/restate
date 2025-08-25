@@ -355,11 +355,6 @@ impl InvocationStateMachine {
     }
 
     pub(super) fn notify_retry_timer_fired(&mut self) {
-        debug_assert!(matches!(
-            &self.invocation_state,
-            InvocationState::WaitingRetry { .. }
-        ));
-
         if let InvocationState::WaitingRetry { timer_fired, .. } = &mut self.invocation_state {
             *timer_fired = true;
         }

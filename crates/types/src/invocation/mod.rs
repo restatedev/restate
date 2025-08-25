@@ -963,6 +963,26 @@ pub struct PurgeInvocationRequest {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
+impl WithInvocationId for PurgeInvocationRequest {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
+}
+
+/// Message to resume an invocation.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ResumeInvocationRequest {
+    pub invocation_id: InvocationId,
+    #[serde(default)]
+    pub response_sink: Option<InvocationMutationResponseSink>,
+}
+
+impl WithInvocationId for ResumeInvocationRequest {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
+}
+
 // We use this struct instead of SpanContext as it is serialisable and allows us to use TraceStateDef
 #[serde_as]
 #[derive(Debug, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]

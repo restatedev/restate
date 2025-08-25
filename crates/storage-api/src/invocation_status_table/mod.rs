@@ -146,6 +146,7 @@ pub enum InvocationStatus {
         metadata: InFlightInvocationMetadata,
         waiting_for_notifications: HashSet<NotificationId>,
     },
+    Paused(InFlightInvocationMetadata),
     Completed(CompletedInvocation),
     /// Service instance is currently not invoked
     #[default]
@@ -162,8 +163,9 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&metadata.metadata.invocation_target),
             InvocationStatus::Inboxed(metadata) => Some(&metadata.metadata.invocation_target),
-            InvocationStatus::Invoked(metadata) => Some(&metadata.invocation_target),
-            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.invocation_target),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => Some(&metadata.invocation_target),
             InvocationStatus::Completed(completed) => Some(&completed.invocation_target),
             _ => None,
         }
@@ -174,8 +176,9 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&metadata.metadata.source),
             InvocationStatus::Inboxed(metadata) => Some(&metadata.metadata.source),
-            InvocationStatus::Invoked(metadata) => Some(&metadata.source),
-            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.source),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => Some(&metadata.source),
             InvocationStatus::Completed(completed) => Some(&completed.source),
             _ => None,
         }
@@ -195,8 +198,9 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Scheduled(metadata) => metadata.metadata.idempotency_key.as_ref(),
             InvocationStatus::Inboxed(metadata) => metadata.metadata.idempotency_key.as_ref(),
-            InvocationStatus::Invoked(metadata) => metadata.idempotency_key.as_ref(),
-            InvocationStatus::Suspended { metadata, .. } => metadata.idempotency_key.as_ref(),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => metadata.idempotency_key.as_ref(),
             InvocationStatus::Completed(completed) => completed.idempotency_key.as_ref(),
             _ => None,
         }
@@ -215,6 +219,9 @@ impl InvocationStatus {
                     },
                 ..
             }
+            | InvocationStatus::Paused(InFlightInvocationMetadata {
+                journal_metadata, ..
+            })
             | InvocationStatus::Completed(CompletedInvocation {
                 journal_metadata, ..
             }) => Some(journal_metadata),
@@ -235,6 +242,9 @@ impl InvocationStatus {
                     },
                 ..
             }
+            | InvocationStatus::Paused(InFlightInvocationMetadata {
+                journal_metadata, ..
+            })
             | InvocationStatus::Completed(CompletedInvocation {
                 journal_metadata, ..
             }) => Some(journal_metadata),
@@ -255,6 +265,9 @@ impl InvocationStatus {
                     },
                 ..
             }
+            | InvocationStatus::Paused(InFlightInvocationMetadata {
+                journal_metadata, ..
+            })
             | InvocationStatus::Completed(CompletedInvocation {
                 journal_metadata, ..
             }) => Some(journal_metadata),
@@ -265,8 +278,9 @@ impl InvocationStatus {
     #[inline]
     pub fn into_invocation_metadata(self) -> Option<InFlightInvocationMetadata> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(metadata),
-            InvocationStatus::Suspended { metadata, .. } => Some(metadata),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => Some(metadata),
             _ => None,
         }
     }
@@ -274,8 +288,9 @@ impl InvocationStatus {
     #[inline]
     pub fn get_invocation_metadata(&self) -> Option<&InFlightInvocationMetadata> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(metadata),
-            InvocationStatus::Suspended { metadata, .. } => Some(metadata),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => Some(metadata),
             _ => None,
         }
     }
@@ -283,8 +298,9 @@ impl InvocationStatus {
     #[inline]
     pub fn get_invocation_metadata_mut(&mut self) -> Option<&mut InFlightInvocationMetadata> {
         match self {
-            InvocationStatus::Invoked(metadata) => Some(metadata),
-            InvocationStatus::Suspended { metadata, .. } => Some(metadata),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => Some(metadata),
             _ => None,
         }
     }
@@ -296,8 +312,9 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&mut metadata.metadata.response_sinks),
             InvocationStatus::Inboxed(metadata) => Some(&mut metadata.metadata.response_sinks),
-            InvocationStatus::Invoked(metadata) => Some(&mut metadata.response_sinks),
-            InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.response_sinks),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => Some(&mut metadata.response_sinks),
             _ => None,
         }
     }
@@ -307,8 +324,9 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&metadata.metadata.response_sinks),
             InvocationStatus::Inboxed(metadata) => Some(&metadata.metadata.response_sinks),
-            InvocationStatus::Invoked(metadata) => Some(&metadata.response_sinks),
-            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.response_sinks),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => Some(&metadata.response_sinks),
             _ => None,
         }
     }
@@ -318,8 +336,9 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&metadata.metadata.timestamps),
             InvocationStatus::Inboxed(metadata) => Some(&metadata.metadata.timestamps),
-            InvocationStatus::Invoked(metadata) => Some(&metadata.timestamps),
-            InvocationStatus::Suspended { metadata, .. } => Some(&metadata.timestamps),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => Some(&metadata.timestamps),
             InvocationStatus::Completed(completed) => Some(&completed.timestamps),
             _ => None,
         }
@@ -330,8 +349,9 @@ impl InvocationStatus {
         match self {
             InvocationStatus::Scheduled(metadata) => Some(&mut metadata.metadata.timestamps),
             InvocationStatus::Inboxed(metadata) => Some(&mut metadata.metadata.timestamps),
-            InvocationStatus::Invoked(metadata) => Some(&mut metadata.timestamps),
-            InvocationStatus::Suspended { metadata, .. } => Some(&mut metadata.timestamps),
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => Some(&mut metadata.timestamps),
             InvocationStatus::Completed(completed) => Some(&mut completed.timestamps),
             _ => None,
         }
@@ -344,6 +364,7 @@ impl InvocationStatus {
             InvocationStatus::Inboxed(_) => Some(InvocationStatusDiscriminants::Inboxed),
             InvocationStatus::Invoked(_) => Some(InvocationStatusDiscriminants::Invoked),
             InvocationStatus::Suspended { .. } => Some(InvocationStatusDiscriminants::Suspended),
+            InvocationStatus::Paused(_) => Some(InvocationStatusDiscriminants::Paused),
             InvocationStatus::Completed(_) => Some(InvocationStatusDiscriminants::Completed),
             InvocationStatus::Free => None,
         }
@@ -356,6 +377,7 @@ pub enum InvocationStatusDiscriminants {
     Inboxed,
     Invoked,
     Suspended,
+    Paused,
     Killed,
     Completed,
 }

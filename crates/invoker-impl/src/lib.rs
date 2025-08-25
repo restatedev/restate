@@ -66,7 +66,7 @@ use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEvent, RawNotification};
 use restate_types::journal_v2::{
-    CommandIndex, EntryMetadata, Event, NotificationId, TransientErrorEvent,
+    CommandIndex, EntryMetadata, Event, NotificationId, PausedEvent, TransientErrorEvent,
 };
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
@@ -369,6 +369,9 @@ where
                     },
                     InputCommand::Abort { partition, invocation_id, invocation_epoch } => {
                         self.handle_abort_invocation(partition, invocation_id,invocation_epoch);
+                    }
+                     InputCommand::RetryNow { partition, invocation_id, invocation_epoch } => {
+                        self.handle_retry_now_invocation(options, partition, invocation_id,invocation_epoch);
                     }
                     InputCommand::AbortAllPartition { partition } => {
                         self.handle_abort_partition(partition);
@@ -1120,6 +1123,26 @@ where
         level = "trace",
         skip_all,
         fields(
+            restate.invocation.id = %invocation_id,
+            restate.invocation.epoch = %invocation_epoch,
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    fn handle_retry_now_invocation(
+        &mut self,
+        options: &InvokerOptions,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) {
+        // Retry now is equivalent to immediately firing the retry timer.
+        self.handle_retry_timer_fired(options, partition, invocation_id, invocation_epoch);
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1264,6 +1287,67 @@ where
                 );
                 self.retry_timers
                     .sleep_until(next_retry_at, (partition, invocation_id, epoch));
+            }
+            _ if options.experimental_feature_pause_on_retry_limit() => {
+                counter!(INVOKER_INVOCATION_TASKS,
+                    "status" => TASK_OP_FAILED,
+                    "transient" => "false"
+                )
+                .increment(1);
+                warn_it!(
+                    error,
+                    restate.invocation.id = %invocation_id,
+                    restate.invocation.target = %ism.invocation_target,
+                    "Error when executing the invocation, pausing the invocation.");
+                self.quota.unreserve_slot();
+                self.status_store.on_end(&partition, &invocation_id);
+
+                let journal_v2_related_command_type =
+                    if let InvokerError::SdkV2(SdkInvocationErrorV2 {
+                        related_command: Some(ref related_entry),
+                        ..
+                    }) = error
+                    {
+                        related_entry
+                            .related_entry_type
+                            .and_then(|e| e.try_as_command_ref().copied())
+                    } else {
+                        None
+                    };
+                let invocation_error_report = error.into_invocation_error_report();
+                let paused_event = PausedEvent {
+                    last_failure: Some(TransientErrorEvent {
+                        error_code: invocation_error_report.err.code(),
+                        error_message: invocation_error_report.err.message().to_owned(),
+                        // Note from the review:
+                        //  The stacktrace might be very long, but trimming it is not a piece of cake.
+                        //  That's because some languages (Python!) have the stacktrace in reverse,
+                        //  so it's hard here to decide whether to just drop the suffix or the prefix.
+                        error_stacktrace: invocation_error_report
+                            .err
+                            .stacktrace()
+                            .map(|s| s.to_owned()),
+                        restate_doc_error_code: invocation_error_report
+                            .doc_error_code
+                            .map(|c| c.code().to_owned()),
+                        related_command_index: invocation_error_report.related_entry_index,
+                        related_command_name: invocation_error_report.related_entry_name.clone(),
+                        related_command_type: journal_v2_related_command_type,
+                    }),
+                };
+
+                let _ = self
+                    .invocation_state_machine_manager
+                    .resolve_partition_sender(partition)
+                    .expect("Partition should be registered")
+                    .send(Box::new(Effect {
+                        invocation_id,
+                        invocation_epoch: ism.invocation_epoch,
+                        kind: EffectKind::Paused {
+                            paused_event: RawEvent::from(Event::Paused(paused_event)),
+                        },
+                    }))
+                    .await;
             }
             _ => {
                 counter!(INVOKER_INVOCATION_TASKS,

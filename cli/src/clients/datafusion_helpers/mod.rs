@@ -45,6 +45,7 @@ pub enum InvocationState {
     Suspended,
     BackingOff,
     Completed,
+    Paused,
 }
 
 impl FromStr for InvocationState {
@@ -58,6 +59,7 @@ impl FromStr for InvocationState {
             "suspended" => Self::Suspended,
             "backing-off" => Self::BackingOff,
             "completed" => Self::Completed,
+            "paused" => Self::Paused,
             _ => Self::Unknown,
         })
     }
@@ -72,6 +74,7 @@ impl Display for InvocationState {
             InvocationState::Ready => write!(f, "ready"),
             InvocationState::Running => write!(f, "running"),
             InvocationState::Suspended => write!(f, "suspended"),
+            InvocationState::Paused => write!(f, "paused"),
             InvocationState::BackingOff => write!(f, "backing-off"),
             InvocationState::Completed => write!(f, "completed"),
         }

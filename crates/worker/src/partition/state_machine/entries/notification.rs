@@ -13,8 +13,8 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
 use restate_types::identifiers::InvocationId;
-use restate_types::journal_v2::NotificationId;
 use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::{CANCEL_NOTIFICATION_ID, NotificationId};
 
 pub(super) struct ApplyNotificationCommand<'e> {
     pub(super) invocation_id: InvocationId,
@@ -41,29 +41,48 @@ where
         }
 
         // If we're suspended, let's figure out if we need to resume
-        if let InvocationStatus::Suspended {
-            waiting_for_notifications,
-            ..
-        } = self.invocation_status
-        {
-            if waiting_for_notifications.remove(&self.entry.id()) {
-                ResumeInvocationCommand {
-                    invocation_id: self.invocation_id,
-                    invocation_status: self.invocation_status,
+        match self.invocation_status {
+            InvocationStatus::Suspended {
+                waiting_for_notifications,
+                ..
+            } => {
+                // If we're suspended, let's figure out if we need to resume
+                if waiting_for_notifications.remove(&self.entry.id()) {
+                    ResumeInvocationCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: self.invocation_status,
+                    }
+                    .apply(ctx)
+                    .await?;
                 }
-                .apply(ctx)
-                .await?;
             }
-        } else if let InvocationStatus::Invoked(im) = self.invocation_status {
-            // Just forward the notification if we're invoked
-            ctx.forward_notification(
-                self.invocation_id,
-                im.current_invocation_epoch,
-                self.entry.clone(),
-            );
+            InvocationStatus::Invoked(im) => {
+                // Just forward the notification if we're invoked
+                ctx.forward_notification(
+                    self.invocation_id,
+                    im.current_invocation_epoch,
+                    self.entry.clone(),
+                );
+            }
+            InvocationStatus::Paused(_) => {
+                // If we're paused, resume only if the notification was a cancellation signal.
+                // In the other cases, the user manually retriggers it.
+                if self.entry.id() == CANCEL_NOTIFICATION_ID {
+                    ResumeInvocationCommand {
+                        invocation_id: self.invocation_id,
+                        invocation_status: self.invocation_status,
+                    }
+                    .apply(ctx)
+                    .await?;
+                }
+            }
+            InvocationStatus::Scheduled(_)
+            | InvocationStatus::Inboxed(_)
+            | InvocationStatus::Completed(_)
+            | InvocationStatus::Free => {
+                // In all the other cases, just move on, nothing to do here.
+            }
         }
-
-        // In all the other cases, just move on.
 
         Ok(())
     }
