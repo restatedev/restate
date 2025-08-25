@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use codederror::CodedError;
+use restate_admin::StorageAccountingTask;
 use restate_admin::cluster_controller;
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
@@ -58,6 +59,7 @@ pub struct AdminRole<T> {
     updateable_config: Live<Configuration>,
     controller: Option<cluster_controller::Service<T>>,
     admin: AdminService<IngressOptions, PartitionProcessorInvocationClient<T>>,
+    storage_accounting_task: Option<StorageAccountingTask>,
 }
 
 impl<T: TransportConnect> AdminRole<T> {
@@ -122,7 +124,7 @@ impl<T: TransportConnect> AdminRole<T> {
             service_discovery,
             telemetry_http_client,
         )
-        .with_query_context(query_context);
+        .with_query_context(query_context.clone());
 
         let controller = if config.admin.is_cluster_controller_enabled() {
             Some(
@@ -141,10 +143,16 @@ impl<T: TransportConnect> AdminRole<T> {
             None
         };
 
+        let storage_accounting_task = config
+            .admin
+            .storage_accounting_update_interval
+            .map(|interval| StorageAccountingTask::new(query_context, interval.into()));
+
         Ok(AdminRole {
             updateable_config,
             controller,
             admin,
+            storage_accounting_task,
         })
     }
 
@@ -156,6 +164,14 @@ impl<T: TransportConnect> AdminRole<T> {
                 cluster_controller.run(),
             )?;
         }
+
+        if let Some(storage_accounting) = self.storage_accounting_task {
+            TaskCenter::spawn(
+                TaskKind::Background,
+                "storage-accounting",
+                storage_accounting.run(),
+            )?;
+        };
 
         TaskCenter::spawn(
             TaskKind::AdminApiServer,

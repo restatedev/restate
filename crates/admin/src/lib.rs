@@ -12,14 +12,18 @@ pub mod cluster_controller;
 mod error;
 #[cfg(feature = "metadata-api")]
 mod metadata_api;
+mod metric_definitions;
 mod query_utils;
 mod rest_api;
 mod schema_registry;
 pub mod service;
 mod state;
+mod storage_accounting;
 #[cfg(feature = "storage-query")]
 mod storage_query;
 #[cfg(feature = "serve-web-ui")]
 mod web_ui;
+
+pub use crate::storage_accounting::StorageAccountingTask;
 
 pub use error::Error;
