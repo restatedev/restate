@@ -15,8 +15,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
-use std::fmt;
-use std::fmt::{Display, Formatter};
+use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
@@ -25,8 +24,7 @@ use ulid::Ulid;
 
 use restate_encoding::{BilrostNewType, NetSerde};
 
-use crate::base62_util::base62_encode_fixed_width;
-use crate::base62_util::base62_max_length_for_type;
+use crate::base62_util::{base62_encode_fixed_width_u128, base62_max_length_for_type};
 use crate::errors::IdDecodeError;
 use crate::id_util::IdDecoder;
 use crate::id_util::IdEncoder;
@@ -190,7 +188,10 @@ pub trait ResourceId {
     }
 
     /// Adds the various fields of this resource ID into the pre-initialized encoder
-    fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>);
+    fn push_contents_to_encoder<W: fmt::Write>(
+        &self,
+        encoder: &mut IdEncoder<Self, W>,
+    ) -> fmt::Result;
 }
 
 /// Discriminator for invocation instances
@@ -296,9 +297,7 @@ impl InvocationUuid {
 impl Display for InvocationUuid {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         let raw: u128 = self.0;
-        let mut buf = String::with_capacity(base62_max_length_for_type::<u128>());
-        base62_encode_fixed_width(raw, &mut buf);
-        fmt::Display::fmt(&buf, f)
+        base62_encode_fixed_width_u128(raw, f)
     }
 }
 
@@ -494,10 +493,14 @@ impl ResourceId for InvocationId {
     const STRING_CAPACITY_HINT: usize =
         base62_max_length_for_type::<PartitionKey>() + base62_max_length_for_type::<u128>();
 
-    fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
-        encoder.encode_fixed_width(self.partition_key);
+    fn push_contents_to_encoder<W: fmt::Write>(
+        &self,
+        encoder: &mut IdEncoder<Self, W>,
+    ) -> fmt::Result {
+        encoder.encode_fixed_width_u64(self.partition_key)?;
         let uuid_raw: u128 = self.inner.0;
-        encoder.encode_fixed_width(uuid_raw);
+        encoder.encode_fixed_width_u128(uuid_raw)?;
+        Ok(())
     }
 }
 
@@ -550,9 +553,8 @@ impl Display for InvocationId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // encode the id such that it is possible to do a string prefix search for a
         // partition key using the first 17 characters.
-        let mut encoder = IdEncoder::<Self>::new();
-        self.push_contents_to_encoder(&mut encoder);
-        fmt::Display::fmt(&encoder.finalize(), f)
+        let mut encoder = IdEncoder::<Self, _>::new_fmt(f)?;
+        self.push_contents_to_encoder(&mut encoder)
     }
 }
 
@@ -862,9 +864,9 @@ macro_rules! ulid_backed_id {
                 const RESOURCE_TYPE: IdResourceType = IdResourceType::$res_name;
                 const STRING_CAPACITY_HINT: usize = base62_max_length_for_type::<u128>();
 
-                fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+                fn push_contents_to_encoder<W: fmt::Write>(&self, encoder: &mut IdEncoder<Self, W>) -> fmt::Result {
                     let raw: u128 = self.0.into();
-                    encoder.encode_fixed_width(raw);
+                    encoder.encode_fixed_width_u128(raw)
                 }
             }
 
@@ -890,9 +892,8 @@ macro_rules! ulid_backed_id {
 
             impl fmt::Display for [< $res_name Id >] {
                 fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    let mut encoder = IdEncoder::<Self>::new();
-                    self.push_contents_to_encoder(&mut encoder);
-                    fmt::Display::fmt(&encoder.finalize(), f)
+                    let mut encoder = IdEncoder::<Self, _>::new_fmt(f)?;
+                    self.push_contents_to_encoder(&mut encoder)
                 }
             }
         }
@@ -1014,13 +1015,16 @@ impl ResourceId for AwakeableIdentifier {
 
     /// We use a custom strategy for awakeable identifiers since they need to be encoded as base64
     /// for wider language support.
-    fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+    fn push_contents_to_encoder<W: fmt::Write>(
+        &self,
+        encoder: &mut IdEncoder<Self, W>,
+    ) -> fmt::Result {
         let mut input_buf =
             BytesMut::with_capacity(size_of::<EncodedInvocationId>() + size_of::<EntryIndex>());
         input_buf.put_slice(&self.invocation_id.to_bytes());
         input_buf.put_u32(self.entry_index);
         let encoded_base64 = restate_base64_util::URL_SAFE.encode(input_buf.freeze());
-        encoder.push_str(encoded_base64);
+        encoder.push_str(encoded_base64)
     }
 }
 
@@ -1074,9 +1078,8 @@ impl FromStr for AwakeableIdentifier {
 
 impl Display for AwakeableIdentifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut encoder = IdEncoder::<Self>::new();
-        self.push_contents_to_encoder(&mut encoder);
-        std::fmt::Display::fmt(&encoder.finalize(), f)
+        let mut encoder = IdEncoder::<Self, _>::new_fmt(f)?;
+        self.push_contents_to_encoder(&mut encoder)
     }
 }
 
@@ -1095,13 +1098,16 @@ impl ResourceId for ExternalSignalIdentifier {
 
     /// We use a custom strategy for awakeable identifiers since they need to be encoded as base64
     /// for wider language support.
-    fn push_contents_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+    fn push_contents_to_encoder<W: fmt::Write>(
+        &self,
+        encoder: &mut IdEncoder<Self, W>,
+    ) -> fmt::Result {
         let mut input_buf =
             BytesMut::with_capacity(size_of::<EncodedInvocationId>() + size_of::<EntryIndex>());
         input_buf.put_slice(&self.invocation_id.to_bytes());
         input_buf.put_u32(self.signal_index);
         let encoded_base64 = restate_base64_util::URL_SAFE.encode(input_buf.freeze());
-        encoder.push_str(encoded_base64);
+        encoder.push_str(encoded_base64)
     }
 }
 
@@ -1155,9 +1161,8 @@ impl FromStr for ExternalSignalIdentifier {
 
 impl Display for ExternalSignalIdentifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut encoder = IdEncoder::<Self>::new();
-        self.push_contents_to_encoder(&mut encoder);
-        std::fmt::Display::fmt(&encoder.finalize(), f)
+        let mut encoder = IdEncoder::<Self, _>::new_fmt(f)?;
+        self.push_contents_to_encoder(&mut encoder)
     }
 }
 
