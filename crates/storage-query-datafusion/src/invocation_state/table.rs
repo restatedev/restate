@@ -135,9 +135,8 @@ async fn for_each_state<'a, I>(
     I: Iterator<Item = InvocationStatusReport> + 'a,
 {
     let mut builder = SysInvocationStateBuilder::new(schema.clone());
-    let mut temp = String::new();
     for row in rows {
-        append_invocation_state_row(&mut builder, &mut temp, row);
+        append_invocation_state_row(&mut builder, row);
         if builder.num_rows() >= batch_size {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {

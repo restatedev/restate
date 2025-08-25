@@ -70,9 +70,8 @@ async fn for_each_state(
     batch_size: usize,
 ) {
     let mut builder = SysDeploymentBuilder::new(schema.clone());
-    let mut temp = String::new();
     for (deployment, _) in rows {
-        append_deployment_row(&mut builder, &mut temp, deployment);
+        append_deployment_row(&mut builder, deployment);
         if builder.num_rows() >= batch_size {
             let batch = builder.finish();
             if tx.send(batch).await.is_err() {

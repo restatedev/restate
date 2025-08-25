@@ -73,7 +73,7 @@ impl ScanLocalPartition for VirtualObjectStatusScanner {
         partition_store.scan_virtual_object_statuses(range)
     }
 
-    fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {
-        append_virtual_object_status_row(row_builder, string_buffer, value.0, value.1)
+    fn append_row(row_builder: &mut Self::Builder, value: Self::Item) {
+        append_virtual_object_status_row(row_builder, value.0, value.1)
     }
 }

@@ -67,7 +67,7 @@ impl ScanLocalPartition for StateScanner {
         partition_store.scan_all_user_states(range)
     }
 
-    fn append_row(row_builder: &mut Self::Builder, _: &mut String, value: Self::Item) {
+    fn append_row(row_builder: &mut Self::Builder, value: Self::Item) {
         append_state_row(row_builder, value.0, value.1, value.2);
     }
 }

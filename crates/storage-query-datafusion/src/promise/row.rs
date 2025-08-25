@@ -10,7 +10,6 @@
 
 use super::schema::SysPromiseBuilder;
 
-use crate::table_util::format_using;
 use restate_storage_api::promise_table::{OwnedPromiseRow, PromiseResult, PromiseState};
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::WithPartitionKey;
@@ -18,7 +17,6 @@ use restate_types::identifiers::WithPartitionKey;
 #[inline]
 pub(crate) fn append_promise_row(
     builder: &mut SysPromiseBuilder,
-    output: &mut String,
     owned_promise_row: OwnedPromiseRow,
 ) {
     let mut row = builder.row();
@@ -42,7 +40,7 @@ pub(crate) fn append_promise_row(
                 }
                 PromiseResult::Failure(c, m) => {
                     if row.is_completion_failure_defined() {
-                        row.completion_failure(format_using(output, &InvocationError::new(c, m)))
+                        row.fmt_completion_failure(InvocationError::new(c, m))
                     }
                 }
             }

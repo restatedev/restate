@@ -12,11 +12,9 @@ use restate_types::partitions::state::MembershipState;
 use restate_types::{Version, partition_table::Partition};
 
 use super::schema::PartitionBuilder;
-use crate::table_util::format_using;
 
 pub(crate) fn append_partition_row(
     builder: &mut PartitionBuilder,
-    output: &mut String,
     membership: MembershipState,
     ver: Version,
     partition: &Partition,
@@ -30,8 +28,8 @@ pub(crate) fn append_partition_row(
     row.db_name(partition.db_name());
     let leadership = membership.current_leader();
     if leadership.current_leader.is_valid() {
-        row.leader_gen_node_id(format_using(output, &leadership.current_leader));
-        row.leader_plain_node_id(format_using(output, &leadership.current_leader.as_plain()));
+        row.fmt_leader_gen_node_id(leadership.current_leader);
+        row.fmt_leader_plain_node_id(leadership.current_leader.as_plain());
     }
     row.v_current(membership.observed_current_membership.version.into());
     row.current_replica_set(itertools::join(
@@ -50,6 +48,6 @@ pub(crate) fn append_partition_row(
         ));
     }
 
-    row.leader_epoch(format_using(output, &leadership.current_leader_epoch));
+    row.fmt_leader_epoch(leadership.current_leader_epoch);
     row.partition_table_version(ver.into());
 }

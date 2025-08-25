@@ -45,6 +45,32 @@ macro_rules! define_builder {
     };
 }
 
+macro_rules! define_fmt {
+    ($element:ident, $name:ident, DataType::Utf8) => {
+        #[inline]
+        pub fn $name(&mut self, d: impl ::std::fmt::Display) {
+            if let Some(builder) = self.builder.arrays.$element.as_mut() {
+                use std::fmt::Write;
+                let _ = write!(builder, "{d}");
+                builder.append_value("");
+                self.flags.$element = true;
+            }
+        }
+    };
+    ($element:ident, $name:ident, DataType::LargeUtf8) => {
+        #[inline]
+        pub fn $name(&mut self, d: impl ::std::fmt::Display) {
+            if let Some(builder) = self.builder.arrays.$element.as_mut() {
+                use std::fmt::Write;
+                let _ = write!(builder, "{d}");
+                builder.append_value("");
+                self.flags.$element = true;
+            }
+        }
+    };
+    ($element:ident, $name:ident, $ty:ty) => {};
+}
+
 // This newtype is necessary to generate values with a UTC timezone, as it will default to having no timezone which can confuse downstream clients
 pub struct TimestampMillisecondUTCBuilder(::datafusion::arrow::array::TimestampMillisecondBuilder);
 
@@ -252,7 +278,15 @@ macro_rules! document_type {
 ///             self.flags.name = true;
 ///         }
 ///     }
-///
+///     #[inline]
+///     pub fn fmt_name(&mut self, d: impl ::std::fmt::Display) {
+///         if let Some(builder) = self.builder.arrays.name.as_mut() {
+///             use std::fmt::Write;
+///             let _ = builder.write_fmt(core::format_args!("{d}"));
+///             builder.append_value("");
+///             self.flags.name = true;
+///         }
+///     }
 ///     #[inline]
 ///     pub fn is_name_defined(&self) -> bool {
 ///         self.builder.arrays.name.is_some()
@@ -276,7 +310,6 @@ macro_rules! document_type {
 ///             self.flags.secret = true;
 ///         }
 ///     }
-///
 ///     #[inline]
 ///     pub fn is_secret_defined(&self) -> bool {
 ///         self.builder.arrays.secret.is_some()
@@ -462,7 +495,9 @@ macro_rules! define_table {
                                 builder.append_value(value);
                                 self.flags.$element = true;
                             }
-                       }
+                        }
+
+                        define_fmt!($element, [< fmt _ $element >], $ty);
 
                         #[inline]
                         pub fn [<is _ $element _ defined>](&self) -> bool {
@@ -629,6 +664,7 @@ macro_rules! define_sort_order {
 
 pub(crate) use define_builder;
 pub(crate) use define_data_type;
+pub(crate) use define_fmt;
 pub(crate) use define_primitive_trait;
 pub(crate) use define_sort_order;
 pub(crate) use define_table;

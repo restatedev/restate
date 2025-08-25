@@ -9,14 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::keyed_service_status::schema::SysKeyedServiceStatusBuilder;
-use crate::table_util::format_using;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 
 #[inline]
 pub(crate) fn append_virtual_object_status_row(
     builder: &mut SysKeyedServiceStatusBuilder,
-    output: &mut String,
     service_id: ServiceId,
     status: VirtualObjectStatus,
 ) {
@@ -29,7 +27,7 @@ pub(crate) fn append_virtual_object_status_row(
     // Invocation id
     if row.is_invocation_id_defined() {
         if let VirtualObjectStatus::Locked(invocation_id) = status {
-            row.invocation_id(format_using(output, &invocation_id));
+            row.fmt_invocation_id(invocation_id);
         }
     }
 }

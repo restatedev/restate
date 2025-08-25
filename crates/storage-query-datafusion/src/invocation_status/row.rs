@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
-use crate::table_util::format_using;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
@@ -21,7 +20,6 @@ use restate_types::invocation::{
 #[inline]
 pub(crate) fn append_invocation_status_row(
     builder: &mut SysInvocationStatusBuilder,
-    output: &mut String,
     invocation_id: InvocationId,
     invocation_status: InvocationStatus,
 ) {
@@ -35,7 +33,7 @@ pub(crate) fn append_invocation_status_row(
         }
         row.target_handler_name(invocation_target.handler_name());
         if row.is_target_defined() {
-            row.target(format_using(output, &invocation_target));
+            row.fmt_target(invocation_target);
         }
         row.target_service_ty(match invocation_target.service_ty() {
             ServiceType::Service => "service",
@@ -46,18 +44,18 @@ pub(crate) fn append_invocation_status_row(
 
     // Invocation id
     if row.is_id_defined() {
-        row.id(format_using(output, &invocation_id));
+        row.fmt_id(invocation_id);
     }
 
     if row.is_idempotency_key_defined() {
         if let Some(key) = invocation_status.idempotency_key() {
-            row.idempotency_key(format_using(output, &key))
+            row.idempotency_key(key)
         }
     }
 
     // Journal metadata
     if let Some(journal_metadata) = invocation_status.get_journal_metadata() {
-        fill_journal_metadata(&mut row, output, journal_metadata)
+        fill_journal_metadata(&mut row, journal_metadata)
     }
 
     // Stat
@@ -72,7 +70,7 @@ pub(crate) fn append_invocation_status_row(
             row.created_using_restate_version(
                 scheduled.metadata.created_using_restate_version.as_str(),
             );
-            fill_invoked_by(&mut row, output, scheduled.metadata.source);
+            fill_invoked_by(&mut row, scheduled.metadata.source);
             if let Some(execution_time) = scheduled.metadata.execution_time {
                 row.scheduled_start_at(execution_time.as_u64() as i64)
             }
@@ -86,7 +84,7 @@ pub(crate) fn append_invocation_status_row(
             row.created_using_restate_version(
                 inboxed.metadata.created_using_restate_version.as_str(),
             );
-            fill_invoked_by(&mut row, output, inboxed.metadata.source);
+            fill_invoked_by(&mut row, inboxed.metadata.source);
             if let Some(execution_time) = inboxed.metadata.execution_time {
                 row.scheduled_start_at(execution_time.as_u64() as i64)
             }
@@ -97,16 +95,16 @@ pub(crate) fn append_invocation_status_row(
         }
         InvocationStatus::Invoked(metadata) => {
             row.status("invoked");
-            fill_in_flight_invocation_metadata(&mut row, output, metadata);
+            fill_in_flight_invocation_metadata(&mut row, metadata);
         }
         InvocationStatus::Suspended { metadata, .. } => {
             row.status("suspended");
-            fill_in_flight_invocation_metadata(&mut row, output, metadata);
+            fill_in_flight_invocation_metadata(&mut row, metadata);
         }
         InvocationStatus::Completed(completed) => {
             row.status("completed");
             row.created_using_restate_version(completed.created_using_restate_version.as_str());
-            fill_invoked_by(&mut row, output, completed.source);
+            fill_invoked_by(&mut row, completed.source);
             if let Some(execution_time) = completed.execution_time {
                 row.scheduled_start_at(execution_time.as_u64() as i64)
             }
@@ -120,7 +118,7 @@ pub(crate) fn append_invocation_status_row(
                 ResponseResult::Failure(failure) => {
                     row.completion_result("failure");
                     if row.is_completion_failure_defined() {
-                        row.completion_failure(format_using(output, &failure));
+                        row.fmt_completion_failure(failure);
                     }
                 }
             }
@@ -133,14 +131,13 @@ pub(crate) fn append_invocation_status_row(
 
 fn fill_in_flight_invocation_metadata(
     row: &mut SysInvocationStatusRowBuilder,
-    output: &mut String,
     meta: InFlightInvocationMetadata,
 ) {
     row.created_using_restate_version(meta.created_using_restate_version.as_str());
     // journal_metadata and stats are filled by other functions
     if let Some(pinned_deployment) = meta.pinned_deployment {
         if row.is_pinned_deployment_id_defined() {
-            row.pinned_deployment_id(format_using(output, &pinned_deployment.deployment_id));
+            row.fmt_pinned_deployment_id(pinned_deployment.deployment_id);
         }
         row.pinned_service_protocol_version(
             pinned_deployment
@@ -149,7 +146,7 @@ fn fill_in_flight_invocation_metadata(
                 .unsigned_abs(),
         );
     }
-    fill_invoked_by(row, output, meta.source);
+    fill_invoked_by(row, meta.source);
     if let Some(execution_time) = meta.execution_time {
         row.scheduled_start_at(execution_time.as_u64() as i64)
     }
@@ -158,16 +155,16 @@ fn fill_in_flight_invocation_metadata(
 }
 
 #[inline]
-fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, output: &mut String, source: Source) {
+fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, source: Source) {
     match source {
         Source::Service(invocation_id, invocation_target) => {
             row.invoked_by("service");
             row.invoked_by_service_name(invocation_target.service_name());
             if row.is_invoked_by_id_defined() {
-                row.invoked_by_id(format_using(output, &invocation_id));
+                row.fmt_invoked_by_id(invocation_id);
             }
             if row.is_invoked_by_target_defined() {
-                row.invoked_by_target(format_using(output, &invocation_target));
+                row.fmt_invoked_by_target(invocation_target);
             }
         }
         Source::Ingress(_) => {
@@ -179,13 +176,13 @@ fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, output: &mut String,
         Source::Subscription(sub_id) => {
             row.invoked_by("subscription");
             if row.is_invoked_by_subscription_id_defined() {
-                row.invoked_by_subscription_id(format_using(output, &sub_id))
+                row.fmt_invoked_by_subscription_id(sub_id)
             }
         }
         Source::RestartAsNew(invocation_id) => {
             row.invoked_by("restart_as_new");
             if row.is_restarted_from_defined() {
-                row.restarted_from(format_using(output, &invocation_id))
+                row.fmt_restarted_from(invocation_id)
             }
         }
     }
@@ -212,10 +209,9 @@ fn fill_timestamps(row: &mut SysInvocationStatusRowBuilder, stat: &StatusTimesta
 #[inline]
 fn fill_journal_metadata(
     row: &mut SysInvocationStatusRowBuilder,
-    output: &mut String,
     journal_metadata: &JournalMetadata,
 ) {
-    fill_span_context(row, output, &journal_metadata.span_context);
+    fill_span_context(row, &journal_metadata.span_context);
     row.journal_size(journal_metadata.length);
     row.journal_commands_size(journal_metadata.commands);
 }
@@ -223,13 +219,12 @@ fn fill_journal_metadata(
 #[inline]
 fn fill_span_context(
     row: &mut SysInvocationStatusRowBuilder,
-    output: &mut String,
     span_context: &ServiceInvocationSpanContext,
 ) {
     if row.is_trace_id_defined() {
         let tid = span_context.trace_id();
         if tid != TraceId::INVALID {
-            row.trace_id(format_using(output, &tid));
+            row.fmt_trace_id(tid);
         }
     }
 }

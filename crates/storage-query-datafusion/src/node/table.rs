@@ -80,12 +80,10 @@ async fn for_each_state(
     batch_size: usize,
 ) {
     let mut builder = NodeBuilder::new(schema.clone());
-    let mut output = String::new();
     for (id, node_config) in nodes_config.iter() {
         let node_state = cluster_state.get_node_state(node_config.current_generation.into());
         append_node_row(
             &mut builder,
-            &mut output,
             nodes_config.version(),
             id,
             node_config,

@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::table_util::format_using;
-
 use super::schema::LogBuilder;
 use restate_types::{
     Version,
@@ -22,7 +20,6 @@ use restate_types::{
 
 pub(crate) fn append_segment_row(
     builder: &mut LogBuilder,
-    output: &mut String,
     ver: Version,
     id: LogId,
     segment: &Segment<'_>,
@@ -35,14 +32,14 @@ pub(crate) fn append_segment_row(
     row.log_id(id.into());
     row.segment_index(segment.config.index().into());
     row.base_lsn(segment.base_lsn.into());
-    row.kind(format_using(output, &segment.config.kind));
+    row.fmt_kind(segment.config.kind);
 
     if segment.config.kind == ProviderKind::Replicated {
         if let Some(LogletRef { params, .. }) = replicated_loglet_params {
-            row.loglet_id(format_using(output, &params.loglet_id));
-            row.sequencer(format_using(output, &params.sequencer));
-            row.replication(format_using(output, &params.replication));
-            row.nodeset(format_using(output, &params.nodeset));
+            row.fmt_loglet_id(params.loglet_id);
+            row.fmt_sequencer(params.sequencer);
+            row.fmt_replication(&params.replication);
+            row.fmt_nodeset(&params.nodeset);
         }
     }
 }

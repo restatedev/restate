@@ -33,7 +33,7 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>;
 
-    fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item);
+    fn append_row(row_builder: &mut Self::Builder, value: Self::Item);
 }
 
 #[derive(Clone, derive_more::Debug)]
@@ -88,11 +88,10 @@ where
                 None => rows.right_stream(),
             };
             let mut builder = S::Builder::new(projection.clone());
-            let mut temp = String::new();
 
             tokio::pin!(rows);
             while let Some(Ok(row)) = rows.next().await {
-                S::append_row(&mut builder, &mut temp, row);
+                S::append_row(&mut builder, row);
                 if builder.num_rows() >= batch_size {
                     let batch = builder.finish();
                     if tx.send(batch).await.is_err() {

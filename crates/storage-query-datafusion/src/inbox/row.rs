@@ -9,14 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use super::schema::SysInboxBuilder;
-use crate::table_util::format_using;
 use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
 use restate_types::identifiers::WithPartitionKey;
 
 #[inline]
 pub(crate) fn append_inbox_row(
     builder: &mut SysInboxBuilder,
-    output: &mut String,
     inbox_entry: SequenceNumberInboxEntry,
 ) {
     let mut row = builder.row();
@@ -32,7 +30,7 @@ pub(crate) fn append_inbox_row(
         row.service_key(&service_id.key);
 
         if row.is_id_defined() {
-            row.id(format_using(output, &invocation_id));
+            row.fmt_id(invocation_id);
         }
 
         row.sequence_number(inbox_sequence_number);

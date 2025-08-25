@@ -72,12 +72,10 @@ async fn for_each_partition(
     batch_size: usize,
 ) {
     let mut builder = PartitionStateBuilder::new(schema.clone());
-    let mut output = String::new();
     for alive in state.alive_nodes() {
         for (partition_id, partition_status) in alive.partitions.iter() {
             append_partition_row(
                 &mut builder,
-                &mut output,
                 alive.generational_node_id,
                 *partition_id,
                 partition_status,

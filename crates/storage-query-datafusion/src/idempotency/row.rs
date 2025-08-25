@@ -10,14 +10,12 @@
 
 use super::schema::SysIdempotencyBuilder;
 
-use crate::table_util::format_using;
 use restate_storage_api::idempotency_table::IdempotencyMetadata;
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 
 #[inline]
 pub(crate) fn append_idempotency_row(
     builder: &mut SysIdempotencyBuilder,
-    output: &mut String,
     idempotency_id: IdempotencyId,
     idempotency_metadata: IdempotencyMetadata,
 ) {
@@ -34,6 +32,6 @@ pub(crate) fn append_idempotency_row(
     row.idempotency_key(&idempotency_id.idempotency_key);
 
     if row.is_invocation_id_defined() {
-        row.invocation_id(format_using(output, &idempotency_metadata.invocation_id));
+        row.fmt_invocation_id(idempotency_metadata.invocation_id);
     }
 }

@@ -11,7 +11,6 @@
 use enumset::EnumSet;
 
 use super::schema::NodeBuilder;
-use crate::table_util::format_using;
 use restate_types::cluster_state::NodeState;
 use restate_types::{
     PlainNodeId, Version,
@@ -20,7 +19,6 @@ use restate_types::{
 
 pub(crate) fn append_node_row(
     builder: &mut NodeBuilder,
-    output: &mut String,
     ver: Version,
     node_id: PlainNodeId,
     node_config: &NodeConfig,
@@ -30,12 +28,12 @@ pub(crate) fn append_node_row(
 
     row.nodes_configuration_version(ver.into());
 
-    row.plain_node_id(format_using(output, &node_id));
-    row.gen_node_id(format_using(output, &node_config.current_generation));
-    row.state(format_using(output, &node_state));
-    row.name(format_using(output, &node_config.name));
-    row.address(format_using(output, &node_config.address));
-    row.location(format_using(output, &node_config.location));
+    row.fmt_plain_node_id(node_id);
+    row.fmt_gen_node_id(node_config.current_generation);
+    row.fmt_state(node_state);
+    row.fmt_name(&node_config.name);
+    row.fmt_address(&node_config.address);
+    row.fmt_location(&node_config.location);
 
     let all: EnumSet<Role> = EnumSet::all();
     for role in all {
@@ -46,28 +44,21 @@ pub(crate) fn append_node_row(
             Role::Worker => {
                 row.has_worker_role(node_config.has_role(role));
                 if node_config.has_role(role) {
-                    row.worker_state(format_using(
-                        output,
-                        &node_config.worker_config.worker_state,
-                    ));
+                    row.fmt_worker_state(node_config.worker_config.worker_state);
                 }
             }
             Role::LogServer => {
                 row.has_log_server_role(node_config.has_role(role));
                 if node_config.has_role(role) {
-                    row.storage_state(format_using(
-                        output,
-                        &node_config.log_server_config.storage_state,
-                    ));
+                    row.fmt_storage_state(node_config.log_server_config.storage_state);
                 }
             }
             Role::MetadataServer => {
                 row.has_metadata_server_role(node_config.has_role(role));
                 if node_config.has_role(role) {
-                    row.metadata_server_state(format_using(
-                        output,
-                        &node_config.metadata_server_config.metadata_server_state,
-                    ));
+                    row.fmt_metadata_server_state(
+                        node_config.metadata_server_config.metadata_server_state,
+                    );
                 }
             }
             Role::HttpIngress => {

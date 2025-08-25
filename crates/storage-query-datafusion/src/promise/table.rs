@@ -66,7 +66,7 @@ impl ScanLocalPartition for PromiseScanner {
         partition_store.scan_promises(range)
     }
 
-    fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {
-        append_promise_row(row_builder, string_buffer, value);
+    fn append_row(row_builder: &mut Self::Builder, value: Self::Item) {
+        append_promise_row(row_builder, value);
     }
 }

@@ -83,13 +83,13 @@ impl ScanLocalPartition for JournalScanner {
         Ok(v1.merge(v2))
     }
 
-    fn append_row(row_builder: &mut Self::Builder, string_buffer: &mut String, value: Self::Item) {
+    fn append_row(row_builder: &mut Self::Builder, value: Self::Item) {
         match value.1 {
             ScannedEntry::V1(v1) => {
-                append_journal_row(row_builder, string_buffer, value.0, v1);
+                append_journal_row(row_builder, value.0, v1);
             }
             ScannedEntry::V2(v2) => {
-                append_journal_row_v2(row_builder, string_buffer, value.0, v2);
+                append_journal_row_v2(row_builder, value.0, v2);
             }
         }
     }
