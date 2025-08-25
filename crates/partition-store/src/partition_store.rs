@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::ControlFlow;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::slice;
@@ -24,6 +25,7 @@ use rocksdb::{
 };
 use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace};
@@ -382,16 +384,12 @@ impl PartitionStore {
         }
     }
 
-    pub fn run_iterator<K: TableKey, O: Send + 'static>(
-        &self,
-        name: &'static str,
-        priority: Priority,
-        scan: TableScan<K>,
+    #[allow(clippy::type_complexity)]
+    fn iterator_step_map<O: Send + 'static>(
+        tx: mpsc::Sender<Result<O>>,
         f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
-    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
-        let (tx, rx) = mpsc::channel(8);
-        let scan: PhysicalScan = scan.into();
-        let on_iter = move |item: Result<(&[u8], &[u8]), RocksError>| -> IterAction {
+    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static {
+        move |item| {
             let res = match item {
                 // apply the caller's function
                 Ok((key, value)) => match f((key, value)) {
@@ -411,7 +409,93 @@ impl PartitionStore {
             }
             // the channel is not closed yet, keep iterating
             IterAction::Next
-        };
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn iterator_step_for_each(
+        tx: oneshot::Sender<StorageError>,
+        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
+        let mut tx = Some(tx);
+        move |item| {
+            let mut must_send = |v| match tx.take() {
+                Some(tx) => tx.send(v),
+                None => panic!("Iterator continued after IterAction::Stop"),
+            };
+
+            match item {
+                // apply the caller's function
+                Ok((key, value)) => match f((key, value)) {
+                    ControlFlow::Continue(()) => match &mut tx {
+                        Some(tx_inner) if tx_inner.is_closed() => {
+                            tx = None;
+                            IterAction::Stop
+                        }
+                        // the channel is not closed yet, keep iterating
+                        Some(_) => IterAction::Next,
+                        None => panic!("Iterator continued after IterAction::Stop"),
+                    },
+                    ControlFlow::Break(Ok(())) => {
+                        // function doesn't need any more items
+                        tx = None;
+                        IterAction::Stop
+                    }
+                    ControlFlow::Break(Err(e)) => {
+                        let _ = must_send(e);
+                        IterAction::Stop
+                    }
+                },
+                Err(e) => {
+                    let _ = must_send(StorageError::Generic(e.into()));
+                    IterAction::Stop
+                }
+            }
+        }
+    }
+
+    pub fn iterator_for_each<K: TableKey>(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        scan: TableScan<K>,
+        f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+        let (tx, rx) = oneshot::channel();
+        let on_iter = Self::iterator_step_for_each(tx, f);
+        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        Ok(async {
+            match rx.await {
+                Ok(storage_err) => Err(storage_err),
+                Err(_recv_err) => {
+                    // iterator was dropped without sending an error; this is actually a success condition
+                    Ok(())
+                }
+            }
+        })
+    }
+
+    pub fn run_iterator<K: TableKey, O: Send + 'static>(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        scan: TableScan<K>,
+        f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
+    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
+        let (tx, rx) = mpsc::channel(8);
+        let on_iter = Self::iterator_step_map(tx, f);
+        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        Ok(ReceiverStream::new(rx))
+    }
+
+    fn run_iterator_internal<K: TableKey>(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        scan: TableScan<K>,
+        on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
+    ) -> Result<(), ShutdownError> {
+        let scan: PhysicalScan = scan.into();
         match scan {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
                 assert!(table.has_key_kind(&prefix));
@@ -468,7 +552,7 @@ impl PartitionStore {
                 )?;
             }
         }
-        Ok(ReceiverStream::new(rx))
+        Ok(())
     }
 
     pub fn transaction(&mut self) -> PartitionStoreTransaction {
