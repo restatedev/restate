@@ -77,13 +77,15 @@ impl LocalLogletReadStream {
         // LogletOffset::INVALID)
         let key = RecordKey::new(loglet.loglet_id, from_offset.prev());
         let mut read_opts = rocksdb::ReadOptions::default();
+
+        // Using a tailing iterator means that it can fail if it hits a `RangeDelete` tombstone. If
+        // the loglet reader starts before a trim point, and more data is readable, we should
+        // continue reading records skipping over the delete tombstones.
+        // It is the responsibility of the upper layer to decide on a sane value of _from_offset_.
+        #[allow(deprecated)]
+        read_opts.set_ignore_range_deletions(true); // required until RocksDB behavior changes
         read_opts.set_tailing(true);
-        // In some cases, the underlying ForwardIterator will fail if it hits a `RangeDelete` tombstone.
-        // For our purposes, we can ignore these tombstones, meaning that we will return those records
-        // instead of a gap.
-        // In summary, if loglet reader started before a trim point and data is readable, we should
-        // continue reading them. It's the responsibility of the upper layer to decide on a sane
-        // value of _from_offset_.
+
         read_opts.set_prefix_same_as_start(true);
         read_opts.set_total_order_seek(false);
         let mut serde_buffer = BytesMut::with_capacity(2 * RecordKey::serialized_size());
