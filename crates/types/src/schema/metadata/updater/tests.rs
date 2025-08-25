@@ -250,9 +250,9 @@ fn force_deploy_private_service() -> Result<(), SchemaError> {
         updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], true)?;
 
     let schemas = updater.into_inner();
-    assert!(!schemas.assert_service(GREETER_SERVICE_NAME).public);
+    assert!(schemas.assert_service(GREETER_SERVICE_NAME).public);
     assert!(
-        !schemas
+        schemas
             .assert_invocation_target(GREETER_SERVICE_NAME, "greet")
             .public
     );
@@ -1541,7 +1541,7 @@ mod endpoint_manifest_options_propagation {
 
         // 5. Operator updates RESTATE_MAX_JOURNAL_RETENTION with value D, journal retention will be min(A, D)
         let mut config = Configuration::default();
-        config.invocation.default_journal_retention = Some(Duration::from_secs(180)); // C = 180 seconds -> this should be ignored
+        config.invocation.default_journal_retention = Some(Duration::from_secs(20)); // E = 20 seconds -> this should be ignored
         config.invocation.max_journal_retention = Some(Duration::from_secs(30)); // D = 30 seconds
         crate::config::set_current_config(config);
 
@@ -1558,6 +1558,39 @@ mod endpoint_manifest_options_propagation {
             schema.assert_service(GREETER_SERVICE_NAME),
             pat!(ServiceMetadata {
                 journal_retention: some(eq(Duration::from_secs(30))),
+            })
+        );
+
+        // 6. Operator registers a new version that doesn't declare journal retention, value should revert to the default E = 20 seconds
+        let mut deployment = Deployment::mock_with_uri("http://localhost:9082");
+        let (deployment_id, schema) = SchemaUpdater::update_and_return(schema, move |updater| {
+            updater.add_deployment(
+                deployment.metadata.clone(),
+                vec![endpoint_manifest::Service {
+                    journal_retention: None,
+                    ..greeter_service()
+                }],
+                false,
+            )
+        })
+        .unwrap();
+        deployment.id = deployment_id;
+
+        schema.assert_service_revision(GREETER_SERVICE_NAME, 3); // Revision should be incremented
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
+        assert_that!(
+            schema
+                .assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME)
+                .compute_retention(false),
+            eq(InvocationRetention {
+                completion_retention: Duration::from_secs(20),
+                journal_retention: Duration::from_secs(20),
+            })
+        );
+        assert_that!(
+            schema.assert_service(GREETER_SERVICE_NAME),
+            pat!(ServiceMetadata {
+                journal_retention: some(eq(Duration::from_secs(20))),
             })
         );
     }
@@ -1588,6 +1621,7 @@ mod endpoint_manifest_options_propagation {
             })
         );
     }
+
     #[test]
     fn max_journal_retention_higher_than_set_value() {
         // Set max_journal_retention to 60 seconds
@@ -1850,6 +1884,7 @@ mod endpoint_manifest_options_propagation {
 mod modify_service {
     use super::*;
 
+    use crate::config::Configuration;
     use crate::invocation::InvocationRetention;
     use crate::schema::service::ServiceMetadata;
     use googletest::prelude::*;
@@ -1911,6 +1946,201 @@ mod modify_service {
             eq(InvocationRetention {
                 completion_retention: new_retention,
                 journal_retention: new_retention,
+            })
+        );
+    }
+
+    #[test]
+    fn modify_all_service_config_options_then_register_second_version() {
+        const DEFAULT_JOURNAL_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
+
+        let mut config = Configuration::default();
+        config.invocation.default_journal_retention = Some(DEFAULT_JOURNAL_RETENTION);
+        crate::config::set_current_config(config);
+
+        // Register a plain service first
+        let (deployment_id, mut schema) =
+            SchemaUpdater::update_and_return(Schema::default(), move |updater| {
+                updater.add_deployment(
+                    Deployment::mock().metadata.clone(),
+                    vec![greeter_service()],
+                    false,
+                )
+            })
+            .unwrap();
+
+        // Verify initial state
+        assert_that!(
+            schema.assert_service(GREETER_SERVICE_NAME),
+            pat!(ServiceMetadata {
+                revision: eq(1),
+                deployment_id: eq(deployment_id),
+                public: eq(true), // default is public
+                idempotency_retention: eq(Some(DEFAULT_IDEMPOTENCY_RETENTION)),
+                journal_retention: eq(Some(DEFAULT_JOURNAL_RETENTION)),
+                inactivity_timeout: eq(None),
+                abort_timeout: eq(None),
+            })
+        );
+
+        // Update using modify_service (e.g. through UI/CLI) the service options
+        let new_public = false;
+        let new_idempotency_retention = Duration::from_secs(120);
+        let new_journal_retention = Duration::from_secs(300);
+        let new_inactivity_timeout = Duration::from_secs(30);
+        let new_abort_timeout = Duration::from_secs(60);
+        schema = SchemaUpdater::update(schema, |updater| {
+            updater.modify_service(
+                GREETER_SERVICE_NAME,
+                vec![
+                    ModifyServiceChange::Public(new_public),
+                    ModifyServiceChange::IdempotencyRetention(new_idempotency_retention),
+                    ModifyServiceChange::JournalRetention(new_journal_retention),
+                    ModifyServiceChange::InactivityTimeout(new_inactivity_timeout),
+                    ModifyServiceChange::AbortTimeout(new_abort_timeout),
+                ],
+            )
+        })
+        .unwrap();
+
+        // Verify all changes have been applied
+        assert_that!(
+            schema.assert_service(GREETER_SERVICE_NAME),
+            pat!(ServiceMetadata {
+                public: eq(new_public),
+                idempotency_retention: eq(Some(new_idempotency_retention)),
+                journal_retention: eq(Some(new_journal_retention)),
+                inactivity_timeout: eq(Some(new_inactivity_timeout)),
+                abort_timeout: eq(Some(new_abort_timeout)),
+            })
+        );
+
+        // Now register a second version of greeter, identical to the first
+        let deployment_2 = Deployment::mock_with_uri("http://localhost:9082");
+        let (deployment_id_2, schema_after_second_deployment) =
+            SchemaUpdater::update_and_return(schema, move |updater| {
+                updater.add_deployment(
+                    deployment_2.metadata.clone(),
+                    vec![greeter_service()], // identical service definition
+                    false,
+                )
+            })
+            .unwrap();
+
+        // Verify that the config option changes have been blanked/reset to defaults
+        assert_that!(
+            schema_after_second_deployment.assert_service(GREETER_SERVICE_NAME),
+            pat!(ServiceMetadata {
+                revision: eq(2),                    // revision should be incremented
+                deployment_id: eq(deployment_id_2), // new deployment
+
+                // -- Back to default
+                public: eq(true),
+                idempotency_retention: eq(Some(DEFAULT_IDEMPOTENCY_RETENTION)),
+                journal_retention: eq(Some(DEFAULT_JOURNAL_RETENTION)),
+                inactivity_timeout: eq(None),
+                abort_timeout: eq(None),
+            })
+        );
+    }
+
+    #[test]
+    fn modify_all_workflow_config_options_then_register_second_version() {
+        const DEFAULT_JOURNAL_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
+
+        let mut config = Configuration::default();
+        config.invocation.default_journal_retention = Some(DEFAULT_JOURNAL_RETENTION);
+        crate::config::set_current_config(config);
+
+        // Register a plain service first
+        let (deployment_id, mut schema) =
+            SchemaUpdater::update_and_return(Schema::default(), move |updater| {
+                updater.add_deployment(
+                    Deployment::mock().metadata.clone(),
+                    vec![greeter_workflow()],
+                    false,
+                )
+            })
+            .unwrap();
+
+        // Verify initial state
+        assert_that!(
+            schema.assert_service(GREETER_SERVICE_NAME),
+            pat!(ServiceMetadata {
+                revision: eq(1),
+                deployment_id: eq(deployment_id),
+                public: eq(true), // default is public
+                idempotency_retention: eq(Some(DEFAULT_IDEMPOTENCY_RETENTION)),
+                journal_retention: eq(Some(DEFAULT_JOURNAL_RETENTION)),
+                workflow_completion_retention: eq(Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)),
+                inactivity_timeout: eq(None),
+                abort_timeout: eq(None),
+            })
+        );
+
+        // Update using modify_service (e.g. through UI/CLI) the service options
+        let new_public = false;
+        let new_idempotency_retention = Duration::from_secs(120);
+        let new_workflow_completion_retention = Duration::from_secs(110);
+        let new_journal_retention = Duration::from_secs(300);
+        let new_inactivity_timeout = Duration::from_secs(30);
+        let new_abort_timeout = Duration::from_secs(60);
+        schema = SchemaUpdater::update(schema, |updater| {
+            updater.modify_service(
+                GREETER_SERVICE_NAME,
+                vec![
+                    ModifyServiceChange::Public(new_public),
+                    ModifyServiceChange::IdempotencyRetention(new_idempotency_retention),
+                    ModifyServiceChange::JournalRetention(new_journal_retention),
+                    ModifyServiceChange::WorkflowCompletionRetention(
+                        new_workflow_completion_retention,
+                    ),
+                    ModifyServiceChange::InactivityTimeout(new_inactivity_timeout),
+                    ModifyServiceChange::AbortTimeout(new_abort_timeout),
+                ],
+            )
+        })
+        .unwrap();
+
+        // Verify all changes have been applied
+        assert_that!(
+            schema.assert_service(GREETER_SERVICE_NAME),
+            pat!(ServiceMetadata {
+                public: eq(new_public),
+                idempotency_retention: eq(Some(new_idempotency_retention)),
+                journal_retention: eq(Some(new_journal_retention)),
+                workflow_completion_retention: eq(Some(new_workflow_completion_retention)),
+                inactivity_timeout: eq(Some(new_inactivity_timeout)),
+                abort_timeout: eq(Some(new_abort_timeout)),
+            })
+        );
+
+        // Now register a second version of greeter, identical to the first
+        let deployment_2 = Deployment::mock_with_uri("http://localhost:9082");
+        let (deployment_id_2, schema_after_second_deployment) =
+            SchemaUpdater::update_and_return(schema, move |updater| {
+                updater.add_deployment(
+                    deployment_2.metadata.clone(),
+                    vec![greeter_workflow()], // identical service definition
+                    false,
+                )
+            })
+            .unwrap();
+
+        // Verify that the config option changes have been blanked/reset to defaults
+        assert_that!(
+            schema_after_second_deployment.assert_service(GREETER_SERVICE_NAME),
+            pat!(ServiceMetadata {
+                revision: eq(2),                    // revision should be incremented
+                deployment_id: eq(deployment_id_2), // new deployment
+
+                // -- Back to default
+                public: eq(true),
+                idempotency_retention: eq(Some(DEFAULT_IDEMPOTENCY_RETENTION)),
+                journal_retention: eq(Some(DEFAULT_JOURNAL_RETENTION)),
+                workflow_completion_retention: eq(Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)),
+                inactivity_timeout: eq(None),
+                abort_timeout: eq(None),
             })
         );
     }

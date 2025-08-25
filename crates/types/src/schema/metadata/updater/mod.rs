@@ -392,7 +392,7 @@ impl SchemaUpdater {
                 } else {
                     ServiceTypeMismatchBehavior::Fail
                 },
-                ServiceLevelSettingsBehavior::Preserve,
+                ServiceLevelSettingsBehavior::UseDefaults,
             )?;
             computed_services.insert(service_name.to_string(), Arc::new(new_service_revision));
         }
