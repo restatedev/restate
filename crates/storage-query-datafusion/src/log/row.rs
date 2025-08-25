@@ -37,12 +37,12 @@ pub(crate) fn append_segment_row(
     row.base_lsn(segment.base_lsn.into());
     row.kind(format_using(output, &segment.config.kind));
 
-    if segment.config.kind == ProviderKind::Replicated {
-        if let Some(LogletRef { params, .. }) = replicated_loglet_params {
-            row.loglet_id(format_using(output, &params.loglet_id));
-            row.sequencer(format_using(output, &params.sequencer));
-            row.replication(format_using(output, &params.replication));
-            row.nodeset(format_using(output, &params.nodeset));
-        }
+    if segment.config.kind == ProviderKind::Replicated
+        && let Some(LogletRef { params, .. }) = replicated_loglet_params
+    {
+        row.loglet_id(format_using(output, &params.loglet_id));
+        row.sequencer(format_using(output, &params.sequencer));
+        row.replication(format_using(output, &params.replication));
+        row.nodeset(format_using(output, &params.nodeset));
     }
 }

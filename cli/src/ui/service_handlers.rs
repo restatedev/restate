@@ -74,7 +74,7 @@ pub fn create_service_handlers_table_diff<'a>(
     table
 }
 
-pub fn icon_for_service_type(svc_type: &ServiceType) -> Icon {
+pub fn icon_for_service_type(svc_type: &ServiceType) -> Icon<'static, 'static> {
     match svc_type {
         ServiceType::Service => Icon("", ""),
         ServiceType::VirtualObject => Icon("⬅️ 🚶🚶🚶", "virtual object"),

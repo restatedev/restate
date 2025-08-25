@@ -211,10 +211,10 @@ impl<T: CodedError> Display for DecoratedError<'_, T> {
             write!(f, "[{}] ", code.code)?;
         }
         write!(f, "{}", self.this.deref())?;
-        if f.alternate() {
-            if let Some(description) = self.this.code().and_then(|c| c.description) {
-                write!(f, "\n\n{description}")?;
-            }
+        if f.alternate()
+            && let Some(description) = self.this.code().and_then(|c| c.description)
+        {
+            write!(f, "\n\n{description}")?;
         }
 
         if let Some(help) = self.this.code().and_then(|c| c.help) {

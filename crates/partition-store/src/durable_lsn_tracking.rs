@@ -157,12 +157,12 @@ fn extract_partition_applied_lsn(
     }
 
     let fsm_key = PartitionStateMachineKey::deserialize_from(&mut key)?;
-    if fsm_key.state_id == Some(fsm_variable::APPLIED_LSN) {
-        if let Some(padded_partition_id) = fsm_key.partition_id {
-            let partition_id = PartitionId::from(padded_partition_id);
-            let applied_lsn = SequenceNumber::decode(&mut value).map(u64::from)?.into();
-            return Ok(Some((partition_id, applied_lsn)));
-        }
+    if fsm_key.state_id == Some(fsm_variable::APPLIED_LSN)
+        && let Some(padded_partition_id) = fsm_key.partition_id
+    {
+        let partition_id = PartitionId::from(padded_partition_id);
+        let applied_lsn = SequenceNumber::decode(&mut value).map(u64::from)?.into();
+        return Ok(Some((partition_id, applied_lsn)));
     }
 
     Ok(None)

@@ -366,19 +366,20 @@ where
         }
 
         // Read eager state, if needed
-        let keyed_service_id = self.invocation_target.as_keyed_service_id();
-        let state_iter = if invocation_attempt_options.enable_lazy_state == Some(true)
-            || self.disable_eager_state
-            || keyed_service_id.is_none()
+        let state_iter = if let Some(keyed_service_id) =
+            self.invocation_target.as_keyed_service_id()
+            && invocation_attempt_options.enable_lazy_state != Some(true)
+            && !self.disable_eager_state
         {
-            EagerState::<Empty<_>>::default().map(itertools::Either::Right)
-        } else {
+            // only for keyed service
             shortcircuit!(
-                txn.read_state(&keyed_service_id.unwrap())
+                txn.read_state(&keyed_service_id)
                     .await
                     .map_err(|e| InvokerError::StateReader(e.into()))
                     .map(|r| r.map(itertools::Either::Left))
             )
+        } else {
+            EagerState::<Empty<_>>::default().map(itertools::Either::Right)
         };
 
         // No need to read from Rocksdb anymore

@@ -374,10 +374,10 @@ impl fmt::Display for InvocationErrorRelatedEntry {
         } else {
             write!(f, "Unknown")?;
         }
-        if let Some(n) = &self.related_entry_name {
-            if !n.is_empty() {
-                write!(f, "(\"{n}\")")?;
-            }
+        if let Some(n) = &self.related_entry_name
+            && !n.is_empty()
+        {
+            write!(f, "(\"{n}\")")?;
         }
         if let Some(i) = self.related_entry_index {
             write!(f, "[index {i}]")?;
@@ -511,10 +511,10 @@ impl fmt::Display for InvocationErrorRelatedCommandV2 {
         } else {
             write!(f, "Unknown")?;
         }
-        if let Some(n) = &self.related_command_name {
-            if !n.is_empty() {
-                write!(f, "(named \"{n}\")")?;
-            }
+        if let Some(n) = &self.related_command_name
+            && !n.is_empty()
+        {
+            write!(f, "(named \"{n}\")")?;
         }
         if let Some(i) = self.related_command_index {
             write!(f, "[command index {i}]")?;

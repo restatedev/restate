@@ -397,19 +397,19 @@ impl ServiceDiscovery {
 
         // Fix for the SDK-Typescript bad protocol version,
         //  see https://github.com/restatedev/sdk-typescript/pull/418
-        if let Some(x_restate_server) = x_restate_server {
-            if let Ok(x_restate_server) = x_restate_server.to_str() {
-                if x_restate_server.starts_with("restate-sdk-typescript/1.0.")
-                    || x_restate_server.starts_with("restate-sdk-typescript/1.1.")
-                    || x_restate_server.starts_with("restate-sdk-typescript/1.2.")
-                {
-                    debug!(
-                        "Applying SDK-Typescript <= 1.2.1 workaround for endpoint.maxProtocolVersion"
-                    );
-                    max_version = 1;
-                }
-                sdk_version = Some(x_restate_server.to_owned());
+        if let Some(x_restate_server) = x_restate_server
+            && let Ok(x_restate_server) = x_restate_server.to_str()
+        {
+            if x_restate_server.starts_with("restate-sdk-typescript/1.0.")
+                || x_restate_server.starts_with("restate-sdk-typescript/1.1.")
+                || x_restate_server.starts_with("restate-sdk-typescript/1.2.")
+            {
+                debug!(
+                    "Applying SDK-Typescript <= 1.2.1 workaround for endpoint.maxProtocolVersion"
+                );
+                max_version = 1;
             }
+            sdk_version = Some(x_restate_server.to_owned());
         }
 
         if !ServiceProtocolVersion::is_acceptable_for_discovery(min_version, max_version) {
@@ -491,17 +491,17 @@ impl ServiceDiscovery {
             };
 
             // Discovery failed
-            if e.is_retryable() {
-                if let Some(next_retry_interval) = retry_iter.next() {
-                    warn!(
-                        "Error when discovering deployment at address '{}'. Retrying in {} seconds: {}",
-                        address,
-                        next_retry_interval.as_secs(),
-                        e
-                    );
-                    tokio::time::sleep(next_retry_interval).await;
-                    continue;
-                }
+            if e.is_retryable()
+                && let Some(next_retry_interval) = retry_iter.next()
+            {
+                warn!(
+                    "Error when discovering deployment at address '{}'. Retrying in {} seconds: {}",
+                    address,
+                    next_retry_interval.as_secs(),
+                    e
+                );
+                tokio::time::sleep(next_retry_interval).await;
+                continue;
             }
 
             return Err(e);

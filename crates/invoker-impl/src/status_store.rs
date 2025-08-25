@@ -65,11 +65,11 @@ impl InvocationStatusStore {
         deployment_id: DeploymentId,
         protocol_version: ServiceProtocolVersion,
     ) {
-        if let Some(inner) = self.0.get_mut(partition) {
-            if let Some(report) = inner.get_mut(invocation_id) {
-                report.last_attempt_deployment_id = Some(deployment_id);
-                report.last_attempt_protocol_version = Some(protocol_version)
-            }
+        if let Some(inner) = self.0.get_mut(partition)
+            && let Some(report) = inner.get_mut(invocation_id)
+        {
+            report.last_attempt_deployment_id = Some(deployment_id);
+            report.last_attempt_protocol_version = Some(protocol_version)
         }
     }
 
@@ -79,10 +79,10 @@ impl InvocationStatusStore {
         invocation_id: &InvocationId,
         x_restate_server_header: String,
     ) {
-        if let Some(inner) = self.0.get_mut(partition) {
-            if let Some(report) = inner.get_mut(invocation_id) {
-                report.last_attempt_server = Some(x_restate_server_header);
-            }
+        if let Some(inner) = self.0.get_mut(partition)
+            && let Some(report) = inner.get_mut(invocation_id)
+        {
+            report.last_attempt_server = Some(x_restate_server_header);
         }
     }
 

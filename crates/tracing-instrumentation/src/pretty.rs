@@ -169,12 +169,12 @@ where
         if thread {
             write!(writer, "{} ", dimmed.paint("on"))?;
             let thread = std::thread::current();
-            if self.display_thread_name {
-                if let Some(name) = thread.name() {
-                    write!(writer, "{name}")?;
-                    if self.display_thread_id {
-                        writer.write_char(' ')?;
-                    }
+            if self.display_thread_name
+                && let Some(name) = thread.name()
+            {
+                write!(writer, "{name}")?;
+                if self.display_thread_id {
+                    writer.write_char(' ')?;
                 }
             }
             if self.display_thread_id {

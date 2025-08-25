@@ -174,7 +174,7 @@ impl InvocationTarget {
         }
     }
 
-    pub fn short(&self) -> Short {
+    pub fn short(&self) -> Short<'_> {
         match self {
             Self::Service { name, handler } => Short::UnKeyed { name, handler },
             Self::VirtualObject { name, handler, .. } | Self::Workflow { name, handler, .. } => {

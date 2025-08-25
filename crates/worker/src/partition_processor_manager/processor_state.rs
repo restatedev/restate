@@ -11,7 +11,7 @@
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc::error::{SendError, TrySendError};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -26,16 +26,6 @@ use restate_types::net::partition_processor::PartitionLeaderService;
 use crate::partition::TargetLeaderState;
 
 pub type LeaderEpochToken = Ulid;
-
-#[derive(Debug, thiserror::Error)]
-#[error("partition processor is shutting down")]
-pub struct ProcessorShutdownError;
-
-impl From<SendError<TargetLeaderState>> for ProcessorShutdownError {
-    fn from(_value: SendError<TargetLeaderState>) -> Self {
-        ProcessorShutdownError
-    }
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum LeaderState {

@@ -95,14 +95,14 @@ impl RocksDbLogStore {
         Ok(Self { rocksdb })
     }
 
-    pub fn data_cf(&self) -> Arc<BoundColumnFamily> {
+    pub fn data_cf(&self) -> Arc<BoundColumnFamily<'_>> {
         self.rocksdb
             .inner()
             .cf_handle(DATA_CF)
             .expect("DATA_CF exists")
     }
 
-    pub fn metadata_cf(&self) -> Arc<BoundColumnFamily> {
+    pub fn metadata_cf(&self) -> Arc<BoundColumnFamily<'_>> {
         self.rocksdb
             .inner()
             .cf_handle(METADATA_CF)

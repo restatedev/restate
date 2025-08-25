@@ -339,14 +339,14 @@ impl Connection {
             .into();
 
         // we expect the node to identify itself as the same NodeId we think we are connecting to.
-        if let Destination::Node(destination_node_id) = destination {
-            if peer_node_id != destination_node_id {
-                // Node claims that it's someone else!
-                return Err(HandshakeError::Failed(
-                    "Node returned an unexpected GenerationalNodeId in Welcome message.".to_owned(),
-                )
-                .into());
-            }
+        if let Destination::Node(destination_node_id) = destination
+            && peer_node_id != destination_node_id
+        {
+            // Node claims that it's someone else!
+            return Err(HandshakeError::Failed(
+                "Node returned an unexpected GenerationalNodeId in Welcome message.".to_owned(),
+            )
+            .into());
         }
 
         let connection = Connection::new(peer_node_id, protocol_version, swimlane, tx);

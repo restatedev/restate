@@ -78,11 +78,11 @@ fn parse_http(s: &str) -> Result<AdvertisedAddress, Error> {
     let mut parts = uri.into_parts();
     // default to http if scheme is missing
     if parts.scheme.is_none() {
-        if let Some(authority) = &parts.authority {
-            if authority.port().is_none() {
-                // can not update just the port in place
-                parts.authority = Some(format!("{authority}:5122").parse()?);
-            }
+        if let Some(authority) = &parts.authority
+            && authority.port().is_none()
+        {
+            // can not update just the port in place
+            parts.authority = Some(format!("{authority}:5122").parse()?);
         }
         parts.scheme = Some(http::uri::Scheme::HTTP);
     } else if parts

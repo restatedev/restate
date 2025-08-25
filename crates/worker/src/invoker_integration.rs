@@ -290,13 +290,13 @@ where
                     Codec::deserialize(EntryType::CancelInvocation, serialized_entry.clone())
                         .map_err(|e| InvocationError::internal(e.to_string()))?;
                 let_assert!(Entry::CancelInvocation(CancelInvocationEntry { target }) = entry);
-                if let CancelInvocationTarget::InvocationId(id) = target {
-                    if let Err(e) = id.parse::<InvocationId>() {
-                        return Err(InvocationError::new(
-                            codes::BAD_REQUEST,
-                            format!("The given invocation id '{id}' to cancel is invalid: {e}"),
-                        ));
-                    }
+                if let CancelInvocationTarget::InvocationId(id) = target
+                    && let Err(e) = id.parse::<InvocationId>()
+                {
+                    return Err(InvocationError::new(
+                        codes::BAD_REQUEST,
+                        format!("The given invocation id '{id}' to cancel is invalid: {e}"),
+                    ));
                 }
 
                 EnrichedEntryHeader::CancelInvocation {}
@@ -307,13 +307,13 @@ where
                     Codec::deserialize(EntryType::AttachInvocation, serialized_entry.clone())
                         .map_err(|e| InvocationError::internal(e.to_string()))?;
                 let_assert!(Entry::AttachInvocation(AttachInvocationEntry { target, .. }) = entry);
-                if let AttachInvocationTarget::InvocationId(id) = target {
-                    if let Err(e) = id.parse::<InvocationId>() {
-                        return Err(InvocationError::new(
-                            codes::BAD_REQUEST,
-                            format!("The given invocation id '{id}' to attach is invalid: {e}"),
-                        ));
-                    }
+                if let AttachInvocationTarget::InvocationId(id) = target
+                    && let Err(e) = id.parse::<InvocationId>()
+                {
+                    return Err(InvocationError::new(
+                        codes::BAD_REQUEST,
+                        format!("The given invocation id '{id}' to attach is invalid: {e}"),
+                    ));
                 }
 
                 EnrichedEntryHeader::AttachInvocation { is_completed }
@@ -326,13 +326,13 @@ where
                 let_assert!(
                     Entry::GetInvocationOutput(GetInvocationOutputEntry { target, .. }) = entry
                 );
-                if let AttachInvocationTarget::InvocationId(id) = target {
-                    if let Err(e) = id.parse::<InvocationId>() {
-                        return Err(InvocationError::new(
-                            codes::BAD_REQUEST,
-                            format!("The given invocation id '{id}' to get output is invalid: {e}"),
-                        ));
-                    }
+                if let AttachInvocationTarget::InvocationId(id) = target
+                    && let Err(e) = id.parse::<InvocationId>()
+                {
+                    return Err(InvocationError::new(
+                        codes::BAD_REQUEST,
+                        format!("The given invocation id '{id}' to get output is invalid: {e}"),
+                    ));
                 }
 
                 EnrichedEntryHeader::GetInvocationOutput { is_completed }

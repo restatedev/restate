@@ -421,16 +421,16 @@ impl Member {
                         // The worst thing that can happen if this assumption does not hold is that
                         // we are wrongly rejecting a write which should be retried by the caller
                         // anyway.
-                        if let Some(actual_version) = self.kv_storage.get_version(request.key()) {
-                            if actual_version > expected_version {
-                                callback.fail(RequestError::FailedPrecondition(
-                                    PreconditionViolation::VersionMismatch {
-                                        expected: expected_version,
-                                        actual: Some(actual_version),
-                                    },
-                                ));
-                                return;
-                            }
+                        if let Some(actual_version) = self.kv_storage.get_version(request.key())
+                            && actual_version > expected_version
+                        {
+                            callback.fail(RequestError::FailedPrecondition(
+                                PreconditionViolation::VersionMismatch {
+                                    expected: expected_version,
+                                    actual: Some(actual_version),
+                                },
+                            ));
+                            return;
                         }
                     }
                     Precondition::DoesNotExist => {

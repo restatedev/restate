@@ -234,7 +234,7 @@ impl PartitionReplicaSetStates {
     ///
     /// If you don't want to miss any changes, it's advised to create this future first, read the
     /// partition replica set states, then await this future for updates.
-    pub fn changed(&self) -> Notified {
+    pub fn changed(&self) -> Notified<'_> {
         self.inner.global_notify.notified()
     }
 }
