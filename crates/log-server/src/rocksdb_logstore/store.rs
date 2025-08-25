@@ -259,13 +259,12 @@ impl LogStore for RocksDbLogStore {
         let mut readopts = rocksdb::ReadOptions::default();
         let oldest_key = DataRecordKey::new(loglet_id, read_from);
         let upper_bound = DataRecordKey::exclusive_upper_bound(loglet_id);
+
+        // If we ever switch to using a tailing iterator, be aware that these can fail on
+        // encountering a `RangeDelete` tombstone. Doing so might also require us to
+        // set_ignore_range_deletions(true).
         readopts.set_tailing(false);
-        // In some cases, the underlying ForwardIterator will fail if it hits a `RangeDelete` tombstone.
-        // For our purposes, we can ignore these tombstones, meaning that we will return those records
-        // instead of a gap.
-        // In summary, if loglet reader started before a trim point and data is readable, we should
-        // continue reading them. It's the responsibility of the upper layer to decide on a sane
-        // value of _from_offset_.
+
         readopts.set_prefix_same_as_start(true);
         readopts.set_total_order_seek(false);
         // don't fill up the cache as the reader we often don't read the same record multiple times
@@ -399,13 +398,12 @@ impl LogStore for RocksDbLogStore {
         } else {
             DataRecordKey::new(loglet_id, read_to.next()).to_binary_array()
         };
+
+        // If we ever switch to using a tailing iterator, be aware that these can fail on
+        // encountering a `RangeDelete` tombstone. Doing so might also require us to
+        // set_ignore_range_deletions(true).
         readopts.set_tailing(false);
-        // In some cases, the underlying ForwardIterator will fail if it hits a `RangeDelete` tombstone.
-        // For our purposes, we can ignore these tombstones, meaning that we will return those records
-        // instead of a gap.
-        // In summary, if loglet reader started before a trim point and data is readable, we should
-        // continue reading them. It's the responsibility of the upper layer to decide on a sane
-        // value of _from_offset_.
+
         readopts.set_prefix_same_as_start(true);
         readopts.set_total_order_seek(false);
         // don't fill up the cache as the reader might actually end up reading very few records and
