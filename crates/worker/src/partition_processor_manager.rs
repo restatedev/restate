@@ -226,6 +226,7 @@ impl PartitionProcessorManager {
         let pp_rpc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
+
         Self {
             health_status,
             updateable_config,
