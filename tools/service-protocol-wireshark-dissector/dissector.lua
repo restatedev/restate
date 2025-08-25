@@ -43,7 +43,7 @@ function p_service_protocol.dissector(buf, pkt, tree)
 
         -- Headers (remove them while querying)
         subtree:add(f_ty, buf(0,2), msg.ty, "Message type: " .. msg.ty_name)
-        subtree:add(f_len, buf(4,8), msg.len)
+        subtree:add(f_len, buf(4,4), msg.len)
         if msg.protocol_version ~= nil then
             subtree:add(f_protocol_version, msg.protocol_version)
         end
