@@ -120,17 +120,17 @@ where
 
         // In case we get a notification (e.g. awakeable completion),
         // but we haven't pinned the deployment yet, we might need to run a migration to V2.
-        if let Some(metadata) = self.invocation_status.get_invocation_metadata_mut() {
-            if metadata.pinned_deployment.is_none() {
-                // The pinned deployment wasn't established yet, but we have a V2 journal entry.
-                // So we need to try to run the migration
-                VerifyOrMigrateJournalTableToV2Command {
-                    invocation_id: self.invocation_id,
-                    metadata,
-                }
-                .apply(ctx)
-                .await?;
+        if let Some(metadata) = self.invocation_status.get_invocation_metadata_mut()
+            && metadata.pinned_deployment.is_none()
+        {
+            // The pinned deployment wasn't established yet, but we have a V2 journal entry.
+            // So we need to try to run the migration
+            VerifyOrMigrateJournalTableToV2Command {
+                invocation_id: self.invocation_id,
+                metadata,
             }
+            .apply(ctx)
+            .await?;
         }
 
         let mut entries = VecDeque::from([self.entry]);

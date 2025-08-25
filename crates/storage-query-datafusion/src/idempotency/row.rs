@@ -25,10 +25,10 @@ pub(crate) fn append_idempotency_row(
     row.partition_key(idempotency_id.partition_key());
 
     row.service_name(&idempotency_id.service_name);
-    if row.is_service_key_defined() {
-        if let Some(ref k) = idempotency_id.service_key {
-            row.service_key(k)
-        }
+    if row.is_service_key_defined()
+        && let Some(ref k) = idempotency_id.service_key
+    {
+        row.service_key(k)
     }
     row.service_handler(&idempotency_id.service_handler);
     row.idempotency_key(&idempotency_id.idempotency_key);

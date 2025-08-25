@@ -23,15 +23,15 @@ pub(crate) fn append_state_row(
     row.partition_key(service_id.partition_key());
     row.service_name(&service_id.service_name);
     row.service_key(&service_id.key);
-    if row.is_key_defined() {
-        if let Ok(str) = std::str::from_utf8(&state_key) {
-            row.key(str);
-        }
+    if row.is_key_defined()
+        && let Ok(str) = std::str::from_utf8(&state_key)
+    {
+        row.key(str);
     }
-    if row.is_value_utf8_defined() {
-        if let Ok(str) = std::str::from_utf8(&state_value) {
-            row.value_utf8(str);
-        }
+    if row.is_value_utf8_defined()
+        && let Ok(str) = std::str::from_utf8(&state_value)
+    {
+        row.value_utf8(str);
     }
     if row.is_value_defined() {
         row.value(&state_value);

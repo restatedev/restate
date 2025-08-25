@@ -465,13 +465,13 @@ impl Iterator for RetryIter<'_> {
                         max_interval.map(Into::into).unwrap_or(Duration::MAX),
                     );
                     self.last_retry = Some(new_retry);
-                    return Some(with_jitter(new_retry, DEFAULT_JITTER_MULTIPLIER));
+                    Some(with_jitter(new_retry, DEFAULT_JITTER_MULTIPLIER))
                 } else {
                     self.last_retry = Some((*initial_interval).into());
-                    return Some(with_jitter(
+                    Some(with_jitter(
                         (*initial_interval).into(),
                         DEFAULT_JITTER_MULTIPLIER,
-                    ));
+                    ))
                 }
             }
         }

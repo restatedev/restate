@@ -121,7 +121,7 @@ impl RocksAccess {
         &self.db_spec
     }
 
-    pub fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily>> {
+    pub fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily<'_>>> {
         self.db.cf_handle(cf)
     }
 

@@ -77,14 +77,12 @@ async fn patch_value_inner(
         .map(|v| v.version)
         .unwrap_or(Version::INVALID);
 
-    if let Some(expected_version) = opts.version {
-        if current_version != Version::from(expected_version) {
-            anyhow::bail!(
-                "Version mismatch: expected v{}, got {:#} from store",
-                expected_version,
-                current_version,
-            );
-        }
+    if let Some(expected_version) = opts.version
+        && current_version != Version::from(expected_version)
+    {
+        anyhow::bail!(
+            "Version mismatch: expected v{expected_version}, got {current_version:#} from store",
+        );
     }
 
     let mut document = value.map(|v| v.to_json_value()).unwrap_or(Value::Null);

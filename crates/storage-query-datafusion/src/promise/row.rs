@@ -34,10 +34,10 @@ pub(crate) fn append_promise_row(
             match c {
                 PromiseResult::Success(s) => {
                     row.completion_success_value(&s);
-                    if row.is_completion_success_value_utf8_defined() {
-                        if let Ok(str) = std::str::from_utf8(&s) {
-                            row.completion_success_value_utf8(str);
-                        }
+                    if row.is_completion_success_value_utf8_defined()
+                        && let Ok(str) = std::str::from_utf8(&s)
+                    {
+                        row.completion_success_value_utf8(str);
                     }
                 }
                 PromiseResult::Failure(c, m) => {

@@ -45,14 +45,14 @@ pub struct RocksDbLogStore {
 }
 
 impl RocksDbLogStore {
-    pub fn data_cf(&self) -> Arc<BoundColumnFamily> {
+    pub fn data_cf(&self) -> Arc<BoundColumnFamily<'_>> {
         self.rocksdb
             .inner()
             .cf_handle(DATA_CF)
             .expect("DATA_CF exists")
     }
 
-    pub fn metadata_cf(&self) -> Arc<BoundColumnFamily> {
+    pub fn metadata_cf(&self) -> Arc<BoundColumnFamily<'_>> {
         self.rocksdb
             .inner()
             .cf_handle(METADATA_CF)
@@ -477,12 +477,12 @@ impl LogStore for RocksDbLogStore {
         }
 
         // we reached the end due to an error
-        if read_pointer <= read_to {
-            if let Err(e) = iterator.status() {
-                // whoa, we have I/O errors, we should switch into failsafe mode (todo)
-                self.health_status.update(LogServerStatus::Failsafe);
-                return Err(RocksDbLogStoreError::Rocksdb(e).into());
-            }
+        if read_pointer <= read_to
+            && let Err(e) = iterator.status()
+        {
+            // whoa, we have I/O errors, we should switch into failsafe mode (todo)
+            self.health_status.update(LogServerStatus::Failsafe);
+            return Err(RocksDbLogStoreError::Rocksdb(e).into());
         }
 
         if let Some(last) = current_open_entry.take() {

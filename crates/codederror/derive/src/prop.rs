@@ -11,13 +11,13 @@
 use crate::ast::{Field, Struct, Variant};
 
 impl Struct<'_> {
-    pub(crate) fn code_field(&self) -> Option<&Field> {
+    pub(crate) fn code_field(&self) -> Option<&Field<'_>> {
         code_field(&self.fields)
     }
 }
 
 impl Variant<'_> {
-    pub(crate) fn code_field(&self) -> Option<&Field> {
+    pub(crate) fn code_field(&self) -> Option<&Field<'_>> {
         code_field(&self.fields)
     }
 }

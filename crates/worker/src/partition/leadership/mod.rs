@@ -647,12 +647,6 @@ impl shuffle::OutboxReader for OutboxReader {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TaskError {
-    #[error(transparent)]
-    Error(#[from] anyhow::Error),
-}
-
 #[cfg(test)]
 mod tests {
     use crate::partition::leadership::trim_queue::TrimQueue;

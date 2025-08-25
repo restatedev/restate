@@ -49,10 +49,10 @@ pub(crate) fn append_invocation_status_row(
         row.id(format_using(output, &invocation_id));
     }
 
-    if row.is_idempotency_key_defined() {
-        if let Some(key) = invocation_status.idempotency_key() {
-            row.idempotency_key(format_using(output, &key))
-        }
+    if row.is_idempotency_key_defined()
+        && let Some(key) = invocation_status.idempotency_key()
+    {
+        row.idempotency_key(format_using(output, &key))
     }
 
     // Journal metadata

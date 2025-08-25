@@ -787,16 +787,14 @@ fn normalize_schema_refs_inner(ref_prefix: &str, schema: &mut Value) {
         }
         Value::Object(obj_value) => {
             // Replace $ref attribute, if existing and starts with #
-            if let Some(ref_value) = obj_value.get_mut("$ref") {
-                if let Some(str_ref_value) = ref_value.as_str() {
-                    // Local refs always start with #
-                    if str_ref_value.starts_with('#') {
-                        *ref_value = Value::String(format!(
-                            "{ref_prefix}{}",
-                            str_ref_value.trim_start_matches('#')
-                        ));
-                    }
-                }
+            if let Some(ref_value) = obj_value.get_mut("$ref")
+                && let Some(str_ref_value) = ref_value.as_str()
+                && str_ref_value.starts_with('#')
+            {
+                *ref_value = Value::String(format!(
+                    "{ref_prefix}{}",
+                    str_ref_value.trim_start_matches('#')
+                ));
             }
 
             for val in obj_value.values_mut() {

@@ -793,15 +793,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             | is @ InvocationStatus::Suspended { .. }
             | is @ InvocationStatus::Inboxed { .. }
             | is @ InvocationStatus::Scheduled { .. } => {
-                if let Some(ref response_sink) = service_invocation.response_sink {
-                    if !is
+                if let Some(ref response_sink) = service_invocation.response_sink
+                    && !is
                         .get_response_sinks()
                         .expect("response sink must be present")
                         .contains(response_sink)
-                    {
-                        self.do_append_response_sink(invocation_id, is, response_sink.clone())
-                            .await?
-                    }
+                {
+                    self.do_append_response_sink(invocation_id, is, response_sink.clone())
+                        .await?
                 }
             }
             InvocationStatus::Completed(completed) => {
@@ -1506,13 +1505,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                 journal_length,
             )?
             .try_filter_map(|(_, journal_entry)| async {
-                if let Some(cmd) = journal_entry.inner.try_as_command() {
-                    if let journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
+                if let Some(cmd) = journal_entry.inner.try_as_command()
+                    && let journal_v2::raw::RawCommandSpecificMetadata::CallOrSend(
                         call_or_send_metadata,
                     ) = cmd.command_specific_metadata()
-                    {
-                        return Ok(Some(call_or_send_metadata.invocation_id));
-                    }
+                {
+                    return Ok(Some(call_or_send_metadata.invocation_id));
                 }
 
                 Ok(None)
@@ -1570,13 +1568,12 @@ impl<S> StateMachineApplyContext<'_, S> {
             .storage
             .get_journal(&invocation_id, journal_length)?
             .try_filter_map(|(journal_index, journal_entry)| async move {
-                if let JournalEntry::Entry(journal_entry) = journal_entry {
-                    if let Some(is_completed) = journal_entry.header().is_completed() {
-                        if !is_completed {
-                            // Every completable journal entry that hasn't been completed yet should be cancelled
-                            return Ok(Some((journal_index, journal_entry)));
-                        }
-                    }
+                if let JournalEntry::Entry(journal_entry) = journal_entry
+                    && let Some(is_completed) = journal_entry.header().is_completed()
+                    && !is_completed
+                {
+                    // Every completable journal entry that hasn't been completed yet should be cancelled
+                    return Ok(Some((journal_index, journal_entry)));
                 }
 
                 Ok(None)
@@ -3213,11 +3210,10 @@ impl<S> StateMachineApplyContext<'_, S> {
                     ReadOnlyJournalTable::get_journal_entry(self.storage, invocation_id, i)
                         .await?
                         .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"))
+                    && e.ty() == EntryType::Output
                 {
-                    if e.ty() == EntryType::Output {
-                        output_entry = Some(e);
-                        break;
-                    }
+                    output_entry = Some(e);
+                    break;
                 }
             }
 

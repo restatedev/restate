@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use codederror::CodedError;
-use restate_core::ShutdownError;
+
 use restate_types::errors::GenericError;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -26,10 +26,4 @@ impl LogServerBuildError {
     pub fn other(err: impl Into<GenericError>) -> Self {
         LogServerBuildError::Other(err.into())
     }
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum Error {
-    #[error("operation failed due to an ongoing shutdown")]
-    Shutdown(#[from] ShutdownError),
 }

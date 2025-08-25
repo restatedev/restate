@@ -137,22 +137,21 @@ impl<T: TransportConnect> FindTailTask<T> {
                     Some(Duration::from_millis(500)),
                 )
                 .await
+                && seq_state.header.status.is_none()
             {
-                if seq_state.header.status.is_none() {
-                    let global_tail = seq_state
-                        .header
-                        .known_global_tail
-                        .expect("global tail must be known by sequencer");
-                    return if seq_state
-                        .header
-                        .sealed
-                        .expect("sequencer must set sealed if status=ok")
-                    {
-                        FindTailResult::Sealed { global_tail }
-                    } else {
-                        FindTailResult::Open { global_tail }
-                    };
-                }
+                let global_tail = seq_state
+                    .header
+                    .known_global_tail
+                    .expect("global tail must be known by sequencer");
+                return if seq_state
+                    .header
+                    .sealed
+                    .expect("sequencer must set sealed if status=ok")
+                {
+                    FindTailResult::Sealed { global_tail }
+                } else {
+                    FindTailResult::Open { global_tail }
+                };
             }
         }
         // After this point we don't try the sequencer.

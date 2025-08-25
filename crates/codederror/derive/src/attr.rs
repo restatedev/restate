@@ -59,7 +59,7 @@ pub struct Code<'a> {
     pub value: Option<Path>,
 }
 
-pub fn get(input: &[Attribute]) -> Result<Attrs> {
+pub fn get(input: &[Attribute]) -> Result<Attrs<'_>> {
     let mut attrs = Attrs {
         source: None,
         from: None,

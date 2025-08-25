@@ -141,7 +141,7 @@ impl RocksDbStorage {
         write_opts
     }
 
-    fn kv_cf_handle(&self) -> Arc<BoundColumnFamily> {
+    fn kv_cf_handle(&self) -> Arc<BoundColumnFamily<'_>> {
         self.rocksdb
             .inner()
             .as_raw_db()

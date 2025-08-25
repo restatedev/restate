@@ -575,14 +575,14 @@ fn nodes_configuration_for_metadata_cluster_seed(
     let plain_node_id = if let Some(node_config) =
         nodes_configuration.find_node_by_name(configuration.common.node_name())
     {
-        if let Some(force_node_id) = configuration.common.force_node_id {
-            if force_node_id != node_config.current_generation.as_plain() {
-                return Err(InvalidConfiguration(format!(
-                    "nodes configuration has wrong plain node id; expected: {}, actual: {}",
-                    force_node_id,
-                    node_config.current_generation.as_plain()
-                )));
-            }
+        if let Some(force_node_id) = configuration.common.force_node_id
+            && force_node_id != node_config.current_generation.as_plain()
+        {
+            return Err(InvalidConfiguration(format!(
+                "nodes configuration has wrong plain node id; expected: {}, actual: {}",
+                force_node_id,
+                node_config.current_generation.as_plain()
+            )));
         }
 
         let restate_node_id = node_config.current_generation.as_plain();
