@@ -81,14 +81,13 @@ async fn for_each_partition(
                 partition_status,
             );
             if builder.num_rows() >= batch_size {
-                let batch = builder.finish();
+                let batch = builder.finish_and_new();
                 if tx.send(batch).await.is_err() {
                     // not sure what to do here?
                     // the other side has hung up on us.
                     // we probably don't want to panic, is it will cause the entire process to exit
                     return;
                 }
-                builder = PartitionStateBuilder::new(schema.clone());
             }
         }
     }
