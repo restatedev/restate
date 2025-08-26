@@ -1227,20 +1227,27 @@ where
                     // Modify or remove this to disable the deduplication logic!
                     let deduplication_hash = transient_error_event.deduplication_hash();
 
-                    let mut raw_event =
-                        RawEvent::from(Event::TransientError(transient_error_event));
-                    raw_event.set_deduplication_hash(deduplication_hash);
+                    // Some trivial deduplication here: if we already sent this transient error in the previous retry, don't send it again
+                    if ism.last_transient_error_event_deduplication_hash.as_ref()
+                        != Some(&deduplication_hash)
+                    {
+                        ism.last_transient_error_event_deduplication_hash =
+                            Some(deduplication_hash.clone());
+                        let mut raw_event =
+                            RawEvent::from(Event::TransientError(transient_error_event));
+                        raw_event.set_deduplication_hash(deduplication_hash);
 
-                    let _ = self
-                        .invocation_state_machine_manager
-                        .resolve_partition_sender(partition)
-                        .expect("Partition should be registered")
-                        .send(Box::new(Effect {
-                            invocation_id,
-                            invocation_epoch: ism.invocation_epoch,
-                            kind: EffectKind::journal_entry(raw_event, None),
-                        }))
-                        .await;
+                        let _ = self
+                            .invocation_state_machine_manager
+                            .resolve_partition_sender(partition)
+                            .expect("Partition should be registered")
+                            .send(Box::new(Effect {
+                                invocation_id,
+                                invocation_epoch: ism.invocation_epoch,
+                                kind: EffectKind::journal_entry(raw_event, None),
+                            }))
+                            .await;
+                    }
                 }
 
                 self.status_store.on_failure(
@@ -1383,13 +1390,15 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use googletest::prelude::eq;
+    use googletest::prelude::{eq, predicate, some};
     use googletest::{assert_that, pat};
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
+    use crate::error::{InvokerError, SdkInvocationErrorV2};
+    use crate::quota::InvokerConcurrencyQuota;
     use restate_core::{TaskCenter, TaskKind};
     use restate_invoker_api::InvokerHandle;
     use restate_invoker_api::entry_enricher;
@@ -1397,12 +1406,15 @@ mod tests {
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_test_util::{check, let_assert};
     use restate_types::config::InvokerOptionsBuilder;
+    use restate_types::errors::{InvocationError, codes};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
     use restate_types::invocation::ServiceType;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
-    use restate_types::journal_v2::{Command, Encoder, Entry, OutputCommand, OutputResult};
-    use restate_types::journal_v2::{CompletionType, NotificationType};
+    use restate_types::journal_v2::{
+        Command, CompletionType, Encoder, Entry, EventType, NotificationType, OutputCommand,
+        OutputResult,
+    };
     use restate_types::live::Constant;
     use restate_types::retries::RetryPolicy;
     use restate_types::schema::deployment::Deployment;
@@ -1410,9 +1422,7 @@ mod tests {
         InvocationAttemptOptions, InvocationTargetMetadata,
     };
     use restate_types::schema::service::ServiceMetadata;
-
-    use crate::error::{InvokerError, SdkInvocationErrorV2};
-    use crate::quota::InvokerConcurrencyQuota;
+    use restate_types::storage::StoredRawEntry;
 
     // -- Mocks
 
@@ -2212,6 +2222,134 @@ mod tests {
         assert!(
             report_after.last_retry_attempt_failure().is_none(),
             "expected last_retry_attempt_failure to be cleared after new command"
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn transient_error_event_deduplication() {
+        // Enable proposing events and keep timers short for the test
+        let invoker_options = InvokerOptionsBuilder::default()
+            .retry_policy(RetryPolicy::fixed_delay(Duration::from_millis(1), Some(3)))
+            .inactivity_timeout(Duration::ZERO.into())
+            .abort_timeout(Duration::ZERO.into())
+            .disable_eager_state(false)
+            .experimental_features_propose_events(true)
+            .build()
+            .unwrap();
+
+        let invocation_id = InvocationId::mock_random();
+
+        // Mock service and register partition
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock((), None);
+        let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        // Start invocation epoch 0
+        service_inner.handle_invoke(
+            &invoker_options,
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+            InvocationTarget::mock_virtual_object(),
+            InvokeInputJournal::NoCachedJournal,
+        );
+
+        // Select protocol V4 to allow proposing events
+        service_inner.handle_pinned_deployment(
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+            PinnedDeployment::new(DeploymentId::new(), ServiceProtocolVersion::V4),
+            false, // has_changed = false -> directly selects protocol without emitting effect
+        );
+
+        // First transient error (A) -> should propose a TransientError event
+        let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
+            related_command: None,
+            next_retry_interval_override: Some(Duration::from_millis(1)),
+            error: InvocationError::new(codes::INTERNAL, "boom"),
+        });
+        service_inner
+            .handle_invocation_task_failed(
+                &invoker_options,
+                MOCK_PARTITION,
+                invocation_id,
+                0,
+                error_a,
+            )
+            .await;
+        assert_that!(
+            *effects_rx
+                .try_recv()
+                .expect("expected a proposed transient error event"),
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                invocation_epoch: eq(0),
+                kind: pat!(EffectKind::JournalEntryV2 {
+                    entry: some(pat!(StoredRawEntry {
+                        inner: predicate(|e: &journal_v2::raw::RawEntry| e
+                            .try_as_event_ref()
+                            .is_some_and(|e| e.event_type() == EventType::TransientError))
+                    }))
+                })
+            })
+        );
+
+        // Fire the timer to let the invocation go back to in flight
+        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
+
+        // Same transient error (A again) -> should NOT propose a new event
+        let error_a_same = InvokerError::SdkV2(SdkInvocationErrorV2 {
+            related_command: None,
+            next_retry_interval_override: Some(Duration::from_millis(1)),
+            error: InvocationError::new(codes::INTERNAL, "boom"),
+        });
+        service_inner
+            .handle_invocation_task_failed(
+                &invoker_options,
+                MOCK_PARTITION,
+                invocation_id,
+                0,
+                error_a_same,
+            )
+            .await;
+        assert!(
+            effects_rx.try_recv().is_err(),
+            "duplicate transient error event should not be proposed"
+        );
+
+        // Fire the timer to let the invocation go back to in flight
+        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
+
+        // Different transient error (B: different message) -> should propose a new event
+        let error_b = InvokerError::SdkV2(SdkInvocationErrorV2 {
+            related_command: None,
+            next_retry_interval_override: Some(Duration::from_millis(1)),
+            error: InvocationError::new(codes::INTERNAL, "boom-2"),
+        });
+        service_inner
+            .handle_invocation_task_failed(
+                &invoker_options,
+                MOCK_PARTITION,
+                invocation_id,
+                0,
+                error_b,
+            )
+            .await;
+        assert_that!(
+            *effects_rx
+                .try_recv()
+                .expect("expected a newly proposed transient error event for different content"),
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                invocation_epoch: eq(0),
+                kind: pat!(EffectKind::JournalEntryV2 {
+                    entry: some(pat!(StoredRawEntry {
+                        inner: predicate(|e: &journal_v2::raw::RawEntry| e
+                            .try_as_event_ref()
+                            .is_some_and(|e| e.event_type() == EventType::TransientError))
+                    }))
+                })
+            })
         );
     }
 }
