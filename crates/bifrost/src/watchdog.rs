@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
 use enum_map::Enum;
+use futures::StreamExt;
 use futures::future::OptionFuture;
+use futures::stream::FuturesUnordered;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -179,12 +181,9 @@ impl Watchdog {
                 }
 
                 // Concurrently look up the trim points of all the requests
-                let trim_point_futures: JoinSet<_> = trim_requests
+                let mut trim_point_futures: FuturesUnordered<_> = trim_requests
                     .drain()
-                    .map(|(log_id, requested_trim_point)| {
-                        let bifrost = bifrost.clone();
-                        let weak_writer_tx = weak_writer_tx.clone();
-                        async move {
+                    .map(async |(log_id, requested_trim_point)| {
                             match bifrost.get_trim_point(log_id).await {
                                 // an invalid lsn means that the log has never been trimmed
                                 Ok(actual_trim_point) if actual_trim_point != Lsn::INVALID => {
@@ -206,11 +205,10 @@ impl Watchdog {
                                     );
                                 },
                             }
-                        }.in_current_tc()
                     })
                     .collect();
 
-                trim_point_futures.join_all().await;
+                while trim_point_futures.next().await.is_some() {}
             },
         )
     }
