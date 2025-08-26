@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::invocation_state::schema::SysInvocationStateBuilder;
 use restate_invoker_api::InvocationStatusReport;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
+
+use crate::invocation_state::schema::SysInvocationStateBuilder;
 
 #[inline]
 pub(crate) fn append_invocation_state_row(
@@ -51,38 +52,36 @@ pub(crate) fn append_invocation_state_row(
             Some(sp) if *sp <= ServiceProtocolVersion::V3 => {
                 // TODO remove this code branch when we remove protocol v3
 
-                if let Some(name) = &last_retry_attempt_failure.related_entry_name {
-                    if !name.is_empty() {
-                        row.last_failure_related_entry_name(name);
-                    }
+                if let Some(name) = &last_retry_attempt_failure.related_entry_name
+                    && !name.is_empty()
+                {
+                    row.last_failure_related_entry_name(name);
                 }
                 if let Some(idx) = last_retry_attempt_failure.related_entry_index {
                     row.last_failure_related_entry_index(idx as u64);
                 }
 
-                if row.is_last_failure_related_entry_type_defined() {
-                    if let Some(related_entry_type) = &last_retry_attempt_failure.related_entry_type
-                    {
-                        row.fmt_last_failure_related_entry_type(related_entry_type);
-                    }
+                if row.is_last_failure_related_entry_type_defined()
+                    && let Some(related_entry_type) = &last_retry_attempt_failure.related_entry_type
+                {
+                    row.fmt_last_failure_related_entry_type(related_entry_type);
                 }
             }
             _ => {
-                if let Some(name) = &last_retry_attempt_failure.related_entry_name {
-                    if !name.is_empty() {
-                        row.last_failure_related_command_name(name);
-                    }
+                if let Some(name) = &last_retry_attempt_failure.related_entry_name
+                    && !name.is_empty()
+                {
+                    row.last_failure_related_command_name(name);
                 }
                 if let Some(idx) = last_retry_attempt_failure.related_entry_index {
                     row.last_failure_related_command_index(idx as u64);
                 }
 
-                if row.is_last_failure_related_command_type_defined() {
-                    if let Some(related_command_type) =
+                if row.is_last_failure_related_command_type_defined()
+                    && let Some(related_command_type) =
                         &last_retry_attempt_failure.related_entry_type
-                    {
-                        row.fmt_last_failure_related_command_type(related_command_type);
-                    }
+                {
+                    row.fmt_last_failure_related_command_type(related_command_type);
                 }
             }
         }

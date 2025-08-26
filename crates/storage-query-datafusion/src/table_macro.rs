@@ -408,7 +408,7 @@ macro_rules! document_type {
 ///     }
 ///
 ///     #[inline]
-///     pub fn row(&mut self) -> UserRowBuilder {
+///     pub fn row(&mut self) -> UserRowBuilder<'_> {
 ///         self.rows_inserted_so_far += 1;
 ///
 ///         UserRowBuilder {
@@ -576,7 +576,7 @@ macro_rules! define_table {
         #[allow(clippy::all)]
         impl [< $table_name:camel Builder >] {
             #[inline]
-            pub fn row(&mut self) -> [< $table_name:camel RowBuilder >] {
+            pub fn row(&mut self) -> [< $table_name:camel RowBuilder >]<'_> {
                  self.rows_inserted_so_far += 1;
 
                  [< $table_name:camel RowBuilder >] {

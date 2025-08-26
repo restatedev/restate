@@ -92,11 +92,11 @@ impl NodeLocation {
             .take(effective_scopes)
             .join(SCOPE_DELIMITER);
 
-        if scope == LocationScope::Node {
-            if let Some(node_id) = node_id {
-                result += NODE_DELIMITER;
-                result += &node_id.to_string();
-            }
+        if scope == LocationScope::Node
+            && let Some(node_id) = node_id
+        {
+            result += NODE_DELIMITER;
+            result += &node_id.to_string();
         }
 
         result

@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::keyed_service_status::schema::SysKeyedServiceStatusBuilder;
 use restate_storage_api::service_status_table::VirtualObjectStatus;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
+
+use crate::keyed_service_status::schema::SysKeyedServiceStatusBuilder;
 
 #[inline]
 pub(crate) fn append_virtual_object_status_row(
@@ -25,9 +26,9 @@ pub(crate) fn append_virtual_object_status_row(
     row.service_key(&service_id.key);
 
     // Invocation id
-    if row.is_invocation_id_defined() {
-        if let VirtualObjectStatus::Locked(invocation_id) = status {
-            row.fmt_invocation_id(invocation_id);
-        }
+    if row.is_invocation_id_defined()
+        && let VirtualObjectStatus::Locked(invocation_id) = status
+    {
+        row.fmt_invocation_id(invocation_id);
     }
 }

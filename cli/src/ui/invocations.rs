@@ -211,41 +211,41 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
     }
 
     // Error: [Internal] other client error: error trying to connect: tcp connect error: Connection refused (os error 61)
-    if invocation.status == InvocationState::BackingOff {
-        if let Some(error) = &invocation.last_failure_message {
-            let when = format!(
-                "[{}]",
+    if invocation.status == InvocationState::BackingOff
+        && let Some(error) = &invocation.last_failure_message
+    {
+        let when = format!(
+            "[{}]",
+            invocation
+                .last_attempt_started_at
+                .map(|d| d.to_string())
+                .unwrap_or("UNKNOWN".to_owned())
+        );
+
+        table.add_kv_row(
+            "Error:",
+            format!("{}\n{}", style(when).dim(), style(error).red()),
+        );
+
+        table.add_kv_row(
+            "Caused by:",
+            format!(
+                "{}{}",
                 invocation
-                    .last_attempt_started_at
-                    .map(|d| d.to_string())
-                    .unwrap_or("UNKNOWN".to_owned())
-            );
-
-            table.add_kv_row(
-                "Error:",
-                format!("{}\n{}", style(when).dim(), style(error).red()),
-            );
-
-            table.add_kv_row(
-                "Caused by:",
-                format!(
-                    "{}{}",
-                    invocation
-                        .last_failure_entry_ty
-                        .as_deref()
-                        .unwrap_or("UNKNOWN"),
-                    invocation
-                        .last_failure_entry_name
-                        .as_deref()
-                        .and_then(|s| if s.is_empty() { None } else { Some(s) })
-                        .map(|n| format!(" [{n}]"))
-                        .or_else(|| invocation
-                            .last_failure_entry_index
-                            .map(|idx| format!(" [{idx}]")))
-                        .unwrap_or("".to_string())
-                ),
-            );
-        }
+                    .last_failure_entry_ty
+                    .as_deref()
+                    .unwrap_or("UNKNOWN"),
+                invocation
+                    .last_failure_entry_name
+                    .as_deref()
+                    .and_then(|s| if s.is_empty() { None } else { Some(s) })
+                    .map(|n| format!(" [{n}]"))
+                    .or_else(|| invocation
+                        .last_failure_entry_index
+                        .map(|idx| format!(" [{idx}]")))
+                    .unwrap_or("".to_string())
+            ),
+        );
     }
 
     if let Some(InvocationCompletion::Failure(error)) = invocation.completion.clone() {

@@ -114,14 +114,14 @@ where
         invocation_epoch: InvocationEpoch,
     ) -> Option<(&mpsc::Sender<Box<Effect>>, &IR, InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
-            if let Some(ism) = p.invocation_state_machines.get(invocation_id) {
-                if ism.invocation_epoch == invocation_epoch {
-                    return Some((
-                        &p.output_tx,
-                        &p.storage_reader,
-                        p.invocation_state_machines.remove(invocation_id).unwrap(),
-                    ));
-                }
+            if let Some(ism) = p.invocation_state_machines.get(invocation_id)
+                && ism.invocation_epoch == invocation_epoch
+            {
+                return Some((
+                    &p.output_tx,
+                    &p.storage_reader,
+                    p.invocation_state_machines.remove(invocation_id).unwrap(),
+                ));
             }
             None
         })

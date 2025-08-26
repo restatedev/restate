@@ -102,14 +102,14 @@ impl RocksDbStorage {
 }
 
 impl RocksDbStorage {
-    fn data_cf(&self) -> Arc<BoundColumnFamily> {
+    fn data_cf(&self) -> Arc<BoundColumnFamily<'_>> {
         self.rocksdb
             .inner()
             .cf_handle(DATA_CF)
             .expect("DATA_CF exists")
     }
 
-    fn metadata_cf(&self) -> Arc<BoundColumnFamily> {
+    fn metadata_cf(&self) -> Arc<BoundColumnFamily<'_>> {
         self.rocksdb
             .inner()
             .cf_handle(METADATA_CF)
@@ -148,7 +148,7 @@ impl RocksDbStorage {
         write_opts
     }
 
-    pub fn txn(&mut self) -> Transaction {
+    pub fn txn(&mut self) -> Transaction<'_> {
         Transaction::new(self)
     }
 
@@ -226,7 +226,10 @@ impl RocksDbStorage {
         self.commit_write_batch(write_batch).await
     }
 
-    fn get_bytes_data_cf(&self, key: impl AsRef<[u8]>) -> Result<Option<DBPinnableSlice>, Error> {
+    fn get_bytes_data_cf(
+        &self,
+        key: impl AsRef<[u8]>,
+    ) -> Result<Option<DBPinnableSlice<'_>>, Error> {
         let cf = self.data_cf();
         self.rocksdb
             .inner()
@@ -238,7 +241,7 @@ impl RocksDbStorage {
     fn get_bytes_metadata_cf(
         &self,
         key: impl AsRef<[u8]>,
-    ) -> Result<Option<DBPinnableSlice>, Error> {
+    ) -> Result<Option<DBPinnableSlice<'_>>, Error> {
         let cf = self.metadata_cf();
         self.rocksdb
             .inner()
@@ -706,15 +709,14 @@ impl<'a> Transaction<'a> {
         self.storage.first_index = self.first_index;
         self.storage.last_index = self.last_index;
 
-        if let Some(snapshot_index) = self.snapshot_index {
-            if self
+        if let Some(snapshot_index) = self.snapshot_index
+            && self
                 .storage
                 .requested_snapshot
                 .borrow()
                 .is_some_and(|requested_snapshot| requested_snapshot <= snapshot_index)
-            {
-                *self.storage.requested_snapshot.get_mut() = None;
-            }
+        {
+            *self.storage.requested_snapshot.get_mut() = None;
         }
 
         Ok(())

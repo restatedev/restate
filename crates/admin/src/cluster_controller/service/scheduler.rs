@@ -39,10 +39,6 @@ use restate_types::replication::{NodeSet, ReplicationProperty};
 use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
-#[error("failed reading scheduling plan from metadata store: {0}")]
-pub struct BuildError(#[from] ReadWriteError);
-
-#[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("failed writing to metadata store: {0}")]
     MetadataStoreWrite(#[from] WriteError),
@@ -101,15 +97,14 @@ impl PartitionState {
             }
         }
 
-        if let Some(next) = next {
-            if self
+        if let Some(next) = next
+            && self
                 .next
                 .as_ref()
                 .is_none_or(|my_next| my_next.version() < next.version())
-            {
-                self.next = Some(next);
-                updated = true;
-            }
+        {
+            self.next = Some(next);
+            updated = true;
         }
 
         if self
@@ -130,14 +125,14 @@ impl PartitionState {
         legacy_cluster_state: &LegacyClusterState,
         commands: &mut BTreeMap<PlainNodeId, Vec<ControlProcessor>>,
     ) {
-        if let Some(leader) = &self.target_leader {
-            if !legacy_cluster_state.runs_partition_processor_leader(leader, partition_id) {
-                commands.entry(*leader).or_default().push(ControlProcessor {
-                    partition_id: *partition_id,
-                    command: ProcessorCommand::Leader,
-                    current_version: self.current.version(),
-                });
-            }
+        if let Some(leader) = &self.target_leader
+            && !legacy_cluster_state.runs_partition_processor_leader(leader, partition_id)
+        {
+            commands.entry(*leader).or_default().push(ControlProcessor {
+                partition_id: *partition_id,
+                command: ProcessorCommand::Leader,
+                current_version: self.current.version(),
+            });
         }
     }
 }

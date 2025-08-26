@@ -453,12 +453,12 @@ impl Stream for LogReadStream {
                             // If this record was supposed to be filtered but it was not filtered
                             // by the loglet itself, we skip it ourselves and advance the
                             // read_pointer.
-                            if let Some(data_record) = record.as_record() {
-                                if !data_record.matches_key_query(this.filter) {
-                                    // read_pointer is already advanced, just don't return the
-                                    // record and fast-forward.
-                                    continue;
-                                }
+                            if let Some(data_record) = record.as_record()
+                                && !data_record.matches_key_query(this.filter)
+                            {
+                                // read_pointer is already advanced, just don't return the
+                                // record and fast-forward.
+                                continue;
                             }
 
                             return Poll::Ready(Some(Ok(record)));

@@ -646,10 +646,10 @@ async fn update_cluster_configuration(
 
                         let mut builder = PartitionTableBuilder::from(partition_table.as_ref().clone());
 
-                        if let Some(partition_replication) = &partition_replication {
-                            if !matches!(builder.partition_replication(), PartitionReplication::Limit(current) if current == partition_replication) {
+                        if let Some(partition_replication) = &partition_replication
+                            && !matches!(builder.partition_replication(), PartitionReplication::Limit(current) if current == partition_replication) {
                                 builder.set_partition_replication(partition_replication.clone().into());
-                            }
+
                         }
 
 

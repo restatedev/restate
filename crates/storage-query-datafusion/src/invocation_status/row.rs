@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
 };
@@ -16,6 +15,8 @@ use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{
     ResponseResult, ServiceInvocationSpanContext, ServiceType, Source, TraceId,
 };
+
+use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 
 #[inline]
 pub(crate) fn append_invocation_status_row(
@@ -47,10 +48,10 @@ pub(crate) fn append_invocation_status_row(
         row.fmt_id(invocation_id);
     }
 
-    if row.is_idempotency_key_defined() {
-        if let Some(key) = invocation_status.idempotency_key() {
-            row.idempotency_key(key)
-        }
+    if row.is_idempotency_key_defined()
+        && let Some(key) = invocation_status.idempotency_key()
+    {
+        row.idempotency_key(key)
     }
 
     // Journal metadata

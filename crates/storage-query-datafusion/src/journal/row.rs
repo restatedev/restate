@@ -190,15 +190,15 @@ pub(crate) fn append_journal_row_v2(
             return;
         };
 
-        if row.is_entry_json_defined() {
-            if let Ok(json) = serde_json::to_string(&entry) {
-                row.entry_json(json);
-            }
+        if row.is_entry_json_defined()
+            && let Ok(json) = serde_json::to_string(&entry)
+        {
+            row.entry_json(json);
         }
-        if row.is_name_defined() {
-            if let journal_v2::Entry::Command(cmd) = entry {
-                row.name(cmd.name());
-            }
+        if row.is_name_defined()
+            && let journal_v2::Entry::Command(cmd) = entry
+        {
+            row.name(cmd.name());
         }
     }
 }

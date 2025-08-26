@@ -303,18 +303,18 @@ async fn render_locked_keys(
                         }
                     }
                     InvocationState::Suspended => {
-                        if let Some(suspend_duration) = key_info.invocation_state_duration {
-                            if suspend_duration.num_seconds() > held_threshold_second {
-                                // too long...
-                                notes = Cell::new(format!(
-                                    "Suspended for {}. The lock will not be \
+                        if let Some(suspend_duration) = key_info.invocation_state_duration
+                            && suspend_duration.num_seconds() > held_threshold_second
+                        {
+                            // too long...
+                            notes = Cell::new(format!(
+                                "Suspended for {}. The lock will not be \
                                     released until this invocation is complete",
-                                    Styled(
-                                        Style::Danger,
-                                        duration_to_human_precise(suspend_duration, Tense::Present)
-                                    )
-                                ));
-                            }
+                                Styled(
+                                    Style::Danger,
+                                    duration_to_human_precise(suspend_duration, Tense::Present)
+                                )
+                            ));
                         }
                     }
                     InvocationState::BackingOff => {

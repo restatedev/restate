@@ -28,16 +28,16 @@ where
     S: ReadOnlyJournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
-        if cfg!(debug_assertions) {
-            if let NotificationId::CompletionId(completion_id) = self.entry.id() {
-                assert!(
-                    ctx.storage
-                        .get_command_by_completion_id(self.invocation_id, completion_id)
-                        .await?
-                        .is_some(),
-                    "For given completion id {completion_id}, the corresponding command must be present already in the journal"
-                )
-            }
+        if cfg!(debug_assertions)
+            && let NotificationId::CompletionId(completion_id) = self.entry.id()
+        {
+            assert!(
+                ctx.storage
+                    .get_command_by_completion_id(self.invocation_id, completion_id)
+                    .await?
+                    .is_some(),
+                "For given completion id {completion_id}, the corresponding command must be present already in the journal"
+            )
         }
 
         // If we're suspended, let's figure out if we need to resume

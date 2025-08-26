@@ -313,11 +313,11 @@ impl<T: TransportConnect> SequencerAppender<T> {
 
         for node_id in spread.iter().copied() {
             // do not attempt on nodes that we know they're committed || sealed
-            if let Some(status) = self.checker.get_attribute(&node_id) {
-                if status.committed || status.sealed {
-                    pending_servers.remove(node_id);
-                    continue;
-                }
+            if let Some(status) = self.checker.get_attribute(&node_id)
+                && (status.committed || status.sealed)
+            {
+                pending_servers.remove(node_id);
+                continue;
             }
             store_tasks
                 .build_task()
