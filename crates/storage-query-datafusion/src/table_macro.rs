@@ -170,7 +170,10 @@ impl BuilderCapacity for TimestampMillisecondUTCBuilder {
     }
 
     fn with_capacity(capacity: Self::Size) -> Self {
-        Self(::datafusion::arrow::array::TimestampMillisecondBuilder::with_capacity(capacity))
+        Self(
+            ::datafusion::arrow::array::TimestampMillisecondBuilder::with_capacity(capacity)
+                .with_timezone(TIMEZONE_UTC.clone()),
+        )
     }
 }
 
