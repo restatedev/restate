@@ -72,6 +72,12 @@ pub struct AdminOptions {
 
     #[cfg(any(test, feature = "test-util"))]
     pub disable_cluster_controller: bool,
+
+    /// Enable state storage accounting. Default is `None`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub storage_accounting_update_interval: Option<humantime::Duration>,
 }
 
 impl AdminOptions {
@@ -139,6 +145,7 @@ impl Default for AdminOptions {
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             disable_web_ui: false,
+            storage_accounting_update_interval: None,
         }
     }
 }
