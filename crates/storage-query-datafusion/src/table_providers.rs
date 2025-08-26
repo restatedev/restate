@@ -97,12 +97,18 @@ fn physical_partitions_to_logical(
             .map(|p| LogicalPartition::new(vec![p]))
             .collect();
     }
-    // split the partitions_to_scan into group_size groups
-    let group_size = physical_partitions.len().div_ceil(target_partitions);
-    physical_partitions
-        .chunks(group_size)
-        .map(|chunks| LogicalPartition::new(chunks.to_vec()))
-        .collect()
+
+    let mut logical_partitions = vec![LogicalPartition::new(Default::default()); target_partitions];
+    let mut logical_index = 0;
+
+    for partition in physical_partitions {
+        logical_partitions[logical_index]
+            .physical_partitions
+            .push(partition);
+        logical_index = (logical_index + 1) % target_partitions;
+    }
+
+    logical_partitions
 }
 
 #[async_trait]
@@ -173,16 +179,9 @@ where
             EquivalenceProperties::new_with_orderings(projected_schema.clone(), [ordering])
         };
 
-        let partition_plan = if sort_columns.is_empty() {
-            Partitioning::UnknownPartitioning(logical_partitions.len())
-        } else {
-            debug_assert!(logical_partitions.len() <= target_partitions);
-            Partitioning::Hash(sort_columns, logical_partitions.len())
-        };
-
         let plan = PlanProperties::new(
             eq_properties,
-            partition_plan,
+            Partitioning::UnknownPartitioning(logical_partitions.len()),
             EmissionType::Incremental,
             Boundedness::Bounded,
         )
