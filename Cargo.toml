@@ -124,6 +124,7 @@ datafusion = { version = "49.0.0", default-features = false, features = [
     "encoding_expressions",
     "regex_expressions",
     "unicode_expressions",
+    "recursive_protection",
 ] }
 datafusion-expr = { version = "49.0.0" }
 derive_builder = "0.20.0"
