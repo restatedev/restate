@@ -747,6 +747,8 @@ where
                 "Received a new entry. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
+            self.status_store
+                .on_progress_made(&partition, &invocation_id);
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
                     .send(Box::new(Effect {
@@ -797,6 +799,8 @@ where
                 "Received a new notification. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
+            self.status_store
+                .on_progress_made(&partition, &invocation_id);
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
                     .send(Box::new(Effect {
@@ -849,6 +853,8 @@ where
                 "Received a new command. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
+            self.status_store
+                .on_progress_made(&partition, &invocation_id);
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
                     .send(Box::new(Effect {
@@ -2158,5 +2164,80 @@ mod tests {
         assert_eq!(partition, MOCK_PARTITION);
         assert_eq!(id, invocation_id);
         assert_eq!(target, invocation_target);
+    }
+
+    #[test(restate_core::test)]
+    async fn status_store_clears_last_failure_on_new_command() {
+        let invocation_id = InvocationId::mock_random();
+
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock((), None);
+        let _effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        // Start an invocation with epoch 0
+        service_inner.handle_invoke(
+            &InvokerOptions::default(),
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+            InvocationTarget::mock_virtual_object(),
+            InvokeInputJournal::NoCachedJournal,
+        );
+
+        // Simulate a transient failure to populate last_retry_attempt_failure
+        service_inner
+            .handle_invocation_task_failed(
+                &InvokerOptions::default(),
+                MOCK_PARTITION,
+                invocation_id,
+                0,
+                InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
+            )
+            .await;
+
+        // After failure, the status store should record the last failure
+        let report = service_inner
+            .status_store
+            .resolve_invocation(MOCK_PARTITION, &invocation_id)
+            .expect("status report exists after failure");
+        assert!(
+            report.last_retry_attempt_failure().is_some(),
+            "expected last_retry_attempt_failure to be set"
+        );
+
+        // Trigger the retry
+        service_inner.handle_retry_timer_fired(
+            &InvokerOptions::default(),
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+        );
+
+        // Now a new command proposal should clear the last failure (progress made)
+        service_inner
+            .handle_new_command(
+                MOCK_PARTITION,
+                invocation_id,
+                0,
+                1,
+                ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(
+                    OutputCommand {
+                        result: OutputResult::Success(Bytes::default()),
+                        name: Default::default(),
+                    },
+                )))
+                .try_as_command()
+                .unwrap(),
+                false,
+            )
+            .await;
+
+        let report_after = service_inner
+            .status_store
+            .resolve_invocation(MOCK_PARTITION, &invocation_id)
+            .expect("status report exists after new command");
+        assert!(
+            report_after.last_retry_attempt_failure().is_none(),
+            "expected last_retry_attempt_failure to be cleared after new command"
+        );
     }
 }

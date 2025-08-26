@@ -58,6 +58,19 @@ impl InvocationStatusStore {
         report.in_flight = true;
     }
 
+    pub(super) fn on_progress_made(
+        &mut self,
+        partition: &PartitionLeaderEpoch,
+        invocation_id: &InvocationId,
+    ) {
+        if let Some(inner) = self.0.get_mut(partition)
+            && let Some(report) = inner.get_mut(invocation_id)
+        {
+            // When we do progress, we reset the last retry attempt failure as that's now invalid
+            report.last_retry_attempt_failure = None;
+        }
+    }
+
     pub(super) fn on_deployment_chosen(
         &mut self,
         partition: &PartitionLeaderEpoch,
