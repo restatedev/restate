@@ -16,7 +16,6 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use futures::{Stream, StreamExt};
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
@@ -27,41 +26,25 @@ use crate::table_util::BatchSender;
 
 pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     type Builder: crate::table_util::Builder + Send;
-    type Item: Send;
+    type Item<'a>: Send;
 
-    fn scan_partition_store(
-        partition_store: &PartitionStore,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>;
-
-    fn append_row(row_builder: &mut Self::Builder, value: Self::Item);
-}
-
-// ScanLocalPartitionInPlace can be used for large or performance sensitive tables to build batches on io threads (instead of sending rows cross-thread)
-pub trait ScanLocalPartitionInPlace: Send + Sync + Debug + 'static {
-    type Builder: crate::table_util::Builder + Send;
-    type Item: Send;
-
-    fn for_each_row<F: FnMut(Self::Item) -> ControlFlow<()> + Send + Sync + 'static>(
+    fn for_each_row<F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>;
 
-    fn append_row(row_builder: &mut Self::Builder, value: Self::Item);
+    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>);
 }
-
-pub struct ScanStream;
-pub struct ScanInPlace;
 
 #[derive(Clone, derive_more::Debug)]
-pub struct LocalPartitionsScanner<S, M = ScanStream> {
+pub struct LocalPartitionsScanner<S> {
     #[debug(skip)]
     partition_store_manager: PartitionStoreManager,
-    _marker: std::marker::PhantomData<(S, M)>,
+    _marker: std::marker::PhantomData<S>,
 }
 
-impl<S> LocalPartitionsScanner<S, ScanStream>
+impl<S> LocalPartitionsScanner<S>
 where
     S: ScanLocalPartition,
 {
@@ -73,81 +56,10 @@ where
     }
 }
 
-impl<S> LocalPartitionsScanner<S, ScanInPlace>
+impl<S, RB> LocalPartitionsScanner<S>
 where
-    S: ScanLocalPartitionInPlace,
-{
-    pub fn new_in_place(partition_store_manager: PartitionStoreManager, _scanner: S) -> Self {
-        Self {
-            partition_store_manager,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<S, RB, T> LocalPartitionsScanner<S, ScanStream>
-where
-    S: ScanLocalPartition<Builder = RB, Item = T>,
+    S: ScanLocalPartition<Builder = RB>,
     RB: crate::table_util::Builder + Send + Sync + 'static,
-    T: Send,
-{
-    fn scan_partition(
-        &self,
-        partition_id: PartitionId,
-        range: RangeInclusive<PartitionKey>,
-        projection: SchemaRef,
-        batch_size: usize,
-        limit: Option<usize>,
-    ) -> anyhow::Result<SendableRecordBatchStream> {
-        let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
-        let tx = stream_builder.tx();
-        let partition_store_manager = self.partition_store_manager.clone();
-        let background_task = async move {
-            let partition_store = partition_store_manager.get_partition_store(partition_id).await.ok_or_else(|| {
-                // make sure that the consumer of this stream to learn about the fact that this node does not have
-                // that partition anymore, so that it can decide how to react to this.
-                // for example, they can retry or fail the query with a useful message.
-                let err = anyhow!("partition {} doesn't exist on this node, this is benign if the partition is being transferred out of/into this node.", partition_id);
-                DataFusionError::External(err.into())
-            })?;
-
-            let rows = S::scan_partition_store(&partition_store, range)
-                .map_err(|e| DataFusionError::External(e.into()))?;
-            let rows = match limit {
-                Some(limit) => rows.take(limit).left_stream(),
-                None => rows.right_stream(),
-            };
-            let mut builder = S::Builder::new(projection.clone());
-
-            tokio::pin!(rows);
-            while let Some(Ok(row)) = rows.next().await {
-                S::append_row(&mut builder, row);
-                if builder.num_rows() >= batch_size {
-                    let batch = builder.finish_and_new();
-                    if tx.send(batch).await.is_err() {
-                        // not sure what to do here?
-                        // the other side has hung up on us.
-                        // we probably don't want to panic, is it will cause the entire process to exit
-                        return Ok(());
-                    }
-                }
-            }
-            if !builder.empty() {
-                let result = builder.finish();
-                let _ = tx.send(result).await;
-            }
-            Ok(())
-        };
-        stream_builder.spawn(background_task);
-        Ok(stream_builder.build())
-    }
-}
-
-impl<S, RB, T> LocalPartitionsScanner<S, ScanInPlace>
-where
-    S: ScanLocalPartitionInPlace<Builder = RB, Item = T>,
-    RB: crate::table_util::Builder + Send + Sync + 'static,
-    T: Send,
 {
     fn scan_partition(
         &self,
@@ -207,29 +119,10 @@ where
     }
 }
 
-impl<S, RB, T> ScanPartition for LocalPartitionsScanner<S, ScanStream>
+impl<S, RB> ScanPartition for LocalPartitionsScanner<S>
 where
-    S: ScanLocalPartition<Builder = RB, Item = T>,
+    S: ScanLocalPartition<Builder = RB>,
     RB: crate::table_util::Builder + Send + Sync + 'static,
-    T: Send,
-{
-    fn scan_partition(
-        &self,
-        partition_id: PartitionId,
-        range: RangeInclusive<PartitionKey>,
-        projection: SchemaRef,
-        batch_size: usize,
-        limit: Option<usize>,
-    ) -> anyhow::Result<SendableRecordBatchStream> {
-        self.scan_partition(partition_id, range, projection, batch_size, limit)
-    }
-}
-
-impl<S, RB, T> ScanPartition for LocalPartitionsScanner<S, ScanInPlace>
-where
-    S: ScanLocalPartitionInPlace<Builder = RB, Item = T>,
-    RB: crate::table_util::Builder + Send + Sync + 'static,
-    T: Send,
 {
     fn scan_partition(
         &self,

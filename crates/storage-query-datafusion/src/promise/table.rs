@@ -12,8 +12,6 @@ use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
-use futures::Stream;
-
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::promise_table::{OwnedPromiseRow, ScanPromiseTable};
@@ -56,17 +54,19 @@ struct PromiseScanner;
 
 impl ScanLocalPartition for PromiseScanner {
     type Builder = SysPromiseBuilder;
-    type Item = OwnedPromiseRow;
+    type Item<'a> = OwnedPromiseRow;
 
-    fn scan_partition_store(
+    fn for_each_row<
+        F: for<'a> FnMut(Self::Item<'a>) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+    >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
-    {
-        partition_store.scan_promises(range)
+        f: F,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
+        partition_store.for_each_promise(range, f)
     }
 
-    fn append_row(row_builder: &mut Self::Builder, value: Self::Item) {
+    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>) {
         append_promise_row(row_builder, value);
     }
 }

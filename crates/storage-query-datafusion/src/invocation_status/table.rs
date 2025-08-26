@@ -23,7 +23,7 @@ use crate::invocation_status::schema::{
     SysInvocationStatusBuilder, sys_invocation_status_sort_order,
 };
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartitionInPlace};
+use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
@@ -36,7 +36,7 @@ pub(crate) fn register_self(
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
     let local_scanner = local_partition_store_manager.map(|partition_store_manager| {
-        Arc::new(LocalPartitionsScanner::new_in_place(
+        Arc::new(LocalPartitionsScanner::new(
             partition_store_manager,
             StatusScanner,
         )) as Arc<dyn ScanPartition>
@@ -56,11 +56,11 @@ pub(crate) fn register_self(
 #[derive(Debug, Clone)]
 struct StatusScanner;
 
-impl ScanLocalPartitionInPlace for StatusScanner {
+impl ScanLocalPartition for StatusScanner {
     type Builder = SysInvocationStatusBuilder;
-    type Item = (InvocationId, InvocationStatus);
+    type Item<'a> = (InvocationId, InvocationStatus);
 
-    fn for_each_row<F: FnMut(Self::Item) -> ControlFlow<()> + Send + Sync + 'static>(
+    fn for_each_row<F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
         f: F,
@@ -68,7 +68,10 @@ impl ScanLocalPartitionInPlace for StatusScanner {
         partition_store.for_each_invocation_status(range, f)
     }
 
-    fn append_row(row_builder: &mut Self::Builder, (invocation_id, invocation_status): Self::Item) {
+    fn append_row<'a>(
+        row_builder: &mut Self::Builder,
+        (invocation_id, invocation_status): Self::Item<'a>,
+    ) {
         append_invocation_status_row(row_builder, invocation_id, invocation_status)
     }
 }

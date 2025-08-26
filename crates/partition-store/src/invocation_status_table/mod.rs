@@ -26,7 +26,7 @@ use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, Wit
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::scan::TableScan;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
 // TODO remove this once we remove the old InvocationStatus
 define_table_key!(
@@ -167,13 +167,6 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     ) -> Result<InvocationStatus> {
         self.assert_partition_key(invocation_id)?;
         get_invocation_status(self, invocation_id)
-    }
-}
-
-fn break_on_err<T, E>(r: std::result::Result<T, E>) -> ControlFlow<std::result::Result<(), E>, T> {
-    match r {
-        Ok(val) => ControlFlow::Continue(val),
-        Err(err) => ControlFlow::Break(Err(err)),
     }
 }
 
