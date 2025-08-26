@@ -359,6 +359,9 @@ impl MetadataServerSvc for MetadataServerHandler {
             .await
             .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
+        // todo(azmy): MetadataCommandError has useful information like (known leader)
+        // which can be attached to the status of this grpc call.
+        // also return proper error codes.
         node_removed_rx
             .await
             .map_err(|_| Status::unavailable("metadata server is shut down"))?
