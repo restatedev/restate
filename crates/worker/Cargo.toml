@@ -48,6 +48,7 @@ async-channel = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
+datafusion = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
 enumset = { workspace = true }
