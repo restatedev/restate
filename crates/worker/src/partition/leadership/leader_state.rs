@@ -39,7 +39,7 @@ use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyValue;
 
-use crate::metric_definitions::PARTITION_HANDLE_LEADER_ACTIONS;
+use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
@@ -358,9 +358,15 @@ impl LeaderState {
     ) -> Result<(), Error> {
         for action in actions {
             trace!(?action, "Apply action");
-            counter!(PARTITION_HANDLE_LEADER_ACTIONS, "action" =>
-                action.name())
+            counter!(PARTITION_HANDLE_LEADER_ACTIONS, "action" => action.name()).increment(1);
+
+            counter!(
+                USAGE_LEADER_ACTION_COUNT,
+                "partition" => self.partition_id.to_string(),
+                "action" => action.name(), // TODO(pb): necessary?
+            )
             .increment(1);
+
             self.handle_action(action, invoker_tx).await?;
         }
 

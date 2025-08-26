@@ -10,7 +10,7 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{Unit, describe_gauge, describe_histogram};
+use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub const PARTITION_LABEL: &str = "partition";
 
@@ -18,6 +18,8 @@ pub const PARTITION_BLOCKED_FLARE: &str = "restate.partition.blocked_flare";
 
 pub const PARTITION_APPLY_COMMAND: &str = "restate.partition.apply_command_duration.seconds";
 pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_leader_action.total";
+
+pub const USAGE_LEADER_ACTION_COUNT: &str = "restate.usage.leader_action_count.total";
 
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
@@ -45,6 +47,13 @@ pub(crate) fn describe_metrics() {
         Unit::Count,
         "Number of actions the leader has performed"
     );
+
+    describe_counter!(
+        USAGE_LEADER_ACTION_COUNT,
+        Unit::Count,
+        "Count of invocation actions processed by partition leaders"
+    );
+
     describe_histogram!(
         PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
         Unit::Seconds,

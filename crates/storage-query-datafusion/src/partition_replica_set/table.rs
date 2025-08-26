@@ -101,14 +101,13 @@ async fn for_each_partition(
         append_replica_set_row(&mut builder, membership, &cluster_state, partition);
 
         if builder.num_rows() >= batch_size {
-            let batch = builder.finish();
+            let batch = builder.finish_and_new();
             if tx.send(batch).await.is_err() {
                 // not sure what to do here?
                 // the other side has hung up on us.
                 // we probably don't want to panic, is it will cause the entire process to exit
                 return;
             }
-            builder = PartitionReplicaSetBuilder::new(schema.clone());
         }
     }
 

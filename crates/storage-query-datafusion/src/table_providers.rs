@@ -185,6 +185,10 @@ where
             partition_plan,
             EmissionType::Incremental,
             Boundedness::Bounded,
+        )
+        .with_scheduling_type(
+            // all our scan functions use RecordBatchReceiverStream to build the result, which is cooperative
+            datafusion::physical_plan::execution_plan::SchedulingType::Cooperative,
         );
 
         Ok(Arc::new(PartitionedExecutionPlan {
