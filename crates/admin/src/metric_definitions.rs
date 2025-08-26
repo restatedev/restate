@@ -12,7 +12,7 @@ use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub(crate) const USAGE_STATE_STORAGE_BYTES: &str = "restate.usage.state.storage_bytes";
 pub(crate) const USAGE_STATE_STORAGE_BYTE_SECONDS: &str =
-    "restate.usage.state.storage_byte_seconds";
+    "restate.usage.state.storage_byte_seconds.total";
 pub(crate) const USAGE_STATE_SIZE_ACCOUNTING_QUERY_DURATION_SECONDS: &str =
     "restate.usage.state_size_accounting.query_duration_seconds";
 
