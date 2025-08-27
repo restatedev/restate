@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod cancel;
+mod event;
 mod migrate_journal_table;
 mod notify_get_invocation_output_response;
 mod notify_invocation_response;
@@ -22,6 +23,7 @@ mod suspend;
 mod version_barrier;
 
 pub(super) use cancel::OnCancelCommand;
+pub(super) use event::OnInvokerEventCommand;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
 pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutputResponse;
 pub(super) use notify_invocation_response::OnNotifyInvocationResponse;

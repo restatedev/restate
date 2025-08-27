@@ -10,6 +10,7 @@
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::JournalTable;
 use restate_types::identifiers::InvocationId;
@@ -26,7 +27,7 @@ pub struct OnPurgeJournalCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnPurgeJournalCommand
 where
-    S: JournalTable + InvocationStatusTable + journal_table::JournalTable,
+    S: JournalTable + InvocationStatusTable + journal_table::JournalTable + JournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPurgeJournalCommand {
@@ -47,6 +48,7 @@ where
                     ctx.do_drop_journal(
                         invocation_id,
                         completed.journal_metadata.length,
+                        completed.journal_metadata.events,
                         should_remove_journal_table_v2,
                     )
                     .await?;
