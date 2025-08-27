@@ -40,9 +40,9 @@ use crate::metric_definitions::{
     STATUS_COMPLETED, STATUS_FAILED,
 };
 use crate::{
-    MetadataCommand, MetadataCommandSender, MetadataServerSummary, MetadataStoreRequest,
-    ProvisionError, ProvisionRequest, ProvisionSender, RequestError, RequestSender, StatusWatch,
-    nodes_configuration_for_metadata_cluster_seed,
+    AddNodeError, MetadataCommand, MetadataCommandError, MetadataCommandSender,
+    MetadataServerSummary, MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender,
+    RequestError, RequestSender, StatusWatch, nodes_configuration_for_metadata_cluster_seed,
 };
 
 /// Grpc svc handler for the metadata server.
@@ -336,12 +336,16 @@ impl MetadataServerSvc for MetadataServerHandler {
             .await
             .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
-        node_added_rx
+        match node_added_rx
             .await
             .map_err(|_| Status::unavailable("metadata server is shut down"))?
-            .map_err(|err| Status::internal(err.to_string()))?;
-
-        Ok(Response::new(()))
+        {
+            Ok(()) => Ok(Response::new(())),
+            Err(MetadataCommandError::AddNode(err @ AddNodeError::StillMember)) => {
+                Err(Status::already_exists(err.to_string()))
+            }
+            Err(err) => Err(Status::internal(err.to_string())),
+        }
     }
 
     async fn remove_node(
