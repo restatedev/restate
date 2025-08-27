@@ -193,6 +193,12 @@ where
             self.local_partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
+        crate::journal_events::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
         crate::inbox::register_self(
             ctx,
             self.partition_selector.clone(),
