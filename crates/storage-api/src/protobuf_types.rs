@@ -155,6 +155,7 @@ pub mod v1 {
         use super::invocation_status_v2::JournalTrimPoint;
         use super::journal_entry::completion_result::{Empty, Failure, Success};
         use super::journal_entry::{CompletionResult, Kind, completion_result};
+        use super::lazy::InvocationStatusV2Lazy;
         use super::outbox_message::{
             OutboxCancel, OutboxKill, OutboxServiceInvocation, OutboxServiceInvocationResponse,
         };
@@ -163,12 +164,12 @@ pub mod v1 {
             BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
             Entry, EntryResult, EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata,
             InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
-            InvocationStatusV2, InvocationStatusV2Lazy, InvocationTarget, InvocationV2Lite,
-            JournalCompletionTarget, JournalEntry, JournalEntryIndex, JournalMeta, KvPair,
-            OutboxMessage, PartitionDurability, Promise, ResponseResult, RestateVersion,
-            SequenceNumber, ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source,
-            SpanContext, SpanContextLite, SpanRelation, StateMutation, SubmitNotificationSink,
-            Timer, VirtualObjectStatus, enriched_entry_header, entry, entry_result, inbox_entry,
+            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
+            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage,
+            PartitionDurability, Promise, ResponseResult, RestateVersion, SequenceNumber,
+            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
+            SpanContextLite, SpanRelation, StateMutation, SubmitNotificationSink, Timer,
+            VirtualObjectStatus, enriched_entry_header, entry, entry_result, inbox_entry,
             invocation_resolution_result, invocation_status, invocation_status_v2,
             invocation_target, journal_entry, outbox_message, promise, response_result, source,
             span_relation, submit_notification_sink, timer, virtual_object_status,
@@ -635,7 +636,7 @@ pub mod v1 {
             }
         }
 
-        impl InvocationStatusV2Lazy {
+        impl<'a> InvocationStatusV2Lazy<'a> {
             pub fn accessor(
                 &self,
             ) -> Result<
@@ -643,7 +644,7 @@ pub mod v1 {
                 ConversionError,
             > {
                 use crate::invocation_status_table::InvocationStatusAccessor;
-                match self.status() {
+                match self.inner.status() {
                     invocation_status_v2::Status::Scheduled => {
                         Ok(InvocationStatusAccessor::Scheduled(self))
                     }
@@ -661,25 +662,27 @@ pub mod v1 {
                     }
                     _ => Err(ConversionError::unexpected_enum_variant(
                         "status",
-                        self.status,
+                        self.inner.status,
                     )),
                 }
             }
         }
 
-        impl crate::invocation_status_table::PreFlightInvocationMetadataAccessor
-            for InvocationStatusV2Lazy
+        impl<'a> crate::invocation_status_table::PreFlightInvocationMetadataAccessor
+            for InvocationStatusV2Lazy<'a>
         {
         }
 
-        impl crate::invocation_status_table::InFlightInvocationMetadataAccessor for InvocationStatusV2Lazy {
+        impl<'a> crate::invocation_status_table::InFlightInvocationMetadataAccessor
+            for InvocationStatusV2Lazy<'a>
+        {
             fn deployment_id(
                 &self,
             ) -> std::result::Result<Option<DeploymentId>, restate_types::errors::ConversionError>
             {
                 use restate_types::errors::ConversionError;
 
-                match self.deployment_id.as_deref() {
+                match self.deployment_id {
                     Some(deployment_id) => str::from_utf8(deployment_id)
                         .map_err(|_| ConversionError::invalid_data("deployment_id"))?
                         .parse()
@@ -695,7 +698,7 @@ pub mod v1 {
                 std::option::Option<ServiceProtocolVersion>,
                 restate_types::errors::ConversionError,
             > {
-                match self.service_protocol_version {
+                match self.inner.service_protocol_version {
                     Some(service_protocol_version) => {
                         ServiceProtocolVersion::try_from(service_protocol_version)
                             .map_err(|_| {
@@ -710,13 +713,13 @@ pub mod v1 {
             }
         }
 
-        impl crate::invocation_status_table::CompletedInvocationMetadataAccessor
-            for InvocationStatusV2Lazy
+        impl<'a> crate::invocation_status_table::CompletedInvocationMetadataAccessor
+            for InvocationStatusV2Lazy<'a>
         {
-            fn response_result<'a>(
-                &'a self,
+            fn response_result<'b>(
+                &'b self,
             ) -> Result<
-                crate::invocation_status_table::ResponseResultRef<'a>,
+                crate::invocation_status_table::ResponseResultRef<'b>,
                 restate_types::errors::ConversionError,
             > {
                 use restate_types::errors::ConversionError;
@@ -724,8 +727,7 @@ pub mod v1 {
                 let result = self.result_lazy.as_ref();
                 let result = expect_or_fail!(result)?;
 
-                // prost attempts to do zero copy on output Bytes when the input is Bytes
-                let result = ResponseResult::decode(result.clone())
+                let result = ResponseResult::decode(*result)
                     .map_err(|_| ConversionError::invalid_data("result"))?;
 
                 let response_result = result.response_result.as_ref();
@@ -745,7 +747,7 @@ pub mod v1 {
             }
         }
 
-        impl crate::invocation_status_table::InvocationMetadataAccessor for InvocationStatusV2Lazy {
+        impl<'a> crate::invocation_status_table::InvocationMetadataAccessor for InvocationStatusV2Lazy<'a> {
             fn invocation_target(
                 &self,
             ) -> Result<
@@ -757,8 +759,7 @@ pub mod v1 {
                 let invocation_target = self.invocation_target_lazy.as_ref();
                 let invocation_target = expect_or_fail!(invocation_target)?;
 
-                // prost attempts to do zero copy on output Bytes when the input is Bytes
-                InvocationTarget::decode(invocation_target.clone())
+                InvocationTarget::decode(*invocation_target)
                     .map_err(|_| ConversionError::invalid_data("invocation_target"))?
                     .try_into()
             }
@@ -770,7 +771,6 @@ pub mod v1 {
                 restate_types::errors::ConversionError,
             > {
                 self.idempotency_key
-                    .as_deref()
                     .map(str::from_utf8)
                     .transpose()
                     .map_err(|_| {
@@ -779,27 +779,35 @@ pub mod v1 {
             }
 
             fn creation_time(&self) -> MillisSinceEpoch {
-                MillisSinceEpoch::new(self.creation_time)
+                MillisSinceEpoch::new(self.inner.creation_time)
             }
 
             fn modification_time(&self) -> MillisSinceEpoch {
-                MillisSinceEpoch::new(self.modification_time)
+                MillisSinceEpoch::new(self.inner.modification_time)
             }
 
             fn inboxed_transition_time(&self) -> Option<MillisSinceEpoch> {
-                self.inboxed_transition_time.map(MillisSinceEpoch::new)
+                self.inner
+                    .inboxed_transition_time
+                    .map(MillisSinceEpoch::new)
             }
 
             fn scheduled_transition_time(&self) -> Option<MillisSinceEpoch> {
-                self.scheduled_transition_time.map(MillisSinceEpoch::new)
+                self.inner
+                    .scheduled_transition_time
+                    .map(MillisSinceEpoch::new)
             }
 
             fn running_transition_time(&self) -> Option<MillisSinceEpoch> {
-                self.running_transition_time.map(MillisSinceEpoch::new)
+                self.inner
+                    .running_transition_time
+                    .map(MillisSinceEpoch::new)
             }
 
             fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
-                self.completed_transition_time.map(MillisSinceEpoch::new)
+                self.inner
+                    .completed_transition_time
+                    .map(MillisSinceEpoch::new)
             }
 
             fn created_using_restate_version(
@@ -808,7 +816,7 @@ pub mod v1 {
                 if self.created_using_restate_version.is_empty() {
                     Ok(restate_types::RestateVersion::UNKNOWN_STR)
                 } else {
-                    str::from_utf8(self.created_using_restate_version.as_ref()).map_err(|_| {
+                    str::from_utf8(self.created_using_restate_version).map_err(|_| {
                         restate_types::errors::ConversionError::invalid_data(
                             "created_using_restate_version",
                         )
@@ -824,31 +832,30 @@ pub mod v1 {
             > {
                 use restate_types::errors::ConversionError;
 
-                let source = self.source_lazy.as_ref();
+                let source = self.source_lazy;
                 let source = expect_or_fail!(source)?;
 
-                let source = Source::decode(source.as_ref())
-                    .map_err(|_| ConversionError::invalid_data("source"))?;
+                let source =
+                    Source::decode(source).map_err(|_| ConversionError::invalid_data("source"))?;
 
                 crate::invocation_status_table::SourceRef::try_from(&source)
             }
 
             fn execution_time(&self) -> Option<MillisSinceEpoch> {
-                self.execution_time.map(MillisSinceEpoch::new)
+                self.inner.execution_time.map(MillisSinceEpoch::new)
             }
 
             fn completion_retention_duration(
                 &self,
             ) -> Result<std::time::Duration, restate_types::errors::ConversionError> {
-                match &self.completion_retention_duration_lazy {
-                    Some(completion_retention_duration) => super::Duration::decode(
-                        completion_retention_duration.as_ref(),
-                    )
-                    .map_err(|_| {
-                        restate_types::errors::ConversionError::invalid_data(
-                            "completion_retention_duration",
-                        )
-                    })?,
+                match self.completion_retention_duration_lazy {
+                    Some(completion_retention_duration) => {
+                        super::Duration::decode(completion_retention_duration).map_err(|_| {
+                            restate_types::errors::ConversionError::invalid_data(
+                                "completion_retention_duration",
+                            )
+                        })?
+                    }
                     None => super::Duration::default(),
                 }
                 .try_into()
@@ -862,15 +869,14 @@ pub mod v1 {
             fn journal_retention_duration(
                 &self,
             ) -> Result<std::time::Duration, restate_types::errors::ConversionError> {
-                match &self.journal_retention_duration_lazy {
-                    Some(journal_retention_duration) => super::Duration::decode(
-                        journal_retention_duration.as_ref(),
-                    )
-                    .map_err(|_| {
-                        restate_types::errors::ConversionError::invalid_data(
-                            "journal_retention_duration",
-                        )
-                    })?,
+                match self.journal_retention_duration_lazy {
+                    Some(journal_retention_duration) => {
+                        super::Duration::decode(journal_retention_duration).map_err(|_| {
+                            restate_types::errors::ConversionError::invalid_data(
+                                "journal_retention_duration",
+                            )
+                        })?
+                    }
                     None => super::Duration::default(),
                 }
                 .try_into()
@@ -882,7 +888,7 @@ pub mod v1 {
             }
         }
 
-        impl crate::invocation_status_table::JournalMetadataAccessor for InvocationStatusV2Lazy {
+        impl<'a> crate::invocation_status_table::JournalMetadataAccessor for InvocationStatusV2Lazy<'a> {
             fn trace_id(
                 &self,
             ) -> Result<opentelemetry::trace::TraceId, restate_types::errors::ConversionError>
@@ -891,8 +897,7 @@ pub mod v1 {
                 let span_context = self.span_context_lazy.as_ref();
                 let span_context = expect_or_fail!(span_context)?;
 
-                // prost attempts to do zero copy on output Bytes when the input is Bytes
-                let span_context = SpanContextLite::decode(span_context.clone())
+                let span_context = SpanContextLite::decode(*span_context)
                     .map_err(|_| ConversionError::invalid_data("span_context"))?;
 
                 let trace_id = try_bytes_into_trace_id(span_context.trace_id.as_ref())
@@ -901,11 +906,11 @@ pub mod v1 {
             }
 
             fn length(&self) -> u32 {
-                self.journal_length
+                self.inner.journal_length
             }
 
             fn commands(&self) -> u32 {
-                self.commands
+                self.inner.commands
             }
         }
 
@@ -4528,6 +4533,147 @@ pub mod v1 {
                 restate_types::RestateVersion::unknown()
             } else {
                 restate_types::RestateVersion::new(restate_version)
+            }
+        }
+    }
+
+    pub mod lazy {
+        fn merge_bytes_zerocopy<'a>(
+            wire_type: prost::encoding::WireType,
+            value: &mut &'a [u8],
+            buf: &mut &'a [u8],
+            _ctx: prost::encoding::DecodeContext,
+        ) -> Result<(), prost::DecodeError> {
+            use prost::encoding::*;
+            check_wire_type(WireType::LengthDelimited, wire_type)?;
+            let len = decode_varint(buf)?;
+            if len > buf.len() as u64 {
+                return Err(prost::DecodeError::new("buffer underflow"));
+            }
+            let len = len as usize;
+
+            (*value, *buf) = buf.split_at(len);
+            Ok(())
+        }
+
+        #[derive(Debug, Default)]
+        pub struct InvocationStatusV2Lazy<'a> {
+            pub inner: super::InvocationStatusV2Lazy,
+            // 2
+            pub invocation_target_lazy: Option<&'a [u8]>,
+            // 3
+            pub source_lazy: Option<&'a [u8]>,
+            // 4
+            pub span_context_lazy: Option<&'a [u8]>,
+            // 11
+            pub completion_retention_duration_lazy: Option<&'a [u8]>,
+            // 12
+            pub idempotency_key: Option<&'a [u8]>,
+            // 15
+            pub deployment_id: Option<&'a [u8]>,
+            // 18
+            pub result_lazy: Option<&'a [u8]>,
+            // 29
+            pub journal_retention_duration_lazy: Option<&'a [u8]>,
+            // 30
+            pub created_using_restate_version: &'a [u8],
+        }
+
+        impl<'a> InvocationStatusV2Lazy<'a> {
+            pub fn decode(
+                mut buf: &'a [u8],
+            ) -> Result<InvocationStatusV2Lazy<'a>, prost::DecodeError> {
+                let mut message = InvocationStatusV2Lazy::default();
+                let ctx = prost::encoding::DecodeContext::default();
+                while !buf.is_empty() {
+                    let (tag, wire_type) = prost::encoding::decode_key(&mut buf)?;
+                    message.merge_field(tag, wire_type, &mut buf, ctx.clone())?;
+                }
+                Ok(message)
+            }
+
+            fn merge_field<'b>(
+                &mut self,
+                tag: u32,
+                wire_type: ::prost::encoding::wire_type::WireType,
+                buf: &'b mut &'a [u8],
+                ctx: ::prost::encoding::DecodeContext,
+            ) -> ::core::result::Result<(), ::prost::DecodeError> {
+                const STRUCT_NAME: &str = "InvocationStatusV2Lazy";
+                match tag {
+                    2u32 => {
+                        let value = &mut self.invocation_target_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "invocation_target_lazy");
+                                error
+                            })
+                    }
+                    3u32 => {
+                        let value = &mut self.source_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "source_lazy");
+                                error
+                            })
+                    }
+                    4u32 => {
+                        let value = &mut self.span_context_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "span_context_lazy");
+                                error
+                            })
+                    }
+                    11u32 => {
+                        let value = &mut self.completion_retention_duration_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "completion_retention_duration_lazy");
+                                error
+                            })
+                    }
+                    12u32 => {
+                        let value = &mut self.idempotency_key;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "idempotency_key");
+                                error
+                            })
+                    }
+                    15u32 => {
+                        let value = &mut self.deployment_id;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "deployment_id");
+                                error
+                            })
+                    }
+                    18u32 => {
+                        let value = &mut self.result_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "result_lazy");
+                                error
+                            })
+                    }
+                    29u32 => {
+                        let value = &mut self.journal_retention_duration_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "journal_retention_duration_lazy");
+                                error
+                            })
+                    }
+                    30u32 => {
+                        let value = &mut self.created_using_restate_version;
+                        merge_bytes_zerocopy(wire_type, value, buf, ctx).map_err(|mut error| {
+                            error.push(STRUCT_NAME, "created_using_restate_version");
+                            error
+                        })
+                    }
+                    _ => prost::Message::merge_field(&mut self.inner, tag, wire_type, buf, ctx),
+                }
             }
         }
     }

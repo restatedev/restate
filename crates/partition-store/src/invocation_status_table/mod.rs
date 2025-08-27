@@ -11,7 +11,7 @@
 use std::ops::{ControlFlow, RangeInclusive};
 
 use futures::Stream;
-use restate_storage_api::protobuf_types::v1::InvocationStatusV2Lazy;
+use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
@@ -172,15 +172,15 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
 }
 
 pub type ScanInvocationStatusAccessor<'a> = InvocationStatusAccessor<
-    &'a InvocationStatusV2Lazy,
-    &'a InvocationStatusV2Lazy,
-    &'a InvocationStatusV2Lazy,
+    &'a InvocationStatusV2Lazy<'a>,
+    &'a InvocationStatusV2Lazy<'a>,
+    &'a InvocationStatusV2Lazy<'a>,
 >;
 
 impl ScanInvocationStatusTable for PartitionStore {
-    type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
-    type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
-    type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
+    type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy<'a>;
+    type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy<'a>;
+    type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy<'a>;
 
     fn scan_invoked_invocations(
         &self,
@@ -254,19 +254,26 @@ impl ScanInvocationStatusTable for PartitionStore {
                         let state_key =
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
 
-                        let inv_status_v2 = break_on_err(
-                            restate_types::storage::StorageCodec::decode::<
-                                restate_storage_api::protobuf_types::ProtobufStorageWrapper<
-                                    restate_storage_api::protobuf_types::v1::InvocationStatusV2Lazy,
-                                >,
-                                _,
-                            >(&mut value)
-                            .map_err(|err| StorageError::Conversion(err.into())),
-                        )?;
+                        if value.len() < std::mem::size_of::<u8>() {
+                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                                "remaining bytes in buf '{}' < version bytes '{}'",
+                                value.len(),
+                                std::mem::size_of::<u8>()
+                            )).into())));
+                        }
+
+                        // read version
+                        let codec = break_on_err(restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value)).map_err(|e|StorageError::Conversion(e.into())))?;
+
+                        let restate_types::storage::StorageCodecKind::Protobuf = codec else {
+                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into())));
+                        };
+
+                        let inv_status_v2 = break_on_err(restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value).map_err(|e| StorageError::Conversion(e.into())))?;
+
 
                         let accessor = break_on_err(
                             inv_status_v2
-                                .0
                                 .accessor()
                                 .map_err(|err| StorageError::Conversion(err.into())),
                         )?;
