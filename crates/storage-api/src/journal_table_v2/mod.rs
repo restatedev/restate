@@ -18,7 +18,7 @@ use crate::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
 use restate_types::journal_v2::raw::RawCommand;
 use restate_types::journal_v2::{CompletionId, NotificationId};
-use restate_types::storage::StoredRawEntry;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 pub trait ReadOnlyJournalTable {
     fn get_journal_entry(
@@ -42,7 +42,7 @@ pub trait ReadOnlyJournalTable {
         &mut self,
         invocation_id: InvocationId,
         notification_id: CompletionId,
-    ) -> impl Future<Output = Result<Option<RawCommand>>> + Send;
+    ) -> impl Future<Output = Result<Option<(StoredRawEntryHeader, RawCommand)>>> + Send;
 }
 
 pub trait ScanJournalTable {

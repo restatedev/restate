@@ -83,7 +83,8 @@ where
         let command = ctx
             .storage
             .get_command_by_completion_id(invocation_id, completion.entry_index)
-            .await?;
+            .await?
+            .map(|(_, cmd)| cmd);
 
         if let Some(cmd) = command {
             let entry: journal_v2::Entry = match cmd.command_type() {

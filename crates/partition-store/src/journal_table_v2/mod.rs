@@ -33,7 +33,7 @@ use restate_types::identifiers::{
 };
 use restate_types::journal_v2::raw::{RawCommand, RawEntry};
 use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
-use restate_types::storage::StoredRawEntry;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 define_table_key!(
     Journal,
@@ -242,7 +242,7 @@ fn get_command_by_completion_id<S: StorageAccess>(
     storage: &mut S,
     invocation_id: InvocationId,
     completion_id: CompletionId,
-) -> Result<Option<RawCommand>> {
+) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
     let _x = RocksDbPerfGuard::new("get-command-by-completion-id");
 
     // Access the index
@@ -265,11 +265,13 @@ fn get_command_by_completion_id<S: StorageAccess>(
 
     let entry = opt.unwrap().0;
     let entry_ty = entry.ty();
-    Ok(Some(entry.inner.try_as_command().ok_or_else(|| {
+    let command = entry.inner.try_as_command().ok_or_else(|| {
         StorageError::Conversion(anyhow!(
             "Entry is expected to be a command, but is {entry_ty}"
         ))
-    })?))
+    })?;
+
+    Ok(Some((entry.header, command)))
 }
 
 impl ReadOnlyJournalTable for PartitionStore {
@@ -307,7 +309,7 @@ impl ReadOnlyJournalTable for PartitionStore {
         &mut self,
         invocation_id: InvocationId,
         notification_id: CompletionId,
-    ) -> Result<Option<RawCommand>> {
+    ) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
         get_command_by_completion_id(self, invocation_id, notification_id)
     }
 }
@@ -379,7 +381,7 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
         &mut self,
         invocation_id: InvocationId,
         notification_id: CompletionId,
-    ) -> Result<Option<RawCommand>> {
+    ) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
         get_command_by_completion_id(self, invocation_id, notification_id)
     }
 }
