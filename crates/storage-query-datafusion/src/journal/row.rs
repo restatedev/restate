@@ -153,7 +153,7 @@ pub(crate) fn append_journal_row_v2(
         row.fmt_entry_type(raw_entry.ty());
     }
 
-    row.appended_at(raw_entry.header().append_time.as_u64() as i64);
+    row.appended_at(raw_entry.header.append_time.as_u64() as i64);
 
     if row.is_entry_lite_json_defined() {
         // We need to parse the entry

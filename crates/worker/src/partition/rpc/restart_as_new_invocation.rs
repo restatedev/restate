@@ -264,7 +264,9 @@ mod tests {
             &mut self,
             invocation_id: InvocationId,
             _: CompletionId,
-        ) -> impl Future<Output = restate_storage_api::Result<Option<RawCommand>>> + Send {
+        ) -> impl Future<
+            Output = restate_storage_api::Result<Option<(StoredRawEntryHeader, RawCommand)>>,
+        > + Send {
             assert_eq!(self.expected_invocation_id, invocation_id);
             ready(Ok(None))
         }
