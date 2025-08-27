@@ -22,10 +22,9 @@ pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_lead
 
 pub const USAGE_LEADER_ACTION_COUNT: &str = "restate.usage.leader_action_count.total";
 
-pub const USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT: &str =
-    "restate.usage.leader_journal_command_entry_count.total";
+pub const USAGE_LEADER_JOURNAL_ENTRY_COUNT: &str = "restate.usage.leader_journal_entry_count.total";
 
-pub const USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT_EXCLUDE: &[EntryType] = &[
+pub const USAGE_LEADER_JOURNAL_ENTRY_COUNT_EXCLUDE: &[EntryType] = &[
     EntryType::Command(CommandType::SetState),
     EntryType::Command(CommandType::GetLazyState),
     EntryType::Command(CommandType::GetEagerState),
@@ -69,7 +68,7 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_counter!(
-        USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT,
+        USAGE_LEADER_JOURNAL_ENTRY_COUNT,
         Unit::Count,
         "Count of journal command entries processed by partition leaders"
     );

@@ -49,7 +49,7 @@ use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::debug_if_leader;
 use crate::metric_definitions::{
-    USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT, USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT_EXCLUDE,
+    USAGE_LEADER_JOURNAL_ENTRY_COUNT, USAGE_LEADER_JOURNAL_ENTRY_COUNT_EXCLUDE,
 };
 use crate::partition::state_machine::entries::attach_invocation_command::ApplyAttachInvocationCommand;
 use crate::partition::state_machine::entries::call_commands::{
@@ -150,9 +150,9 @@ where
             if ctx.is_leader {
                 let entry_name = entry.ty().to_string();
 
-                if !USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT_EXCLUDE.contains(&entry.ty()) {
+                if !USAGE_LEADER_JOURNAL_ENTRY_COUNT_EXCLUDE.contains(&entry.ty()) {
                     counter!(
-                        USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT,
+                        USAGE_LEADER_JOURNAL_ENTRY_COUNT,
                         "partition" => ctx.partition_id.to_string(),
                         "entry" => entry_name.chars().filter(|c| !c.is_whitespace()).collect::<String>(),
                     )
