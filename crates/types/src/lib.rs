@@ -32,6 +32,7 @@ pub mod errors;
 pub mod identifiers;
 pub mod invocation;
 pub mod journal;
+pub mod journal_events;
 pub mod journal_v2;
 pub mod live;
 pub mod locality;

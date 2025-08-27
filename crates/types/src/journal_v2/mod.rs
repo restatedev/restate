@@ -31,7 +31,6 @@ use serde::{Deserialize, Serialize};
 
 pub mod command;
 pub mod encoding;
-mod event;
 pub mod lite;
 pub mod notification;
 pub mod raw;
@@ -39,7 +38,6 @@ mod types;
 
 pub use command::*;
 pub use encoding::*;
-pub use event::*;
 pub use notification::*;
 pub use types::*;
 
@@ -59,7 +57,6 @@ pub type SignalName = ByteString;
 pub enum EntryType {
     Command(CommandType),
     Notification(NotificationType),
-    Event,
 }
 
 impl fmt::Display for EntryType {
@@ -73,7 +70,6 @@ impl fmt::Display for EntryType {
                 write!(f, "Notification: ")?;
                 fmt::Display::fmt(notif, f)
             }
-            e => fmt::Debug::fmt(e, f),
         }
     }
 }
@@ -115,7 +111,6 @@ pub trait EntryMetadata {
 pub enum Entry {
     Command(Command),
     Notification(Notification),
-    Event(Event),
 }
 
 impl Entry {
