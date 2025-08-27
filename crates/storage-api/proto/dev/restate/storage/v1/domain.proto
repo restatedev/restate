@@ -197,17 +197,18 @@ message InvocationV2Lite {
 }
 
 // A somewhat slimmer version of InvocationStatusV2 with nested messages left
-// unparsed and utf8 left unvalidated.
+// unparsed, utf8 left unvalidated, and all bytes processed with our zerocopy
+// approach.
 message InvocationStatusV2Lazy {
   InvocationStatusV2.Status status = 1;
 
   // Common
-  optional bytes invocation_target_lazy = 2;
-  optional bytes source_lazy = 3;
-  optional bytes span_context_lazy = 4;
-  optional bytes completion_retention_duration_lazy = 11;
-  optional bytes journal_retention_duration_lazy = 29;
-  bytes created_using_restate_version = 30;
+  // optional bytes invocation_target_lazy = 2;
+  // optional bytes source_lazy = 3;
+  // optional bytes span_context_lazy = 4;
+  // optional bytes completion_retention_duration_lazy = 11;
+  // optional bytes journal_retention_duration_lazy = 29;
+  // bytes created_using_restate_version = 30;
 
   // Timestamps
   uint64 creation_time = 5;
@@ -219,17 +220,17 @@ message InvocationStatusV2Lazy {
 
   // Scheduled/Inboxed
   optional uint64 execution_time = 10;
-  optional bytes idempotency_key = 12;
+  // optional bytes idempotency_key = 12;
 
   // Invoked/Suspended
   uint32 journal_length = 14;
   uint32 commands = 26;
-  optional bytes deployment_id = 15;
+  // optional bytes deployment_id = 15;
   optional dev.restate.service.protocol.ServiceProtocolVersion
       service_protocol_version = 16;
 
   // Completed
-  optional bytes result_lazy = 18;
+  // optional bytes result_lazy = 18;
 }
 
 // TODO remove this after 1.1
