@@ -11,6 +11,7 @@
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
+use restate_types::journal_v2::{CommandType, EntryType};
 
 pub const PARTITION_LABEL: &str = "partition";
 
@@ -24,14 +25,14 @@ pub const USAGE_LEADER_ACTION_COUNT: &str = "restate.usage.leader_action_count.t
 pub const USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT: &str =
     "restate.usage.leader_journal_command_entry_count.total";
 
-pub const USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT_EXCLUDE: &[&str] = &[
-    "SetState",
-    "GetLazyState",
-    "GetEagerState",
-    "GetLazyStateKeys",
-    "GetEagerStateKeys",
-    "ClearState",
-    "ClearAllState",
+pub const USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT_EXCLUDE: &[EntryType] = &[
+    EntryType::Command(CommandType::SetState),
+    EntryType::Command(CommandType::GetLazyState),
+    EntryType::Command(CommandType::GetEagerState),
+    EntryType::Command(CommandType::GetLazyStateKeys),
+    EntryType::Command(CommandType::GetEagerStateKeys),
+    EntryType::Command(CommandType::ClearState),
+    EntryType::Command(CommandType::ClearAllState),
 ];
 
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";

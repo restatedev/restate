@@ -150,8 +150,7 @@ where
             if ctx.is_leader {
                 let entry_name = entry.ty().to_string();
 
-                if !USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT_EXCLUDE.contains(&entry_name.as_str())
-                {
+                if !USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT_EXCLUDE.contains(&entry.ty()) {
                     counter!(
                         USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT,
                         "partition" => ctx.partition_id.to_string(),
