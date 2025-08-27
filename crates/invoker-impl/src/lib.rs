@@ -63,13 +63,14 @@ use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
+use restate_types::journal_events::raw::RawEvent;
+use restate_types::journal_events::{Event, TransientErrorEvent};
 use restate_types::journal_v2;
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEvent, RawNotification};
-use restate_types::journal_v2::{
-    CommandIndex, EntryMetadata, Event, NotificationId, TransientErrorEvent,
-};
+use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
+use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::schema::service::ServiceMetadataResolver;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -1200,12 +1201,7 @@ where
                         None
                     };
                 let invocation_error_report = error.into_invocation_error_report();
-                if options.experimental_features_propose_events()
-                    && ism
-                        .selected_service_protocol()
-                        .is_some_and(|sp| sp >= ServiceProtocolVersion::V4)
-                {
-                    // Only if protocol version >= 4 was selected we can propose the transient error
+                if options.experimental_features_propose_events() {
                     let transient_error_event = TransientErrorEvent {
                         error_code: invocation_error_report.err.code(),
                         error_message: invocation_error_report.err.message().to_owned(),
@@ -1244,7 +1240,7 @@ where
                             .send(Box::new(Effect {
                                 invocation_id,
                                 invocation_epoch: ism.invocation_epoch,
-                                kind: EffectKind::journal_entry(raw_event, None),
+                                kind: EffectKind::JournalEvent { event: raw_event },
                             }))
                             .await;
                     }

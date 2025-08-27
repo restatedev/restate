@@ -481,9 +481,6 @@ where
                 )
                 .await?;
             }
-            RawEntry::Event(_) => {
-                // We don't send these
-            }
         }
         Ok(())
     }

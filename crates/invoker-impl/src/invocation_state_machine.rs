@@ -228,6 +228,7 @@ impl InvocationStateMachine {
         self.selected_service_protocol = Some(service_protocol_version);
     }
 
+    #[allow(unused)]
     pub(super) fn selected_service_protocol(&self) -> Option<ServiceProtocolVersion> {
         self.selected_service_protocol
     }
