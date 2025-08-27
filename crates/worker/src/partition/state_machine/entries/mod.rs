@@ -43,14 +43,12 @@ use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
-    Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType,
+    Command, CommandMetadata, CommandType, Completion, Entry, EntryMetadata, EntryType,
 };
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::debug_if_leader;
-use crate::metric_definitions::{
-    USAGE_LEADER_JOURNAL_ENTRY_COUNT, USAGE_LEADER_JOURNAL_ENTRY_COUNT_EXCLUDE,
-};
+use crate::metric_definitions::USAGE_LEADER_JOURNAL_ENTRY_COUNT;
 use crate::partition::state_machine::entries::attach_invocation_command::ApplyAttachInvocationCommand;
 use crate::partition::state_machine::entries::call_commands::{
     ApplyCallCommand, ApplyOneWayCallCommand,
@@ -72,6 +70,19 @@ use crate::partition::state_machine::entries::set_state_command::ApplySetStateCo
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
 use crate::partition::state_machine::lifecycle::VerifyOrMigrateJournalTableToV2Command;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+
+fn usage_journal_entry_type_allowed(entry_type: &EntryType) -> bool {
+    !matches!(
+        entry_type,
+        EntryType::Command(CommandType::SetState)
+            | EntryType::Command(CommandType::GetLazyState)
+            | EntryType::Command(CommandType::GetEagerState)
+            | EntryType::Command(CommandType::GetLazyStateKeys)
+            | EntryType::Command(CommandType::GetEagerStateKeys)
+            | EntryType::Command(CommandType::ClearState)
+            | EntryType::Command(CommandType::ClearAllState)
+    )
+}
 
 pub(super) struct OnJournalEntryCommand {
     pub(super) invocation_id: InvocationId,
@@ -150,7 +161,7 @@ where
             if ctx.is_leader {
                 let entry_name = entry.ty().to_string();
 
-                if !USAGE_LEADER_JOURNAL_ENTRY_COUNT_EXCLUDE.contains(&entry.ty()) {
+                if usage_journal_entry_type_allowed(&entry.ty()) {
                     counter!(
                         USAGE_LEADER_JOURNAL_ENTRY_COUNT,
                         "partition" => ctx.partition_id.to_string(),
