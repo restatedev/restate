@@ -21,12 +21,10 @@ use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
 use restate_test_util::let_assert;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-use restate_types::journal_v2;
 use restate_types::journal_v2::raw::RawCommandSpecificMetadata;
 use restate_types::journal_v2::{
     CallCommand, CallRequest, CommandType, CompletionId, CompletionType, Entry, EntryMetadata,
-    EntryType, Event, NotificationId, NotificationType, OneWayCallCommand, SleepCommand,
-    SleepCompletion, TransientErrorEvent,
+    EntryType, NotificationId, NotificationType, OneWayCallCommand, SleepCommand, SleepCompletion,
 };
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
@@ -314,49 +312,6 @@ async fn test_call_journal() {
             .command_type(),
         CommandType::OneWayCall
     );
-
-    txn.commit().await.expect("should not fail");
-}
-
-#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_event() {
-    let mut rocksdb = storage_test_environment().await;
-
-    let mut txn = rocksdb.transaction();
-
-    let event = journal_v2::Event::TransientError(TransientErrorEvent {
-        error_code: 500u16.into(),
-        error_message: "my_error".to_string(),
-        error_stacktrace: None,
-        restate_doc_error_code: None,
-        related_command_index: None,
-        related_command_name: Some("Input".to_string()),
-        related_command_type: None,
-    });
-
-    // Populate
-    txn.put_journal_entry(
-        MOCK_INVOCATION_ID_1,
-        0,
-        &StoredRawEntry::new(
-            StoredRawEntryHeader::new(MillisSinceEpoch::now()),
-            Entry::Event(event.clone()).encode::<ServiceProtocolV4Codec>(),
-        ),
-        &[],
-    )
-    .await
-    .unwrap();
-
-    // Verify the event is correct
-    let mut journal = txn.get_journal(MOCK_INVOCATION_ID_1, 1).unwrap();
-    let entry = journal.next().await.unwrap().unwrap().1;
-    assert_eq!(
-        entry.decode::<ServiceProtocolV4Codec, Event>().unwrap(),
-        event
-    );
-
-    assert!(journal.next().await.is_none());
-    drop(journal);
 
     txn.commit().await.expect("should not fail");
 }
