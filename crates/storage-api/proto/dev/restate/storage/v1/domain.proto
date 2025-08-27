@@ -181,6 +181,7 @@ message InvocationStatusV2 {
   uint32 current_invocation_epoch = 27;
   // Used to reconstruct the completion_range_epoch_map
   repeated JournalTrimPoint trim_points = 28;
+  uint32 events = 31;
 
   // Suspended
   repeated uint32 waiting_for_completions = 17;
@@ -490,6 +491,9 @@ message JournalEntry {
 
 // -------- Entry V2 --------
 message Entry {
+  // Were used for events.
+  reserved 10, 11;
+
   message CallOrSendCommandMetadata {
     InvocationId invocation_id = 1;
     InvocationTarget invocation_target = 2;
@@ -499,8 +503,10 @@ message Entry {
   }
 
   enum EntryType {
+    // Was used for EVENT
+    reserved 1;
+
     UNKNOWN = 0;
-    EVENT = 1;
     INPUT_COMMAND = 2;
     OUTPUT_COMMAND = 3;
     GET_LAZY_STATE_COMMAND = 8;
@@ -552,15 +558,6 @@ message Entry {
     uint32 signal_idx = 8;
     string signal_name = 9;
   }
-
-  enum EventType {
-    UNKNOWN_EVENT = 0;
-    TRANSIENT_ERROR = 1;
-  }
-
-  // Additional metadata for EVENT
-  EventType event_type = 10;
-  optional bytes event_deduplication_hash = 11;
 }
 
 message ResponseResult {
@@ -575,6 +572,20 @@ message ResponseResult {
     ResponseSuccess response_success = 1;
     ResponseFailure response_failure = 2;
   }
+}
+
+message Event {
+  enum EventType {
+    UNKNOWN_EVENT = 0;
+    TRANSIENT_ERROR = 1;
+  }
+
+  // Additional metadata for EVENT
+  EventType event_type = 1;
+  optional bytes event_deduplication_hash = 2;
+  bytes content = 3;
+  uint64 append_time = 4;
+  uint32 after_journal_entry_index = 5;
 }
 
 // ---------------------------------------------------------------------

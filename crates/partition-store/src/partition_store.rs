@@ -136,6 +136,7 @@ pub enum TableKind {
     Idempotency,
     Inbox,
     Journal,
+    JournalEvent,
     Promise,
 }
 
@@ -158,6 +159,7 @@ impl TableKind {
                 KeyKind::JournalV2CompletionIdToCommandIndex,
                 KeyKind::JournalV2NotificationIdToNotificationIndex,
             ],
+            Self::JournalEvent => &[KeyKind::JournalEvent],
             Self::Promise => &[KeyKind::Promise],
         }
     }
