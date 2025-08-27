@@ -21,6 +21,19 @@ pub const PARTITION_HANDLE_LEADER_ACTIONS: &str = "restate.partition.handle_lead
 
 pub const USAGE_LEADER_ACTION_COUNT: &str = "restate.usage.leader_action_count.total";
 
+pub const USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT: &str =
+    "restate.usage.leader_journal_command_entry_count.total";
+
+pub const USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT_EXCLUDE: &[&str] = &[
+    "SetState",
+    "GetLazyState",
+    "GetEagerState",
+    "GetLazyStateKeys",
+    "GetEagerStateKeys",
+    "ClearState",
+    "ClearAllState",
+];
+
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
 pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
@@ -52,6 +65,12 @@ pub(crate) fn describe_metrics() {
         USAGE_LEADER_ACTION_COUNT,
         Unit::Count,
         "Count of invocation actions processed by partition leaders"
+    );
+
+    describe_counter!(
+        USAGE_LEADER_JOURNAL_COMMAND_ENTRY_COUNT,
+        Unit::Count,
+        "Count of journal command entries processed by partition leaders"
     );
 
     describe_histogram!(

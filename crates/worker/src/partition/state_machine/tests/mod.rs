@@ -158,6 +158,7 @@ impl TestEnv {
                 MillisSinceEpoch::now(),
                 &mut transaction,
                 &mut action_collector,
+                PartitionId::MIN,
                 true,
             )
             .await
@@ -177,6 +178,7 @@ impl TestEnv {
                 MillisSinceEpoch::now(),
                 &mut transaction,
                 &mut action_collector,
+                PartitionId::MIN,
                 true,
             )
             .await?;

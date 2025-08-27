@@ -701,6 +701,7 @@ where
                         record_created_at.into(),
                         transaction,
                         action_collector,
+                        self.partition_store.partition_id(),
                         self.leadership_state.is_leader(),
                     )
                     .await?;
