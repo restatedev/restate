@@ -71,7 +71,7 @@ pub(crate) fn append_invocation_status_row<
     }
 
     if row.is_idempotency_key_defined()
-        && let Some(key) = invocation_status.idempotency_key()
+        && let Some(key) = invocation_status.idempotency_key()?
     {
         row.idempotency_key(key)
     }
@@ -83,7 +83,7 @@ pub(crate) fn append_invocation_status_row<
 
             row.status("scheduled");
             if row.is_created_using_restate_version_defined() {
-                row.created_using_restate_version(scheduled.created_using_restate_version());
+                row.created_using_restate_version(scheduled.created_using_restate_version()?);
             }
             if needs_invoked_by(&row) {
                 fill_invoked_by(&mut row, scheduled.source()?)?;
@@ -107,7 +107,7 @@ pub(crate) fn append_invocation_status_row<
 
             row.status("inboxed");
             if row.is_created_using_restate_version_defined() {
-                row.created_using_restate_version(inboxed.created_using_restate_version());
+                row.created_using_restate_version(inboxed.created_using_restate_version()?);
             }
             if needs_invoked_by(&row) {
                 fill_invoked_by(&mut row, inboxed.source()?)?;
@@ -146,7 +146,7 @@ pub(crate) fn append_invocation_status_row<
 
             row.status("completed");
             if row.is_created_using_restate_version_defined() {
-                row.created_using_restate_version(completed.created_using_restate_version());
+                row.created_using_restate_version(completed.created_using_restate_version()?);
             }
             if needs_invoked_by(&row) {
                 fill_invoked_by(&mut row, completed.source()?)?;
@@ -196,7 +196,7 @@ fn fill_in_flight_invocation_metadata(
     meta: impl InFlightInvocationMetadataAccessor,
 ) -> Result<(), ConversionError> {
     if row.is_created_using_restate_version_defined() {
-        row.created_using_restate_version(meta.created_using_restate_version());
+        row.created_using_restate_version(meta.created_using_restate_version()?);
     }
     // journal_metadata and stats are filled by other functions
     if row.is_pinned_deployment_id_defined()

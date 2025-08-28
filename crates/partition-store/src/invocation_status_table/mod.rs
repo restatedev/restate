@@ -11,7 +11,7 @@
 use std::ops::{ControlFlow, RangeInclusive};
 
 use futures::Stream;
-use restate_storage_api::protobuf_types::v1::InvocationStatusV2;
+use restate_storage_api::protobuf_types::v1::InvocationStatusV2Lazy;
 use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
@@ -172,15 +172,15 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
 }
 
 pub type ScanInvocationStatusAccessor<'a> = InvocationStatusAccessor<
-    &'a InvocationStatusV2,
-    &'a InvocationStatusV2,
-    &'a InvocationStatusV2,
+    &'a InvocationStatusV2Lazy,
+    &'a InvocationStatusV2Lazy,
+    &'a InvocationStatusV2Lazy,
 >;
 
 impl ScanInvocationStatusTable for PartitionStore {
-    type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
-    type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
-    type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
+    type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
+    type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
+    type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
 
     fn scan_invoked_invocations(
         &self,
@@ -257,7 +257,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                         let inv_status_v2 = break_on_err(
                             restate_types::storage::StorageCodec::decode::<
                                 restate_storage_api::protobuf_types::ProtobufStorageWrapper<
-                                    restate_storage_api::protobuf_types::v1::InvocationStatusV2,
+                                    restate_storage_api::protobuf_types::v1::InvocationStatusV2Lazy,
                                 >,
                                 _,
                             >(&mut value)

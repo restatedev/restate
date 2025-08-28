@@ -993,12 +993,12 @@ impl<
         }
     }
 
-    pub fn idempotency_key(&self) -> Option<&str> {
+    pub fn idempotency_key(&self) -> std::result::Result<Option<&str>, ConversionError> {
         match self {
             Self::Scheduled(metadata) | Self::Inboxed(metadata) => metadata.idempotency_key(),
             Self::Invoked(metadata) | Self::Suspended(metadata) => metadata.idempotency_key(),
             Self::Completed(completed) => completed.idempotency_key(),
-            _ => None,
+            _ => Ok(None),
         }
     }
 }
@@ -1095,7 +1095,7 @@ impl<T: CompletedInvocationMetadataAccessor + ?Sized> CompletedInvocationMetadat
 
 pub trait InvocationMetadataAccessor: Send + Sync {
     fn invocation_target(&self) -> std::result::Result<InvocationTargetRef, ConversionError>;
-    fn idempotency_key(&self) -> Option<&str>;
+    fn idempotency_key(&self) -> std::result::Result<Option<&str>, ConversionError>;
 
     fn creation_time(&self) -> MillisSinceEpoch;
     fn modification_time(&self) -> MillisSinceEpoch;
@@ -1104,7 +1104,7 @@ pub trait InvocationMetadataAccessor: Send + Sync {
     fn running_transition_time(&self) -> Option<MillisSinceEpoch>;
     fn completed_transition_time(&self) -> Option<MillisSinceEpoch>;
 
-    fn created_using_restate_version(&self) -> &str;
+    fn created_using_restate_version(&self) -> std::result::Result<&str, ConversionError>;
     fn source(&self) -> std::result::Result<SourceRef, ConversionError>;
     fn execution_time(&self) -> Option<MillisSinceEpoch>;
     fn completion_retention_duration(&self) -> std::result::Result<Duration, ConversionError>;
@@ -1137,7 +1137,10 @@ impl<T: InvocationMetadataAccessor + ?Sized> InvocationMetadataAccessor for &T {
     ) -> std::result::Result<InvocationTargetRef, restate_types::errors::ConversionError> {
         (*self).invocation_target()
     }
-    fn idempotency_key(&self) -> Option<&str> {
+    fn idempotency_key(
+        &self,
+    ) -> std::result::Result<std::option::Option<&str>, restate_types::errors::ConversionError>
+    {
         (*self).idempotency_key()
     }
     fn creation_time(&self) -> MillisSinceEpoch {
@@ -1158,7 +1161,9 @@ impl<T: InvocationMetadataAccessor + ?Sized> InvocationMetadataAccessor for &T {
     fn completed_transition_time(&self) -> Option<MillisSinceEpoch> {
         (*self).completed_transition_time()
     }
-    fn created_using_restate_version(&self) -> &str {
+    fn created_using_restate_version(
+        &self,
+    ) -> std::result::Result<&str, restate_types::errors::ConversionError> {
         (*self).created_using_restate_version()
     }
     fn source(&self) -> std::result::Result<SourceRef, restate_types::errors::ConversionError> {
