@@ -12,6 +12,7 @@
 
 use std::str::FromStr;
 
+use generic_array::GenericArray;
 use num_traits::PrimInt;
 
 use crate::base62_util::{
@@ -24,9 +25,8 @@ use crate::macros::prefixed_ids;
 pub const ID_RESOURCE_SEPARATOR: char = '_';
 
 ///  versions of the ID encoding scheme that we use to generate user-facing ID tokens.
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum IdSchemeVersion {
-    #[default]
     /// V1 is the first version of the ID encoding scheme.
     ///
     /// V1 IDs are encoded as follows:
@@ -35,6 +35,12 @@ pub enum IdSchemeVersion {
     /// - 1c for the codec version, currently `1`
     /// - A type-specific base62 encoded string for the ID type.
     V1,
+}
+
+impl IdSchemeVersion {
+    pub const fn latest() -> Self {
+        Self::V1
+    }
 }
 
 prefixed_ids! {
@@ -133,6 +139,7 @@ impl<'a> IdStrCursor<'a> {
 }
 
 pub struct IdDecoder<'a> {
+    #[allow(unused)]
     pub version: IdSchemeVersion,
     pub resource_type: IdResourceType,
     pub cursor: IdStrCursor<'a>,
@@ -176,53 +183,65 @@ impl<'a> IdDecoder<'a> {
     }
 }
 
-pub struct IdEncoder<T: ?Sized, W = String> {
-    buf: W,
+pub struct IdEncoder<T: ResourceId + ?Sized> {
+    buf: GenericArray<u8, <T as ResourceId>::StrEncodedLen>,
+    pos: usize,
     _marker: std::marker::PhantomData<T>,
 }
 
-impl<T: ResourceId + ?Sized, W> IdEncoder<T, W> {
-    /// Estimates the capacity of string buffer needed to encode this ResourceId
-    pub const fn estimate_buf_capacity() -> usize {
-        T::RESOURCE_TYPE.as_str().len() + /* separator =*/1 + /* version =*/ 1 + T::STRING_CAPACITY_HINT
-    }
-}
+impl<T: ResourceId + ?Sized> IdEncoder<T> {
+    pub(crate) fn new() -> IdEncoder<T> {
+        use std::io::{IoSlice, Write};
 
-impl<T: ResourceId + ?Sized, W: std::fmt::Write> IdEncoder<T, W> {
-    pub fn new_fmt(mut buf: W) -> Result<IdEncoder<T, W>, std::fmt::Error> {
-        // prefix token
-        buf.write_str(T::RESOURCE_TYPE.as_str())?;
-        // Separator
-        buf.write_char(ID_RESOURCE_SEPARATOR)?;
+        static SEP_AND_VER: [u8; 2] = [
+            ID_RESOURCE_SEPARATOR as u8,
+            IdSchemeVersion::latest().as_char() as u8,
+        ];
 
-        // ID Scheme Version
-        buf.write_char(IdSchemeVersion::default().as_char())?;
-
-        Ok(Self {
-            buf,
+        let mut encoder = Self {
+            buf: Default::default(),
+            pos: 0,
             _marker: std::marker::PhantomData,
-        })
-    }
+        };
 
+        let pos = (&mut encoder.buf[..])
+            .write_vectored(&[
+                // prefix token
+                IoSlice::new(T::RESOURCE_TYPE.as_str().as_bytes()),
+                // Separator + ID Scheme Version
+                IoSlice::new(&SEP_AND_VER),
+            ])
+            .expect("buf must fit");
+
+        encoder.pos = pos;
+        encoder
+    }
     /// Appends a u64 value as a padded base62 encoded string to the underlying buffer
-    pub fn encode_fixed_width_u64(&mut self, i: u64) -> std::fmt::Result {
-        base62_encode_fixed_width_u64(i, &mut self.buf)
+    pub(crate) fn push_u64(&mut self, i: u64) -> std::io::Result<()> {
+        let width = base62_encode_fixed_width_u64(i, &mut self.buf[self.pos..])?;
+        self.pos += width;
+        debug_assert!(self.pos <= self.buf.len());
+        Ok(())
     }
 
     /// Appends a u128 value as a padded base62 encoded string to the underlying buffer
-    pub fn encode_fixed_width_u128(&mut self, i: u128) -> std::fmt::Result {
-        base62_encode_fixed_width_u128(i, &mut self.buf)
+    pub(crate) fn push_u128(&mut self, i: u128) -> std::io::Result<()> {
+        let width = base62_encode_fixed_width_u128(i, &mut self.buf[self.pos..])?;
+        self.pos += width;
+        debug_assert!(self.pos <= self.buf.len());
+        Ok(())
     }
 
-    /// Adds the given string to the end of the buffer
-    pub fn push_str<S>(&mut self, i: S) -> std::fmt::Result
-    where
-        S: AsRef<str>,
-    {
-        self.buf.write_str(i.as_ref())
+    pub(crate) fn remaining_mut(&mut self) -> &mut [u8] {
+        &mut self.buf[self.pos..]
     }
 
-    pub fn finalize(self) -> W {
-        self.buf
+    pub(crate) fn advance(&mut self, cnt: usize) {
+        self.pos += cnt;
+    }
+
+    pub fn as_str(&self) -> &str {
+        debug_assert!(self.pos <= self.buf.len());
+        unsafe { std::str::from_utf8_unchecked(&self.buf[..self.pos]) }
     }
 }
