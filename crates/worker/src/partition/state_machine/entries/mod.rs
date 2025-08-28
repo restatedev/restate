@@ -148,7 +148,7 @@ where
             if ctx.is_leader {
                 counter!(
                     USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                    "entry" => entry.ty().as_static_str(),
+                    "entry" => <&'static str>::from(entry.ty()),
                 )
                 .increment(1);
             }
