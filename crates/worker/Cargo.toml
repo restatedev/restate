@@ -32,12 +32,12 @@ restate-metadata-server = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
 restate-service-protocol = { workspace = true, features = ["codec", "message"] }
+restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
 restate-storage-api = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
-restate-tracing-instrumentation = { workspace = true }
 restate-timer = { workspace = true }
+restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
 
@@ -50,8 +50,8 @@ bytestring = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
 derive_more = { workspace = true }
-futures = { workspace = true }
 enumset = { workspace = true }
+futures = { workspace = true }
 humantime = { workspace = true }
 itertools = { workspace = true }
 jiff = { workspace = true }

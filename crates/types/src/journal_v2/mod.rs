@@ -78,6 +78,19 @@ impl fmt::Display for EntryType {
     }
 }
 
+impl From<EntryType> for &'static str {
+    fn from(val: EntryType) -> Self {
+        match val {
+            EntryType::Command(cmd_type) => cmd_type.into(),
+            EntryType::Notification(notif_type) => match notif_type {
+                NotificationType::Completion(completion_type) => completion_type.into(),
+                NotificationType::Signal => "Signal",
+            },
+            EntryType::Event => "Event",
+        }
+    }
+}
+
 use crate::journal_v2::lite::*;
 use crate::journal_v2::raw::*;
 

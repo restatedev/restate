@@ -27,6 +27,7 @@ mod sleep_command;
 
 use std::collections::VecDeque;
 
+use metrics::counter;
 use tracing::debug;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -46,6 +47,7 @@ use restate_types::journal_v2::{
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::debug_if_leader;
+use crate::metric_definitions::USAGE_LEADER_JOURNAL_ENTRY_COUNT;
 use crate::partition::state_machine::entries::attach_invocation_command::ApplyAttachInvocationCommand;
 use crate::partition::state_machine::entries::call_commands::{
     ApplyCallCommand, ApplyOneWayCallCommand,
@@ -140,6 +142,14 @@ where
         while let Some(mut entry) = entries.pop_front() {
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
+
+            if ctx.is_leader {
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                    "entry" => <&'static str>::from(entry.ty()),
+                )
+                .increment(1);
+            }
 
             // --- Process entry effect
             match entry.ty() {
