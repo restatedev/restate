@@ -78,6 +78,20 @@ impl fmt::Display for EntryType {
     }
 }
 
+// Avoid to_string() allocations when handling entries.
+impl EntryType {
+    pub fn as_static_str(&self) -> &'static str {
+        match self {
+            EntryType::Command(cmd_type) => cmd_type.into(),
+            EntryType::Notification(notif_type) => match notif_type {
+                NotificationType::Completion(completion_type) => completion_type.into(),
+                NotificationType::Signal => "Signal",
+            },
+            EntryType::Event => "Event",
+        }
+    }
+}
+
 use crate::journal_v2::lite::*;
 use crate::journal_v2::raw::*;
 

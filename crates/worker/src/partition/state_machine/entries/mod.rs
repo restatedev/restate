@@ -158,17 +158,12 @@ where
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
 
-            if ctx.is_leader {
-                let entry_name = entry.ty().to_string();
-
-                if usage_journal_entry_type_allowed(&entry.ty()) {
-                    counter!(
-                        USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                        "partition" => ctx.partition_id.to_string(),
-                        "entry" => entry_name.chars().filter(|c| !c.is_whitespace()).collect::<String>(),
-                    )
-                    .increment(1);
-                }
+            if ctx.is_leader && usage_journal_entry_type_allowed(&entry.ty()) {
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                    "entry" => entry.ty().as_static_str(),
+                )
+                .increment(1);
             }
 
             // --- Process entry effect

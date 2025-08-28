@@ -107,7 +107,12 @@ impl Notification {
 #[derive(Debug, Clone, PartialEq, Eq, strum::EnumDiscriminants, Serialize, Deserialize)]
 #[strum_discriminants(vis(pub))]
 #[strum_discriminants(name(CompletionType))]
-#[strum_discriminants(derive(serde::Serialize, serde::Deserialize))]
+#[strum_discriminants(derive(
+    serde::Serialize,
+    serde::Deserialize,
+    strum::EnumString,
+    strum::IntoStaticStr
+))]
 pub enum Completion {
     GetLazyState(GetLazyStateCompletion),
     GetLazyStateKeys(GetLazyStateKeysCompletion),

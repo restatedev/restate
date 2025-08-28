@@ -61,8 +61,8 @@ use restate_types::errors::{
     NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, PartitionId,
-    PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
+    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, PartitionKey,
+    PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 use restate_types::invocation::client::{
@@ -234,7 +234,6 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
     min_restate_version: &'a mut SemanticRestateVersion,
     partition_key_range: RangeInclusive<PartitionKey>,
-    partition_id: PartitionId,
     #[allow(dead_code)]
     experimental_features: &'a EnumSet<ExperimentalFeature>,
     is_leader: bool,
@@ -255,7 +254,6 @@ impl StateMachine {
         record_created_at: MillisSinceEpoch,
         transaction: &mut TransactionType,
         action_collector: &mut ActionCollector,
-        partition_id: PartitionId,
         is_leader: bool,
     ) -> Result<(), Error> {
         let span = utils::state_machine_apply_command_span(is_leader, &command);
@@ -272,7 +270,6 @@ impl StateMachine {
                 outbox_head_seq_number: &mut self.outbox_head_seq_number,
                 min_restate_version: &mut self.min_restate_version,
                 partition_key_range: self.partition_key_range.clone(),
-                partition_id,
                 experimental_features: &self.experimental_features,
                 is_leader,
             }
