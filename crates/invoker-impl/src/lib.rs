@@ -69,8 +69,6 @@ use restate_types::journal_v2;
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
 use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::schema::service::ServiceMetadataResolver;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
