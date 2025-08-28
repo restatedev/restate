@@ -9,10 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 use std::sync::Arc;
-
-use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
@@ -60,17 +58,20 @@ struct StatusScanner;
 
 impl ScanLocalPartition for StatusScanner {
     type Builder = SysInvocationStatusBuilder;
-    type Item = (InvocationId, InvocationStatus);
+    type Item<'a> = (InvocationId, InvocationStatus);
 
-    fn scan_partition_store(
+    fn for_each_row<F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
-    {
-        partition_store.scan_invocation_statuses(range)
+        f: F,
+    ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
+        partition_store.for_each_invocation_status(range, f)
     }
 
-    fn append_row(row_builder: &mut Self::Builder, (invocation_id, invocation_status): Self::Item) {
+    fn append_row<'a>(
+        row_builder: &mut Self::Builder,
+        (invocation_id, invocation_status): Self::Item<'a>,
+    ) {
         append_invocation_status_row(row_builder, invocation_id, invocation_status)
     }
 }

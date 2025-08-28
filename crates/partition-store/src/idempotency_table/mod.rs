@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::Stream;
 
 use restate_rocksdb::Priority;
 use restate_storage_api::idempotency_table::{
@@ -24,7 +23,7 @@ use restate_types::identifiers::{IdempotencyId, PartitionKey, WithPartitionKey};
 
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::scan::TableScan;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
 define_table_key!(
     TableKind::Idempotency,
@@ -88,32 +87,36 @@ impl ReadOnlyIdempotencyTable for PartitionStore {
 }
 
 impl ScanIdempotencyTable for PartitionStore {
-    fn scan_idempotency_metadata(
+    fn for_each_idempotency_metadata<
+        F: FnMut((IdempotencyId, IdempotencyMetadata)) -> ControlFlow<()> + Send + Sync + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send> {
-        self.run_iterator(
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        self.iterator_for_each(
             "df-idempotency",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<IdempotencyKey>(range),
-            |(mut key, mut value)| {
-                let key = IdempotencyKey::deserialize_from(&mut key)?;
-                let idempotency_metadata = IdempotencyMetadata::decode(&mut value)?;
+            move |(mut key, mut value)| {
+                let key = break_on_err(IdempotencyKey::deserialize_from(&mut key))?;
+                let idempotency_metadata = break_on_err(IdempotencyMetadata::decode(&mut value))?;
 
-                Ok((
-                    IdempotencyId::new(
-                        key.service_name_ok_or()?.clone(),
+                let idempotency_id = IdempotencyId::new(
+                    break_on_err(key.service_name_ok_or())?.clone(),
+                    break_on_err(
                         key.service_key
                             .clone()
                             .map(|b| {
                                 ByteString::try_from(b).map_err(|e| StorageError::Generic(e.into()))
                             })
-                            .transpose()?,
-                        key.service_handler_ok_or()?.clone(),
-                        key.idempotency_key_ok_or()?.clone(),
-                    ),
-                    idempotency_metadata,
-                ))
+                            .transpose(),
+                    )?,
+                    break_on_err(key.service_handler_ok_or())?.clone(),
+                    break_on_err(key.idempotency_key_ok_or())?.clone(),
+                );
+
+                f((idempotency_id, idempotency_metadata)).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

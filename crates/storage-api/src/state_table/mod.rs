@@ -31,10 +31,13 @@ pub trait ReadOnlyStateTable {
 }
 
 pub trait ScanStateTable {
-    fn scan_all_user_states(
+    fn for_each_user_state<
+        F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send>;
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait StateTable: ReadOnlyStateTable {

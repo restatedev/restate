@@ -20,7 +20,8 @@ use crate::TableKind::Journal;
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::owned_iter::OwnedIterator;
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
+    TableScanIterationDecision, break_on_err,
 };
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
@@ -315,31 +316,38 @@ impl ReadOnlyJournalTable for PartitionStore {
 }
 
 impl ScanJournalTable for PartitionStore {
-    fn scan_journals(
+    fn for_each_journal<
+        F: FnMut(
+                (restate_types::identifiers::JournalEntryId, StoredRawEntry),
+            ) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<
-        impl Stream<Item = Result<(restate_types::identifiers::JournalEntryId, StoredRawEntry)>> + Send,
-    > {
-        self.run_iterator(
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        self.iterator_for_each(
             "df-v2-journal",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<JournalKey>(range),
-            |(mut key, mut value)| {
-                let journal_key = JournalKey::deserialize_from(&mut key)?;
-                let journal_entry = StoredEntry::decode(&mut value)
-                    .map_err(|err| StorageError::Conversion(err.into()))?;
+            move |(mut key, mut value)| {
+                let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
+                let journal_entry = break_on_err(
+                    StoredEntry::decode(&mut value)
+                        .map_err(|err| StorageError::Conversion(err.into())),
+                )?;
 
                 let (partition_key, invocation_uuid, entry_index) =
-                    journal_key.into_inner_ok_or()?;
+                    break_on_err(journal_key.into_inner_ok_or())?;
 
-                Ok((
-                    JournalEntryId::from_parts(
-                        InvocationId::from_parts(partition_key, invocation_uuid),
-                        entry_index,
-                    ),
-                    journal_entry.0,
-                ))
+                let journal_entry_id = JournalEntryId::from_parts(
+                    InvocationId::from_parts(partition_key, invocation_uuid),
+                    entry_index,
+                );
+
+                f((journal_entry_id, journal_entry.0)).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

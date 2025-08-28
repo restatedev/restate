@@ -8,32 +8,33 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
 use std::ops::RangeInclusive;
+use std::{fmt::Debug, ops::ControlFlow};
 
 use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use futures::{Stream, StreamExt};
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 
 use crate::table_providers::ScanPartition;
+use crate::table_util::BatchSender;
 
 pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
-    type Builder;
-    type Item;
+    type Builder: crate::table_util::Builder + Send;
+    type Item<'a>: Send;
 
-    fn scan_partition_store(
+    fn for_each_row<F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>;
+        f: F,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>;
 
-    fn append_row(row_builder: &mut Self::Builder, value: Self::Item);
+    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>);
 }
 
 #[derive(Clone, derive_more::Debug)]
@@ -55,11 +56,10 @@ where
     }
 }
 
-impl<S, RB, T> ScanPartition for LocalPartitionsScanner<S>
+impl<S, RB> LocalPartitionsScanner<S>
 where
-    S: ScanLocalPartition<Builder = RB, Item = T>,
-    RB: crate::table_util::Builder + Send,
-    T: Send,
+    S: ScanLocalPartition<Builder = RB>,
+    RB: crate::table_util::Builder + Send + Sync + 'static,
 {
     fn scan_partition(
         &self,
@@ -67,11 +67,12 @@ where
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
         batch_size: usize,
-        limit: Option<usize>,
+        mut limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
+        let partition_store_manager = self.partition_store_manager.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
         let tx = stream_builder.tx();
-        let partition_store_manager = self.partition_store_manager.clone();
+
         let background_task = async move {
             let partition_store = partition_store_manager.get_partition_store(partition_id).await.ok_or_else(|| {
                 // make sure that the consumer of this stream to learn about the fact that this node does not have
@@ -81,34 +82,56 @@ where
                 DataFusionError::External(err.into())
             })?;
 
-            let rows = S::scan_partition_store(&partition_store, range)
-                .map_err(|e| DataFusionError::External(e.into()))?;
-            let rows = match limit {
-                Some(limit) => rows.take(limit).left_stream(),
-                None => rows.right_stream(),
-            };
-            let mut builder = S::Builder::new(projection.clone());
+            // will send the last batch on Drop.
+            let mut batch_sender = BatchSender::new(projection.clone(), tx);
 
-            tokio::pin!(rows);
-            while let Some(Ok(row)) = rows.next().await {
-                S::append_row(&mut builder, row);
-                if builder.num_rows() >= batch_size {
-                    let batch = builder.finish_and_new();
-                    if tx.send(batch).await.is_err() {
-                        // not sure what to do here?
-                        // the other side has hung up on us.
-                        // we probably don't want to panic, is it will cause the entire process to exit
-                        return Ok(());
-                    }
+            S::for_each_row(&partition_store, range, move |row| {
+                if let Some(0) = limit {
+                    return ControlFlow::Break(());
                 }
-            }
-            if !builder.empty() {
-                let result = builder.finish();
-                let _ = tx.send(result).await;
-            }
+                S::append_row(batch_sender.builder_mut(), row);
+
+                if batch_sender.num_rows() >= batch_size && batch_sender.send().is_err() {
+                    // the other side has hung up on us.
+                    return ControlFlow::Break(());
+                }
+
+                match &mut limit {
+                    Some(limit) => {
+                        *limit -= 1; // we already checked for 0 above
+                        if *limit == 0 {
+                            ControlFlow::Break(())
+                        } else {
+                            ControlFlow::Continue(())
+                        }
+                    }
+                    None => ControlFlow::Continue(()),
+                }
+            })
+            .map_err(|err| DataFusionError::External(err.into()))?
+            .await
+            .map_err(|err| DataFusionError::External(err.into()))?;
+
             Ok(())
         };
         stream_builder.spawn(background_task);
         Ok(stream_builder.build())
+    }
+}
+
+impl<S, RB> ScanPartition for LocalPartitionsScanner<S>
+where
+    S: ScanLocalPartition<Builder = RB>,
+    RB: crate::table_util::Builder + Send + Sync + 'static,
+{
+    fn scan_partition(
+        &self,
+        partition_id: PartitionId,
+        range: RangeInclusive<PartitionKey>,
+        projection: SchemaRef,
+        batch_size: usize,
+        limit: Option<usize>,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        self.scan_partition(partition_id, range, projection, batch_size, limit)
     }
 }

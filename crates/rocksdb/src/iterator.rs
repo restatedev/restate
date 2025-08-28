@@ -51,7 +51,7 @@ pub struct RocksIterator<'a, F> {
 
 impl<'a, F> RocksIterator<'a, F>
 where
-    F: Fn(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
+    F: FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
 {
     pub fn new(iterator: DBRawIteratorWithThreadMode<'a, DB>, next_step: IterAction, f: F) -> Self {
         Self {

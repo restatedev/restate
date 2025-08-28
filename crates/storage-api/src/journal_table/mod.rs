@@ -69,10 +69,13 @@ pub trait ReadOnlyJournalTable {
 }
 
 pub trait ScanJournalTable {
-    fn scan_journals(
+    fn for_each_journal<
+        F: FnMut((JournalEntryId, JournalEntry)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(JournalEntryId, JournalEntry)>> + Send>;
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait JournalTable: ReadOnlyJournalTable {

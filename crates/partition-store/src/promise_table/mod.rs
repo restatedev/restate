@@ -12,7 +12,6 @@ use std::ops::RangeInclusive;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::Stream;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::promise_table::{
@@ -25,7 +24,8 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::scan::TableScan;
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, TableScanIterationDecision,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
+    TableScanIterationDecision, break_on_err,
 };
 
 define_table_key!(
@@ -95,31 +95,38 @@ impl ReadOnlyPromiseTable for PartitionStore {
 }
 
 impl ScanPromiseTable for PartitionStore {
-    fn scan_promises(
+    fn for_each_promise<
+        F: FnMut(OwnedPromiseRow) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<OwnedPromiseRow>> + Send> {
-        self.run_iterator(
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        self.iterator_for_each(
             "df-promise",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<PromiseKey>(range),
-            |(mut k, mut v)| {
-                let key = PromiseKey::deserialize_from(&mut k)?;
-                let metadata = Promise::decode(&mut v)?;
+            move |(mut k, mut v)| {
+                let key = break_on_err(PromiseKey::deserialize_from(&mut k))?;
+                let metadata = break_on_err(Promise::decode(&mut v))?;
 
                 let (partition_key, service_name, service_key, promise_key) =
-                    key.into_inner_ok_or()?;
+                    break_on_err(key.into_inner_ok_or())?;
 
-                Ok(OwnedPromiseRow {
-                    service_id: ServiceId::with_partition_key(
-                        partition_key,
-                        service_name,
-                        ByteString::try_from(service_key)
-                            .map_err(|e| anyhow::anyhow!("Cannot convert to string {e}"))?,
-                    ),
+                let service_id = ServiceId::with_partition_key(
+                    partition_key,
+                    service_name,
+                    break_on_err(ByteString::try_from(service_key).map_err(|e| {
+                        StorageError::Generic(anyhow::anyhow!("Cannot convert to string {e}"))
+                    }))?,
+                );
+
+                f(OwnedPromiseRow {
+                    service_id,
                     key: promise_key,
                     metadata,
                 })
+                .map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

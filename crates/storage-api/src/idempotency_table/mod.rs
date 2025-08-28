@@ -11,8 +11,6 @@
 use std::future::Future;
 use std::ops::RangeInclusive;
 
-use futures::Stream;
-
 use restate_types::identifiers::{IdempotencyId, InvocationId, PartitionKey};
 
 use super::Result;
@@ -35,10 +33,16 @@ pub trait ReadOnlyIdempotencyTable {
 }
 
 pub trait ScanIdempotencyTable {
-    fn scan_idempotency_metadata(
+    fn for_each_idempotency_metadata<
+        F: FnMut((IdempotencyId, IdempotencyMetadata)) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(IdempotencyId, IdempotencyMetadata)>> + Send>;
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait IdempotencyTable: ReadOnlyIdempotencyTable {

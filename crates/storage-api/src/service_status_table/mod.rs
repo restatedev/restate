@@ -11,8 +11,6 @@
 use std::future::Future;
 use std::ops::RangeInclusive;
 
-use futures::Stream;
-
 use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId};
 
 use crate::Result;
@@ -37,10 +35,16 @@ pub trait ReadOnlyVirtualObjectStatusTable {
 }
 
 pub trait ScanVirtualObjectStatusTable {
-    fn scan_virtual_object_statuses(
+    fn for_each_virtual_object_status<
+        F: FnMut((ServiceId, VirtualObjectStatus)) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send>;
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait VirtualObjectStatusTable: ReadOnlyVirtualObjectStatusTable {

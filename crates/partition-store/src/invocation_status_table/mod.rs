@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 
 use futures::Stream;
 use tokio_stream::StreamExt;
@@ -26,7 +26,7 @@ use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, Wit
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::scan::TableScan;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
 // TODO remove this once we remove the old InvocationStatus
 define_table_key!(
@@ -211,6 +211,40 @@ impl ScanInvocationStatusTable for PartitionStore {
             },
         )
         .map_err(|_| StorageError::OperationalError)
+    }
+
+    fn for_each_invocation_status<
+        F: FnMut((InvocationId, InvocationStatus)) -> ControlFlow<()> + Send + Sync + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        let new_status_keys = self
+            .iterator_for_each(
+                "df-for-each-invocation-status",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                {
+                    move |(mut key, mut value)| {
+                        let state_key =
+                            break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
+                        let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
+
+                        let (partition_key, invocation_uuid) =
+                            break_on_err(state_key.into_inner_ok_or())?;
+
+                        f((
+                            InvocationId::from_parts(partition_key, invocation_uuid),
+                            state_value,
+                        ))
+                        .map_break(Ok)
+                    }
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(new_status_keys)
     }
 }
 

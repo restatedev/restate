@@ -12,7 +12,9 @@ use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr::{PhysicalExpr, PhysicalSortExpr};
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
 
 #[macro_export]
 macro_rules! log_data_corruption_error {
@@ -58,4 +60,47 @@ pub(crate) trait Builder {
     fn finish(self) -> datafusion::common::Result<RecordBatch>;
 
     fn finish_and_new(&mut self) -> datafusion::common::Result<RecordBatch>;
+}
+
+pub(crate) struct BatchSender<B: Builder> {
+    builder: ManuallyDrop<B>,
+    tx: Sender<datafusion::error::Result<RecordBatch>>,
+}
+
+impl<B: Builder> BatchSender<B> {
+    pub(crate) fn new(
+        projection: SchemaRef,
+        tx: Sender<datafusion::error::Result<RecordBatch>>,
+    ) -> Self {
+        let builder = B::new(projection);
+        Self {
+            builder: ManuallyDrop::new(builder),
+            tx,
+        }
+    }
+
+    pub(crate) fn send(
+        &mut self,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<datafusion::error::Result<RecordBatch>>>
+    {
+        self.tx.blocking_send(self.builder.finish_and_new())
+    }
+
+    pub(crate) fn builder_mut(&mut self) -> &mut B {
+        &mut self.builder
+    }
+
+    pub(crate) fn num_rows(&self) -> usize {
+        self.builder.num_rows()
+    }
+}
+
+impl<B: Builder> Drop for BatchSender<B> {
+    fn drop(&mut self) {
+        if !self.builder.empty() {
+            // Safety: self.builder is exclusively taken at drop time, and never accessed again.
+            let builder = unsafe { ManuallyDrop::take(&mut self.builder) };
+            let _ = self.tx.blocking_send(builder.finish());
+        }
+    }
 }

@@ -22,7 +22,7 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::TableKind::State;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, break_on_err};
 use crate::{TableScan, TableScanIterationDecision};
 
 define_table_key!(
@@ -141,24 +141,25 @@ impl ReadOnlyStateTable for PartitionStore {
 }
 
 impl ScanStateTable for PartitionStore {
-    fn scan_all_user_states(
+    fn for_each_user_state<
+        F: FnMut((ServiceId, Bytes, &[u8])) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, Bytes, Bytes)>> + Send> {
-        self.run_iterator(
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        self.iterator_for_each(
             "df-user-state",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<StateKey>(range),
-            |(mut key, value)| {
-                let row_key = StateKey::deserialize_from(&mut key)?;
+            move |(mut key, value)| {
+                let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
                 let (partition_key, service_name, service_key, state_key) =
-                    row_key.into_inner_ok_or()?;
+                    break_on_err(row_key.into_inner_ok_or())?;
 
-                Ok((
-                    ServiceId::from_parts(partition_key, service_name, service_key),
-                    state_key,
-                    Bytes::copy_from_slice(value),
-                ))
+                let service_id = ServiceId::from_parts(partition_key, service_name, service_key);
+
+                f((service_id, state_key, value)).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

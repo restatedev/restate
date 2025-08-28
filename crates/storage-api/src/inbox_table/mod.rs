@@ -98,10 +98,13 @@ pub trait ReadOnlyInboxTable {
 }
 
 pub trait ScanInboxTable {
-    fn scan_inboxes(
+    fn for_each_inbox<
+        F: FnMut(SequenceNumberInboxEntry) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send>;
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait InboxTable: ReadOnlyPromiseTable {
