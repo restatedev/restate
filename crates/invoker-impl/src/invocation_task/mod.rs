@@ -38,7 +38,6 @@ use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -189,7 +188,7 @@ impl<IR, EE, Schemas> InvocationTask<IR, EE, Schemas>
 where
     IR: InvocationReader + Clone + Send + Sync + 'static,
     EE: EntryEnricher,
-    Schemas: DeploymentResolver + ServiceMetadataResolver + InvocationTargetResolver,
+    Schemas: DeploymentResolver + InvocationTargetResolver,
 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(

@@ -100,24 +100,25 @@ pub trait RequestDispatcher {
 // Contains some mocks we use in unit tests in this crate
 #[cfg(test)]
 mod mocks {
+    use super::*;
+    use restate_types::config::{DEFAULT_ABORT_TIMEOUT, DEFAULT_INACTIVITY_TIMEOUT};
     use restate_types::identifiers::DeploymentId;
     use restate_types::invocation::{
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
     };
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
-        InvocationTargetMetadata, InvocationTargetResolver,
+        DEFAULT_IDEMPOTENCY_RETENTION, InvocationAttemptOptions, InvocationTargetMetadata,
+        InvocationTargetResolver,
     };
     use restate_types::schema::service::test_util::MockServiceMetadataResolver;
     use restate_types::schema::service::{
-        HandlerMetadata, InvocationAttemptOptions, ServiceMetadata, ServiceMetadataResolver,
+        HandlerMetadata, ServiceMetadata, ServiceMetadataResolver,
     };
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use std::collections::HashMap;
     use std::sync::Arc;
-
-    use super::*;
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub(super) struct GreetingRequest {
@@ -152,7 +153,6 @@ mod mocks {
                         documentation: None,
                         metadata: Default::default(),
                         idempotency_retention: None,
-                        workflow_completion_retention: None,
                         journal_retention: None,
                         inactivity_timeout: None,
                         abort_timeout: None,
@@ -170,15 +170,18 @@ mod mocks {
                 deployment_id: DeploymentId::default(),
                 revision: 0,
                 public: invocation_target_metadata.public,
-                idempotency_retention: None,
+                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                 workflow_completion_retention: None,
                 journal_retention: None,
-                inactivity_timeout: None,
-                abort_timeout: None,
-                enable_lazy_state: None,
+                inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
+                abort_timeout: DEFAULT_ABORT_TIMEOUT,
+                enable_lazy_state: false,
             });
-            self.1
-                .add(service_name, [(handler_name, invocation_target_metadata)]);
+            self.1.add(
+                service_name,
+                invocation_target_metadata.target_ty.into(),
+                [(handler_name, invocation_target_metadata)],
+            );
         }
 
         pub fn with_service_and_target(
@@ -197,28 +200,16 @@ mod mocks {
             self.0.resolve_latest_service(service_name)
         }
 
-        fn resolve_invocation_attempt_options(
-            &self,
-            _deployment_id: &DeploymentId,
-            _service_name: impl AsRef<str>,
-            _handler_name: impl AsRef<str>,
-        ) -> Option<InvocationAttemptOptions> {
-            todo!()
-        }
-
-        fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {
-            todo!()
-        }
-
-        fn resolve_latest_service_type(
-            &self,
-            service_name: impl AsRef<str>,
-        ) -> Option<ServiceType> {
-            self.0.resolve_latest_service_type(service_name)
+        fn resolve_latest_service_openapi(&self, service_name: impl AsRef<str>) -> Option<Value> {
+            self.0.resolve_latest_service_openapi(service_name)
         }
 
         fn list_services(&self) -> Vec<ServiceMetadata> {
             self.0.list_services()
+        }
+
+        fn list_service_names(&self) -> Vec<String> {
+            self.0.list_service_names()
         }
     }
 
@@ -230,6 +221,23 @@ mod mocks {
         ) -> Option<InvocationTargetMetadata> {
             self.1
                 .resolve_latest_invocation_target(service_name, handler_name)
+        }
+
+        fn resolve_invocation_attempt_options(
+            &self,
+            deployment_id: &DeploymentId,
+            service_name: impl AsRef<str>,
+            handler_name: impl AsRef<str>,
+        ) -> Option<InvocationAttemptOptions> {
+            self.1
+                .resolve_invocation_attempt_options(deployment_id, service_name, handler_name)
+        }
+
+        fn resolve_latest_service_type(
+            &self,
+            service_name: impl AsRef<str>,
+        ) -> Option<ServiceType> {
+            self.1.resolve_latest_service_type(service_name)
         }
     }
 

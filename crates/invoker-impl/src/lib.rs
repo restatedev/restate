@@ -69,7 +69,6 @@ use restate_types::journal_v2::{
     CommandIndex, EntryMetadata, Event, NotificationId, TransientErrorEvent,
 };
 use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,13 +108,7 @@ impl<IR, EE, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<E
 where
     IR: InvocationReader + Clone + Send + Sync + 'static,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    Schemas: DeploymentResolver
-        + ServiceMetadataResolver
-        + InvocationTargetResolver
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    Schemas: DeploymentResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     fn start_invocation_task(
         &self,
@@ -187,7 +180,7 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
     where
         IR: InvocationReader + Clone + Send + Sync + 'static,
         EE: EntryEnricher,
-        Schemas: DeploymentResolver + ServiceMetadataResolver,
+        Schemas: DeploymentResolver + InvocationTargetResolver,
     {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
@@ -225,7 +218,7 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
     where
         IR: InvocationReader + Clone + Send + Sync + 'static,
         EE: EntryEnricher,
-        Schemas: DeploymentResolver + ServiceMetadataResolver,
+        Schemas: DeploymentResolver + InvocationTargetResolver,
     {
         metric_definitions::describe_metrics();
         let client =
@@ -250,13 +243,7 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas>
 where
     IR: InvocationReader + Clone + Send + Sync + 'static,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    Schemas: DeploymentResolver
-        + ServiceMetadataResolver
-        + InvocationTargetResolver
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    Schemas: DeploymentResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     pub fn handle(&self) -> InvokerHandle<IR> {
         InvokerHandle {
@@ -1398,7 +1385,6 @@ mod tests {
     use bytes::Bytes;
     use googletest::prelude::eq;
     use googletest::{assert_that, pat};
-    use serde_json::Value;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -1420,8 +1406,10 @@ mod tests {
     use restate_types::live::Constant;
     use restate_types::retries::RetryPolicy;
     use restate_types::schema::deployment::Deployment;
-    use restate_types::schema::invocation_target::InvocationTargetMetadata;
-    use restate_types::schema::service::{InvocationAttemptOptions, ServiceMetadata};
+    use restate_types::schema::invocation_target::{
+        InvocationAttemptOptions, InvocationTargetMetadata,
+    };
+    use restate_types::schema::service::ServiceMetadata;
 
     use crate::error::{InvokerError, SdkInvocationErrorV2};
     use crate::quota::InvokerConcurrencyQuota;
@@ -1575,33 +1563,6 @@ mod tests {
     #[derive(Debug, Clone, Default)]
     struct MockSchemas;
 
-    impl ServiceMetadataResolver for MockSchemas {
-        fn resolve_latest_service(&self, _: impl AsRef<str>) -> Option<ServiceMetadata> {
-            None
-        }
-
-        fn resolve_invocation_attempt_options(
-            &self,
-            _: &DeploymentId,
-            _: impl AsRef<str>,
-            _: impl AsRef<str>,
-        ) -> Option<InvocationAttemptOptions> {
-            None
-        }
-
-        fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {
-            None
-        }
-
-        fn resolve_latest_service_type(&self, _: impl AsRef<str>) -> Option<ServiceType> {
-            None
-        }
-
-        fn list_services(&self) -> Vec<ServiceMetadata> {
-            vec![]
-        }
-    }
-
     impl DeploymentResolver for MockSchemas {
         fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
             None
@@ -1629,6 +1590,19 @@ mod tests {
             _service_name: impl AsRef<str>,
             _handler_name: impl AsRef<str>,
         ) -> Option<InvocationTargetMetadata> {
+            None
+        }
+
+        fn resolve_invocation_attempt_options(
+            &self,
+            _: &DeploymentId,
+            _: impl AsRef<str>,
+            _: impl AsRef<str>,
+        ) -> Option<InvocationAttemptOptions> {
+            None
+        }
+
+        fn resolve_latest_service_type(&self, _: impl AsRef<str>) -> Option<ServiceType> {
             None
         }
     }
