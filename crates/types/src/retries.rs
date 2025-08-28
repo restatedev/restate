@@ -16,6 +16,8 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+use restate_serde_util::DurationString;
+
 use rand::Rng;
 
 const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
@@ -78,10 +80,10 @@ pub enum RetryPolicy {
         ///
         /// Interval between retries.
         ///
-        /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-        interval: humantime::Duration,
+        /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
+        #[serde(with = "serde_with::As::<DurationString>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "DurationString"))]
+        interval: Duration,
         /// # Max attempts
         ///
         /// Number of maximum attempts before giving up. Infinite retries if unset.
@@ -95,10 +97,10 @@ pub enum RetryPolicy {
         ///
         /// Initial interval for the first retry attempt.
         ///
-        /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-        #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-        initial_interval: humantime::Duration,
+        /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
+        #[serde(with = "serde_with::As::<DurationString>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "DurationString"))]
+        initial_interval: Duration,
 
         /// # Factor
         ///
@@ -113,9 +115,11 @@ pub enum RetryPolicy {
         /// # Max interval
         ///
         /// Maximum interval between retries.
-        #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-        #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-        max_interval: Option<humantime::Duration>,
+        ///
+        /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
+        #[serde(with = "serde_with::As::<Option<DurationString>>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "Option<DurationString>"))]
+        max_interval: Option<Duration>,
     },
 }
 
@@ -128,7 +132,7 @@ impl Default for RetryPolicy {
 impl RetryPolicy {
     pub fn fixed_delay(interval: Duration, max_attempts: Option<usize>) -> Self {
         Self::FixedDelay {
-            interval: interval.into(),
+            interval,
             max_attempts: max_attempts.map(|m| NonZeroUsize::new(m).expect("non-zero")),
         }
     }
@@ -142,10 +146,10 @@ impl RetryPolicy {
         // Formula to compute the time based on number of retries:
         // y = \sum_{n=0}^{x} \min \left( max_interval,\ initial_interval \cdot factor x \right)
         Self::Exponential {
-            initial_interval: initial_interval.into(),
+            initial_interval,
             factor,
             max_attempts: max_attempts.map(|m| NonZeroUsize::new(m).expect("non-zero")),
-            max_interval: max_interval.map(Into::into),
+            max_interval,
         }
     }
 
@@ -408,7 +412,7 @@ impl RetryIter<'_> {
                 if max_attempts.is_some_and(|limit| (self.attempts + 1) > limit.into()) {
                     None
                 } else {
-                    Some((*interval).into())
+                    Some(*interval)
                 }
             }
             RetryPolicy::Exponential {
@@ -426,7 +430,7 @@ impl RetryIter<'_> {
                     );
                     Some(new_retry)
                 } else {
-                    Some((*initial_interval).into())
+                    Some(*initial_interval)
                 }
             }
         }
@@ -448,7 +452,7 @@ impl Iterator for RetryIter<'_> {
                 if max_attempts.is_some_and(|limit| self.attempts > limit.into()) {
                     None
                 } else {
-                    Some(with_jitter((*interval).into(), DEFAULT_JITTER_MULTIPLIER))
+                    Some(with_jitter(*interval, DEFAULT_JITTER_MULTIPLIER))
                 }
             }
             RetryPolicy::Exponential {
@@ -467,11 +471,8 @@ impl Iterator for RetryIter<'_> {
                     self.last_retry = Some(new_retry);
                     Some(with_jitter(new_retry, DEFAULT_JITTER_MULTIPLIER))
                 } else {
-                    self.last_retry = Some((*initial_interval).into());
-                    Some(with_jitter(
-                        (*initial_interval).into(),
-                        DEFAULT_JITTER_MULTIPLIER,
-                    ))
+                    self.last_retry = Some(*initial_interval);
+                    Some(with_jitter(*initial_interval, DEFAULT_JITTER_MULTIPLIER))
                 }
             }
         }
