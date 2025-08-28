@@ -145,7 +145,7 @@ where
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
 
-            if ctx.is_leader && entry.ty().is_usage_type() {
+            if ctx.is_leader {
                 counter!(
                     USAGE_LEADER_JOURNAL_ENTRY_COUNT,
                     "entry" => entry.ty().as_static_str(),

@@ -90,37 +90,6 @@ impl EntryType {
             EntryType::Event => "Event",
         }
     }
-
-    /// Returns true if the entry type should be counted as usage.
-    /// State-related commands are excluded.
-    pub fn is_usage_type(&self) -> bool {
-        use CommandType as Ct;
-        use EntryType as Et;
-        match self {
-            Et::Command(Ct::Input) => true,
-            Et::Command(Ct::Output) => true,
-            Et::Command(Ct::GetPromise) => true,
-            Et::Command(Ct::PeekPromise) => true,
-            Et::Command(Ct::CompletePromise) => true,
-            Et::Command(Ct::Sleep) => true,
-            Et::Command(Ct::Call) => true,
-            Et::Command(Ct::OneWayCall) => true,
-            Et::Command(Ct::SendSignal) => true,
-            Et::Command(Ct::Run) => true,
-            Et::Command(Ct::AttachInvocation) => true,
-            Et::Command(Ct::GetInvocationOutput) => true,
-            Et::Command(Ct::CompleteAwakeable) => true,
-            Et::Command(Ct::SetState) => false,
-            Et::Command(Ct::GetLazyState) => false,
-            Et::Command(Ct::GetEagerState) => false,
-            Et::Command(Ct::GetLazyStateKeys) => false,
-            Et::Command(Ct::GetEagerStateKeys) => false,
-            Et::Command(Ct::ClearState) => false,
-            Et::Command(Ct::ClearAllState) => false,
-            Et::Notification(_) => false,
-            Et::Event => false,
-        }
-    }
 }
 
 use crate::journal_v2::lite::*;
