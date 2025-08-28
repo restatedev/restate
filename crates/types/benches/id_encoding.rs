@@ -13,11 +13,12 @@ use std::fmt::Write;
 use criterion::{Criterion, criterion_group, criterion_main};
 
 use restate_types::identifiers::AwakeableIdentifier;
-use restate_types::{IdEncoder, identifiers::InvocationId};
+use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::ResourceId;
 
 pub fn id_encoding(c: &mut Criterion) {
     c.bench_function("invocation-id-display", |b| {
-        let mut buf = String::with_capacity(IdEncoder::<InvocationId>::estimate_buf_capacity());
+        let mut buf = String::with_capacity(InvocationId::str_encoded_len());
         b.iter_batched(
             InvocationId::mock_random,
             |id| {
