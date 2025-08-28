@@ -217,6 +217,9 @@ pub enum DurabilityMode {
     SnapshotOnly,
 }
 
+pub const DEFAULT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEFAULT_ABORT_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// # Invoker options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -336,8 +339,8 @@ impl Default for InvokerOptions {
                 Some(Duration::from_secs(10)),
             ),
             in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
-            inactivity_timeout: Duration::from_secs(60).into(),
-            abort_timeout: Duration::from_secs(60).into(),
+            inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT.into(),
+            abort_timeout: DEFAULT_ABORT_TIMEOUT.into(),
             message_size_warning: NonZeroUsize::new(10 * 1024 * 1024).unwrap(), // 10MiB
             message_size_limit: None,
             tmp_dir: None,

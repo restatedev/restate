@@ -11,7 +11,6 @@
 use std::ops::RangeInclusive;
 
 use bytestring::ByteString;
-use futures::Stream;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
@@ -24,7 +23,7 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::scan::TableScan;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
 define_table_key!(
     TableKind::ServiceStatus,
@@ -93,24 +92,30 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
 }
 
 impl ScanVirtualObjectStatusTable for PartitionStore {
-    fn scan_virtual_object_statuses(
+    fn for_each_virtual_object_status<
+        F: FnMut((ServiceId, VirtualObjectStatus)) -> std::ops::ControlFlow<()>
+            + Send
+            + Sync
+            + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(ServiceId, VirtualObjectStatus)>> + Send> {
-        self.run_iterator(
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        self.iterator_for_each(
             "df-vo-status",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<ServiceStatusKey>(range),
-            |(mut key, mut value)| {
-                let state_key = ServiceStatusKey::deserialize_from(&mut key)?;
-                let state_value = VirtualObjectStatus::decode(&mut value)?;
+            move |(mut key, mut value)| {
+                let state_key = break_on_err(ServiceStatusKey::deserialize_from(&mut key))?;
+                let state_value = break_on_err(VirtualObjectStatus::decode(&mut value))?;
 
-                let (partition_key, service_name, service_key) = state_key.into_inner_ok_or()?;
+                let (partition_key, service_name, service_key) =
+                    break_on_err(state_key.into_inner_ok_or())?;
 
-                Ok((
-                    ServiceId::from_parts(partition_key, service_name, service_key),
-                    state_value,
-                ))
+                let service_id = ServiceId::from_parts(partition_key, service_name, service_key);
+
+                f((service_id, state_value)).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

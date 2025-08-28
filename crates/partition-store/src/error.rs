@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::ControlFlow;
+
 use codederror::CodedError;
 
 use restate_core::ShutdownError;
@@ -80,4 +82,13 @@ pub enum SnapshotErrorKind {
     Internal(#[source] anyhow::Error),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+}
+
+pub(crate) fn break_on_err<T, E>(
+    r: std::result::Result<T, E>,
+) -> ControlFlow<std::result::Result<(), E>, T> {
+    match r {
+        Ok(val) => ControlFlow::Continue(val),
+        Err(err) => ControlFlow::Break(Err(err)),
+    }
 }

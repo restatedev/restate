@@ -9,10 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 use std::sync::Arc;
-
-use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
@@ -58,19 +56,19 @@ struct IdempotencyScanner;
 
 impl ScanLocalPartition for IdempotencyScanner {
     type Builder = SysIdempotencyBuilder;
-    type Item = (IdempotencyId, IdempotencyMetadata);
+    type Item<'a> = (IdempotencyId, IdempotencyMetadata);
 
-    fn scan_partition_store(
+    fn for_each_row<F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
-    {
-        partition_store.scan_idempotency_metadata(range)
+        f: F,
+    ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
+        partition_store.for_each_idempotency_metadata(range, f)
     }
 
-    fn append_row(
+    fn append_row<'a>(
         row_builder: &mut Self::Builder,
-        (idempotency_id, idempotency_metadata): Self::Item,
+        (idempotency_id, idempotency_metadata): Self::Item<'a>,
     ) {
         append_idempotency_row(row_builder, idempotency_id, idempotency_metadata);
     }

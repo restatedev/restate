@@ -9,11 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
+use std::ops::ControlFlow;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-
-use futures::Stream;
-use tokio_stream::StreamExt;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
@@ -67,23 +65,46 @@ struct JournalScanner;
 
 impl ScanLocalPartition for JournalScanner {
     type Builder = SysJournalBuilder;
-    type Item = (JournalEntryId, ScannedEntry);
+    type Item<'a> = (JournalEntryId, ScannedEntry);
 
-    fn scan_partition_store(
+    fn for_each_row<F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
-    {
-        let v1 = ScanJournalTable::scan_journals(partition_store, range.clone())?
-            .map(|x| x.map(|(id, entry)| (id, ScannedEntry::V1(entry))));
+        f: F,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
+        // these two iterators can run concurrently in theory.
+        // in practice, there are not typically any keys in the first iterator, but rust rightfully forces us to use a mutex to protect the FnMut
+        // the intent here is that iterators race to produce the first row, the winner gets an owned lock guard which it then holds until its done iterating
+        // and then the next iterator is able to get a lock guard.
 
-        let v2 = ScanJournalTableV2::scan_journals(partition_store, range)?
-            .map(|x| x.map(|(id, entry)| (id, ScannedEntry::V2(entry))));
+        let f = Arc::new(tokio::sync::Mutex::new(f));
 
-        Ok(v1.merge(v2))
+        let v1 = ScanJournalTable::for_each_journal(partition_store, range.clone(), {
+            let f = f.clone();
+            let mut f_locked = None;
+            move |(id, entry)| {
+                let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
+                f((id, ScannedEntry::V1(entry)))
+            }
+        })?;
+
+        let v2 = ScanJournalTableV2::for_each_journal(partition_store, range, {
+            let f = f.clone();
+            let mut f_locked = None;
+            move |(id, entry)| {
+                let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
+                f((id, ScannedEntry::V2(entry)))
+            }
+        })?;
+
+        Ok(async {
+            v1.await?;
+            v2.await?;
+            Ok(())
+        })
     }
 
-    fn append_row(row_builder: &mut Self::Builder, value: Self::Item) {
+    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>) {
         match value.1 {
             ScannedEntry::V1(v1) => {
                 append_journal_row(row_builder, value.0, v1);

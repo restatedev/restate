@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::io::Cursor;
+use std::ops::ControlFlow;
 
 use bytestring::ByteString;
 use futures::Stream;
@@ -26,7 +27,8 @@ use restate_types::message::MessageIndex;
 use crate::TableKind::Inbox;
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
+    TableScanIterationDecision, break_on_err,
 };
 
 define_table_key!(
@@ -98,20 +100,23 @@ impl ReadOnlyInboxTable for PartitionStore {
 }
 
 impl ScanInboxTable for PartitionStore {
-    fn scan_inboxes(
+    fn for_each_inbox<
+        F: FnMut(SequenceNumberInboxEntry) -> ControlFlow<()> + Send + Sync + 'static,
+    >(
         &self,
         range: std::ops::RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
-        self.run_iterator(
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        self.iterator_for_each(
             "df-inbox",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
-            |(mut key, mut value)| {
-                let key = InboxKey::deserialize_from(&mut key)?;
-                let sequence_number = *key.sequence_number_ok_or()?;
-                let inbox_entry = InboxEntry::decode(&mut value)?;
+            move |(mut key, mut value)| {
+                let key = break_on_err(InboxKey::deserialize_from(&mut key))?;
+                let sequence_number = *break_on_err(key.sequence_number_ok_or())?;
+                let inbox_entry = break_on_err(InboxEntry::decode(&mut value))?;
 
-                Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
+                f(SequenceNumberInboxEntry::new(sequence_number, inbox_entry)).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)

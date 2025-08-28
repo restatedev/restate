@@ -13,7 +13,6 @@ use std::ops::RangeInclusive;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::Stream;
 
 use restate_types::errors::InvocationErrorCode;
 use restate_types::identifiers::{PartitionKey, ServiceId};
@@ -121,10 +120,13 @@ pub trait ReadOnlyPromiseTable {
 }
 
 pub trait ScanPromiseTable {
-    fn scan_promises(
+    fn for_each_promise<
+        F: FnMut(OwnedPromiseRow) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<OwnedPromiseRow>> + Send>;
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait PromiseTable: ReadOnlyPromiseTable {

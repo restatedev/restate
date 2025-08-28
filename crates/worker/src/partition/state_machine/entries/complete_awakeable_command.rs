@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use crate::partition::types::OutboxMessageExt;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
 use restate_storage_api::state_table::StateTable;
@@ -18,6 +15,10 @@ use restate_types::invocation::{NotifySignalRequest, ResponseResult};
 use restate_types::journal_v2::{
     CompleteAwakeableCommand, CompleteAwakeableId, CompleteAwakeableResult, Signal, SignalResult,
 };
+
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::types::OutboxMessageExt;
 
 pub(super) type ApplyCompleteAwakeableCommand<'e> =
     ApplyJournalCommandEffect<'e, CompleteAwakeableCommand>;

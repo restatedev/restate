@@ -8,8 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::invocation::{InvocationRetention, InvocationTargetType, WorkflowHandlerType};
+use crate::invocation::{
+    InvocationRetention, InvocationTargetType, ServiceType, WorkflowHandlerType,
+};
 
+use crate::identifiers::DeploymentId;
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
@@ -20,6 +23,31 @@ use std::{cmp, fmt};
 
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
+
+/// This API resolves invocation targets.
+///
+/// This is used by invoker and ingress to resolve metadata required to ingest an invocation and run it.
+///
+/// The metadata used by the Admin API is returned by [`super::service::ServiceMetadataResolver`].
+pub trait InvocationTargetResolver {
+    /// Returns None if the service handler doesn't exist, Some(basic_service_metadata) otherwise.
+    fn resolve_latest_invocation_target(
+        &self,
+        service_name: impl AsRef<str>,
+        handler_name: impl AsRef<str>,
+    ) -> Option<InvocationTargetMetadata>;
+
+    /// Resolve latest service type, for the given service name
+    fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType>;
+
+    /// Resolve attempt options
+    fn resolve_invocation_attempt_options(
+        &self,
+        deployment_id: &DeploymentId,
+        service_name: impl AsRef<str>,
+        handler_name: impl AsRef<str>,
+    ) -> Option<InvocationAttemptOptions>;
+}
 
 #[derive(Debug, Clone)]
 pub struct InvocationTargetMetadata {
@@ -58,14 +86,11 @@ impl InvocationTargetMetadata {
     }
 }
 
-/// This API resolves invocation targets.
-pub trait InvocationTargetResolver {
-    /// Returns None if the service handler doesn't exist, Some(basic_service_metadata) otherwise.
-    fn resolve_latest_invocation_target(
-        &self,
-        service_name: impl AsRef<str>,
-        handler_name: impl AsRef<str>,
-    ) -> Option<InvocationTargetMetadata>;
+#[derive(Debug, Eq, PartialEq, Default)]
+pub struct InvocationAttemptOptions {
+    pub abort_timeout: Option<Duration>,
+    pub inactivity_timeout: Option<Duration>,
+    pub enable_lazy_state: Option<bool>,
 }
 
 // --- Input rules
@@ -449,7 +474,7 @@ pub mod test_util {
     use std::collections::HashMap;
 
     #[derive(Debug, Clone)]
-    pub struct MockService(HashMap<String, InvocationTargetMetadata>);
+    pub struct MockService(ServiceType, HashMap<String, InvocationTargetMetadata>);
 
     #[derive(Debug, Default, Clone)]
     pub struct MockInvocationTargetResolver(HashMap<String, MockService>);
@@ -458,11 +483,13 @@ pub mod test_util {
         pub fn add(
             &mut self,
             service_name: &str,
+            service_type: ServiceType,
             handlers: impl IntoIterator<Item = (impl ToString, InvocationTargetMetadata)>,
         ) {
             self.0.insert(
                 service_name.to_owned(),
                 MockService(
+                    service_type,
                     handlers
                         .into_iter()
                         .map(|(s, i)| (s.to_string(), i))
@@ -480,7 +507,26 @@ pub mod test_util {
         ) -> Option<InvocationTargetMetadata> {
             self.0
                 .get(service_name.as_ref())
-                .and_then(|c| c.0.get(handler_name.as_ref()).cloned())
+                .and_then(|c| c.1.get(handler_name.as_ref()).cloned())
+        }
+
+        fn resolve_latest_service_type(
+            &self,
+            service_name: impl AsRef<str>,
+        ) -> Option<ServiceType> {
+            self.0.get(service_name.as_ref()).map(|s| s.0)
+        }
+
+        fn resolve_invocation_attempt_options(
+            &self,
+            _deployment_id: &DeploymentId,
+            service_name: impl AsRef<str>,
+            handler_name: impl AsRef<str>,
+        ) -> Option<InvocationAttemptOptions> {
+            self.0.get(service_name.as_ref()).and_then(|c| {
+                c.1.get(handler_name.as_ref())
+                    .map(|_| InvocationAttemptOptions::default())
+            })
         }
     }
 

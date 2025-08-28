@@ -16,6 +16,7 @@ pub mod prometheus_metrics;
 use std::collections::HashMap;
 use std::env;
 use std::fmt::Display;
+use std::sync::OnceLock;
 
 use exporter::RuntimeModifierSpanExporter;
 use opentelemetry::trace::{TraceError, TracerProvider};
@@ -54,6 +55,14 @@ const RESTATE_INVOCATION_ID: &str = "restate.invocation.id";
 const RESTATE_INVOCATION_TARGET: &str = "restate.invocation.target";
 const RESTATE_ERROR_CODE: &str = "restate.error.code";
 const RESTATE_INVOCATION_ERROR_STACKTRACE: &str = "restate.invocation.error.stacktrace";
+
+static SERVICE_TRACING_INITIALIZED: OnceLock<()> = OnceLock::new();
+
+#[inline]
+/// Returns true if service tracing is enabled.
+pub fn is_service_tracing_enabled() -> bool {
+    SERVICE_TRACING_INITIALIZED.get().is_some()
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
@@ -175,7 +184,7 @@ fn parse_tracing_endpoint(
 }
 
 /// This function parses tracing-services-endpoint and/or tracing-endpoint, and
-/// builds an OpenTelemetry trace exporter emitting to that endpoiont. It then
+/// builds an OpenTelemetry trace exporter emitting to that endpoint. It then
 /// installs that exporter as the global OpenTelemetry tracer provider, which is
 /// used by the [`invocation_span!`] macro.
 ///
@@ -199,6 +208,10 @@ fn install_opentelemetry_tracer_provider(common_opts: &CommonOptions) -> Result<
         Some(endpoint) => *endpoint,
         None => return Ok(()),
     };
+
+    SERVICE_TRACING_INITIALIZED
+        .set(())
+        .expect("service tracing not set");
 
     // Parse the endpoint and headers to build the exporter.
     let exporter = parse_tracing_endpoint(endpoint, common_opts.tracing.tracing_headers.clone())?;
@@ -234,7 +247,6 @@ fn install_opentelemetry_tracer_provider(common_opts: &CommonOptions) -> Result<
         .build();
 
     opentelemetry::global::set_tracer_provider(provider);
-
     Ok(())
 }
 

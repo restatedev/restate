@@ -17,7 +17,7 @@ pub(crate) fn append_state_row(
     builder: &mut StateBuilder,
     service_id: ServiceId,
     state_key: Bytes,
-    state_value: Bytes,
+    state_value: &[u8],
 ) {
     let mut row = builder.row();
     row.partition_key(service_id.partition_key());
@@ -29,11 +29,11 @@ pub(crate) fn append_state_row(
         row.key(str);
     }
     if row.is_value_utf8_defined()
-        && let Ok(str) = std::str::from_utf8(&state_value)
+        && let Ok(str) = std::str::from_utf8(state_value)
     {
         row.value_utf8(str);
     }
     if row.is_value_defined() {
-        row.value(&state_value);
+        row.value(state_value);
     }
 }

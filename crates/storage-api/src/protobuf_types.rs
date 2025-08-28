@@ -3418,7 +3418,7 @@ pub mod v1 {
                 crate::journal_table_v2::StoredEntry(raw_entry): crate::journal_table_v2::StoredEntry,
             ) -> Self {
                 let ty = EntryType::from(raw_entry.ty());
-                let append_time = raw_entry.header().append_time.into();
+                let append_time = raw_entry.header.append_time.into();
 
                 let mut event_type = entry::EventType::UnknownEvent;
                 let mut event_deduplication_hash = None;

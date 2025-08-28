@@ -988,9 +988,9 @@ dependencies = [
 
 [[package]]
 name = "base62"
-version = "2.2.1"
+version = "2.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10e52a7bcb1d6beebee21fb5053af9e3cbb7a7ed1a4909e534040e676437ab1f"
+checksum = "0104d4d8d15e458f21dcd027ea350bf38e4364954909402f4da075aca8d0f136"
 dependencies = [
  "rustversion",
 ]
@@ -1219,7 +1219,7 @@ version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
- "generic-array",
+ "generic-array 0.14.7",
 ]
 
 [[package]]
@@ -1958,7 +1958,7 @@ version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1bfb12502f3fc46cca1bb51ac28df9d618d813cdc3d2f25b9fe775a34af26bb3"
 dependencies = [
- "generic-array",
+ "generic-array 0.14.7",
  "typenum",
 ]
 
@@ -2156,6 +2156,7 @@ dependencies = [
  "log",
  "object_store",
  "paste",
+ "recursive",
  "sqlparser",
  "tokio",
  "web-time",
@@ -2292,6 +2293,7 @@ dependencies = [
  "datafusion-physical-expr-common",
  "indexmap 2.10.0",
  "paste",
+ "recursive",
  "serde_json",
  "sqlparser",
 ]
@@ -2454,6 +2456,7 @@ dependencies = [
  "indexmap 2.10.0",
  "itertools 0.14.0",
  "log",
+ "recursive",
  "regex",
  "regex-syntax 0.8.5",
 ]
@@ -2511,6 +2514,7 @@ dependencies = [
  "datafusion-pruning",
  "itertools 0.14.0",
  "log",
+ "recursive",
 ]
 
 [[package]]
@@ -2597,6 +2601,7 @@ dependencies = [
  "datafusion-expr",
  "indexmap 2.10.0",
  "log",
+ "recursive",
  "regex",
  "sqlparser",
 ]
@@ -3307,6 +3312,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "generic-array"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8c8444bc9d71b935156cc0ccab7f622180808af7867b1daae6547d773591703"
+dependencies = [
+ "typenum",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3946,7 +3960,7 @@ version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0c10553d664a4d0bcff9f4215d0aac67a639cc68ef660840afe309b807bc9f5"
 dependencies = [
- "generic-array",
+ "generic-array 0.14.7",
 ]
 
 [[package]]
@@ -5949,6 +5963,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "psm"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e944464ec8536cd1beb0bbfd96987eb5e3b72f2ecdafdc5c769a37f1fa2ae1f"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "pyo3"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6282,6 +6305,26 @@ dependencies = [
  "num_enum 0.7.4",
  "openssl-sys",
  "pkg-config",
+]
+
+[[package]]
+name = "recursive"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0786a43debb760f491b1bc0269fe5e84155353c67482b9e60d0cfb596054b43e"
+dependencies = [
+ "recursive-proc-macro-impl",
+ "stacker",
+]
+
+[[package]]
+name = "recursive-proc-macro-impl"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76009fbe0614077fc1a2ce255e3a1881a2e3a3527097d5dc6d8212c585e7e38b"
+dependencies = [
+ "quote",
+ "syn 2.0.104",
 ]
 
 [[package]]
@@ -7705,6 +7748,7 @@ dependencies = [
  "figment",
  "flexbuffers",
  "futures",
+ "generic-array 1.2.0",
  "googletest",
  "hostname",
  "http 1.3.1",
@@ -7800,8 +7844,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.0.97"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.97#7cf1608d10a825d3323df15a75307f901d9cdae7"
+version = "0.0.98"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.0.98#5741c13bbcc08e9ac1af0e73886cac58437841c9"
 dependencies = [
  "anyhow",
  "include_dir",
@@ -7909,6 +7953,7 @@ dependencies = [
  "criterion",
  "crossbeam-epoch",
  "datafusion-common",
+ "datafusion-expr",
  "digest",
  "either",
  "enum-map",
@@ -7982,6 +8027,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "smallvec",
+ "sqlparser",
  "stable_deref_trait",
  "syn 1.0.109",
  "syn 2.0.104",
@@ -8783,6 +8829,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4521174166bac1ff04fe16ef4524c70144cd29682a45978978ca3d7f4e0be11"
 dependencies = [
  "log",
+ "recursive",
  "sqlparser_derive",
 ]
 
@@ -8802,6 +8849,19 @@ name = "stable_deref_trait"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8f112729512f8e442d81f95a8a7ddf2b7c6b8a1a6f509a95864142b30cab2d3"
+
+[[package]]
+name = "stacker"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cddb07e32ddb770749da91081d8d0ac3a16f1a569a18b20348cd371f5dead06b"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "psm",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "static_assertions"
@@ -9665,9 +9725,9 @@ dependencies = [
 
 [[package]]
 name = "typenum"
-version = "1.17.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42ff0bf0c66b8238c6f3b578df37d0b7848e55df8577b3f74f92a69acceeb825"
+checksum = "1dccffe3ce07af9386bfd29e80c0ab1a8205a2fc34e4bcd40364df902cfa8f3f"
 
 [[package]]
 name = "typify"

@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use http::Uri;
-
 use super::Handler;
 use super::HandlerError;
-use restate_types::schema::service::ServiceMetadataResolver;
+use http::Uri;
+use restate_types::schema::invocation_target::InvocationTargetResolver;
 
 pub(crate) enum WorkflowRequestType {
     Attach(String, String),
@@ -63,7 +62,7 @@ impl InvocationRequestType {
         schemas: &Schemas,
     ) -> Result<Self, HandlerError>
     where
-        Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
+        Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
     {
         // 🤔 This code could use the experimental api https://doc.rust-lang.org/std/iter/trait.Iterator.html#method.next_chunk
 
@@ -169,7 +168,7 @@ impl ServiceRequestType {
         schemas: &Schemas,
     ) -> Result<Self, HandlerError>
     where
-        Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
+        Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
     {
         // We need to query the service type before continuing to parse
         let service_type = schemas
@@ -223,7 +222,7 @@ pub(crate) enum RequestType {
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Schemas: ServiceMetadataResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     /// This function takes care of parsing the path of the request, inferring the correct request type
     pub(crate) fn parse_path(&mut self, uri: &Uri) -> Result<RequestType, HandlerError> {

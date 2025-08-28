@@ -144,6 +144,7 @@ async fn check_sleep_completion_index<T: JournalTable>(txn: &mut T) {
                 .await
                 .unwrap()
                 .unwrap()
+                .1
                 .command_type(),
             CommandType::Sleep
         );
@@ -299,6 +300,7 @@ async fn test_call_journal() {
                 .await
                 .unwrap()
                 .unwrap()
+                .1
                 .command_type(),
             CommandType::Call
         );
@@ -308,6 +310,7 @@ async fn test_call_journal() {
             .await
             .unwrap()
             .unwrap()
+            .1
             .command_type(),
         CommandType::OneWayCall
     );

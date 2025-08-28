@@ -26,7 +26,7 @@ restate-utoipa = { workspace = true }
 ahash = {workspace = true }
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
-base62 = { version = "2.0.2" }
+base62 = { version = "2.2.2" }
 base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
@@ -46,6 +46,7 @@ enum_dispatch = "0.3.13"
 enumset = { workspace = true, features = ["serde"] }
 figment = { version = "0.10.8", features = ["env", "toml"] }
 flexbuffers = { workspace = true }
+generic-array = { version = "1.2.0" }
 hostname = { workspace = true }
 http = { workspace = true }
 humantime = { workspace = true }
@@ -114,4 +115,8 @@ jsonptr = "0.7.1"
 
 [[bench]]
 name = "network_serialization"
+harness = false
+
+[[bench]]
+name = "id_encoding"
 harness = false

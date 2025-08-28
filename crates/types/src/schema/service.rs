@@ -13,17 +13,31 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde::Serialize;
-use serde_with::serde_as;
 
-use restate_serde_util::DurationString;
-
+use crate::config::{DEFAULT_ABORT_TIMEOUT, DEFAULT_INACTIVITY_TIMEOUT};
 use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
+use crate::schema::invocation_target::DEFAULT_IDEMPOTENCY_RETENTION;
+use restate_serde_util::DurationString;
 
-// TODO this type should not be serde, the actual type we need in the Admin API should be moved there.
-#[serde_as]
+/// This API returns service metadata, as shown in the Admin API.
+///
+/// Changing the types returned here has effect on the Admin API returned types!
+pub trait ServiceMetadataResolver {
+    fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata>;
+
+    fn resolve_latest_service_openapi(
+        &self,
+        service_name: impl AsRef<str>,
+    ) -> Option<serde_json::Value>;
+
+    fn list_services(&self) -> Vec<ServiceMetadata>;
+
+    fn list_service_names(&self) -> Vec<String>;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ServiceMetadata {
@@ -32,11 +46,17 @@ pub struct ServiceMetadata {
     /// Fully qualified name of the service
     pub name: String,
 
-    #[serde_as(as = "restate_serde_util::MapAsVec")]
+    /// # Type
+    ///
+    /// Service type
+    pub ty: ServiceType,
+
+    /// # Handlers
+    ///
+    /// Handlers for this service.
+    #[serde(with = "serde_with::As::<restate_serde_util::MapAsVec>")]
     #[cfg_attr(feature = "schemars", schemars(with = "Vec<HandlerMetadata>"))]
     pub handlers: HashMap<String, HandlerMetadata>,
-
-    pub ty: ServiceType,
 
     /// # Documentation
     ///
@@ -52,7 +72,6 @@ pub struct ServiceMetadata {
     /// # Deployment Id
     ///
     /// Deployment exposing the latest revision of the service.
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub deployment_id: DeploymentId,
 
     /// # Revision
@@ -64,18 +83,20 @@ pub struct ServiceMetadata {
     ///
     /// If true, the service can be invoked through the ingress.
     /// If false, the service can be invoked only from another Restate service.
+    #[serde(default = "restate_serde_util::default::bool::<true>")]
     pub public: bool,
 
     /// # Idempotency retention
     ///
     /// The retention duration of idempotent requests for this service.
+    ///
+    /// If not configured, this returns the default idempotency retention.
     #[serde(
-        with = "serde_with::As::<Option<DurationString>>",
-        skip_serializing_if = "Option::is_none",
-        default
+        with = "serde_with::As::<DurationString>",
+        default = "default_idempotency_retention"
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub idempotency_retention: Option<Duration>,
+    #[cfg_attr(feature = "schemars", schemars(with = "DurationString"))]
+    pub idempotency_retention: Duration,
 
     /// # Workflow completion retention
     ///
@@ -85,7 +106,7 @@ pub struct ServiceMetadata {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<DurationString>"))]
     pub workflow_completion_retention: Option<Duration>,
 
     /// # Journal retention
@@ -99,7 +120,7 @@ pub struct ServiceMetadata {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<DurationString>"))]
     pub journal_retention: Option<Duration>,
 
     /// # Inactivity timeout
@@ -113,14 +134,13 @@ pub struct ServiceMetadata {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     ///
-    /// This overrides the default inactivity timeout set in invoker options.
+    /// If unset, this returns the default inactivity timeout configured in invoker options.
     #[serde(
-        with = "serde_with::As::<Option<DurationString>>",
-        skip_serializing_if = "Option::is_none",
-        default
+        with = "serde_with::As::<DurationString>",
+        default = "default_inactivity_timeout"
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub inactivity_timeout: Option<Duration>,
+    #[cfg_attr(feature = "schemars", schemars(with = "DurationString"))]
+    pub inactivity_timeout: Duration,
 
     /// # Abort timeout
     ///
@@ -134,21 +154,20 @@ pub struct ServiceMetadata {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     ///
-    /// This overrides the default abort timeout set in invoker options.
+    /// If unset, this returns the default abort timeout configured in invoker options.
     #[serde(
-        with = "serde_with::As::<Option<DurationString>>",
-        skip_serializing_if = "Option::is_none",
-        default
+        with = "serde_with::As::<DurationString>",
+        default = "default_abort_timeout"
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub abort_timeout: Option<Duration>,
+    #[cfg_attr(feature = "schemars", schemars(with = "DurationString"))]
+    pub abort_timeout: Duration,
 
     /// # Enable lazy state
     ///
     /// If true, lazy state will be enabled for all invocations to this service.
     /// This is relevant only for Workflows and Virtual Objects.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub enable_lazy_state: Option<bool>,
+    #[serde(default = "restate_serde_util::default::bool::<false>")]
+    pub enable_lazy_state: bool,
 }
 
 impl restate_serde_util::MapAsVecItem for ServiceMetadata {
@@ -157,6 +176,18 @@ impl restate_serde_util::MapAsVecItem for ServiceMetadata {
     fn key(&self) -> Self::Key {
         self.name.clone()
     }
+}
+
+fn default_idempotency_retention() -> Duration {
+    DEFAULT_IDEMPOTENCY_RETENTION
+}
+
+fn default_inactivity_timeout() -> Duration {
+    DEFAULT_INACTIVITY_TIMEOUT
+}
+
+fn default_abort_timeout() -> Duration {
+    DEFAULT_ABORT_TIMEOUT
 }
 
 // This type is used only for exposing the handler metadata, and not internally. See [ServiceAndHandlerType].
@@ -171,8 +202,7 @@ pub enum HandlerMetadataType {
 impl From<InvocationTargetType> for Option<HandlerMetadataType> {
     fn from(value: InvocationTargetType) -> Self {
         match value {
-            // TODO(slinkydeveloper) stop writing this field in 1.3, now we still have to write it for back-compat
-            InvocationTargetType::Service => Some(HandlerMetadataType::Shared),
+            InvocationTargetType::Service => None,
             InvocationTargetType::VirtualObject(h_ty) => match h_ty {
                 VirtualObjectHandlerType::Exclusive => Some(HandlerMetadataType::Exclusive),
                 VirtualObjectHandlerType::Shared => Some(HandlerMetadataType::Shared),
@@ -185,12 +215,17 @@ impl From<InvocationTargetType> for Option<HandlerMetadataType> {
     }
 }
 
-// TODO this type should not be serde, the actual type we need in the Admin API should be moved there.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct HandlerMetadata {
+    /// # Name
+    ///
+    /// The handler name.
     pub name: String,
 
+    /// # Type
+    ///
+    /// The handler type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ty: Option<HandlerMetadataType>,
 
@@ -207,7 +242,7 @@ pub struct HandlerMetadata {
 
     /// # Idempotency retention
     ///
-    /// The retention duration of idempotent requests for this service.
+    /// The retention duration of idempotent requests for this handler. If set, it overrides the value set in the service.
     #[serde(
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
         skip_serializing_if = "Option::is_none",
@@ -216,23 +251,14 @@ pub struct HandlerMetadata {
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
     pub idempotency_retention: Option<Duration>,
 
-    /// # Workflow completion retention
-    ///
-    /// The retention duration of workflows. Only available on workflow services.
-    #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub workflow_completion_retention: Option<Duration>,
-
     /// # Journal retention
     ///
     /// The journal retention. When set, this applies to all requests to this handler.
     ///
     /// In case the invocation has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
     /// In case this handler is a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
+    ///
+    /// If set, it overrides the value set in the service.
     #[serde(
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
         skip_serializing_if = "Option::is_none",
@@ -252,7 +278,7 @@ pub struct HandlerMetadata {
     ///
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     ///
-    /// This overrides the default inactivity timeout set in invoker options.
+    /// If set, it overrides the value set in the service.
     #[serde(
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
         skip_serializing_if = "Option::is_none",
@@ -273,7 +299,7 @@ pub struct HandlerMetadata {
     ///
     /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
     ///
-    /// This overrides the default abort timeout set in invoker options.
+    /// If set, it overrides the value set in the service.
     #[serde(
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
         skip_serializing_if = "Option::is_none",
@@ -286,6 +312,8 @@ pub struct HandlerMetadata {
     ///
     /// If true, lazy state will be enabled for all invocations to this service.
     /// This is relevant only for Workflows and Virtual Objects.
+    ///
+    /// If set, it overrides the value set in the service.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub enable_lazy_state: Option<bool>,
 
@@ -327,39 +355,12 @@ impl restate_serde_util::MapAsVecItem for HandlerMetadata {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Default)]
-pub struct InvocationAttemptOptions {
-    pub abort_timeout: Option<Duration>,
-    pub inactivity_timeout: Option<Duration>,
-    pub enable_lazy_state: Option<bool>,
-}
-
-/// This API will return services registered by the user.
-pub trait ServiceMetadataResolver {
-    fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata>;
-
-    fn resolve_invocation_attempt_options(
-        &self,
-        deployment_id: &DeploymentId,
-        service_name: impl AsRef<str>,
-        handler_name: impl AsRef<str>,
-    ) -> Option<InvocationAttemptOptions>;
-
-    fn resolve_latest_service_openapi(
-        &self,
-        service_name: impl AsRef<str>,
-    ) -> Option<serde_json::Value>;
-
-    fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType>;
-
-    fn list_services(&self) -> Vec<ServiceMetadata>;
-}
-
 #[cfg(feature = "test-util")]
 #[allow(dead_code)]
 pub mod test_util {
     use super::*;
 
+    use crate::schema::invocation_target::DEFAULT_IDEMPOTENCY_RETENTION;
     use serde_json::Value;
     use std::collections::HashMap;
 
@@ -378,28 +379,16 @@ pub mod test_util {
             self.0.get(service_name.as_ref()).cloned()
         }
 
-        fn resolve_invocation_attempt_options(
-            &self,
-            _deployment_id: &DeploymentId,
-            _service_name: impl AsRef<str>,
-            _handler_name: impl AsRef<str>,
-        ) -> Option<InvocationAttemptOptions> {
-            None
-        }
-
         fn resolve_latest_service_openapi(&self, _service_name: impl AsRef<str>) -> Option<Value> {
             Some(Value::Null)
         }
 
-        fn resolve_latest_service_type(
-            &self,
-            service_name: impl AsRef<str>,
-        ) -> Option<ServiceType> {
-            self.0.get(service_name.as_ref()).map(|c| c.ty)
-        }
-
         fn list_services(&self) -> Vec<ServiceMetadata> {
             self.0.values().cloned().collect()
+        }
+
+        fn list_service_names(&self) -> Vec<String> {
+            self.0.values().map(|s| s.name.clone()).collect()
         }
     }
 
@@ -421,7 +410,6 @@ pub mod test_util {
                                 documentation: None,
                                 metadata: Default::default(),
                                 idempotency_retention: None,
-                                workflow_completion_retention: None,
                                 journal_retention: None,
                                 inactivity_timeout: None,
                                 abort_timeout: None,
@@ -441,12 +429,12 @@ pub mod test_util {
                 deployment_id: Default::default(),
                 revision: 0,
                 public: true,
-                idempotency_retention: Some(Duration::from_secs(60)),
+                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                 workflow_completion_retention: None,
                 journal_retention: None,
-                inactivity_timeout: None,
-                abort_timeout: None,
-                enable_lazy_state: None,
+                inactivity_timeout: Duration::from_secs(60),
+                abort_timeout: Duration::from_secs(60),
+                enable_lazy_state: false,
             }
         }
 
@@ -467,7 +455,6 @@ pub mod test_util {
                                 documentation: None,
                                 metadata: Default::default(),
                                 idempotency_retention: None,
-                                workflow_completion_retention: None,
                                 journal_retention: None,
                                 inactivity_timeout: None,
                                 abort_timeout: None,
@@ -487,12 +474,12 @@ pub mod test_util {
                 deployment_id: Default::default(),
                 revision: 0,
                 public: true,
-                idempotency_retention: Some(Duration::from_secs(60)),
+                idempotency_retention: DEFAULT_IDEMPOTENCY_RETENTION,
                 workflow_completion_retention: None,
                 journal_retention: None,
-                inactivity_timeout: None,
-                abort_timeout: None,
-                enable_lazy_state: None,
+                inactivity_timeout: Duration::from_secs(60),
+                abort_timeout: Duration::from_secs(60),
+                enable_lazy_state: false,
             }
         }
     }

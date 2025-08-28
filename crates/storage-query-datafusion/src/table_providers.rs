@@ -97,12 +97,18 @@ fn physical_partitions_to_logical(
             .map(|p| LogicalPartition::new(vec![p]))
             .collect();
     }
-    // split the partitions_to_scan into group_size groups
-    let group_size = physical_partitions.len().div_ceil(target_partitions);
-    physical_partitions
-        .chunks(group_size)
-        .map(|chunks| LogicalPartition::new(chunks.to_vec()))
-        .collect()
+
+    let mut logical_partitions = vec![LogicalPartition::new(Default::default()); target_partitions];
+    let mut logical_index = 0;
+
+    for partition in physical_partitions {
+        logical_partitions[logical_index]
+            .physical_partitions
+            .push(partition);
+        logical_index = (logical_index + 1) % target_partitions;
+    }
+
+    logical_partitions
 }
 
 #[async_trait]
@@ -135,7 +141,7 @@ where
             None => self.schema.clone(),
         };
 
-        let partition_key = self
+        let partition_keys = self
             .partition_key_extractor
             .try_extract(filters)
             .map_err(|e| DataFusionError::External(e.into()))?;
@@ -146,16 +152,38 @@ where
             .await
             .map_err(DataFusionError::External)?
             .into_iter()
-            .filter_map(|(partition_id, partition)| {
-                let Some(partition_key) = partition_key else {
-                    return Some((partition_id, partition));
-                };
-                if partition.key_range.contains(&partition_key) {
-                    let new_range = partition_key..=partition_key;
-                    let new_partition = Partition::new(partition_id, new_range);
-                    Some((partition_id, new_partition))
-                } else {
-                    None
+            .flat_map(|(partition_id, partition)| {
+                match &partition_keys {
+                    // User requested a full scan of all partitions, return one physical partition per restate partition
+                    None => itertools::Either::Left([(partition_id, partition)].into_iter()),
+                    // User requested too many point reads; for safety reasons we will ignore them
+                    Some(partition_keys) if partition_keys.len() > 4096 => {
+                        itertools::Either::Left([(partition_id, partition)].into_iter())
+                    }
+                    // User requested a list of point reads
+                    Some(partition_keys) => {
+                        itertools::Either::Right(
+                            partition_keys
+                                // Find requested partition keys that are in this partition
+                                .range(partition.key_range)
+                                .cloned()
+                                .map(move |partition_key| {
+                                    // We create a 'physical partition' per partition key.
+                                    // If the user provided a single point read (`id = 'inv_...'`),
+                                    // then we will have 1 physical partition overall -> 1 logical partition.
+                                    // If they provided N point reads (`id in ('inv_1', 'inv_2', ..)`),
+                                    // we will have N physical partitions, perhaps even for a single restate partition.
+                                    // Those will then be round-robined to the underlying logical partitions.
+                                    // As a result, separate point reads on the same partition ID might end up
+                                    // on separate logical partitions,but that's ok because they *can* be done
+                                    // in parallel efficiently.
+                                    (
+                                        partition_id,
+                                        Partition::new(partition_id, partition_key..=partition_key),
+                                    )
+                                }),
+                        )
+                    }
                 }
             })
             .collect();
@@ -173,16 +201,9 @@ where
             EquivalenceProperties::new_with_orderings(projected_schema.clone(), [ordering])
         };
 
-        let partition_plan = if sort_columns.is_empty() {
-            Partitioning::UnknownPartitioning(logical_partitions.len())
-        } else {
-            debug_assert!(logical_partitions.len() <= target_partitions);
-            Partitioning::Hash(sort_columns, logical_partitions.len())
-        };
-
         let plan = PlanProperties::new(
             eq_properties,
-            partition_plan,
+            Partitioning::UnknownPartitioning(logical_partitions.len()),
             EmissionType::Incremental,
             Boundedness::Bounded,
         )

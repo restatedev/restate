@@ -91,16 +91,14 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     c_tip!("{}", PUBLIC_DESCRIPTION);
     c_println!();
 
-    if let Some(idempotency_retention) = service.idempotency_retention {
-        let mut table = Table::new_styled();
-        table.add_kv_row(
-            "Idempotent requests retention:",
-            DurationString::display(idempotency_retention),
-        );
-        c_println!("{table}");
-        c_tip!("{}", IDEMPOTENCY_RETENTION);
-        c_println!();
-    }
+    let mut table = Table::new_styled();
+    table.add_kv_row(
+        "Idempotent requests retention:",
+        DurationString::display(service.idempotency_retention),
+    );
+    c_println!("{table}");
+    c_tip!("{}", IDEMPOTENCY_RETENTION);
+    c_println!();
 
     if service.ty == ServiceType::Workflow {
         let mut table = Table::new_styled();
@@ -117,24 +115,22 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         c_println!();
     }
 
-    if let Some(journal_retention) = service.journal_retention {
-        let mut table = Table::new_styled();
-        table.add_kv_row(
-            "Journal retention:",
-            DurationString::display(journal_retention),
-        );
-        c_println!("{table}");
-        c_tip!("{}", JOURNAL_RETENTION);
-        c_println!();
-    }
+    let mut table = Table::new_styled();
+    table.add_kv_row(
+        "Journal retention:",
+        service
+            .journal_retention
+            .map(DurationString::display)
+            .unwrap_or_else(|| "<UNSET>".to_string()),
+    );
+    c_println!("{table}");
+    c_tip!("{}", JOURNAL_RETENTION);
+    c_println!();
 
     let mut table = Table::new_styled();
     table.add_kv_row(
         "Inactivity timeout:",
-        service
-            .inactivity_timeout
-            .map(DurationString::display)
-            .unwrap_or("<DEFAULT>".to_string()),
+        DurationString::display(service.inactivity_timeout),
     );
     c_println!("{table}");
     c_tip!("{}", INACTIVITY_TIMEOUT);
@@ -143,10 +139,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     let mut table = Table::new_styled();
     table.add_kv_row(
         "Abort timeout:",
-        service
-            .abort_timeout
-            .map(DurationString::display)
-            .unwrap_or("<DEFAULT>".to_string()),
+        DurationString::display(service.abort_timeout),
     );
     c_println!("{table}");
     c_tip!("{}", ABORT_TIMEOUT);

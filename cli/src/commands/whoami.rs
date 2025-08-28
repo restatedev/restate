@@ -117,7 +117,7 @@ pub async fn run(State(env): State<CliEnv>) {
     c_println!("{}", table);
 
     c_println!();
-    c_println!("Build Information");
+    c_println!("Restate CLI Build Information");
     let mut table = Table::new();
     table.load_preset(comfy_table::presets::NOTHING);
     table.add_row(vec!["Version", build_info::RESTATE_CLI_VERSION]);

@@ -21,7 +21,6 @@ mod get_lazy_state_keys_command;
 mod get_promise_command;
 mod notification;
 mod peek_promise_command;
-mod run_command;
 mod send_signal_command;
 mod set_state_command;
 mod sleep_command;
@@ -62,7 +61,6 @@ use crate::partition::state_machine::entries::get_lazy_state_keys_command::Apply
 use crate::partition::state_machine::entries::get_promise_command::ApplyGetPromiseCommand;
 use crate::partition::state_machine::entries::notification::ApplyNotificationCommand;
 use crate::partition::state_machine::entries::peek_promise_command::ApplyPeekPromiseCommand;
-use crate::partition::state_machine::entries::run_command::ApplyRunCommand;
 use crate::partition::state_machine::entries::send_signal_command::ApplySendSignalCommand;
 use crate::partition::state_machine::entries::set_state_command::ApplySetStateCommand;
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
@@ -152,19 +150,9 @@ where
                         Command::Input(_)
                         | Command::Output(_)
                         | Command::GetEagerState(_)
-                        | Command::GetEagerStateKeys(_) => {
+                        | Command::GetEagerStateKeys(_)
+                        | Command::Run(_) => {
                             // For these entries, we don't need to perform operations, we just need to store them
-                        }
-
-                        Command::Run(entry) => {
-                            ApplyRunCommand {
-                                invocation_id: self.invocation_id,
-                                invocation_status: &self.invocation_status,
-                                entry,
-                                completions_to_process: &mut entries,
-                            }
-                            .apply(ctx)
-                            .await?;
                         }
 
                         Command::GetLazyState(entry) => {

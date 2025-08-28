@@ -13,7 +13,6 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures::Stream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
@@ -57,17 +56,19 @@ struct StateScanner;
 
 impl ScanLocalPartition for StateScanner {
     type Builder = StateBuilder;
-    type Item = (ServiceId, Bytes, Bytes);
+    type Item<'a> = (ServiceId, Bytes, &'a [u8]);
 
-    fn scan_partition_store(
+    fn for_each_row<
+        F: for<'a> FnMut(Self::Item<'a>) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+    >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = restate_storage_api::Result<Self::Item>> + Send, StorageError>
-    {
-        partition_store.scan_all_user_states(range)
+        f: F,
+    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
+        partition_store.for_each_user_state(range, f)
     }
 
-    fn append_row(row_builder: &mut Self::Builder, value: Self::Item) {
+    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>) {
         append_state_row(row_builder, value.0, value.1, value.2);
     }
 }

@@ -471,7 +471,7 @@ impl StoredRawEntryHeader {
 /// storing it in the partition processor storage.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StoredRawEntry {
-    header: StoredRawEntryHeader,
+    pub header: StoredRawEntryHeader,
     pub inner: RawEntry,
 }
 
@@ -481,14 +481,6 @@ impl StoredRawEntry {
             header,
             inner: inner.into(),
         }
-    }
-
-    pub fn header(&self) -> &StoredRawEntryHeader {
-        &self.header
-    }
-
-    pub fn header_mut(&mut self) -> &mut StoredRawEntryHeader {
-        &mut self.header
     }
 }
 

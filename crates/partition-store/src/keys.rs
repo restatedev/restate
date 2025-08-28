@@ -462,15 +462,15 @@ impl KeyCodec for InvocationUuid {
 
     fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
         // note: this is a zero-copy when the source is bytes::Bytes.
-        if source.remaining() < InvocationUuid::SIZE_IN_BYTES {
+        if source.remaining() < InvocationUuid::RAW_BYTES_LEN {
             return Err(StorageError::DataIntegrityError);
         }
-        let bytes = source.copy_to_bytes(InvocationUuid::SIZE_IN_BYTES);
+        let bytes = source.copy_to_bytes(InvocationUuid::RAW_BYTES_LEN);
         InvocationUuid::from_slice(&bytes).map_err(|err| StorageError::Generic(err.into()))
     }
 
     fn serialized_length(&self) -> usize {
-        InvocationUuid::SIZE_IN_BYTES
+        InvocationUuid::RAW_BYTES_LEN
     }
 }
 

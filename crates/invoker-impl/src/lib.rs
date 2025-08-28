@@ -69,7 +69,6 @@ use restate_types::journal_v2::{
     CommandIndex, EntryMetadata, Event, NotificationId, TransientErrorEvent,
 };
 use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,13 +108,7 @@ impl<IR, EE, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<E
 where
     IR: InvocationReader + Clone + Send + Sync + 'static,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    Schemas: DeploymentResolver
-        + ServiceMetadataResolver
-        + InvocationTargetResolver
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    Schemas: DeploymentResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     fn start_invocation_task(
         &self,
@@ -187,7 +180,7 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
     where
         IR: InvocationReader + Clone + Send + Sync + 'static,
         EE: EntryEnricher,
-        Schemas: DeploymentResolver + ServiceMetadataResolver,
+        Schemas: DeploymentResolver + InvocationTargetResolver,
     {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
@@ -225,7 +218,7 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
     where
         IR: InvocationReader + Clone + Send + Sync + 'static,
         EE: EntryEnricher,
-        Schemas: DeploymentResolver + ServiceMetadataResolver,
+        Schemas: DeploymentResolver + InvocationTargetResolver,
     {
         metric_definitions::describe_metrics();
         let client =
@@ -250,13 +243,7 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas>
 where
     IR: InvocationReader + Clone + Send + Sync + 'static,
     EE: EntryEnricher + Clone + Send + Sync + 'static,
-    Schemas: DeploymentResolver
-        + ServiceMetadataResolver
-        + InvocationTargetResolver
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    Schemas: DeploymentResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     pub fn handle(&self) -> InvokerHandle<IR> {
         InvokerHandle {
@@ -747,6 +734,8 @@ where
                 "Received a new entry. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
+            self.status_store
+                .on_progress_made(&partition, &invocation_id);
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
                     .send(Box::new(Effect {
@@ -797,6 +786,8 @@ where
                 "Received a new notification. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
+            self.status_store
+                .on_progress_made(&partition, &invocation_id);
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
                     .send(Box::new(Effect {
@@ -849,6 +840,8 @@ where
                 "Received a new command. Invocation state: {:?}",
                 ism.invocation_state_debug()
             );
+            self.status_store
+                .on_progress_made(&partition, &invocation_id);
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
                 let _ = output_tx
                     .send(Box::new(Effect {
@@ -1392,7 +1385,6 @@ mod tests {
     use bytes::Bytes;
     use googletest::prelude::eq;
     use googletest::{assert_that, pat};
-    use serde_json::Value;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -1414,8 +1406,10 @@ mod tests {
     use restate_types::live::Constant;
     use restate_types::retries::RetryPolicy;
     use restate_types::schema::deployment::Deployment;
-    use restate_types::schema::invocation_target::InvocationTargetMetadata;
-    use restate_types::schema::service::{InvocationAttemptOptions, ServiceMetadata};
+    use restate_types::schema::invocation_target::{
+        InvocationAttemptOptions, InvocationTargetMetadata,
+    };
+    use restate_types::schema::service::ServiceMetadata;
 
     use crate::error::{InvokerError, SdkInvocationErrorV2};
     use crate::quota::InvokerConcurrencyQuota;
@@ -1569,33 +1563,6 @@ mod tests {
     #[derive(Debug, Clone, Default)]
     struct MockSchemas;
 
-    impl ServiceMetadataResolver for MockSchemas {
-        fn resolve_latest_service(&self, _: impl AsRef<str>) -> Option<ServiceMetadata> {
-            None
-        }
-
-        fn resolve_invocation_attempt_options(
-            &self,
-            _: &DeploymentId,
-            _: impl AsRef<str>,
-            _: impl AsRef<str>,
-        ) -> Option<InvocationAttemptOptions> {
-            None
-        }
-
-        fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {
-            None
-        }
-
-        fn resolve_latest_service_type(&self, _: impl AsRef<str>) -> Option<ServiceType> {
-            None
-        }
-
-        fn list_services(&self) -> Vec<ServiceMetadata> {
-            vec![]
-        }
-    }
-
     impl DeploymentResolver for MockSchemas {
         fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
             None
@@ -1623,6 +1590,19 @@ mod tests {
             _service_name: impl AsRef<str>,
             _handler_name: impl AsRef<str>,
         ) -> Option<InvocationTargetMetadata> {
+            None
+        }
+
+        fn resolve_invocation_attempt_options(
+            &self,
+            _: &DeploymentId,
+            _: impl AsRef<str>,
+            _: impl AsRef<str>,
+        ) -> Option<InvocationAttemptOptions> {
+            None
+        }
+
+        fn resolve_latest_service_type(&self, _: impl AsRef<str>) -> Option<ServiceType> {
             None
         }
     }
@@ -2158,5 +2138,80 @@ mod tests {
         assert_eq!(partition, MOCK_PARTITION);
         assert_eq!(id, invocation_id);
         assert_eq!(target, invocation_target);
+    }
+
+    #[test(restate_core::test)]
+    async fn status_store_clears_last_failure_on_new_command() {
+        let invocation_id = InvocationId::mock_random();
+
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock((), None);
+        let _effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        // Start an invocation with epoch 0
+        service_inner.handle_invoke(
+            &InvokerOptions::default(),
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+            InvocationTarget::mock_virtual_object(),
+            InvokeInputJournal::NoCachedJournal,
+        );
+
+        // Simulate a transient failure to populate last_retry_attempt_failure
+        service_inner
+            .handle_invocation_task_failed(
+                &InvokerOptions::default(),
+                MOCK_PARTITION,
+                invocation_id,
+                0,
+                InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
+            )
+            .await;
+
+        // After failure, the status store should record the last failure
+        let report = service_inner
+            .status_store
+            .resolve_invocation(MOCK_PARTITION, &invocation_id)
+            .expect("status report exists after failure");
+        assert!(
+            report.last_retry_attempt_failure().is_some(),
+            "expected last_retry_attempt_failure to be set"
+        );
+
+        // Trigger the retry
+        service_inner.handle_retry_timer_fired(
+            &InvokerOptions::default(),
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+        );
+
+        // Now a new command proposal should clear the last failure (progress made)
+        service_inner
+            .handle_new_command(
+                MOCK_PARTITION,
+                invocation_id,
+                0,
+                1,
+                ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(
+                    OutputCommand {
+                        result: OutputResult::Success(Bytes::default()),
+                        name: Default::default(),
+                    },
+                )))
+                .try_as_command()
+                .unwrap(),
+                false,
+            )
+            .await;
+
+        let report_after = service_inner
+            .status_store
+            .resolve_invocation(MOCK_PARTITION, &invocation_id)
+            .expect("status report exists after new command");
+        assert!(
+            report_after.last_retry_attempt_failure().is_none(),
+            "expected last_retry_attempt_failure to be cleared after new command"
+        );
     }
 }
