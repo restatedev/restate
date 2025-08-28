@@ -11,9 +11,9 @@
 use bytes::Bytes;
 use http::{Method, Request, Response, StatusCode, header};
 use http_body_util::Full;
-use serde::Serialize;
-
+use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
+use serde::Serialize;
 
 use super::{APPLICATION_JSON, Handler};
 use crate::handler::error::HandlerError;
@@ -27,7 +27,7 @@ pub(crate) struct HealthResponse {
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Schemas: ServiceMetadataResolver + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver + InvocationTargetResolver + Send + Sync + 'static,
 {
     pub(crate) fn handle_health<B: http_body::Body>(
         &mut self,
@@ -37,13 +37,7 @@ where
             return Err(HandlerError::MethodNotAllowed);
         }
         let response = HealthResponse {
-            services: self
-                .schemas
-                .pinned()
-                .list_services()
-                .into_iter()
-                .map(|c| c.name)
-                .collect(),
+            services: self.schemas.pinned().list_service_names(),
         };
         Ok(Response::builder()
             .status(StatusCode::OK)

@@ -5,12 +5,13 @@ pub mod updater;
 use crate::config::Configuration;
 use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
+use crate::live::Pinned;
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::schema::deployment::{DeliveryOptions, DeploymentResolver, DeploymentType};
 use crate::schema::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InputRules,
-    InvocationTargetMetadata, InvocationTargetResolver, OutputRules,
+    InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver, OutputRules,
 };
 use crate::schema::metadata::openapi::ServiceOpenAPI;
 use crate::schema::service::ServiceMetadataResolver;
@@ -229,12 +230,19 @@ impl MapAsVecItem for ServiceRevision {
 
 impl ServiceRevision {
     fn to_service_metadata(&self, deployment_id: DeploymentId) -> service::ServiceMetadata {
+        let configuration = Configuration::pinned();
+
         service::ServiceMetadata {
             name: self.name.clone(),
             handlers: self
                 .handlers
                 .iter()
-                .map(|(name, handler)| (name.clone(), handler.as_handler_metadata(self.public)))
+                .map(|(name, handler)| {
+                    (
+                        name.clone(),
+                        handler.as_handler_metadata(&configuration, self.public),
+                    )
+                })
                 .collect(),
             ty: self.ty,
             documentation: self.documentation.clone(),
@@ -242,10 +250,9 @@ impl ServiceRevision {
             deployment_id,
             revision: self.revision,
             public: self.public,
-            idempotency_retention: Some(
-                self.idempotency_retention
-                    .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION),
-            ),
+            idempotency_retention: self
+                .idempotency_retention
+                .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION),
             workflow_completion_retention: if self.ty == ServiceType::Workflow {
                 Some(
                     self.handlers
@@ -258,13 +265,17 @@ impl ServiceRevision {
             } else {
                 None
             },
-            journal_retention: clamp_journal_retention(
+            journal_retention: configuration.clamp_journal_retention(
                 self.journal_retention
-                    .or(Configuration::pinned().invocation.default_journal_retention),
+                    .or(configuration.invocation.default_journal_retention),
             ),
-            inactivity_timeout: self.inactivity_timeout,
-            abort_timeout: self.abort_timeout,
-            enable_lazy_state: self.enable_lazy_state,
+            inactivity_timeout: self
+                .inactivity_timeout
+                .unwrap_or_else(|| configuration.worker.invoker.inactivity_timeout.into()),
+            abort_timeout: self
+                .abort_timeout
+                .unwrap_or_else(|| configuration.worker.invoker.abort_timeout.into()),
+            enable_lazy_state: self.enable_lazy_state.unwrap_or(false),
         }
     }
 
@@ -337,7 +348,11 @@ impl MapAsVecItem for Handler {
 }
 
 impl Handler {
-    fn as_handler_metadata(&self, service_level_public: bool) -> service::HandlerMetadata {
+    fn as_handler_metadata(
+        &self,
+        configuration: &Pinned<Configuration>,
+        service_level_public: bool,
+    ) -> service::HandlerMetadata {
         service::HandlerMetadata {
             name: self.name.clone(),
             ty: self.target_ty.into(),
@@ -349,8 +364,7 @@ impl Handler {
             input_json_schema: self.input_rules.json_schema(),
             output_json_schema: self.output_rules.json_schema(),
             idempotency_retention: self.idempotency_retention,
-            workflow_completion_retention: self.workflow_completion_retention,
-            journal_retention: clamp_journal_retention(self.journal_retention),
+            journal_retention: configuration.clamp_journal_retention(self.journal_retention),
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
@@ -420,6 +434,8 @@ impl InvocationTargetResolver for Schema {
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<InvocationTargetMetadata> {
+        let configuration = Configuration::pinned();
+
         let service_name = service_name.as_ref();
         let handler_name = handler_name.as_ref();
 
@@ -440,13 +456,14 @@ impl InvocationTargetResolver for Schema {
                     .or(service_revision.idempotency_retention)
                     .unwrap_or(DEFAULT_IDEMPOTENCY_RETENTION)
             };
-        let journal_retention = clamp_journal_retention(
-            handler
-                .journal_retention
-                .or(service_revision.journal_retention)
-                .or_else(|| Configuration::pinned().invocation.default_journal_retention),
-        )
-        .unwrap_or(Duration::ZERO);
+        let journal_retention = configuration
+            .clamp_journal_retention(
+                handler
+                    .journal_retention
+                    .or(service_revision.journal_retention)
+                    .or_else(|| configuration.invocation.default_journal_retention),
+            )
+            .unwrap_or(Duration::ZERO);
 
         Some(InvocationTargetMetadata {
             public: handler.public.unwrap_or(service_revision.public),
@@ -456,6 +473,36 @@ impl InvocationTargetResolver for Schema {
             input_rules: handler.input_rules.clone(),
             output_rules: handler.output_rules.clone(),
         })
+    }
+
+    fn resolve_invocation_attempt_options(
+        &self,
+        deployment_id: &DeploymentId,
+        service_name: impl AsRef<str>,
+        handler_name: impl AsRef<str>,
+    ) -> Option<InvocationAttemptOptions> {
+        let service_name = service_name.as_ref();
+        let handler_name = handler_name.as_ref();
+
+        let deployment = self.deployments.get(deployment_id)?;
+        let service_revision = deployment.services.get(service_name)?;
+        let handler = service_revision.handlers.get(handler_name)?;
+
+        Some(InvocationAttemptOptions {
+            abort_timeout: handler.abort_timeout.or(service_revision.abort_timeout),
+            inactivity_timeout: handler
+                .inactivity_timeout
+                .or(service_revision.inactivity_timeout),
+            enable_lazy_state: handler
+                .enable_lazy_state
+                .or(service_revision.enable_lazy_state),
+        })
+    }
+
+    fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType> {
+        self.active_service_revisions
+            .get(service_name.as_ref())
+            .map(|revision| revision.service_revision.ty)
     }
 }
 
@@ -469,46 +516,23 @@ impl ServiceMetadataResolver for Schema {
             .map(|revision| revision.as_service_metadata())
     }
 
-    fn resolve_invocation_attempt_options(
-        &self,
-        deployment_id: &DeploymentId,
-        service_name: impl AsRef<str>,
-        handler_name: impl AsRef<str>,
-    ) -> Option<service::InvocationAttemptOptions> {
-        let service_name = service_name.as_ref();
-        let handler_name = handler_name.as_ref();
-
-        let deployment = self.deployments.get(deployment_id)?;
-        let service_revision = deployment.services.get(service_name)?;
-        let handler = service_revision.handlers.get(handler_name)?;
-
-        Some(service::InvocationAttemptOptions {
-            abort_timeout: handler.abort_timeout.or(service_revision.abort_timeout),
-            inactivity_timeout: handler
-                .inactivity_timeout
-                .or(service_revision.inactivity_timeout),
-            enable_lazy_state: handler
-                .enable_lazy_state
-                .or(service_revision.enable_lazy_state),
-        })
-    }
-
     fn resolve_latest_service_openapi(&self, service_name: impl AsRef<str>) -> Option<Value> {
         self.active_service_revisions
             .get(service_name.as_ref())
             .map(|revision| revision.service_revision.as_openapi_spec())
     }
 
-    fn resolve_latest_service_type(&self, service_name: impl AsRef<str>) -> Option<ServiceType> {
-        self.active_service_revisions
-            .get(service_name.as_ref())
-            .map(|revision| revision.service_revision.ty)
-    }
-
     fn list_services(&self) -> Vec<service::ServiceMetadata> {
         self.active_service_revisions
             .values()
             .map(|revision| revision.as_service_metadata())
+            .collect()
+    }
+
+    fn list_service_names(&self) -> Vec<String> {
+        self.active_service_revisions
+            .values()
+            .map(|revision| revision.service_revision.name.clone())
             .collect()
     }
 }
@@ -534,14 +558,16 @@ impl SubscriptionResolver for Schema {
     }
 }
 
-fn clamp_journal_retention(requested: Option<Duration>) -> Option<Duration> {
-    let global_limit = Configuration::pinned().invocation.max_journal_retention;
-    match (requested, global_limit) {
-        (None, Some(_)) => None,
-        (None, None) => None,
-        (Some(requested_duration), None) => Some(requested_duration),
-        (Some(requested_duration), Some(global_limit)) => {
-            Some(cmp::min(requested_duration, global_limit))
+impl Configuration {
+    fn clamp_journal_retention(&self, requested: Option<Duration>) -> Option<Duration> {
+        let global_limit = self.invocation.max_journal_retention;
+        match (requested, global_limit) {
+            (None, Some(_)) => None,
+            (None, None) => None,
+            (Some(requested_duration), None) => Some(requested_duration),
+            (Some(requested_duration), Some(global_limit)) => {
+                Some(cmp::min(requested_duration, global_limit))
+            }
         }
     }
 }
