@@ -17,6 +17,7 @@ use test_log::test;
 use crate::Versioned;
 use crate::schema::deployment::Deployment;
 use crate::schema::deployment::DeploymentResolver;
+use crate::schema::invocation_target::InvocationTargetResolver;
 use crate::schema::service::ServiceMetadataResolver;
 
 const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
@@ -1082,8 +1083,7 @@ mod endpoint_manifest_options_propagation {
     use crate::config::Configuration;
     use crate::invocation::InvocationRetention;
     use crate::schema::deployment::Deployment;
-    use crate::schema::invocation_target::InvocationTargetMetadata;
-    use crate::schema::service::InvocationAttemptOptions;
+    use crate::schema::invocation_target::{InvocationAttemptOptions, InvocationTargetMetadata};
     use crate::schema::service::{HandlerMetadata, ServiceMetadata};
     use googletest::prelude::*;
     use std::time::Duration;
@@ -1884,7 +1884,7 @@ mod endpoint_manifest_options_propagation {
 mod modify_service {
     use super::*;
 
-    use crate::config::Configuration;
+    use crate::config::{Configuration, DEFAULT_ABORT_TIMEOUT, DEFAULT_INACTIVITY_TIMEOUT};
     use crate::invocation::InvocationRetention;
     use crate::schema::service::ServiceMetadata;
     use googletest::prelude::*;
@@ -1976,10 +1976,10 @@ mod modify_service {
                 revision: eq(1),
                 deployment_id: eq(deployment_id),
                 public: eq(true), // default is public
-                idempotency_retention: eq(Some(DEFAULT_IDEMPOTENCY_RETENTION)),
+                idempotency_retention: eq(DEFAULT_IDEMPOTENCY_RETENTION),
                 journal_retention: eq(Some(DEFAULT_JOURNAL_RETENTION)),
-                inactivity_timeout: eq(None),
-                abort_timeout: eq(None),
+                inactivity_timeout: eq(DEFAULT_INACTIVITY_TIMEOUT),
+                abort_timeout: eq(DEFAULT_ABORT_TIMEOUT),
             })
         );
 
@@ -2008,10 +2008,10 @@ mod modify_service {
             schema.assert_service(GREETER_SERVICE_NAME),
             pat!(ServiceMetadata {
                 public: eq(new_public),
-                idempotency_retention: eq(Some(new_idempotency_retention)),
+                idempotency_retention: eq(new_idempotency_retention),
                 journal_retention: eq(Some(new_journal_retention)),
-                inactivity_timeout: eq(Some(new_inactivity_timeout)),
-                abort_timeout: eq(Some(new_abort_timeout)),
+                inactivity_timeout: eq(new_inactivity_timeout),
+                abort_timeout: eq(new_abort_timeout),
             })
         );
 
@@ -2036,10 +2036,10 @@ mod modify_service {
 
                 // -- Back to default
                 public: eq(true),
-                idempotency_retention: eq(Some(DEFAULT_IDEMPOTENCY_RETENTION)),
+                idempotency_retention: eq(DEFAULT_IDEMPOTENCY_RETENTION),
                 journal_retention: eq(Some(DEFAULT_JOURNAL_RETENTION)),
-                inactivity_timeout: eq(None),
-                abort_timeout: eq(None),
+                inactivity_timeout: eq(DEFAULT_INACTIVITY_TIMEOUT),
+                abort_timeout: eq(DEFAULT_ABORT_TIMEOUT),
             })
         );
     }
@@ -2070,11 +2070,11 @@ mod modify_service {
                 revision: eq(1),
                 deployment_id: eq(deployment_id),
                 public: eq(true), // default is public
-                idempotency_retention: eq(Some(DEFAULT_IDEMPOTENCY_RETENTION)),
+                idempotency_retention: eq(DEFAULT_IDEMPOTENCY_RETENTION),
                 journal_retention: eq(Some(DEFAULT_JOURNAL_RETENTION)),
                 workflow_completion_retention: eq(Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)),
-                inactivity_timeout: eq(None),
-                abort_timeout: eq(None),
+                inactivity_timeout: eq(DEFAULT_INACTIVITY_TIMEOUT),
+                abort_timeout: eq(DEFAULT_ABORT_TIMEOUT),
             })
         );
 
@@ -2107,11 +2107,11 @@ mod modify_service {
             schema.assert_service(GREETER_SERVICE_NAME),
             pat!(ServiceMetadata {
                 public: eq(new_public),
-                idempotency_retention: eq(Some(new_idempotency_retention)),
+                idempotency_retention: eq(new_idempotency_retention),
                 journal_retention: eq(Some(new_journal_retention)),
                 workflow_completion_retention: eq(Some(new_workflow_completion_retention)),
-                inactivity_timeout: eq(Some(new_inactivity_timeout)),
-                abort_timeout: eq(Some(new_abort_timeout)),
+                inactivity_timeout: eq(new_inactivity_timeout),
+                abort_timeout: eq(new_abort_timeout),
             })
         );
 
@@ -2136,11 +2136,11 @@ mod modify_service {
 
                 // -- Back to default
                 public: eq(true),
-                idempotency_retention: eq(Some(DEFAULT_IDEMPOTENCY_RETENTION)),
+                idempotency_retention: eq(DEFAULT_IDEMPOTENCY_RETENTION),
                 journal_retention: eq(Some(DEFAULT_JOURNAL_RETENTION)),
                 workflow_completion_retention: eq(Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)),
-                inactivity_timeout: eq(None),
-                abort_timeout: eq(None),
+                inactivity_timeout: eq(DEFAULT_INACTIVITY_TIMEOUT),
+                abort_timeout: eq(DEFAULT_ABORT_TIMEOUT),
             })
         );
     }
