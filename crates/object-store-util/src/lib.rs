@@ -184,8 +184,8 @@ fn from_retry_policy(retry_policy: &RetryPolicy) -> RetryConfig {
                 .unwrap_or(NonZeroUsize::new(usize::MAX).expect("non-zero"))
                 .into(),
             backoff: BackoffConfig {
-                init_backoff: (*interval).into(),
-                max_backoff: (*interval).into(),
+                init_backoff: *interval,
+                max_backoff: *interval,
                 base: 1.,
             },
             retry_timeout: Duration::MAX,
@@ -200,8 +200,8 @@ fn from_retry_policy(retry_policy: &RetryPolicy) -> RetryConfig {
                 .unwrap_or(NonZeroUsize::new(usize::MAX).expect("non-zero"))
                 .into(),
             backoff: BackoffConfig {
-                init_backoff: (*initial_interval).into(),
-                max_backoff: max_interval.unwrap_or(Duration::MAX.into()).into(),
+                init_backoff: *initial_interval,
+                max_backoff: max_interval.unwrap_or(Duration::MAX),
                 base: f64::from(*factor),
             },
             retry_timeout: Duration::MAX,
