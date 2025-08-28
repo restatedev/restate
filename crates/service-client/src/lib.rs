@@ -14,7 +14,7 @@ use crate::lambda::LambdaClient;
 pub use crate::http::HttpError;
 pub use crate::lambda::AssumeRoleCacheMode;
 use crate::request_identity::SignRequest;
-use ::http::Version;
+use ::http::{HeaderName, HeaderValue, Version};
 use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -22,12 +22,12 @@ use core::fmt;
 use futures::FutureExt;
 use http_body_util::Full;
 use hyper::body::Body;
-use hyper::header::HeaderValue;
 use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Response, Uri};
 use restate_types::config::ServiceClientOptions;
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::deployment::EndpointLambdaCompression;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::Formatter;
 use std::future;
@@ -50,6 +50,7 @@ pub struct ServiceClient {
     lambda: LambdaClient,
     // this can be changed to re-read periodically if necessary
     request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
+    additional_request_headers: HashMap<HeaderName, HeaderValue>,
 }
 
 impl ServiceClient {
@@ -57,11 +58,13 @@ impl ServiceClient {
         http: HttpClient,
         lambda: LambdaClient,
         request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
+        additional_request_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Self {
         Self {
             http,
             lambda,
             request_identity_key,
+            additional_request_headers,
         }
     }
 
@@ -85,6 +88,11 @@ impl ServiceClient {
             HttpClient::from_options(&options.http),
             LambdaClient::from_options(&options.lambda, assume_role_cache_mode),
             request_identity_key,
+            options
+                .additional_request_headers
+                .clone()
+                .unwrap_or_default()
+                .into(),
         ))
     }
 }
@@ -121,6 +129,12 @@ impl ServiceClient {
             Ok(headers) => headers,
             Err(err) => return future::ready(Err(err.into())).right_future(),
         };
+
+        parts.headers.extend(
+            self.additional_request_headers
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
 
         match parts.address {
             Endpoint::Http(uri, version) => {

@@ -33,6 +33,8 @@ use crate::retries::RetryPolicy;
 
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
 const DEFAULT_ADVERTISED_ADDRESS: &str = "http://127.0.0.1:5122/";
+const X_RESTATE_CLUSTER_NAME: http::HeaderName =
+    http::HeaderName::from_static("x-restate-cluster-name");
 
 static HOSTNAME: LazyLock<String> = LazyLock::new(|| {
     hostname::get()
@@ -413,6 +415,24 @@ impl CommonOptions {
         if self.bind_address.is_none() {
             self.bind_address = Some(self.advertised_address.derive_bind_address()?);
         }
+
+        if self.service_client.additional_request_headers.is_none() {
+            let cluster_name_visible_ascii = self
+                .cluster_name()
+                .chars()
+                .filter(|c| *c >= ' ' && *c <= '~')
+                .collect::<String>();
+
+            self.service_client.additional_request_headers = Some(
+                std::collections::HashMap::from_iter([(
+                    X_RESTATE_CLUSTER_NAME,
+                    http::HeaderValue::from_str(&cluster_name_visible_ascii)
+                        .expect("a visible ascii string must be a valid header value"),
+                )])
+                .into(),
+            )
+        }
+
         Ok(())
     }
 }
@@ -496,6 +516,13 @@ pub struct ServiceClientOptions {
     /// This file is currently only read on client creation, but this may change in future.
     /// Parsed public keys will be logged at INFO level in the same format that SDKs expect.
     pub request_identity_private_key_pem_file: Option<PathBuf>,
+
+    /// # Additional request headers
+    ///
+    /// Headers that should be applied to all outgoing requests (HTTP and Lambda).
+    /// Defaults to `x-restate-cluster-name: <cluster name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_request_headers: Option<SerdeableHeaderHashMap>,
 }
 
 /// # Log format
