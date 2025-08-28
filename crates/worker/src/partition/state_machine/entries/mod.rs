@@ -43,7 +43,7 @@ use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
-    Command, CommandMetadata, CommandType, Completion, Entry, EntryMetadata, EntryType,
+    Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType,
 };
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
@@ -70,19 +70,6 @@ use crate::partition::state_machine::entries::set_state_command::ApplySetStateCo
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
 use crate::partition::state_machine::lifecycle::VerifyOrMigrateJournalTableToV2Command;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-
-fn usage_journal_entry_type_allowed(entry_type: &EntryType) -> bool {
-    !matches!(
-        entry_type,
-        EntryType::Command(CommandType::SetState)
-            | EntryType::Command(CommandType::GetLazyState)
-            | EntryType::Command(CommandType::GetEagerState)
-            | EntryType::Command(CommandType::GetLazyStateKeys)
-            | EntryType::Command(CommandType::GetEagerStateKeys)
-            | EntryType::Command(CommandType::ClearState)
-            | EntryType::Command(CommandType::ClearAllState)
-    )
-}
 
 pub(super) struct OnJournalEntryCommand {
     pub(super) invocation_id: InvocationId,
@@ -158,7 +145,7 @@ where
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
 
-            if ctx.is_leader && usage_journal_entry_type_allowed(&entry.ty()) {
+            if ctx.is_leader && entry.ty().is_usage_type() {
                 counter!(
                     USAGE_LEADER_JOURNAL_ENTRY_COUNT,
                     "entry" => entry.ty().as_static_str(),
