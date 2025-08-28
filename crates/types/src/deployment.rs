@@ -34,7 +34,6 @@ impl PinnedDeployment {
 mod tests {
     use super::*;
 
-    use crate::IdEncoder;
     use crate::identifiers::{ResourceId, TimestampAwareId};
 
     #[test]
@@ -43,11 +42,7 @@ mod tests {
         assert!(a.timestamp().as_u64() > 0);
         let a_str = a.to_string();
         assert!(a_str.starts_with("dp_"));
-        assert_eq!(DeploymentId::STRING_CAPACITY_HINT + 4, a_str.len());
-        assert_eq!(
-            a_str.len(),
-            IdEncoder::<DeploymentId>::estimate_buf_capacity()
-        );
+        assert_eq!(a_str.len(), DeploymentId::str_encoded_len(),);
         assert_eq!(26, a_str.len());
     }
 

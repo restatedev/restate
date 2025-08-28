@@ -11,6 +11,7 @@
 //! Note: We use base62 [0-9a-zA-Z], that's why we use encode_alternative functions on
 //! base62 crate. Otherwise, by default it uses [0-9A-Za-z].
 
+use std::io::Write as _;
 use std::mem::size_of;
 
 const BITS_PER_BASE62_CHAR: usize = 6;
@@ -18,7 +19,7 @@ const BITS_PER_BYTE: usize = 8;
 
 /// Encodes a u64 into base62 string, this function pads the string with
 /// trailing zeros to ensure the string is of fixed length 11.
-pub fn base62_encode_fixed_width_u64(i: u64, mut f: impl std::fmt::Write) -> std::fmt::Result {
+pub fn base62_encode_fixed_width_u64(i: u64, mut f: impl std::io::Write) -> std::io::Result<usize> {
     const MAX_LENGTH: usize = base62_max_length_for_type::<u64>();
 
     let i = i.to_be();
@@ -28,17 +29,16 @@ pub fn base62_encode_fixed_width_u64(i: u64, mut f: impl std::fmt::Write) -> std
         base62::encode_alternative_bytes(i, &mut buf).expect("a u64 must fit into 11 digits");
 
     if digits < MAX_LENGTH {
-        // SAFETY; the array was initialised with valid utf8 and encode_alternative_bytes only writes utf8
-        f.write_str(unsafe { std::str::from_utf8_unchecked(&buf[digits..]) })?;
+        f.write_all(&buf[digits..])?;
     }
+    f.write_all(&buf[0..digits])?;
 
-    // SAFETY; the array was initialised with valid utf8 and encode_alternative_bytes only writes utf8
-    f.write_str(unsafe { std::str::from_utf8_unchecked(&buf[0..digits]) })
+    Ok(MAX_LENGTH)
 }
 
 /// Encodes a u128 into base62 string, this function pads the string with
 /// trailing zeros to ensure the string is of fixed length 22.
-pub fn base62_encode_fixed_width_u128(i: u128, mut f: impl std::fmt::Write) -> std::fmt::Result {
+pub fn base62_encode_fixed_width_u128(i: u128, mut out: &mut [u8]) -> std::io::Result<usize> {
     const MAX_LENGTH: usize = base62_max_length_for_type::<u128>();
 
     let i = i.to_be();
@@ -48,12 +48,11 @@ pub fn base62_encode_fixed_width_u128(i: u128, mut f: impl std::fmt::Write) -> s
         base62::encode_alternative_bytes(i, &mut buf).expect("a u128 must fit into 22 digits");
 
     if digits < MAX_LENGTH {
-        // SAFETY; the array was initialised with valid utf8 and encode_alternative_bytes only writes utf8
-        f.write_str(unsafe { std::str::from_utf8_unchecked(&buf[digits..]) })?;
+        out.write_all(&buf[digits..])?;
     }
+    out.write_all(&buf[0..digits])?;
 
-    // SAFETY; the array was initialised with valid utf8 and encode_alternative_bytes only writes utf8
-    f.write_str(unsafe { std::str::from_utf8_unchecked(&buf[0..digits]) })
+    Ok(MAX_LENGTH)
 }
 
 /// Calculate the max number of chars needed to encode this type as base62
