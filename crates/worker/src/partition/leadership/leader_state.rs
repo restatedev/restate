@@ -357,13 +357,15 @@ impl LeaderState {
         actions: impl Iterator<Item = Action>,
     ) -> Result<(), Error> {
         for action in actions {
+            let action_name = action.name();
+
             trace!(?action, "Apply action");
-            counter!(PARTITION_HANDLE_LEADER_ACTIONS, "action" => action.name()).increment(1);
+            counter!(PARTITION_HANDLE_LEADER_ACTIONS, "action" => action_name).increment(1);
 
             counter!(
                 USAGE_LEADER_ACTION_COUNT,
                 "partition" => self.partition_id.to_string(),
-                "action" => action.name(), // TODO(pb): necessary?
+                "action" => action_name,
             )
             .increment(1);
 
