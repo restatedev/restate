@@ -11,14 +11,181 @@
 use super::*;
 
 use crate::identifiers::DeploymentId;
+use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
 use crate::schema::deployment::DeploymentMetadata;
-use crate::schema::service::ServiceMetadata;
+use restate_serde_util::DurationString;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
 
 mod v1_data_model {
     use super::*;
+
+    #[serde_as]
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct ServiceMetadata {
+        pub name: String,
+        #[serde_as(as = "restate_serde_util::MapAsVec")]
+        pub handlers: HashMap<String, HandlerMetadata>,
+        pub ty: ServiceType,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub documentation: Option<String>,
+
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        pub metadata: HashMap<String, String>,
+
+        pub deployment_id: DeploymentId,
+
+        pub revision: identifiers::ServiceRevision,
+
+        pub public: bool,
+
+        /// # Idempotency retention
+        ///
+        /// The retention duration of idempotent requests for this service.
+        #[serde(
+            with = "serde_with::As::<Option<DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub idempotency_retention: Option<Duration>,
+
+        #[serde(
+            with = "serde_with::As::<Option<DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub workflow_completion_retention: Option<Duration>,
+
+        #[serde(
+            with = "serde_with::As::<Option<DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub journal_retention: Option<Duration>,
+
+        #[serde(
+            with = "serde_with::As::<Option<DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub inactivity_timeout: Option<Duration>,
+
+        #[serde(
+            with = "serde_with::As::<Option<DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub abort_timeout: Option<Duration>,
+
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        pub enable_lazy_state: Option<bool>,
+    }
+
+    impl MapAsVecItem for ServiceMetadata {
+        type Key = String;
+
+        fn key(&self) -> Self::Key {
+            self.name.clone()
+        }
+    }
+
+    // This type is used only for exposing the handler metadata, and not internally. See [ServiceAndHandlerType].
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    pub enum HandlerMetadataType {
+        Exclusive,
+        Shared,
+        Workflow,
+    }
+
+    impl From<InvocationTargetType> for Option<HandlerMetadataType> {
+        fn from(value: InvocationTargetType) -> Self {
+            match value {
+                InvocationTargetType::Service => Some(HandlerMetadataType::Shared),
+                InvocationTargetType::VirtualObject(h_ty) => match h_ty {
+                    VirtualObjectHandlerType::Exclusive => Some(HandlerMetadataType::Exclusive),
+                    VirtualObjectHandlerType::Shared => Some(HandlerMetadataType::Shared),
+                },
+                InvocationTargetType::Workflow(h_ty) => match h_ty {
+                    WorkflowHandlerType::Workflow => Some(HandlerMetadataType::Workflow),
+                    WorkflowHandlerType::Shared => Some(HandlerMetadataType::Shared),
+                },
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct HandlerMetadata {
+        pub name: String,
+
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub ty: Option<HandlerMetadataType>,
+
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub documentation: Option<String>,
+
+        #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+        pub metadata: HashMap<String, String>,
+
+        #[serde(
+            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub idempotency_retention: Option<Duration>,
+
+        #[serde(
+            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub workflow_completion_retention: Option<Duration>,
+
+        #[serde(
+            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub journal_retention: Option<Duration>,
+
+        #[serde(
+            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub inactivity_timeout: Option<Duration>,
+
+        #[serde(
+            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            skip_serializing_if = "Option::is_none",
+            default
+        )]
+        pub abort_timeout: Option<Duration>,
+
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        pub enable_lazy_state: Option<bool>,
+
+        #[serde(default = "restate_serde_util::default::bool::<true>")]
+        pub public: bool,
+
+        pub input_description: String,
+
+        pub output_description: String,
+
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub input_json_schema: Option<serde_json::Value>,
+
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub output_json_schema: Option<serde_json::Value>,
+    }
+
+    impl MapAsVecItem for HandlerMetadata {
+        type Key = String;
+
+        fn key(&self) -> Self::Key {
+            self.name.clone()
+        }
+    }
 
     #[serde_as]
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -310,7 +477,6 @@ mod conversions {
     use crate::schema::invocation_target::{
         DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
     };
-    use crate::schema::service::{HandlerMetadata, HandlerMetadataType, ServiceMetadata};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
@@ -399,23 +565,23 @@ mod conversions {
         }
     }
 
-    #[allow(dead_code)]
     fn to_target_ty(
         ty: ServiceType,
-        handler_ty: Option<HandlerMetadataType>,
+        handler_ty: Option<v1_data_model::HandlerMetadataType>,
     ) -> InvocationTargetType {
         match (ty, handler_ty) {
             (ServiceType::Service, _) => InvocationTargetType::Service,
-            (ServiceType::VirtualObject, None | Some(HandlerMetadataType::Exclusive)) => {
-                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-            }
-            (ServiceType::VirtualObject, Some(HandlerMetadataType::Shared)) => {
+            (
+                ServiceType::VirtualObject,
+                None | Some(v1_data_model::HandlerMetadataType::Exclusive),
+            ) => InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive),
+            (ServiceType::VirtualObject, Some(v1_data_model::HandlerMetadataType::Shared)) => {
                 InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
             }
-            (ServiceType::Workflow, None | Some(HandlerMetadataType::Workflow)) => {
+            (ServiceType::Workflow, None | Some(v1_data_model::HandlerMetadataType::Workflow)) => {
                 InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
             }
-            (ServiceType::Workflow, Some(HandlerMetadataType::Shared)) => {
+            (ServiceType::Workflow, Some(v1_data_model::HandlerMetadataType::Shared)) => {
                 InvocationTargetType::Workflow(WorkflowHandlerType::Shared)
             }
             (st, ht) => panic!(
@@ -446,7 +612,7 @@ mod conversions {
                     for (handler_name, handler) in &service.handlers {
                         v1_handlers.insert(
                             handler_name.clone(),
-                            HandlerMetadata {
+                            v1_data_model::HandlerMetadata {
                                 name: handler_name.clone(),
                                 ty: handler.target_ty.into(),
                                 documentation: handler.documentation.clone(),
@@ -469,7 +635,7 @@ mod conversions {
 
                     v1_services_metadata.insert(
                         service_name.clone(),
-                        ServiceMetadata {
+                        v1_data_model::ServiceMetadata {
                             name: service_name.clone(),
                             handlers: v1_handlers,
                             ty: service.ty,
@@ -611,11 +777,11 @@ mod conversions {
         use super::v1_data_model::*;
         use super::*;
 
-        use crate::Version;
         use crate::schema::deployment::{DeploymentType, ProtocolType};
         use crate::schema::invocation_target::InvocationTargetMetadata;
         use crate::storage::StorageCodec;
         use crate::time::MillisSinceEpoch;
+        use crate::{Version, schema};
         use googletest::prelude::*;
 
         #[serde_as]
@@ -825,7 +991,7 @@ mod conversions {
                 &mut buf,
             )
             .unwrap();
-            let schema: crate::schema::Schema = StorageCodec::decode(&mut buf.freeze()).unwrap();
+            let schema: schema::Schema = StorageCodec::decode(&mut buf.freeze()).unwrap();
 
             assert_that!(
                 schema.assert_invocation_target("Greeter", "greet"),
@@ -838,7 +1004,7 @@ mod conversions {
             );
             assert_that!(
                 schema.assert_service("Greeter"),
-                pat!(ServiceMetadata {
+                pat!(service::ServiceMetadata {
                     public: eq(false),
                     deployment_id: eq(dp_2),
                     revision: eq(2)
@@ -869,7 +1035,7 @@ mod conversions {
             );
             assert_that!(
                 schema.assert_service("AnotherGreeter"),
-                pat!(ServiceMetadata {
+                pat!(service::ServiceMetadata {
                     public: eq(true),
                     deployment_id: eq(dp_1),
                     revision: eq(1)
@@ -1189,7 +1355,7 @@ mod conversions {
             );
             assert_that!(
                 schema.assert_service("Greeter"),
-                pat!(ServiceMetadata {
+                pat!(service::ServiceMetadata {
                     public: eq(false),
                     deployment_id: eq(dp_2),
                     revision: eq(2),
@@ -1221,7 +1387,7 @@ mod conversions {
             );
             assert_that!(
                 schema.assert_service("AnotherGreeter"),
-                pat!(ServiceMetadata {
+                pat!(service::ServiceMetadata {
                     public: eq(true),
                     deployment_id: eq(dp_1),
                     revision: eq(1)
