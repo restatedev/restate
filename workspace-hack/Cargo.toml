@@ -131,6 +131,7 @@ tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parking_lot"] }
+typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
@@ -260,6 +261,7 @@ tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parking_lot"] }
+typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }

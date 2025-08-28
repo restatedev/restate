@@ -10,25 +10,26 @@
 
 //! Restate uses many identifiers to uniquely identify its services and entities.
 
-use base64::Engine;
-use bytes::{BufMut, Bytes, BytesMut};
-use bytestring::ByteString;
-use rand::RngCore;
-use sha2::{Digest, Sha256};
 use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
 use std::mem::size_of;
 use std::str::FromStr;
 use std::sync::Arc;
+
+use base64::Engine;
+use bytes::Bytes;
+use bytestring::ByteString;
+use generic_array::ArrayLength;
+use rand::RngCore;
+use sha2::{Digest, Sha256};
 use ulid::Ulid;
 
 use restate_encoding::{BilrostNewType, NetSerde};
 
 use crate::base62_util::{base62_encode_fixed_width_u128, base62_max_length_for_type};
 use crate::errors::IdDecodeError;
-use crate::id_util::IdDecoder;
-use crate::id_util::IdEncoder;
 use crate::id_util::IdResourceType;
+use crate::id_util::{IdDecoder, IdEncoder};
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::journal_v2::SignalId;
 use crate::time::MillisSinceEpoch;
@@ -171,27 +172,18 @@ pub trait TimestampAwareId {
 // A marker trait for serializable IDs that represent restate resources or entities.
 // Those could be user-facing or not.
 pub trait ResourceId {
-    const SIZE_IN_BYTES: usize;
+    const RAW_BYTES_LEN: usize;
     const RESOURCE_TYPE: IdResourceType;
-    /// The number of characters/bytes needed to string-serialize this resource (without the
-    /// prefix or separator)
-    const STRING_CAPACITY_HINT: usize;
 
-    /// The resource type of this ID
-    fn resource_type(&self) -> IdResourceType {
-        Self::RESOURCE_TYPE
-    }
+    type StrEncodedLen: ArrayLength;
 
-    /// The max number of bytes needed to store the binary representation of this ID
-    fn size_in_bytes(&self) -> usize {
-        Self::SIZE_IN_BYTES
+    /// The number of characters/bytes needed to string-serialize this resource identifier
+    fn str_encoded_len() -> usize {
+        <Self::StrEncodedLen as generic_array::typenum::Unsigned>::USIZE
     }
 
     /// Adds the various fields of this resource ID into the pre-initialized encoder
-    fn push_contents_to_encoder<W: fmt::Write>(
-        &self,
-        encoder: &mut IdEncoder<Self, W>,
-    ) -> fmt::Result;
+    fn push_to_encoder(&self, encoder: &mut IdEncoder<Self>);
 }
 
 /// Discriminator for invocation instances
@@ -211,7 +203,7 @@ pub trait ResourceId {
 pub struct InvocationUuid(u128);
 
 impl InvocationUuid {
-    pub const SIZE_IN_BYTES: usize = size_of::<u128>();
+    pub const RAW_BYTES_LEN: usize = size_of::<u128>();
 
     pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
         Ok(Self::from_u128(u128::from_be_bytes(
@@ -224,11 +216,11 @@ impl InvocationUuid {
         Self(id)
     }
 
-    pub const fn from_bytes(b: [u8; Self::SIZE_IN_BYTES]) -> Self {
+    pub const fn from_bytes(b: [u8; Self::RAW_BYTES_LEN]) -> Self {
         Self::from_u128(u128::from_be_bytes(b))
     }
 
-    pub fn to_bytes(&self) -> [u8; Self::SIZE_IN_BYTES] {
+    pub fn to_bytes(&self) -> [u8; Self::RAW_BYTES_LEN] {
         self.0.to_be_bytes()
     }
 
@@ -296,8 +288,11 @@ impl InvocationUuid {
 
 impl Display for InvocationUuid {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut buf = [b'0'; base62_max_length_for_type::<u128>()];
         let raw: u128 = self.0;
-        base62_encode_fixed_width_u128(raw, f)
+        let written = base62_encode_fixed_width_u128(raw, &mut buf);
+        // SAFETY; the array was initialised with valid utf8 and encode_alternative_bytes only writes utf8
+        f.write_str(unsafe { std::str::from_utf8_unchecked(&buf[0..written]) })
     }
 }
 
@@ -306,7 +301,7 @@ impl FromStr for InvocationUuid {
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let mut decoder = IdDecoder::new_ignore_prefix(
-            crate::id_util::IdSchemeVersion::default(),
+            crate::id_util::IdSchemeVersion::latest(),
             IdResourceType::Invocation,
             input,
         )?;
@@ -440,7 +435,7 @@ pub trait WithInvocationId {
     fn invocation_id(&self) -> InvocationId;
 }
 
-pub type EncodedInvocationId = [u8; InvocationId::SIZE_IN_BYTES];
+pub type EncodedInvocationId = [u8; InvocationId::RAW_BYTES_LEN];
 
 impl InvocationId {
     pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
@@ -477,7 +472,21 @@ impl InvocationId {
     }
 
     pub fn to_bytes(&self) -> EncodedInvocationId {
-        encode_invocation_id(&self.partition_key, &self.inner)
+        let mut buf = EncodedInvocationId::default();
+        self.encode_raw_bytes(&mut buf);
+        buf
+    }
+
+    /// Returns the number of bytes written to the buffer
+    ///
+    /// The buffer must be at least `InvocationId::RAW_BYTES_LEN` bytes long.
+    pub fn encode_raw_bytes(&self, buf: &mut [u8]) -> usize {
+        let pk = self.partition_key.to_be_bytes();
+        let uuid = self.inner.to_bytes();
+
+        buf[..size_of::<PartitionKey>()].copy_from_slice(&pk);
+        buf[size_of::<PartitionKey>()..].copy_from_slice(&uuid);
+        pk.len() + uuid.len()
     }
 }
 
@@ -488,19 +497,23 @@ impl From<InvocationId> for Bytes {
 }
 
 impl ResourceId for InvocationId {
-    const SIZE_IN_BYTES: usize = size_of::<PartitionKey>() + InvocationUuid::SIZE_IN_BYTES;
+    const RAW_BYTES_LEN: usize = size_of::<PartitionKey>() + InvocationUuid::RAW_BYTES_LEN;
     const RESOURCE_TYPE: IdResourceType = IdResourceType::Invocation;
-    const STRING_CAPACITY_HINT: usize =
-        base62_max_length_for_type::<PartitionKey>() + base62_max_length_for_type::<u128>();
 
-    fn push_contents_to_encoder<W: fmt::Write>(
-        &self,
-        encoder: &mut IdEncoder<Self, W>,
-    ) -> fmt::Result {
-        encoder.encode_fixed_width_u64(self.partition_key)?;
-        let uuid_raw: u128 = self.inner.0;
-        encoder.encode_fixed_width_u128(uuid_raw)?;
-        Ok(())
+    type StrEncodedLen = generic_array::ConstArrayLength<
+        // prefix + separator + version + suffix
+        {
+            Self::RESOURCE_TYPE.as_str().len()
+                // separator + version
+                + 2
+                + base62_max_length_for_type::<PartitionKey>()
+                + base62_max_length_for_type::<u128>()
+        },
+    >;
+
+    fn push_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+        encoder.push_u64(self.partition_key);
+        encoder.push_u128(self.inner.0);
     }
 }
 
@@ -511,7 +524,7 @@ impl TryFrom<&[u8]> for InvocationId {
         if encoded_id.len() < size_of::<EncodedInvocationId>() {
             return Err(IdDecodeError::Length);
         }
-        let buf: [u8; InvocationId::SIZE_IN_BYTES] =
+        let buf: [u8; InvocationId::RAW_BYTES_LEN] =
             encoded_id.try_into().map_err(|_| IdDecodeError::Length)?;
         Ok(buf.into())
     }
@@ -525,7 +538,7 @@ impl From<EncodedInvocationId> for InvocationId {
         let partition_key = PartitionKey::from_be_bytes(partition_key_bytes);
 
         let offset = size_of::<PartitionKey>();
-        let inner_id_bytes = encoded_id[offset..offset + InvocationUuid::SIZE_IN_BYTES]
+        let inner_id_bytes = encoded_id[offset..offset + InvocationUuid::RAW_BYTES_LEN]
             .try_into()
             .unwrap();
         let inner = InvocationUuid::from_bytes(inner_id_bytes);
@@ -553,8 +566,9 @@ impl Display for InvocationId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         // encode the id such that it is possible to do a string prefix search for a
         // partition key using the first 17 characters.
-        let mut encoder = IdEncoder::<Self, _>::new_fmt(f)?;
-        self.push_contents_to_encoder(&mut encoder)
+        let mut encoder = IdEncoder::new();
+        self.push_to_encoder(&mut encoder);
+        f.write_str(encoder.as_str())
     }
 }
 
@@ -672,16 +686,6 @@ pub mod partitioner {
             hasher.finish()
         }
     }
-}
-
-fn encode_invocation_id(
-    partition_key: &PartitionKey,
-    invocation_uuid: &InvocationUuid,
-) -> EncodedInvocationId {
-    let mut buf = EncodedInvocationId::default();
-    buf[..size_of::<PartitionKey>()].copy_from_slice(&partition_key.to_be_bytes());
-    buf[size_of::<PartitionKey>()..].copy_from_slice(&invocation_uuid.to_bytes());
-    buf
 }
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
@@ -860,13 +864,17 @@ macro_rules! ulid_backed_id {
 
         paste::paste! {
             impl ResourceId for [< $res_name Id >] {
-                const SIZE_IN_BYTES: usize = size_of::<Ulid>();
+                const RAW_BYTES_LEN: usize = size_of::<Ulid>();
                 const RESOURCE_TYPE: IdResourceType = IdResourceType::$res_name;
-                const STRING_CAPACITY_HINT: usize = base62_max_length_for_type::<u128>();
 
-                fn push_contents_to_encoder<W: fmt::Write>(&self, encoder: &mut IdEncoder<Self, W>) -> fmt::Result {
+                type StrEncodedLen = ::generic_array::ConstArrayLength<
+                    // prefix + separator + version + suffix
+                    { Self::RESOURCE_TYPE.as_str().len() + 2 + base62_max_length_for_type::<u128>() },
+                >;
+
+                fn push_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
                     let raw: u128 = self.0.into();
-                    encoder.encode_fixed_width_u128(raw)
+                    encoder.push_u128(raw);
                 }
             }
 
@@ -892,8 +900,9 @@ macro_rules! ulid_backed_id {
 
             impl fmt::Display for [< $res_name Id >] {
                 fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    let mut encoder = IdEncoder::<Self, _>::new_fmt(f)?;
-                    self.push_contents_to_encoder(&mut encoder)
+                    let mut encoder = IdEncoder::new();
+                    self.push_to_encoder(&mut encoder);
+                    f.write_str(encoder.as_str())
                 }
             }
         }
@@ -1009,22 +1018,35 @@ pub struct AwakeableIdentifier {
 }
 
 impl ResourceId for AwakeableIdentifier {
-    const SIZE_IN_BYTES: usize = InvocationId::SIZE_IN_BYTES + size_of::<EntryIndex>();
+    const RAW_BYTES_LEN: usize = InvocationId::RAW_BYTES_LEN + size_of::<EntryIndex>();
     const RESOURCE_TYPE: IdResourceType = IdResourceType::Awakeable;
-    const STRING_CAPACITY_HINT: usize = 0; /* Not needed since encoding is custom */
+
+    type StrEncodedLen = ::generic_array::ConstArrayLength<
+        // prefix + separator + version + suffix (38 chars)
+        {
+            Self::RESOURCE_TYPE.as_str().len()
+                + 2
+                + base64::encoded_len(
+                    size_of::<EncodedInvocationId>() + size_of::<EntryIndex>(),
+                    false,
+                )
+                .expect("awakeable id is far from usize limit")
+        },
+    >;
 
     /// We use a custom strategy for awakeable identifiers since they need to be encoded as base64
     /// for wider language support.
-    fn push_contents_to_encoder<W: fmt::Write>(
-        &self,
-        encoder: &mut IdEncoder<Self, W>,
-    ) -> fmt::Result {
-        let mut input_buf =
-            BytesMut::with_capacity(size_of::<EncodedInvocationId>() + size_of::<EntryIndex>());
-        input_buf.put_slice(&self.invocation_id.to_bytes());
-        input_buf.put_u32(self.entry_index);
-        let encoded_base64 = restate_base64_util::URL_SAFE.encode(input_buf.freeze());
-        encoder.push_str(encoded_base64)
+    fn push_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+        let mut input_buf = [0u8; Self::RAW_BYTES_LEN];
+        let pos = self
+            .invocation_id
+            .encode_raw_bytes(&mut input_buf[..InvocationId::RAW_BYTES_LEN]);
+        input_buf[pos..].copy_from_slice(&self.entry_index.to_be_bytes());
+
+        let written = restate_base64_util::URL_SAFE
+            .encode_slice(input_buf, encoder.remaining_mut())
+            .expect("base64 encoding succeeds for system-generated ids");
+        encoder.advance(written);
     }
 }
 
@@ -1078,8 +1100,11 @@ impl FromStr for AwakeableIdentifier {
 
 impl Display for AwakeableIdentifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut encoder = IdEncoder::<Self, _>::new_fmt(f)?;
-        self.push_contents_to_encoder(&mut encoder)
+        // encode the id such that it is possible to do a string prefix search for a
+        // partition key using the first 17 characters.
+        let mut encoder = IdEncoder::new();
+        self.push_to_encoder(&mut encoder);
+        f.write_str(encoder.as_str())
     }
 }
 
@@ -1092,22 +1117,35 @@ pub struct ExternalSignalIdentifier {
 }
 
 impl ResourceId for ExternalSignalIdentifier {
-    const SIZE_IN_BYTES: usize = InvocationId::SIZE_IN_BYTES + size_of::<EntryIndex>();
+    const RAW_BYTES_LEN: usize = size_of::<EncodedInvocationId>() + size_of::<EntryIndex>();
     const RESOURCE_TYPE: IdResourceType = IdResourceType::Signal;
-    const STRING_CAPACITY_HINT: usize = 0; /* Not needed since encoding is custom */
+
+    type StrEncodedLen = ::generic_array::ConstArrayLength<
+        // prefix + separator + version + suffix (38 chars)
+        {
+            Self::RESOURCE_TYPE.as_str().len()
+                + 2
+                + base64::encoded_len(
+                    size_of::<EncodedInvocationId>() + size_of::<EntryIndex>(),
+                    false,
+                )
+                .expect("awakeable id is far from usize limit")
+        },
+    >;
 
     /// We use a custom strategy for awakeable identifiers since they need to be encoded as base64
     /// for wider language support.
-    fn push_contents_to_encoder<W: fmt::Write>(
-        &self,
-        encoder: &mut IdEncoder<Self, W>,
-    ) -> fmt::Result {
-        let mut input_buf =
-            BytesMut::with_capacity(size_of::<EncodedInvocationId>() + size_of::<EntryIndex>());
-        input_buf.put_slice(&self.invocation_id.to_bytes());
-        input_buf.put_u32(self.signal_index);
-        let encoded_base64 = restate_base64_util::URL_SAFE.encode(input_buf.freeze());
-        encoder.push_str(encoded_base64)
+    fn push_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
+        let mut input_buf = [0u8; Self::RAW_BYTES_LEN];
+        let pos = self
+            .invocation_id
+            .encode_raw_bytes(&mut input_buf[..InvocationId::RAW_BYTES_LEN]);
+        input_buf[pos..].copy_from_slice(&self.signal_index.to_be_bytes());
+
+        let written = restate_base64_util::URL_SAFE
+            .encode_slice(input_buf, encoder.remaining_mut())
+            .expect("base64 encoding succeeds for system-generated ids");
+        encoder.advance(written);
     }
 }
 
@@ -1161,8 +1199,9 @@ impl FromStr for ExternalSignalIdentifier {
 
 impl Display for ExternalSignalIdentifier {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut encoder = IdEncoder::<Self, _>::new_fmt(f)?;
-        self.push_contents_to_encoder(&mut encoder)
+        let mut encoder = IdEncoder::new();
+        self.push_to_encoder(&mut encoder);
+        f.write_str(encoder.as_str())
     }
 }
 
@@ -1288,7 +1327,7 @@ mod tests {
 
     #[test]
     fn invocation_codec_capacity() {
-        assert_eq!(38, IdEncoder::<InvocationId>::estimate_buf_capacity())
+        assert_eq!(38, InvocationId::str_encoded_len())
     }
 
     #[test]
