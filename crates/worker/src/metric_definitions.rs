@@ -59,7 +59,7 @@ pub(crate) fn describe_metrics() {
     describe_counter!(
         USAGE_LEADER_JOURNAL_ENTRY_COUNT,
         Unit::Count,
-        "Count of journal command entries processed by partition leaders"
+        "Count of specific journal entries processed by partition leaders"
     );
 
     describe_histogram!(
