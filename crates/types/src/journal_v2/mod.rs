@@ -82,7 +82,6 @@ impl From<EntryType> for &'static str {
                 NotificationType::Completion(completion_type) => completion_type.into(),
                 NotificationType::Signal => "Signal",
             },
-            EntryType::Event => "Event",
         }
     }
 }
