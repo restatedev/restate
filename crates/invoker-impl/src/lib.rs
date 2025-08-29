@@ -17,6 +17,8 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
+use futures::{StreamExt, stream};
+use gardal::RateLimitedStreamExt;
 use input_command::{InputCommand, InvokeCommand};
 use invocation_state_machine::InvocationStateMachine;
 use invocation_task::InvocationTask;
@@ -70,6 +72,8 @@ use restate_types::journal_v2::{
 };
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
+
+pub type TokenBucket<C = gardal::TokioClock> = gardal::TokenBucket<gardal::AtomicStorage, C>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -167,6 +171,7 @@ pub struct Service<IR, EntryEnricher, DeploymentRegistry> {
     // We have this level of indirection to hide the InvocationTaskRunner,
     // which is a rather internal thing we have only for mocking.
     inner: ServiceInner<DefaultInvocationTaskRunner<EntryEnricher, DeploymentRegistry>, IR>,
+    token_bucket: TokenBucket,
 }
 
 impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
@@ -185,6 +190,21 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
         let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
+
+        // we create a bucket per partition/invoker. This way the operator gets more control over
+        // the invocation rate even in a multi-node setup.
+        //
+        // max-rate = rate * number-of-partitions
+        let token_bucket = TokenBucket::from_parts(
+            gardal::RateLimit::per_second_and_burst(
+                options.throttling.rate,
+                options.throttling.burst,
+            ),
+            gardal::TokioClock::default(),
+        );
+
+        // start with the burst capacity
+        token_bucket.add_tokens(options.throttling.burst.get());
 
         Self {
             input_tx,
@@ -205,7 +225,9 @@ impl<IR, EE, Schemas> Service<IR, EE, Schemas> {
                 quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit()),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
+                invocation_token: None,
             },
+            token_bucket,
         }
     }
 
@@ -260,11 +282,15 @@ where
         let Service {
             tmp_dir,
             inner: mut service,
+            token_bucket,
             ..
         } = self;
 
         let shutdown = cancellation_watcher();
         tokio::pin!(shutdown);
+
+        let mut token_stream =
+            std::pin::pin!(stream::iter(std::iter::repeat(())).rate_limit(token_bucket));
 
         let in_memory_limit = updateable_options
             .live_load()
@@ -277,7 +303,12 @@ where
         loop {
             let options = updateable_options.live_load();
             if !service
-                .step(options, &mut segmented_input_queue, shutdown.as_mut())
+                .step(
+                    options,
+                    &mut segmented_input_queue,
+                    token_stream.as_mut(),
+                    shutdown.as_mut(),
+                )
                 .await
             {
                 break;
@@ -289,7 +320,6 @@ where
     }
 }
 
-#[derive(Debug)]
 struct ServiceInner<InvocationTaskRunner, SR> {
     input_rx: mpsc::UnboundedReceiver<InputCommand<SR>>,
     status_rx: mpsc::UnboundedReceiver<
@@ -312,6 +342,8 @@ struct ServiceInner<InvocationTaskRunner, SR> {
     quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
     invocation_state_machine_manager: state_machine_manager::InvocationStateMachineManager<SR>,
+
+    invocation_token: Option<()>,
 }
 
 impl<ITR, IR> ServiceInner<ITR, IR>
@@ -324,6 +356,7 @@ where
         &mut self,
         options: &InvokerOptions,
         segmented_input_queue: &mut SegmentQueue<Box<InvokeCommand>>,
+        mut token_stream: Pin<&mut impl StreamExt<Item = ()>>,
         mut shutdown: Pin<&mut F>,
     ) -> bool
     where
@@ -371,12 +404,15 @@ where
                     }
                 }
             },
-
-            Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
+            item = token_stream.next(), if self.invocation_token.is_none() => {
+                self.invocation_token = item;
+            },
+            Some(invoke_input_command) = segmented_input_queue.dequeue(), if self.invocation_token.is_some() && !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
+                self.invocation_token.take();
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_epoch, invoke_input_command.invocation_target, invoke_input_command.journal);
             },
-
-            Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
+            Some(invocation_task_msg) = self.invocation_tasks_rx.recv(), if self.invocation_token.is_some() => {
+                self.invocation_token.take();
                 let InvocationTaskOutput {
                     invocation_id,
                     partition,
@@ -1383,6 +1419,7 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use futures::Stream;
     use googletest::prelude::eq;
     use googletest::{assert_that, pat};
     use tempfile::tempdir;
@@ -1413,6 +1450,10 @@ mod tests {
 
     use crate::error::{InvokerError, SdkInvocationErrorV2};
     use crate::quota::InvokerConcurrencyQuota;
+
+    pub fn unlimited_token_stream() -> impl Stream<Item = ()> {
+        stream::iter(std::iter::repeat(()))
+    }
 
     // -- Mocks
 
@@ -1451,6 +1492,7 @@ mod tests {
                 quota: InvokerConcurrencyQuota::new(concurrency_limit),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
+                invocation_token: None,
             };
             (input_tx, status_tx, service_inner)
         }
@@ -1693,6 +1735,8 @@ mod tests {
         let shutdown = cancel_token.cancelled();
         tokio::pin!(shutdown);
 
+        let mut token_stream = std::pin::pin!(unlimited_token_stream());
+
         let invocation_id_1 = InvocationId::mock_random();
         let invocation_id_2 = InvocationId::mock_random();
 
@@ -1723,7 +1767,12 @@ mod tests {
         // Now step the state machine to start the invocation
         assert!(
             service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
+                .step(
+                    &invoker_options,
+                    &mut segment_queue,
+                    token_stream.as_mut(),
+                    shutdown.as_mut()
+                )
                 .await
         );
 
@@ -1740,7 +1789,12 @@ mod tests {
         // Step again to remove sid_1 from task queue. This should not invoke sid_2!
         assert!(
             service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
+                .step(
+                    &invoker_options,
+                    &mut segment_queue,
+                    token_stream.as_mut(),
+                    shutdown.as_mut()
+                )
                 .await
         );
         assert!(
@@ -1762,7 +1816,12 @@ mod tests {
         // Step now should invoke sid_2
         assert!(
             service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
+                .step(
+                    &invoker_options,
+                    &mut segment_queue,
+                    token_stream.as_mut(),
+                    shutdown.as_mut(),
+                )
                 .await
         );
         assert!(
