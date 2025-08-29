@@ -180,6 +180,33 @@
                   "type": "boolean",
                   "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
                 },
+                "retryPolicyInitialInterval":  {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Retry policy initial interval, expressed in milliseconds."
+                },
+                "retryPolicyMaxInterval":  {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Retry policy max interval, expressed in milliseconds."
+                },
+                "retryPolicyMaxAttempts":  {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Retry policy max attempts."
+                },
+                "retryPolicyExponentiationFactor":  {
+                  "type": "number",
+                  "description": "Retry policy exponentiation factor."
+                },
+                "retryPolicyOnMaxAttempts":  {
+                  "title": "RetryPolicyOnMaxAttempts",
+                  "enum": [
+                    "PAUSE",
+                    "KILL"
+                  ],
+                  "description": "Retry policy behavior on max attempts."
+                },
                 "metadata": {
                   "type": "object",
                   "description": "Custom metadata of this handler definition. This metadata is shown on the Admin API when querying the service/handler definition.",
@@ -221,6 +248,33 @@
           "ingressPrivate":  {
             "type": "boolean",
             "description": "If true, the service cannot be invoked from the HTTP nor Kafka ingress."
+          },
+          "retryPolicyInitialInterval":  {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Retry policy initial interval, expressed in milliseconds."
+          },
+          "retryPolicyMaxInterval":  {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Retry policy max interval, expressed in milliseconds."
+          },
+          "retryPolicyMaxAttempts":  {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Retry policy max attempts."
+          },
+          "retryPolicyExponentiationFactor":  {
+            "type": "number",
+            "description": "Retry policy exponentiation factor."
+          },
+          "retryPolicyOnMaxAttempts":  {
+            "title": "RetryPolicyOnMaxAttempts",
+            "enum": [
+              "PAUSE",
+              "KILL"
+            ],
+            "description": "Retry policy behavior on max attempts."
           },
           "metadata": {
             "type": "object",

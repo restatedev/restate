@@ -10,6 +10,7 @@
 
 use super::{ActiveServiceRevision, Deployment, Handler, Schema, ServiceRevision};
 
+use crate::config::Configuration;
 use crate::endpoint_manifest;
 use crate::endpoint_manifest::HandlerType;
 use crate::errors::GenericError;
@@ -17,10 +18,11 @@ use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
+use crate::live::Pinned;
 use crate::schema::deployment::{DeploymentMetadata, DeploymentType};
 use crate::schema::invocation_target::{
     BadInputContentType, DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
-    InputRules, InputValidationRule, OutputContentTypeRule, OutputRules,
+    InputRules, InputValidationRule, OnMaxAttempts, OutputContentTypeRule, OutputRules,
 };
 use crate::schema::subscriptions::{
     EventInvocationTargetTemplate, Sink, Source, Subscription, SubscriptionValidator,
@@ -192,6 +194,11 @@ pub enum ServiceError {
     #[error("modifying retention time for service type {0} is unsupported")]
     #[code(unknown)]
     CannotModifyRetentionTime(ServiceType),
+    #[error(
+        "{0} configures the retry policy 'on max attempts' behavior to Pause, but the Pause behavior is not explicitly enabled in the restate-server configuration. To enable it, set the field 'default_retry_policy' in the restate-server configuration file."
+    )]
+    #[code(unknown)]
+    PauseBehaviorDisabled(String),
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -659,15 +666,16 @@ impl SchemaUpdater {
 
         // --- Figure out service options
 
-        // Little problem here that can lead to some surprising stuff.
-        //
-        // When updating a service, and setting the service/handler options (e.g. the idempotency retention, private, etc)
-        // in the manifest, I override whatever was stored before. Makes sense.
-        //
-        // But when not setting these values, we keep whatever was configured before (either from manifest, or from Admin REST API).
-        // This makes little sense now that we have these settings in the manifest, but it preserves the old behavior.
-        // At some point we should "break" this behavior, and on service updates simply apply defaults when nothing is configured in the manifest,
-        // in order to favour people using annotations, rather than the clunky Admin REST API.
+        macro_rules! resolve_optional_config_option {
+            ($get_from_current:expr, $name_from_previous:ident) => {
+                $get_from_current.or(if service_level_settings_behavior.preserve() {
+                    active_revision.and_then(|old_svc| old_svc.$name_from_previous)
+                } else {
+                    None
+                })
+            };
+        }
+
         let public = service
             .ingress_private
             .map(bool::not)
@@ -685,12 +693,9 @@ impl SchemaUpdater {
                 Some(DEFAULT_IDEMPOTENCY_RETENTION)
             },
         );
-        let journal_retention = service.journal_retention_duration().or(
-            if service_level_settings_behavior.preserve() {
-                active_revision.and_then(|old_svc| old_svc.journal_retention)
-            } else {
-                None
-            },
+        let journal_retention = resolve_optional_config_option!(
+            service.journal_retention_duration(),
+            journal_retention
         );
         let workflow_completion_retention = if service_level_settings_behavior.preserve()
             // Retain previous value only if new service and old one are both workflows
@@ -704,21 +709,45 @@ impl SchemaUpdater {
         } else {
             None
         };
-        let inactivity_timeout = service.inactivity_timeout_duration().or(
-            if service_level_settings_behavior.preserve() {
-                active_revision.and_then(|old_svc| old_svc.inactivity_timeout)
-            } else {
-                None
-            },
+        let inactivity_timeout = resolve_optional_config_option!(
+            service.inactivity_timeout_duration(),
+            inactivity_timeout
         );
         let abort_timeout =
-            service
-                .abort_timeout_duration()
-                .or(if service_level_settings_behavior.preserve() {
-                    active_revision.and_then(|old_svc| old_svc.abort_timeout)
-                } else {
-                    None
-                });
+            resolve_optional_config_option!(service.abort_timeout_duration(), abort_timeout);
+        let retry_policy_initial_interval = resolve_optional_config_option!(
+            service.retry_policy_initial_interval(),
+            retry_policy_initial_interval
+        );
+        let retry_policy_max_interval = resolve_optional_config_option!(
+            service.retry_policy_max_interval(),
+            retry_policy_max_interval
+        );
+        let retry_policy_exponentiation_factor = resolve_optional_config_option!(
+            service.retry_policy_exponentiation_factor.map(|f| f as f32),
+            retry_policy_exponentiation_factor
+        );
+        let retry_policy_max_attempts = resolve_optional_config_option!(
+            service.retry_policy_max_attempts.map(|n| n as usize),
+            retry_policy_max_attempts
+        );
+        let retry_policy_on_max_attempts = resolve_optional_config_option!(
+            service.retry_policy_on_max_attempts.map(|f| match f {
+                endpoint_manifest::RetryPolicyOnMaxAttempts::Pause => OnMaxAttempts::Pause,
+                endpoint_manifest::RetryPolicyOnMaxAttempts::Kill => OnMaxAttempts::Kill,
+            }),
+            retry_policy_on_max_attempts
+        );
+
+        let configuration = Configuration::pinned();
+        if !configuration.is_pause_behavior_enabled()
+            && retry_policy_on_max_attempts
+                .is_some_and(|on_max_attempts| matches!(on_max_attempts, OnMaxAttempts::Pause))
+        {
+            return Err(SchemaError::Service(ServiceError::PauseBehaviorDisabled(
+                service_name.as_ref().to_owned(),
+            )));
+        }
 
         let handlers = service
             .handlers
@@ -726,7 +755,13 @@ impl SchemaUpdater {
             .map(|h| {
                 Ok((
                     h.name.to_string(),
-                    Handler::from_schema(service_name.as_ref(), service_type, public, h)?,
+                    Handler::from_schema(
+                        service_name.as_ref(),
+                        service_type,
+                        public,
+                        &configuration,
+                        h,
+                    )?,
                 ))
             })
             .collect::<Result<HashMap<_, _>, SchemaError>>()?;
@@ -747,6 +782,11 @@ impl SchemaUpdater {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: service.enable_lazy_state,
+            retry_policy_initial_interval,
+            retry_policy_exponentiation_factor,
+            retry_policy_max_attempts,
+            retry_policy_max_interval,
+            retry_policy_on_max_attempts,
             service_openapi_cache: Default::default(),
         })
     }
@@ -987,6 +1027,7 @@ impl Handler {
         service_name: &str,
         service_type: ServiceType,
         is_service_public: bool,
+        configuration: &Pinned<Configuration>,
         handler: endpoint_manifest::Handler,
     ) -> Result<Self, ServiceError> {
         let ty = match (service_type, handler.ty) {
@@ -1034,6 +1075,24 @@ impl Handler {
         let workflow_completion_retention = handler.workflow_completion_retention_duration();
         let inactivity_timeout = handler.inactivity_timeout_duration();
         let abort_timeout = handler.abort_timeout_duration();
+        let retry_policy_initial_interval = handler.retry_policy_initial_interval();
+        let retry_policy_max_interval = handler.retry_policy_max_interval();
+        let retry_policy_exponentiation_factor =
+            handler.retry_policy_exponentiation_factor.map(|f| f as f32);
+        let retry_policy_max_attempts = handler.retry_policy_max_attempts.map(|n| n as usize);
+        let retry_policy_on_max_attempts = handler.retry_policy_on_max_attempts.map(|f| match f {
+            endpoint_manifest::RetryPolicyOnMaxAttempts::Pause => OnMaxAttempts::Pause,
+            endpoint_manifest::RetryPolicyOnMaxAttempts::Kill => OnMaxAttempts::Kill,
+        });
+
+        if !configuration.is_pause_behavior_enabled()
+            && retry_policy_on_max_attempts
+                .is_some_and(|on_max_attempts| matches!(on_max_attempts, OnMaxAttempts::Pause))
+        {
+            return Err(ServiceError::PauseBehaviorDisabled(
+                service_name.to_string(),
+            ));
+        }
 
         if !is_service_public && handler.ingress_private == Some(false) {
             return Err(ServiceError::BadHandlerVisibility {
@@ -1061,6 +1120,10 @@ impl Handler {
                 .unwrap_or_default(),
             documentation: handler.documentation,
             metadata: handler.metadata,
+            retry_policy_initial_interval,
+            retry_policy_exponentiation_factor,
+            retry_policy_max_attempts,
+            retry_policy_max_interval,
             journal_retention,
             idempotency_retention,
             workflow_completion_retention,
@@ -1068,6 +1131,7 @@ impl Handler {
             abort_timeout,
             enable_lazy_state: handler.enable_lazy_state,
             public: handler.ingress_private.map(bool::not),
+            retry_policy_on_max_attempts,
         })
     }
 
@@ -1170,6 +1234,12 @@ struct UnsupportedExternalRefRetriever;
 impl jsonschema::Retrieve for UnsupportedExternalRefRetriever {
     fn retrieve(&self, uri: &jsonschema::Uri<&str>) -> Result<Value, Box<dyn Error + Send + Sync>> {
         Err(UnsupportedExternalRefRetrieveError(uri.to_string()).into())
+    }
+}
+
+impl Configuration {
+    fn is_pause_behavior_enabled(&self) -> bool {
+        self.invocation.default_retry_policy.is_some()
     }
 }
 
