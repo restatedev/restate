@@ -195,6 +195,16 @@ impl_meta_api_error!(RestartAsNewInvocationMissingInputError: GONE "The invocati
 pub(crate) struct RestartAsNewInvocationNotStartedError(pub(crate) String);
 impl_meta_api_error!(RestartAsNewInvocationNotStartedError: TOO_EARLY "The invocation cannot be restarted because it's not running yet, meaning it might have been scheduled or inboxed.");
 
+#[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' is completed, cannot be resumed.")]
+pub(crate) struct ResumeInvocationCompletedError(pub(crate) String);
+impl_meta_api_error!(ResumeInvocationCompletedError: CONFLICT "The invocation is completed. An invocation can be resumed only when running, paused or suspended.");
+
+#[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' is either inboxed or scheduled, cannot be resumed.")]
+pub(crate) struct ResumeInvocationNotStartedError(pub(crate) String);
+impl_meta_api_error!(ResumeInvocationNotStartedError: TOO_EARLY "The invocation is either inboxed or scheduled. An invocation can be resumed only when running, paused or suspended.");
+
 // --- Old Meta API errors. Please don't use these anymore.
 
 /// This error is used by handlers to propagate API errors,
