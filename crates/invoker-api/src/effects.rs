@@ -65,6 +65,9 @@ pub enum EffectKind {
     SuspendedV2 {
         waiting_for_notifications: HashSet<journal_v2::NotificationId>,
     },
+    Paused {
+        paused_event: RawEvent,
+    },
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.

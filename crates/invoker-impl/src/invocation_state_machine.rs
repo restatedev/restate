@@ -13,6 +13,7 @@ use super::*;
 use restate_types::journal::Completion;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::retries;
+use restate_types::schema::invocation_target::OnMaxAttempts;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::fmt;
 use std::time::Duration;
@@ -26,7 +27,7 @@ pub(super) struct InvocationStateMachine {
     pub(super) invocation_epoch: InvocationEpoch,
     selected_service_protocol: Option<ServiceProtocolVersion>,
     invocation_state: InvocationState,
-    retry_iter: retries::RetryIter<'static>,
+    retry_policy_state: RetryPolicyState,
     /// This retry count is passed in the StartMessage.
     /// For more details of when we bump it, see [`InvokerError::should_bump_start_message_retry_count_since_last_stored_entry`].
     pub(super) start_message_retry_count_since_last_stored_command: u32,
@@ -160,18 +161,30 @@ impl fmt::Debug for InvocationState {
     }
 }
 
+#[derive(Debug)]
+struct RetryPolicyState {
+    selected_from_deployment_id: Option<DeploymentId>,
+    retry_iter: retries::RetryIter<'static>,
+    on_max_attempts: OnMaxAttempts,
+}
+
 impl InvocationStateMachine {
     pub(super) fn create(
         invocation_target: InvocationTarget,
         invocation_epoch: InvocationEpoch,
-        retry_policy: RetryPolicy,
+        retry_iter: retries::RetryIter<'static>,
+        on_max_attempts: OnMaxAttempts,
     ) -> InvocationStateMachine {
         Self {
             invocation_target,
             invocation_epoch,
             selected_service_protocol: None,
             invocation_state: InvocationState::New,
-            retry_iter: retry_policy.into_iter(),
+            retry_policy_state: RetryPolicyState {
+                selected_from_deployment_id: None,
+                retry_iter,
+                on_max_attempts,
+            },
             start_message_retry_count_since_last_stored_command: 0,
         }
     }
@@ -198,6 +211,32 @@ impl InvocationStateMachine {
     pub(super) fn abort(&mut self) {
         if let InvocationState::InFlight { abort_handle, .. } = &mut self.invocation_state {
             abort_handle.abort();
+        }
+    }
+
+    pub(super) fn update_retry_policy_if_needed(
+        &mut self,
+        selected_deployment_id: DeploymentId,
+        target_resolver: &impl InvocationTargetResolver,
+    ) {
+        if self
+            .retry_policy_state
+            .selected_from_deployment_id
+            .is_some_and(|dp| dp == selected_deployment_id)
+        {
+            // No need to update, the retry is on the same deployment as before
+            return;
+        }
+
+        let (retry_iter, on_max_attempts) = target_resolver.resolve_invocation_retry_policy(
+            Some(&selected_deployment_id),
+            self.invocation_target.service_name(),
+            self.invocation_target.handler_name(),
+        );
+        self.retry_policy_state = RetryPolicyState {
+            selected_from_deployment_id: Some(selected_deployment_id),
+            retry_iter,
+            on_max_attempts,
         }
     }
 
@@ -356,22 +395,17 @@ impl InvocationStateMachine {
     }
 
     pub(super) fn notify_retry_timer_fired(&mut self) {
-        debug_assert!(matches!(
-            &self.invocation_state,
-            InvocationState::WaitingRetry { .. }
-        ));
-
         if let InvocationState::WaitingRetry { timer_fired, .. } = &mut self.invocation_state {
             *timer_fired = true;
         }
     }
 
-    /// Returns Some() with the timer for the next retry, otherwise None if retry limit exhausted
     pub(super) fn handle_task_error(
         &mut self,
+        error_is_transient: bool,
         next_retry_interval_override: Option<Duration>,
         should_bump_start_message_retry_count_since_last_stored_command: bool,
-    ) -> Option<Duration> {
+    ) -> OnTaskError {
         let journal_tracker = match &self.invocation_state {
             InvocationState::InFlight {
                 journal_tracker, ..
@@ -392,8 +426,10 @@ impl InvocationStateMachine {
             }
         };
 
-        let next_timer = next_retry_interval_override.or_else(|| self.retry_iter.next());
-        if next_timer.is_some() {
+        if error_is_transient
+            && let Some(next_timer) =
+                next_retry_interval_override.or_else(|| self.retry_policy_state.retry_iter.next())
+        {
             if should_bump_start_message_retry_count_since_last_stored_command {
                 self.start_message_retry_count_since_last_stored_command += 1;
             }
@@ -401,9 +437,12 @@ impl InvocationStateMachine {
                 timer_fired: false,
                 journal_tracker,
             };
-            next_timer
+            OnTaskError::ScheduleRetry(next_timer)
         } else {
-            None
+            match self.retry_policy_state.on_max_attempts {
+                OnMaxAttempts::Pause => OnTaskError::Pause,
+                OnMaxAttempts::Kill => OnTaskError::Kill,
+            }
         }
     }
 
@@ -423,6 +462,13 @@ impl InvocationStateMachine {
     }
 }
 
+#[derive(Debug)]
+pub(super) enum OnTaskError {
+    ScheduleRetry(Duration),
+    Pause,
+    Kill,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,29 +483,29 @@ mod tests {
 
     use restate_test_util::{assert, check, let_assert};
     use restate_types::journal_v2::{CompletionType, NotificationType};
+    use restate_types::retries::RetryPolicy;
 
     #[test]
     fn handle_error_when_waiting_for_retry() {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_virtual_object(),
             0,
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
+            OnMaxAttempts::Kill,
         );
 
-        assert!(
-            invocation_state_machine
-                .handle_task_error(None, true)
-                .is_some()
+        let_assert!(
+            OnTaskError::ScheduleRetry(_) =
+                invocation_state_machine.handle_task_error(true, None, true)
         );
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         invocation_state_machine.notify_retry_timer_fired();
 
         // We stay in `WaitingForRetry`
-        assert!(
-            invocation_state_machine
-                .handle_task_error(None, true)
-                .is_some()
+        let_assert!(
+            OnTaskError::ScheduleRetry(_) =
+                invocation_state_machine.handle_task_error(true, None, true)
         );
         check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
     }
@@ -469,7 +515,8 @@ mod tests {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_virtual_object(),
             0,
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
+            OnMaxAttempts::Kill,
         );
 
         // Start invocation
@@ -479,10 +526,9 @@ mod tests {
         );
 
         // Notify error
-        assert!(
-            invocation_state_machine
-                .handle_task_error(None, true)
-                .is_some()
+        let_assert!(
+            OnTaskError::ScheduleRetry(_) =
+                invocation_state_machine.handle_task_error(true, None, true)
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -496,10 +542,9 @@ mod tests {
         );
 
         // Get error again
-        assert!(
-            invocation_state_machine
-                .handle_task_error(None, true)
-                .is_some()
+        let_assert!(
+            OnTaskError::ScheduleRetry(_) =
+                invocation_state_machine.handle_task_error(true, None, true)
         );
         assert_eq!(
             invocation_state_machine.start_message_retry_count_since_last_stored_command,
@@ -529,7 +574,8 @@ mod tests {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_virtual_object(),
             0,
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
+            OnMaxAttempts::Kill,
         );
 
         let abort_handle = tokio::spawn(async {}).abort_handle();
@@ -560,7 +606,8 @@ mod tests {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_service(),
             0,
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
+            OnMaxAttempts::Kill,
         );
 
         let abort_handle = tokio::spawn(async {}).abort_handle();
@@ -570,7 +617,10 @@ mod tests {
 
         // Invoker generates entry 1
         invocation_state_machine.notify_new_command(1, false);
-        let_assert!(Some(_) = invocation_state_machine.handle_task_error(None, true));
+        let_assert!(
+            OnTaskError::ScheduleRetry(_) =
+                invocation_state_machine.handle_task_error(true, None, true)
+        );
 
         // PP sends ack for command 1
         invocation_state_machine.notify_stored_ack(1);
@@ -589,7 +639,8 @@ mod tests {
         let mut invocation_state_machine = InvocationStateMachine::create(
             InvocationTarget::mock_service(),
             0,
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
+            OnMaxAttempts::Kill,
         );
 
         let abort_handle = tokio::spawn(async {}).abort_handle();
@@ -598,7 +649,10 @@ mod tests {
         invocation_state_machine.start(abort_handle, tx);
         invocation_state_machine.notify_new_notification_proposal(NotificationId::SignalIndex(18));
         invocation_state_machine.notify_new_notification_proposal(NotificationId::CompletionId(1));
-        let_assert!(Some(_) = invocation_state_machine.handle_task_error(None, true));
+        let_assert!(
+            OnTaskError::ScheduleRetry(_) =
+                invocation_state_machine.handle_task_error(true, None, true)
+        );
 
         // Waiting notifications acks and retry timer fired
         assert!(!invocation_state_machine.is_ready_to_retry());
