@@ -12,6 +12,7 @@ use std::io::Cursor;
 use std::ops::RangeInclusive;
 
 use crate::TableKind::JournalEvent;
+use crate::error::break_on_err;
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
@@ -139,29 +140,30 @@ impl ReadOnlyJournalEventsTable for PartitionStore {
 }
 
 impl ScanJournalEventsTable for PartitionStore {
-    fn scan_journal_events(
+    fn for_each_journal_event<
+        F: FnMut((JournalEventId, StoredEvent)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+    >(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(JournalEventId, StoredEvent)>> + Send> {
-        self.run_iterator(
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send> {
+        self.iterator_for_each(
             "df-journal-events",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<JournalEventKey>(range),
-            |(mut key, mut value)| {
-                let journal_event_key = JournalEventKey::deserialize_from(&mut key)?;
-                let journal_event = StoredEvent::decode(&mut value)
-                    .map_err(|err| StorageError::Conversion(err.into()))?;
+            move |(mut key, mut value)| {
+                let journal_event_key = break_on_err(JournalEventKey::deserialize_from(&mut key))?;
+                let journal_event = break_on_err(StoredEvent::decode(&mut value))?;
 
                 let (partition_key, invocation_uuid, event_index) =
-                    journal_event_key.into_inner_ok_or()?;
+                    break_on_err(journal_event_key.into_inner_ok_or())?;
 
-                Ok((
-                    JournalEventId::from_parts(
-                        InvocationId::from_parts(partition_key, invocation_uuid),
-                        event_index,
-                    ),
-                    journal_event,
-                ))
+                let journal_event_id = JournalEventId::from_parts(
+                    InvocationId::from_parts(partition_key, invocation_uuid),
+                    event_index,
+                );
+
+                f((journal_event_id, journal_event)).map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)
