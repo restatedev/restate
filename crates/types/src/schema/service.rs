@@ -446,6 +446,7 @@ pub struct HandlerRetryPolicyMetadata {
     /// Initial interval for the first retry attempt.
     #[serde(
         default,
+        skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
     #[cfg_attr(
@@ -457,13 +458,13 @@ pub struct HandlerRetryPolicyMetadata {
     /// # Factor
     ///
     /// The factor to use to compute the next retry attempt.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exponentiation_factor: Option<f32>,
 
     /// # Max attempts
     ///
     /// Number of maximum attempts before giving up. Infinite retries if unset.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_attempts: Option<usize>,
 
     /// # Max interval
@@ -471,6 +472,7 @@ pub struct HandlerRetryPolicyMetadata {
     /// Maximum interval between retries.
     #[serde(
         default,
+        skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
     )]
     #[cfg_attr(
@@ -482,7 +484,7 @@ pub struct HandlerRetryPolicyMetadata {
     /// # On max attempts
     ///
     /// Behavior when max attempts are reached.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_max_attempts: Option<OnMaxAttempts>,
 }
 
