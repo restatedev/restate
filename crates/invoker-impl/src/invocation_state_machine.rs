@@ -10,6 +10,7 @@
 
 use super::*;
 
+use bytes::Bytes;
 use restate_types::journal::Completion;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::retries;
@@ -24,6 +25,7 @@ use tokio::task::AbortHandle;
 pub(super) struct InvocationStateMachine {
     pub(super) invocation_target: InvocationTarget,
     pub(super) invocation_epoch: InvocationEpoch,
+    pub(super) last_transient_error_event_deduplication_hash: Option<Bytes>,
     selected_service_protocol: Option<ServiceProtocolVersion>,
     invocation_state: InvocationState,
     retry_iter: retries::RetryIter<'static>,
@@ -169,6 +171,7 @@ impl InvocationStateMachine {
         Self {
             invocation_target,
             invocation_epoch,
+            last_transient_error_event_deduplication_hash: None,
             selected_service_protocol: None,
             invocation_state: InvocationState::New,
             retry_iter: retry_policy.into_iter(),
