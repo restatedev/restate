@@ -77,25 +77,37 @@ impl ScanLocalPartition for JournalScanner {
         // the intent here is that iterators race to produce the first row, the winner gets an owned lock guard which it then holds until its done iterating
         // and then the next iterator is able to get a lock guard.
 
-        let f = Arc::new(tokio::sync::Mutex::new(f));
+        let (v1, v2) = {
+            // once we've started iterating, this arc must be dropped from inside the io threads and not in an async context
+            let mut f_v1 = Some(Arc::new(tokio::sync::Mutex::new(f)));
+            let mut f_v2 = f_v1.clone();
 
-        let v1 = ScanJournalTable::for_each_journal(partition_store, range.clone(), {
-            let f = f.clone();
-            let mut f_locked = None;
-            move |(id, entry)| {
-                let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
-                f((id, ScannedEntry::V1(entry)))
-            }
-        })?;
+            let v1 = ScanJournalTable::for_each_journal(partition_store, range.clone(), {
+                let mut f_locked = None;
+                move |(id, entry)| {
+                    let f = f_locked.get_or_insert_with(|| {
+                        f_v1.take()
+                            .expect("we only take f_v1 once")
+                            .blocking_lock_owned()
+                    });
+                    f((id, ScannedEntry::V1(entry)))
+                }
+            })?;
 
-        let v2 = ScanJournalTableV2::for_each_journal(partition_store, range, {
-            let f = f.clone();
-            let mut f_locked = None;
-            move |(id, entry)| {
-                let f = f_locked.get_or_insert_with(|| f.clone().blocking_lock_owned());
-                f((id, ScannedEntry::V2(entry)))
-            }
-        })?;
+            let v2 = ScanJournalTableV2::for_each_journal(partition_store, range, {
+                let mut f_locked = None;
+                move |(id, entry)| {
+                    let f = f_locked.get_or_insert_with(|| {
+                        f_v2.take()
+                            .expect("we only take f_v2 once")
+                            .blocking_lock_owned()
+                    });
+                    f((id, ScannedEntry::V2(entry)))
+                }
+            })?;
+
+            (v1, v2)
+        };
 
         Ok(async {
             v1.await?;
