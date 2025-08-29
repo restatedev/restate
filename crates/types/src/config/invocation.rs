@@ -126,7 +126,10 @@ pub struct InvocationRetryPolicyOptions {
     /// # Max interval
     ///
     /// Maximum interval between retries.
-    #[serde(default, with = "serde_with::As::<Option<restate_serde_util::DurationString>>")]
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
     #[cfg_attr(
         feature = "schemars",
         schemars(with = "Option<restate_serde_util::DurationString>")
