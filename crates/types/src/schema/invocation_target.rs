@@ -13,6 +13,7 @@ use crate::invocation::{
 };
 
 use crate::identifiers::DeploymentId;
+use crate::retries::RetryIter;
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
@@ -47,6 +48,28 @@ pub trait InvocationTargetResolver {
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<InvocationAttemptOptions>;
+
+    /// Resolve the invocation retry policy.
+    ///
+    /// This will apply all the different levels of configuration, from more granular handler level configuration up to restate-server configuration file.
+    ///
+    /// If deployment id is not provided, the last service/handler configuration will be applied instead.
+    fn resolve_invocation_retry_policy(
+        &self,
+        deployment_id: Option<&DeploymentId>,
+        service_name: impl AsRef<str>,
+        handler_name: impl AsRef<str>,
+    ) -> (RetryIter<'static>, OnMaxAttempts);
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum OnMaxAttempts {
+    /// Pause the invocation when max attempts are reached.
+    #[default]
+    Pause,
+    /// Kill the invocation when max attempts are reached.
+    Kill,
 }
 
 #[derive(Debug, Clone)]
@@ -471,6 +494,7 @@ fn try_display_json_detailed_info<D: fmt::Display>(
 pub mod test_util {
     use super::*;
 
+    use crate::schema::service::ServiceRetryPolicyMetadata;
     use std::collections::HashMap;
 
     #[derive(Debug, Clone)]
@@ -527,6 +551,20 @@ pub mod test_util {
                 c.1.get(handler_name.as_ref())
                     .map(|_| InvocationAttemptOptions::default())
             })
+        }
+
+        fn resolve_invocation_retry_policy(
+            &self,
+            _: Option<&DeploymentId>,
+            _: impl AsRef<str>,
+            _: impl AsRef<str>,
+        ) -> (RetryIter<'static>, OnMaxAttempts) {
+            let retry_policy = ServiceRetryPolicyMetadata::default();
+
+            (
+                retry_policy.as_retry_policy().into_iter(),
+                retry_policy.on_max_attempts,
+            )
         }
     }
 
