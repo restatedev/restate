@@ -230,7 +230,10 @@ pub const DEFAULT_ABORT_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct InvokerOptions {
     /// # Retry policy
     ///
-    /// Retry policy to use for all the invocations handled by this invoker.
+    /// This is **deprecated** and will be removed in the next Restate releases.
+    ///
+    /// Please refer to [`InvocationOptions.retry_policy`] for the new configuration options.
+    #[deprecated]
     pub retry_policy: RetryPolicy,
 
     /// # Inactivity timeout
@@ -331,6 +334,7 @@ impl InvokerOptions {
 impl Default for InvokerOptions {
     fn default() -> Self {
         Self {
+            #[allow(deprecated)]
             retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(50),
                 2.0,

@@ -22,8 +22,8 @@ pub(super) struct Request {
     pub(super) invocation_id: InvocationId,
 }
 
-impl<'a, Proposer: CommandProposer, Storage> RpcHandler<Request>
-    for RpcContext<'a, Proposer, Storage>
+impl<'a, TActuator: Actuator, TStorage> RpcHandler<Request>
+    for RpcContext<'a, TActuator, TStorage>
 {
     type Output = KillInvocationRpcResponse;
     type Error = ();

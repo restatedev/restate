@@ -55,7 +55,7 @@ type RpcReciprocal =
     Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>;
 
 pub struct LeaderState {
-    partition_id: PartitionId,
+    pub(crate) partition_id: PartitionId,
     pub leader_epoch: LeaderEpoch,
     // only needed for proposing TruncateOutbox to ourselves
     own_partition_key: PartitionKey,
@@ -532,6 +532,16 @@ impl LeaderState {
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
                     response_tx.send(Ok(PartitionProcessorRpcResponse::PurgeJournal(
+                        response.into(),
+                    )));
+                }
+            }
+            Action::ForwardResumeInvocationResponse {
+                request_id,
+                response,
+            } => {
+                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
+                    response_tx.send(Ok(PartitionProcessorRpcResponse::ResumeInvocation(
                         response.into(),
                     )));
                 }

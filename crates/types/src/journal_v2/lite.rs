@@ -12,7 +12,7 @@ use crate::identifiers::InvocationId;
 use crate::invocation::InvocationTarget;
 use crate::journal_v2::{
     AttachInvocationTarget, CommandType, CompleteAwakeableId, CompletionId, EntryMetadata,
-    EntryType, Event, NotificationId, NotificationMetadata, NotificationType, SignalId,
+    EntryType, NotificationId, NotificationMetadata, NotificationType, SignalId,
 };
 use crate::time::MillisSinceEpoch;
 use bytestring::ByteString;
@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 pub enum EntryLite {
     Command(CommandLite),
     Notification(NotificationLite),
-    Event(Event),
 }
 
 // ---- Commands

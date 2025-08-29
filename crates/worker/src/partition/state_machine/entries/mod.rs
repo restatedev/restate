@@ -14,7 +14,6 @@ mod clear_all_state_command;
 mod clear_state_command;
 mod complete_awakeable_command;
 mod complete_promise_command;
-mod event;
 mod get_invocation_output_command;
 mod get_lazy_state_command;
 mod get_lazy_state_keys_command;
@@ -56,7 +55,6 @@ use crate::partition::state_machine::entries::clear_all_state_command::ApplyClea
 use crate::partition::state_machine::entries::clear_state_command::ApplyClearStateCommand;
 use crate::partition::state_machine::entries::complete_awakeable_command::ApplyCompleteAwakeableCommand;
 use crate::partition::state_machine::entries::complete_promise_command::ApplyCompletePromiseCommand;
-use crate::partition::state_machine::entries::event::ApplyEventCommand;
 use crate::partition::state_machine::entries::get_invocation_output_command::ApplyGetInvocationOutputCommand;
 use crate::partition::state_machine::entries::get_lazy_state_command::ApplyGetLazyStateCommand;
 use crate::partition::state_machine::entries::get_lazy_state_keys_command::ApplyGetLazyStateKeysCommand;
@@ -116,9 +114,10 @@ where
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         if !matches!(self.invocation_status, InvocationStatus::Invoked(_))
             && !matches!(self.invocation_status, InvocationStatus::Suspended { .. })
+            && !matches!(self.invocation_status, InvocationStatus::Paused(_))
         {
             debug!(
-                "Received entry for invocation that is not invoked nor suspended. Ignoring the effect."
+                "Received entry for invocation that is not invoked nor suspended nor paused. Ignoring the effect."
             );
             return Ok(());
         }
@@ -139,7 +138,7 @@ where
         }
 
         let mut entries = VecDeque::from([self.entry]);
-        while let Some(mut entry) = entries.pop_front() {
+        while let Some(entry) = entries.pop_front() {
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
 
@@ -331,27 +330,6 @@ where
                     }
                     .apply(ctx)
                     .await?;
-                }
-
-                EntryType::Event => {
-                    let mut entry_opt = Some(entry);
-                    ApplyEventCommand {
-                        invocation_id: self.invocation_id,
-                        invocation_status: &mut self.invocation_status,
-                        entry: &mut entry_opt,
-                    }
-                    .apply(ctx)
-                    .await?;
-                    match entry_opt {
-                        None => {
-                            // Just skip appending the journal entry here
-                            continue;
-                        }
-                        Some(e) => {
-                            // We still need to append this entry
-                            entry = e;
-                        }
-                    }
                 }
             };
 

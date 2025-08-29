@@ -19,7 +19,7 @@ use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
-use crate::schema::invocation_target::DEFAULT_IDEMPOTENCY_RETENTION;
+use crate::schema::invocation_target::{DEFAULT_IDEMPOTENCY_RETENTION, OnMaxAttempts};
 use restate_serde_util::DurationString;
 
 /// This API returns service metadata, as shown in the Admin API.
@@ -168,6 +168,14 @@ pub struct ServiceMetadata {
     /// This is relevant only for Workflows and Virtual Objects.
     #[serde(default = "restate_serde_util::default::bool::<false>")]
     pub enable_lazy_state: bool,
+
+    /// # Retry policy
+    ///
+    /// Retry policy applied to invocations of this service.
+    ///
+    /// If unset, it returns the default values configured in the Restate configuration.
+    #[serde(default)]
+    pub retry_policy: ServiceRetryPolicyMetadata,
 }
 
 impl restate_serde_util::MapAsVecItem for ServiceMetadata {
@@ -188,6 +196,75 @@ fn default_inactivity_timeout() -> Duration {
 
 fn default_abort_timeout() -> Duration {
     DEFAULT_ABORT_TIMEOUT
+}
+
+/// # Service retry policy
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct ServiceRetryPolicyMetadata {
+    /// # Initial Interval
+    ///
+    /// Initial interval for the first retry attempt.
+    #[serde(
+        default = "default_initial_interval",
+        with = "serde_with::As::<restate_serde_util::DurationString>"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "restate_serde_util::DurationString")
+    )]
+    pub initial_interval: Duration,
+
+    /// # Factor
+    ///
+    /// The factor to use to compute the next retry attempt. Default: `2.0`.
+    #[serde(default = "default_exponentiation_factor")]
+    pub exponentiation_factor: f32,
+
+    /// # Max attempts
+    ///
+    /// Number of maximum attempts before giving up. Infinite retries if unset.
+    #[serde(default)]
+    pub max_attempts: Option<usize>,
+
+    /// # Max interval
+    ///
+    /// Maximum interval between retries.
+    #[serde(
+        default,
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
+    pub max_interval: Option<Duration>,
+
+    /// # On max attempts
+    ///
+    /// Behavior when max attempts are reached.
+    #[serde(default)]
+    pub on_max_attempts: OnMaxAttempts,
+}
+
+impl Default for ServiceRetryPolicyMetadata {
+    fn default() -> Self {
+        Self {
+            initial_interval: default_initial_interval(),
+            exponentiation_factor: default_exponentiation_factor(),
+            max_attempts: None,
+            max_interval: None,
+            on_max_attempts: Default::default(),
+        }
+    }
+}
+
+fn default_initial_interval() -> Duration {
+    Duration::from_millis(100)
+}
+
+fn default_exponentiation_factor() -> f32 {
+    2.0
 }
 
 // This type is used only for exposing the handler metadata, and not internally. See [ServiceAndHandlerType].
@@ -345,6 +422,11 @@ pub struct HandlerMetadata {
     /// JSON Schema of the handler output
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_json_schema: Option<serde_json::Value>,
+
+    /// # Retry policy
+    ///
+    /// Retry policy overrides applied for this handler.
+    pub retry_policy: HandlerRetryPolicyMetadata,
 }
 
 impl restate_serde_util::MapAsVecItem for HandlerMetadata {
@@ -353,6 +435,57 @@ impl restate_serde_util::MapAsVecItem for HandlerMetadata {
     fn key(&self) -> Self::Key {
         self.name.clone()
     }
+}
+
+/// # Handler retry policy overrides
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct HandlerRetryPolicyMetadata {
+    /// # Initial Interval
+    ///
+    /// Initial interval for the first retry attempt.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "restate_serde_util::DurationString")
+    )]
+    pub initial_interval: Option<Duration>,
+
+    /// # Factor
+    ///
+    /// The factor to use to compute the next retry attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exponentiation_factor: Option<f32>,
+
+    /// # Max attempts
+    ///
+    /// Number of maximum attempts before giving up. Infinite retries if unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<usize>,
+
+    /// # Max interval
+    ///
+    /// Maximum interval between retries.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(with = "Option<restate_serde_util::DurationString>")
+    )]
+    pub max_interval: Option<Duration>,
+
+    /// # On max attempts
+    ///
+    /// Behavior when max attempts are reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_max_attempts: Option<OnMaxAttempts>,
 }
 
 #[cfg(feature = "test-util")]
@@ -419,6 +552,7 @@ pub mod test_util {
                                 output_description: "any".to_string(),
                                 input_json_schema: None,
                                 output_json_schema: None,
+                                retry_policy: Default::default(),
                             },
                         )
                     })
@@ -435,6 +569,7 @@ pub mod test_util {
                 inactivity_timeout: Duration::from_secs(60),
                 abort_timeout: Duration::from_secs(60),
                 enable_lazy_state: false,
+                retry_policy: Default::default(),
             }
         }
 
@@ -464,6 +599,7 @@ pub mod test_util {
                                 output_description: "any".to_string(),
                                 input_json_schema: None,
                                 output_json_schema: None,
+                                retry_policy: Default::default(),
                             },
                         )
                     })
@@ -480,6 +616,7 @@ pub mod test_util {
                 inactivity_timeout: Duration::from_secs(60),
                 abort_timeout: Duration::from_secs(60),
                 enable_lazy_state: false,
+                retry_policy: Default::default(),
             }
         }
     }

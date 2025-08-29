@@ -15,7 +15,7 @@ use crate::identifiers::{
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PurgeInvocationResponse,
-    RestartAsNewInvocationResponse, SubmittedInvocationNotification,
+    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
@@ -75,6 +75,7 @@ pub enum PartitionProcessorRpcRequestInner {
     PurgeInvocation { invocation_id: InvocationId },
     PurgeJournal { invocation_id: InvocationId },
     RestartAsNewInvocation { invocation_id: InvocationId },
+    ResumeInvocation { invocation_id: InvocationId },
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
@@ -97,6 +98,9 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
                 invocation_id.partition_key()
             }
             PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id } => {
                 invocation_id.partition_key()
             }
         }
@@ -299,6 +303,42 @@ impl From<RestartAsNewInvocationRpcResponse> for PartitionProcessorRpcResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ResumeInvocationRpcResponse {
+    Ok,
+    NotFound,
+    NotStarted,
+    Completed,
+}
+
+impl From<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
+    fn from(value: ResumeInvocationRpcResponse) -> Self {
+        match value {
+            ResumeInvocationRpcResponse::Ok => ResumeInvocationResponse::Ok,
+            ResumeInvocationRpcResponse::NotFound => ResumeInvocationResponse::NotFound,
+            ResumeInvocationRpcResponse::NotStarted => ResumeInvocationResponse::NotStarted,
+            ResumeInvocationRpcResponse::Completed => ResumeInvocationResponse::Completed,
+        }
+    }
+}
+
+impl From<ResumeInvocationResponse> for ResumeInvocationRpcResponse {
+    fn from(value: ResumeInvocationResponse) -> Self {
+        match value {
+            ResumeInvocationResponse::Ok => ResumeInvocationRpcResponse::Ok,
+            ResumeInvocationResponse::NotFound => ResumeInvocationRpcResponse::NotFound,
+            ResumeInvocationResponse::NotStarted => ResumeInvocationRpcResponse::NotStarted,
+            ResumeInvocationResponse::Completed => ResumeInvocationRpcResponse::Completed,
+        }
+    }
+}
+
+impl From<ResumeInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: ResumeInvocationRpcResponse) -> Self {
+        Self::ResumeInvocation(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
     Appended,
     NotFound,
@@ -311,4 +351,5 @@ pub enum PartitionProcessorRpcResponse {
     PurgeInvocation(PurgeInvocationRpcResponse),
     PurgeJournal(PurgeInvocationRpcResponse),
     RestartAsNewInvocation(RestartAsNewInvocationRpcResponse),
+    ResumeInvocation(ResumeInvocationRpcResponse),
 }

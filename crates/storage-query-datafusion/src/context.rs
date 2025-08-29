@@ -91,6 +91,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
                 WHEN ss.status = 'scheduled' THEN 'scheduled'
                 WHEN ss.status = 'completed' THEN 'completed'
                 WHEN ss.status = 'suspended' THEN 'suspended'
+                WHEN ss.status = 'paused' THEN 'paused'
                 WHEN sis.in_flight THEN 'running'
                 WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
                 ELSE 'ready'
@@ -188,6 +189,12 @@ where
             &self.remote_scanner_manager,
         )?;
         crate::journal::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.local_partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::journal_events::register_self(
             ctx,
             self.partition_selector.clone(),
             self.local_partition_store_manager.clone(),

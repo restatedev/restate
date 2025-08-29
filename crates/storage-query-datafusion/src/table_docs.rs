@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::{
-    deployment, idempotency, inbox, invocation_state, invocation_status, journal,
+    deployment, idempotency, inbox, invocation_state, invocation_status, journal, journal_events,
     keyed_service_status, promise, service, state,
 };
 use std::borrow::Cow;
@@ -20,6 +20,7 @@ use std::borrow::Cow;
 pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
     state::schema::TABLE_DOCS,
     journal::schema::TABLE_DOCS,
+    journal_events::schema::TABLE_DOCS,
     keyed_service_status::schema::TABLE_DOCS,
     inbox::schema::TABLE_DOCS,
     idempotency::schema::TABLE_DOCS,
@@ -226,7 +227,7 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         TableColumn {
             name: "status",
             column_type: "Utf8",
-            description: "Either `pending` or `scheduled` or `ready` or `running` or `backing-off` or `suspended` or `completed`.",
+            description: "Either `pending` or `scheduled` or `ready` or `running` or `paused` or `backing-off` or `suspended` or `completed`.",
         },
         sys_invocation_status
             .remove("completion_result")

@@ -43,6 +43,7 @@ use restate_storage_api::invocation_status_table::{
     JournalRetentionPolicy, PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
+use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table::ReadOnlyJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, JournalTable};
 use restate_storage_api::journal_table_v2;
@@ -67,7 +68,7 @@ use restate_types::identifiers::{
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
-    PurgeInvocationResponse,
+    PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationEpoch,
@@ -425,7 +426,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + VirtualObjectStatusTable
             + InboxTable
             + StateTable
-            + journal_table_v2::JournalTable,
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         match command {
             Command::UpdatePartitionDurability(_) => {
@@ -540,6 +542,15 @@ impl<S> StateMachineApplyContext<'_, S> {
                 lifecycle::OnPurgeJournalCommand {
                     invocation_id: purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
+            }
+            Command::ResumeInvocation(resume_invocation_request) => {
+                lifecycle::OnManualResumeCommand {
+                    invocation_id: resume_invocation_request.invocation_id,
+                    response_sink: resume_invocation_request.response_sink,
                 }
                 .apply(self)
                 .await?;
@@ -791,6 +802,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         match previous_invocation_status {
             is @ InvocationStatus::Invoked { .. }
             | is @ InvocationStatus::Suspended { .. }
+            | is @ InvocationStatus::Paused { .. }
             | is @ InvocationStatus::Inboxed { .. }
             | is @ InvocationStatus::Scheduled { .. } => {
                 if let Some(ref response_sink) = service_invocation.response_sink
@@ -1094,7 +1106,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + OutboxTable
             + journal_table_v2::JournalTable
             + TimerTable
-            + PromiseTable,
+            + PromiseTable
+            + JournalEventsTable,
     {
         match termination_flavor {
             TerminationFlavor::Kill => self.on_kill_invocation(invocation_id, response_sink).await,
@@ -1120,7 +1133,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + OutboxTable
             + TimerTable
             + FsmTable
-            + journal_table_v2::JournalTable,
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
 
@@ -1130,8 +1144,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .await?;
                 self.reply_to_kill(response_sink, KillInvocationResponse::Ok);
             }
-            InvocationStatus::Suspended { metadata, .. } => {
-                self.kill_suspended_invocation(invocation_id, metadata)
+            InvocationStatus::Suspended { metadata, .. } | InvocationStatus::Paused(metadata) => {
+                self.kill_suspended_or_paused_invocation(invocation_id, metadata)
                     .await?;
                 self.reply_to_kill(response_sink, KillInvocationResponse::Ok);
             }
@@ -1271,6 +1285,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                 {
                     self.do_resume_service( invocation_id, metadata).await?;
                 }
+                self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
+            }
+            InvocationStatus::Paused(metadata) => {
+                self.cancel_journal_leaves(
+                    invocation_id,
+                    InvocationStatusProjection::Paused,
+                    metadata.journal_metadata.length,
+                )
+                .await?;
+                self.do_resume_service(invocation_id, metadata).await?;
                 self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
             InvocationStatus::Inboxed(inboxed) => {
@@ -1441,7 +1465,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + JournalTable
             + OutboxTable
             + FsmTable
-            + journal_table_v2::JournalTable,
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -1456,7 +1481,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    async fn kill_suspended_invocation(
+    async fn kill_suspended_or_paused_invocation(
         &mut self,
         invocation_id: InvocationId,
         metadata: InFlightInvocationMetadata,
@@ -1470,7 +1495,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + JournalTable
             + OutboxTable
             + FsmTable
-            + journal_table_v2::JournalTable,
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -1664,6 +1690,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 Ok(false)
             }
+            InvocationStatusProjection::Paused => {
+                self.handle_completion_for_paused(
+                    invocation_id,
+                    Completion::new(journal_index, canceled_result),
+                )
+                .await?;
+                Ok(false)
+            }
             InvocationStatusProjection::Suspended(waiting_for_completed_entry) => {
                 self.handle_completion_for_suspended(
                     invocation_id,
@@ -1689,7 +1723,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + TimerTable
             + PromiseTable
             + StateTable
-            + journal_table_v2::JournalTable,
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         let (key, value) = timer_value.into_inner();
         self.do_delete_timer(key).await?;
@@ -1804,7 +1839,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + TimerTable
             + InboxTable
             + VirtualObjectStatusTable
-            + journal_table_v2::JournalTable,
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         let status = self
             .get_invocation_status(&invoker_effect.invocation_id)
@@ -1829,7 +1865,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + TimerTable
             + InboxTable
             + VirtualObjectStatusTable
-            + journal_table_v2::JournalTable,
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         let is_status_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
 
@@ -1902,6 +1939,15 @@ impl<S> StateMachineApplyContext<'_, S> {
                     });
                 }
             }
+            InvokerEffectKind::JournalEvent { event } => {
+                lifecycle::OnInvokerEventCommand {
+                    invocation_id: effect.invocation_id,
+                    invocation_status,
+                    event,
+                }
+                .apply(self)
+                .await?;
+            }
             InvokerEffectKind::Suspended {
                 waiting_for_completed_entries,
             } => {
@@ -1955,6 +2001,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .apply(self)
                 .await?;
             }
+            InvokerEffectKind::Paused { paused_event } => {
+                lifecycle::OnPausedCommand {
+                    invocation_id: effect.invocation_id,
+                    paused_event,
+                }
+                .apply(self)
+                .await?;
+            }
             InvokerEffectKind::End => {
                 self.end_invocation(
                     effect.invocation_id,
@@ -1996,10 +2050,12 @@ impl<S> StateMachineApplyContext<'_, S> {
             + FsmTable
             + InvocationStatusTable
             + StateTable
-            + journal_table_v2::JournalTable,
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
+        let events_length = invocation_metadata.journal_metadata.events;
         let completion_retention = invocation_metadata.completion_retention_duration;
         let journal_retention = invocation_metadata.journal_retention_duration;
 
@@ -2091,6 +2147,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.do_drop_journal(
                 invocation_id,
                 journal_length,
+                events_length,
                 should_remove_journal_table_v2,
             )
             .await?;
@@ -3160,6 +3217,18 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(resume_invocation)
     }
 
+    async fn handle_completion_for_paused(
+        &mut self,
+        invocation_id: InvocationId,
+        completion: Completion,
+    ) -> Result<(), Error>
+    where
+        S: JournalTable,
+    {
+        self.store_completion(invocation_id, completion).await?;
+        Ok(())
+    }
+
     async fn handle_completion_for_invoked(
         &mut self,
         invocation_id: InvocationId,
@@ -3339,6 +3408,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             is @ InvocationStatus::Invoked(_)
             | is @ InvocationStatus::Suspended { .. }
             | is @ InvocationStatus::Inboxed(_)
+            | is @ InvocationStatus::Paused(_)
             | is @ InvocationStatus::Scheduled(_) => {
                 if attach_invocation_request.block_on_inflight {
                     self.do_append_response_sink(
@@ -3496,6 +3566,30 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.action_collector
             .push(Action::ForwardPurgeJournalResponse {
+                request_id,
+                response,
+            });
+    }
+
+    fn reply_to_resume_invocation(
+        &mut self,
+        response_sink: Option<InvocationMutationResponseSink>,
+        response: ResumeInvocationResponse,
+    ) {
+        if response_sink.is_none() {
+            return;
+        }
+        let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
+            response_sink.unwrap();
+        debug_if_leader!(
+            self.is_leader,
+            "Send resume response to request id '{:?}': {:?}",
+            request_id,
+            response
+        );
+
+        self.action_collector
+            .push(Action::ForwardResumeInvocationResponse {
                 request_id,
                 response,
             });
@@ -3934,10 +4028,11 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
+        events_length: EntryIndex,
         should_remove_journal_table_v2: bool,
     ) -> Result<(), Error>
     where
-        S: JournalTable + journal_table_v2::JournalTable,
+        S: JournalTable + journal_table_v2::JournalTable + JournalEventsTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -3955,6 +4050,11 @@ impl<S> StateMachineApplyContext<'_, S> {
             .map_err(Error::Storage)?
         } else {
             JournalTable::delete_journal(self.storage, &invocation_id, journal_length)
+                .await
+                .map_err(Error::Storage)?;
+        }
+        if events_length != 0 {
+            JournalEventsTable::delete_journal_events(self.storage, invocation_id, events_length)
                 .await
                 .map_err(Error::Storage)?;
         }
@@ -4252,6 +4352,7 @@ impl fmt::Display for CompletionResultFmt<'_> {
 /// Projected [`InvocationStatus`] for cancellation purposes.
 enum InvocationStatusProjection {
     Invoked,
+    Paused,
     Suspended(HashSet<EntryIndex>),
 }
 

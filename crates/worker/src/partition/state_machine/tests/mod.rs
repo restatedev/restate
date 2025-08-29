@@ -63,6 +63,7 @@ use restate_types::journal::{
     CompleteAwakeableEntry, Completion, CompletionResult, EntryResult, InvokeRequest,
 };
 use restate_types::journal::{Entry, EntryType};
+use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
 use restate_types::live::Constant;
 use restate_types::partitions::Partition;
@@ -223,6 +224,7 @@ impl TestEnv {
         .collect()
     }
 
+    #[allow(unused)]
     pub async fn read_journal_entry<E: TryFromEntry>(
         &mut self,
         invocation_id: InvocationId,
@@ -238,6 +240,25 @@ impl TestEnv {
         .expect("Entry to be present")
         .decode::<ServiceProtocolV4Codec, E>()
         .expect("Entry to be of the specified type")
+    }
+
+    pub async fn read_journal_event(
+        &mut self,
+        invocation_id: InvocationId,
+        idx: EntryIndex,
+    ) -> Event {
+        Event::try_from(
+            restate_storage_api::journal_events::ReadOnlyJournalEventsTable::get_journal_event(
+                self.storage(),
+                invocation_id,
+                idx,
+            )
+            .await
+            .expect("storage to be working")
+            .expect("event to be present")
+            .event,
+        )
+        .expect("to be decodable")
     }
 
     pub async fn modify_invocation_status(

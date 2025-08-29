@@ -13,7 +13,8 @@ use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, GetInvocationOutputResponse, InvocationResponse,
-    InvocationTermination, NotifySignalRequest, PurgeInvocationRequest, ServiceInvocation,
+    InvocationTermination, NotifySignalRequest, PurgeInvocationRequest, ResumeInvocationRequest,
+    ServiceInvocation,
 };
 use restate_types::logs::{HasRecordKeys, Keys, MatchKeyQuery};
 use restate_types::message::MessageIndex;
@@ -159,6 +160,8 @@ pub enum Command {
     ProxyThrough(Box<ServiceInvocation>),
     /// Attach to an existing invocation
     AttachInvocation(AttachInvocationRequest),
+    /// Resume an invocation
+    ResumeInvocation(ResumeInvocationRequest),
 
     // -- Partition processor events for PP
     /// Invoker is reporting effect(s) from an ongoing invocation.
@@ -226,6 +229,7 @@ impl HasRecordKeys for Envelope {
             Command::TruncateOutbox(_) => Keys::Single(self.partition_key()),
             Command::ProxyThrough(_) => Keys::Single(self.partition_key()),
             Command::AttachInvocation(_) => Keys::Single(self.partition_key()),
+            Command::ResumeInvocation(req) => Keys::Single(req.partition_key()),
             // todo: Handle journal entries that request cross-partition invocations
             Command::InvokerEffect(effect) => Keys::Single(effect.invocation_id.partition_key()),
             Command::Timer(timer) => Keys::Single(timer.invocation_id().partition_key()),
@@ -335,6 +339,7 @@ mod envelope {
         PurgeJournal = 15,                      // flexbuffers
         VersionBarrier = 16,                    // bilrost
         UpdatePartitionDurability = 17,         // bilrost
+        ResumeInvocation = 18,                  // flexbuffers
     }
 
     #[derive(bilrost::Message)]
@@ -463,6 +468,10 @@ mod envelope {
                 CommandKind::PurgeInvocation,
                 Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
             ),
+            Command::ResumeInvocation(value) => (
+                CommandKind::ResumeInvocation,
+                Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
+            ),
             Command::PurgeJournal(value) => (
                 CommandKind::PurgeJournal,
                 Field::encode_serde(StorageCodecKind::FlexbuffersSerde, value),
@@ -559,6 +568,10 @@ mod envelope {
             CommandKind::PurgeInvocation => {
                 codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
                 Command::PurgeInvocation(envelope.command.decode_serde()?)
+            }
+            CommandKind::ResumeInvocation => {
+                codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);
+                Command::ResumeInvocation(envelope.command.decode_serde()?)
             }
             CommandKind::PurgeJournal => {
                 codec_or_error!(envelope.command, StorageCodecKind::FlexbuffersSerde);

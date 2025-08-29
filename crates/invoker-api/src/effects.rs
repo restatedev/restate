@@ -15,6 +15,7 @@ use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationEpoch;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_v2;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawEntry;
@@ -58,8 +59,14 @@ pub enum EffectKind {
         // todo start writing with v1.5.0 and make non-optional once we no longer support Bifrost commands written by v1.4.0
         raw_entry: Option<journal_v2::raw::RawEntry>,
     },
+    JournalEvent {
+        event: RawEvent,
+    },
     SuspendedV2 {
         waiting_for_notifications: HashSet<journal_v2::NotificationId>,
+    },
+    Paused {
+        paused_event: RawEvent,
     },
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,

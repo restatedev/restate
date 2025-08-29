@@ -20,11 +20,11 @@ use restate_types::journal_v2::{Entry, EntryIndex};
 
 pub mod storage {
     use super::*;
-    use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
+    use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
     use restate_storage_api::invocation_status_table::{
-        InvocationStatus, InvocationStatusDiscriminants,
+        InFlightInvocationMetadata, InvocationStatus, InvocationStatusDiscriminants,
     };
     use restate_storage_api::journal_table::JournalEntry;
     use restate_types::identifiers::InvocationId;
@@ -41,6 +41,17 @@ pub mod storage {
         .with_description(
             format!("has journal length {journal_length}"),
             format!("hasn't journal length {journal_length}"),
+        )
+    }
+
+    pub fn has_events(events: EntryIndex) -> impl Matcher<ActualT = InvocationStatus> {
+        predicate(move |is: &InvocationStatus| {
+            is.get_journal_metadata()
+                .is_some_and(|jm| jm.events == events)
+        })
+        .with_description(
+            format!("has journal events {events}"),
+            format!("hasn't journal events {events}"),
         )
     }
 
@@ -80,6 +91,17 @@ pub mod storage {
             |o: &InvocationStatus| o.discriminant(),
             "discriminant()",
             some(eq(discriminant)),
+        )
+    }
+
+    pub fn in_flight_metadata(
+        inner: impl Matcher<ActualT = InFlightInvocationMetadata> + 'static,
+    ) -> impl Matcher<ActualT = InvocationStatus> {
+        // Guilty!
+        property_matcher::internal::property_matcher(
+            |o: &InvocationStatus| o.get_invocation_metadata().cloned(),
+            "get_invocation_metadata()",
+            some(inner),
         )
     }
 }

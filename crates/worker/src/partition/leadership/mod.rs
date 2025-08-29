@@ -551,6 +551,17 @@ where
 
         Ok(())
     }
+
+    // This is returned only if we're leaders (otherwise there's no messages to be sent to the invoker)
+    pub fn invoker_handle(&mut self) -> Option<(PartitionLeaderEpoch, &mut I)> {
+        match &mut self.state {
+            State::Leader(leader_state) => {
+                let partition_leader_epoch = (leader_state.partition_id, leader_state.leader_epoch);
+                Some((partition_leader_epoch, &mut self.invoker_tx))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl<I> LeadershipState<I> {

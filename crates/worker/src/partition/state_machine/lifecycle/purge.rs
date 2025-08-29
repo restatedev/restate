@@ -13,6 +13,7 @@ use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, InvocationStatusTable,
 };
+use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::JournalTable;
 use restate_storage_api::promise_table::PromiseTable;
@@ -39,7 +40,8 @@ where
         + journal_table::JournalTable
         + IdempotencyTable
         + VirtualObjectStatusTable
-        + PromiseTable,
+        + PromiseTable
+        + JournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPurgeCommand {
@@ -90,6 +92,7 @@ where
                     ctx.do_drop_journal(
                         invocation_id,
                         journal_metadata.length,
+                        journal_metadata.events,
                         should_remove_journal_table_v2,
                     )
                     .await?;

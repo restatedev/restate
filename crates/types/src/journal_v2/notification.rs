@@ -329,6 +329,9 @@ pub const CANCEL_SIGNAL: Notification = Notification::Signal(Signal::new(
     SignalResult::Void,
 ));
 
+pub const CANCEL_NOTIFICATION_ID: NotificationId =
+    NotificationId::SignalIndex(BuiltInSignal::Cancel as u32);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SignalId {
     Index(SignalIndex),
