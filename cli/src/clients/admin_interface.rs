@@ -54,6 +54,8 @@ pub trait AdminClientInterface {
         id: &str,
     ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>>;
 
+    async fn resume_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
+
     async fn patch_state(
         &self,
         service: &str,
@@ -146,6 +148,11 @@ impl AdminClientInterface for AdminClient {
         id: &str,
     ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>> {
         let url = self.versioned_url(["invocations", id, "restart-as-new"]);
+        self.run(reqwest::Method::PATCH, url).await
+    }
+
+    async fn resume_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
+        let url = self.versioned_url(["invocations", id, "resume"]);
         self.run(reqwest::Method::PATCH, url).await
     }
 
