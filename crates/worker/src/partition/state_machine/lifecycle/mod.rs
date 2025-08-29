@@ -10,11 +10,13 @@
 
 mod cancel;
 mod event;
+mod manual_resume;
 mod migrate_journal_table;
 mod notify_get_invocation_output_response;
 mod notify_invocation_response;
 mod notify_signal;
 mod notify_sleep_completion;
+mod paused;
 mod pinned_deployment;
 mod purge;
 mod purge_journal;
@@ -24,11 +26,13 @@ mod version_barrier;
 
 pub(super) use cancel::OnCancelCommand;
 pub(super) use event::OnInvokerEventCommand;
+pub(super) use manual_resume::OnManualResumeCommand;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
 pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutputResponse;
 pub(super) use notify_invocation_response::OnNotifyInvocationResponse;
 pub(super) use notify_signal::OnNotifySignalCommand;
 pub(super) use notify_sleep_completion::OnNotifySleepCompletionCommand;
+pub(super) use paused::OnPausedCommand;
 pub(super) use pinned_deployment::OnPinnedDeploymentCommand;
 pub(super) use purge::OnPurgeCommand;
 pub(super) use purge_journal::OnPurgeJournalCommand;

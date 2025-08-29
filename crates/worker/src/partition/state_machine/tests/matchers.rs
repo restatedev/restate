@@ -20,11 +20,11 @@ use restate_types::journal_v2::{Entry, EntryIndex};
 
 pub mod storage {
     use super::*;
-    use restate_service_protocol::codec::ProtobufRawEntryCodec;
 
+    use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
     use restate_storage_api::invocation_status_table::{
-        InvocationStatus, InvocationStatusDiscriminants,
+        InFlightInvocationMetadata, InvocationStatus, InvocationStatusDiscriminants,
     };
     use restate_storage_api::journal_table::JournalEntry;
     use restate_types::identifiers::InvocationId;
@@ -91,6 +91,17 @@ pub mod storage {
             |o: &InvocationStatus| o.discriminant(),
             "discriminant()",
             some(eq(discriminant)),
+        )
+    }
+
+    pub fn in_flight_metadata(
+        inner: impl Matcher<ActualT = InFlightInvocationMetadata> + 'static,
+    ) -> impl Matcher<ActualT = InvocationStatus> {
+        // Guilty!
+        property_matcher::internal::property_matcher(
+            |o: &InvocationStatus| o.get_invocation_metadata().cloned(),
+            "get_invocation_metadata()",
+            some(inner),
         )
     }
 }
