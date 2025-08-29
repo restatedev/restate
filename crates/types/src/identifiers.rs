@@ -719,6 +719,37 @@ impl WithInvocationId for JournalEntryId {
     }
 }
 
+#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug)]
+pub struct JournalEventId {
+    invocation_id: InvocationId,
+    event_index: EntryIndex,
+}
+
+impl JournalEventId {
+    pub const fn from_parts(invocation_id: InvocationId, event_index: EntryIndex) -> Self {
+        Self {
+            invocation_id,
+            event_index,
+        }
+    }
+
+    pub fn event_index(&self) -> EntryIndex {
+        self.event_index
+    }
+}
+
+impl From<(InvocationId, EntryIndex)> for JournalEventId {
+    fn from(value: (InvocationId, EntryIndex)) -> Self {
+        Self::from_parts(value.0, value.1)
+    }
+}
+
+impl WithInvocationId for JournalEventId {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde_with::SerializeDisplay, serde_with::DeserializeFromStr)]
 pub struct LambdaARN {
     arn: Arc<str>,

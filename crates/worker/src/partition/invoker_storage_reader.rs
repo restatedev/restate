@@ -21,7 +21,6 @@ use restate_storage_api::state_table::ReadOnlyStateTable;
 use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::ServiceId;
-use restate_types::journal_v2::{EntryIndex, EntryMetadata, EntryType};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use std::vec::IntoIter;
 
@@ -91,24 +90,12 @@ where
                     *invocation_id,
                     invoked_status.journal_metadata.length,
                 )?
-                .filter_map(|entry| {
-                    std::future::ready(
-                        entry
-                            .map_err(InvokerStorageReaderError::Storage)
-                            .map(|(_, entry)| {
-                                if entry.ty() == EntryType::Event {
-                                    // Filter out events!
-                                    None
-                                } else {
-                                    Some(
-                                    restate_invoker_api::invocation_reader::JournalEntry::JournalV2(
-                                        entry,
-                                    ),
-                                )
-                                }
-                            })
-                            .transpose(),
-                    )
+                .map(|entry| {
+                    entry
+                        .map_err(InvokerStorageReaderError::Storage)
+                        .map(|(_, entry)| {
+                            restate_invoker_api::invocation_reader::JournalEntry::JournalV2(entry)
+                        })
                 })
                 // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
                 // collecting the stream because we cannot keep the transaction open
@@ -116,8 +103,7 @@ where
                 .await?;
 
                 let journal_metadata = JournalMetadata::new(
-                    // Use entries len here, because we might be filtering out events
-                    entries.len() as EntryIndex,
+                    invoked_status.journal_metadata.length,
                     invoked_status.journal_metadata.span_context,
                     invoked_status.pinned_deployment,
                     invoked_status.current_invocation_epoch,
