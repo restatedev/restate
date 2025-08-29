@@ -261,16 +261,7 @@ impl Node {
             None
         };
 
-        // In v1.4.0 we start ingress role even if not explicitly configured. This allows softer
-        // migration from v1.3.x to v1.4.0. In v1.5, ingress will be started _only_ if
-        // http-ingress role is explicitly configured.
-        let ingress_role = if config.has_role(Role::HttpIngress) || config.has_role(Role::Worker) {
-            if !config.has_role(Role::HttpIngress) {
-                info!(
-                    "!!! This node has a `worker` role and no explicit `http-ingress` role. `http-ingress` will be started anyway in this version. In v1.5, running ingress will require the role `http-ingress` to be set."
-                );
-            }
-
+        let ingress_role = if config.has_role(Role::HttpIngress) {
             Some(IngressRole::create(
                 updateable_config
                     .clone()
