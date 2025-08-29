@@ -58,18 +58,28 @@ struct InboxScanner;
 impl ScanLocalPartition for InboxScanner {
     type Builder = SysInboxBuilder;
     type Item<'a> = SequenceNumberInboxEntry;
+    type ConversionError = std::convert::Infallible;
 
     fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+        F: for<'a> FnMut(
+                Self::Item<'a>,
+            ) -> std::ops::ControlFlow<Result<(), Self::ConversionError>>
+            + Send
+            + Sync
+            + 'static,
     >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-        f: F,
+        mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_inbox(range, f)
+        partition_store.for_each_inbox(range, move |item| f(item).map_break(Result::unwrap))
     }
 
-    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>) {
+    fn append_row<'a>(
+        row_builder: &mut Self::Builder,
+        value: Self::Item<'a>,
+    ) -> Result<(), Self::ConversionError> {
         append_inbox_row(row_builder, value);
+        Ok(())
     }
 }

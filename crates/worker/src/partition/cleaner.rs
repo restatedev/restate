@@ -201,8 +201,10 @@ mod tests {
     use restate_storage_api::StorageError;
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
-        InvokedInvocationStatusLite, JournalMetadata, ScanInvocationStatusTable,
+        InvocationStatusAccessor, InvokedInvocationStatusLite, JournalMetadata,
+        ScanInvocationStatusTable,
     };
+    use restate_storage_api::protobuf_types::v1::InvocationStatusV2;
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::partition_table::{FindPartition, PartitionTable};
@@ -212,6 +214,10 @@ mod tests {
     struct MockInvocationStatusReader(Vec<(InvocationId, InvocationStatus)>);
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
+        type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
+        type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
+        type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2;
+
         fn scan_invocation_statuses(
             &self,
             _: RangeInclusive<PartitionKey>,
@@ -223,27 +229,30 @@ mod tests {
         }
 
         fn for_each_invocation_status<
-            F: FnMut((InvocationId, InvocationStatus)) -> std::ops::ControlFlow<()>
+            E: Into<anyhow::Error>,
+            F: for<'a> FnMut(
+                    (
+                        InvocationId,
+                        InvocationStatusAccessor<
+                            Self::PreFlightInvocationMetadataAccessor<'static>,
+                            Self::InFlightInvocationMetadataAccessor<'static>,
+                            Self::CompletedInvocationMetadataAccessor<'static>,
+                        >,
+                    ),
+                ) -> std::ops::ControlFlow<std::result::Result<(), E>>
                 + Send
                 + Sync
                 + 'static,
         >(
             &self,
             _: RangeInclusive<PartitionKey>,
-            mut f: F,
+            _: F,
         ) -> restate_storage_api::Result<impl Future<Output = restate_storage_api::Result<()>> + Send>
         {
-            let inner = self.0.clone();
-            Ok(async move {
-                for (id, status) in inner {
-                    match f((id, status)) {
-                        std::ops::ControlFlow::Continue(()) => continue,
-                        std::ops::ControlFlow::Break(()) => break,
-                    }
-                }
+            unimplemented!();
 
-                Ok(())
-            })
+            #[allow(unreachable_code)]
+            Ok(std::future::pending())
         }
 
         fn scan_invoked_invocations(

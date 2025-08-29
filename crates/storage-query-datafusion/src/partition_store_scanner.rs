@@ -27,14 +27,23 @@ use crate::table_util::BatchSender;
 pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     type Builder: crate::table_util::Builder + Send;
     type Item<'a>: Send;
+    type ConversionError;
 
-    fn for_each_row<F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<()> + Send + Sync + 'static>(
+    fn for_each_row<
+        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
+            + Send
+            + Sync
+            + 'static,
+    >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>;
 
-    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>);
+    fn append_row<'a>(
+        row_builder: &mut Self::Builder,
+        value: Self::Item<'a>,
+    ) -> Result<(), Self::ConversionError>;
 }
 
 #[derive(Clone, derive_more::Debug)]
@@ -87,20 +96,23 @@ where
 
             S::for_each_row(&partition_store, range, move |row| {
                 if let Some(0) = limit {
-                    return ControlFlow::Break(());
+                    return ControlFlow::Break(Ok(()));
                 }
-                S::append_row(batch_sender.builder_mut(), row);
+                match S::append_row(batch_sender.builder_mut(), row) {
+                    Ok(()) => {}
+                    err => return ControlFlow::Break(err),
+                }
 
                 if batch_sender.num_rows() >= batch_size && batch_sender.send().is_err() {
                     // the other side has hung up on us.
-                    return ControlFlow::Break(());
+                    return ControlFlow::Break(Ok(()));
                 }
 
                 match &mut limit {
                     Some(limit) => {
                         *limit -= 1; // we already checked for 0 above
                         if *limit == 0 {
-                            ControlFlow::Break(())
+                            ControlFlow::Break(Ok(()))
                         } else {
                             ControlFlow::Continue(())
                         }
