@@ -114,9 +114,10 @@ where
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         if !matches!(self.invocation_status, InvocationStatus::Invoked(_))
             && !matches!(self.invocation_status, InvocationStatus::Suspended { .. })
+            && !matches!(self.invocation_status, InvocationStatus::Paused(_))
         {
             debug!(
-                "Received entry for invocation that is not invoked nor suspended. Ignoring the effect."
+                "Received entry for invocation that is not invoked nor suspended nor paused. Ignoring the effect."
             );
             return Ok(());
         }

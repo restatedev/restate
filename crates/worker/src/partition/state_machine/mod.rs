@@ -68,7 +68,7 @@ use restate_types::identifiers::{
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
-    PurgeInvocationResponse,
+    PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationEpoch,
@@ -547,6 +547,15 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 Ok(())
             }
+            Command::ResumeInvocation(resume_invocation_request) => {
+                lifecycle::OnManualResumeCommand {
+                    invocation_id: resume_invocation_request.invocation_id,
+                    response_sink: resume_invocation_request.response_sink,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
+            }
             Command::PatchState(mutation) => self.handle_external_state_mutation(mutation).await,
             Command::AnnounceLeader(_) => {
                 // no-op :-)
@@ -793,6 +802,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         match previous_invocation_status {
             is @ InvocationStatus::Invoked { .. }
             | is @ InvocationStatus::Suspended { .. }
+            | is @ InvocationStatus::Paused { .. }
             | is @ InvocationStatus::Inboxed { .. }
             | is @ InvocationStatus::Scheduled { .. } => {
                 if let Some(ref response_sink) = service_invocation.response_sink
@@ -1134,8 +1144,8 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .await?;
                 self.reply_to_kill(response_sink, KillInvocationResponse::Ok);
             }
-            InvocationStatus::Suspended { metadata, .. } => {
-                self.kill_suspended_invocation(invocation_id, metadata)
+            InvocationStatus::Suspended { metadata, .. } | InvocationStatus::Paused(metadata) => {
+                self.kill_suspended_or_paused_invocation(invocation_id, metadata)
                     .await?;
                 self.reply_to_kill(response_sink, KillInvocationResponse::Ok);
             }
@@ -1275,6 +1285,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                 {
                     self.do_resume_service( invocation_id, metadata).await?;
                 }
+                self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
+            }
+            InvocationStatus::Paused(metadata) => {
+                self.cancel_journal_leaves(
+                    invocation_id,
+                    InvocationStatusProjection::Paused,
+                    metadata.journal_metadata.length,
+                )
+                .await?;
+                self.do_resume_service(invocation_id, metadata).await?;
                 self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
             InvocationStatus::Inboxed(inboxed) => {
@@ -1461,7 +1481,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    async fn kill_suspended_invocation(
+    async fn kill_suspended_or_paused_invocation(
         &mut self,
         invocation_id: InvocationId,
         metadata: InFlightInvocationMetadata,
@@ -1664,6 +1684,14 @@ impl<S> StateMachineApplyContext<'_, S> {
         match invocation_status {
             InvocationStatusProjection::Invoked => {
                 self.handle_completion_for_invoked(
+                    invocation_id,
+                    Completion::new(journal_index, canceled_result),
+                )
+                .await?;
+                Ok(false)
+            }
+            InvocationStatusProjection::Paused => {
+                self.handle_completion_for_paused(
                     invocation_id,
                     Completion::new(journal_index, canceled_result),
                 )
@@ -1969,6 +1997,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_id: effect.invocation_id,
                     invocation_status,
                     waiting_for_notifications,
+                }
+                .apply(self)
+                .await?;
+            }
+            InvokerEffectKind::Paused { paused_event } => {
+                lifecycle::OnPausedCommand {
+                    invocation_id: effect.invocation_id,
+                    paused_event,
                 }
                 .apply(self)
                 .await?;
@@ -3181,6 +3217,18 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(resume_invocation)
     }
 
+    async fn handle_completion_for_paused(
+        &mut self,
+        invocation_id: InvocationId,
+        completion: Completion,
+    ) -> Result<(), Error>
+    where
+        S: JournalTable,
+    {
+        self.store_completion(invocation_id, completion).await?;
+        Ok(())
+    }
+
     async fn handle_completion_for_invoked(
         &mut self,
         invocation_id: InvocationId,
@@ -3360,6 +3408,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             is @ InvocationStatus::Invoked(_)
             | is @ InvocationStatus::Suspended { .. }
             | is @ InvocationStatus::Inboxed(_)
+            | is @ InvocationStatus::Paused(_)
             | is @ InvocationStatus::Scheduled(_) => {
                 if attach_invocation_request.block_on_inflight {
                     self.do_append_response_sink(
@@ -3517,6 +3566,30 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.action_collector
             .push(Action::ForwardPurgeJournalResponse {
+                request_id,
+                response,
+            });
+    }
+
+    fn reply_to_resume_invocation(
+        &mut self,
+        response_sink: Option<InvocationMutationResponseSink>,
+        response: ResumeInvocationResponse,
+    ) {
+        if response_sink.is_none() {
+            return;
+        }
+        let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
+            response_sink.unwrap();
+        debug_if_leader!(
+            self.is_leader,
+            "Send resume response to request id '{:?}': {:?}",
+            request_id,
+            response
+        );
+
+        self.action_collector
+            .push(Action::ForwardResumeInvocationResponse {
                 request_id,
                 response,
             });
@@ -4279,6 +4352,7 @@ impl fmt::Display for CompletionResultFmt<'_> {
 /// Projected [`InvocationStatus`] for cancellation purposes.
 enum InvocationStatusProjection {
     Invoked,
+    Paused,
     Suspended(HashSet<EntryIndex>),
 }
 
