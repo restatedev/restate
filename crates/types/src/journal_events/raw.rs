@@ -94,6 +94,7 @@ fn decode(ty: EventType, value: Bytes) -> Result<Event, EventDecodingError> {
         EventType::TransientError => Ok(Event::TransientError(
             pb::TransientErrorEvent::decode(value)?.try_into()?,
         )),
+        EventType::Paused => Ok(Event::Paused(pb::PausedEvent::decode(value)?.try_into()?)),
         EventType::Unknown => Ok(Event::Unknown),
     }
 }
@@ -103,6 +104,10 @@ fn encode(event: Event) -> RawEvent {
         Event::TransientError(e) => RawEvent::new(
             EventType::TransientError,
             pb::TransientErrorEvent::from(e).encode_to_vec().into(),
+        ),
+        Event::Paused(e) => RawEvent::new(
+            EventType::Paused,
+            pb::PausedEvent::from(e).encode_to_vec().into(),
         ),
         Event::Unknown => RawEvent::unknown(),
     }
@@ -226,6 +231,24 @@ mod pb {
                 }
                 transient_error_event::CommandType::CompleteAwakeable => Self::CompleteAwakeable,
             }
+        }
+    }
+
+    impl From<event::PausedEvent> for PausedEvent {
+        fn from(event::PausedEvent { last_failure }: event::PausedEvent) -> Self {
+            PausedEvent {
+                last_failure: last_failure.map(Into::into),
+            }
+        }
+    }
+
+    impl TryFrom<PausedEvent> for event::PausedEvent {
+        type Error = anyhow::Error;
+
+        fn try_from(PausedEvent { last_failure }: PausedEvent) -> Result<Self, Self::Error> {
+            Ok(event::PausedEvent {
+                last_failure: last_failure.map(|f| f.try_into()).transpose()?,
+            })
         }
     }
 }
