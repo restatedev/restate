@@ -106,10 +106,11 @@ mod mocks {
     use restate_types::invocation::{
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
     };
+    use restate_types::retries::RetryIter;
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
         DEFAULT_IDEMPOTENCY_RETENTION, InvocationAttemptOptions, InvocationTargetMetadata,
-        InvocationTargetResolver,
+        InvocationTargetResolver, OnMaxAttempts,
     };
     use restate_types::schema::service::test_util::MockServiceMetadataResolver;
     use restate_types::schema::service::{
@@ -162,6 +163,7 @@ mod mocks {
                         output_description: "any".to_string(),
                         input_json_schema: None,
                         output_json_schema: None,
+                        retry_policy: Default::default(),
                     },
                 )]),
                 ty: invocation_target_metadata.target_ty.into(),
@@ -176,6 +178,7 @@ mod mocks {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
+                retry_policy: Default::default(),
             });
             self.1.add(
                 service_name,
@@ -238,6 +241,16 @@ mod mocks {
             service_name: impl AsRef<str>,
         ) -> Option<ServiceType> {
             self.1.resolve_latest_service_type(service_name)
+        }
+
+        fn resolve_invocation_retry_policy(
+            &self,
+            deployment_id: Option<&DeploymentId>,
+            service_name: impl AsRef<str>,
+            handler_name: impl AsRef<str>,
+        ) -> (RetryIter<'static>, OnMaxAttempts) {
+            self.1
+                .resolve_invocation_retry_policy(deployment_id, service_name, handler_name)
         }
     }
 
