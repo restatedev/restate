@@ -11,14 +11,12 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use enumset::enum_set;
+use enumset::{EnumSet, enum_set};
 use futures_util::StreamExt;
 use googletest::{IntoTestResult, fail};
 use restate_core::protobuf::cluster_ctrl_svc::{
     GetClusterConfigurationRequest, SetClusterConfigurationRequest,
 };
-use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
-use restate_types::replication::ReplicationProperty;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::try_join;
@@ -38,8 +36,10 @@ use restate_local_cluster_runner::{
 use restate_types::config::{LogFormat, MetadataClientKind, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
+use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::protobuf::cluster::node_state::State;
+use restate_types::replication::ReplicationProperty;
 use restate_types::retries::RetryPolicy;
 use restate_types::{config::Configuration, nodes_config::Role};
 
@@ -66,7 +66,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::MetadataServer | Role::Admin | Role::Worker | Role::LogServer),
+        EnumSet::all(),
         1,
         false,
     );
@@ -180,7 +180,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         "node-2",
         no_snapshot_repository_config,
         BinarySource::CargoTest,
-        enum_set!(Role::Worker),
+        enum_set!(Role::Worker | Role::HttpIngress),
     );
     *worker_2.metadata_store_client_mut() = MetadataClientKind::Replicated {
         addresses: vec![cluster.nodes[0].node_address().clone()],
@@ -232,7 +232,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         "node-2",
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::Worker),
+        enum_set!(Role::Worker | Role::HttpIngress),
     );
     *worker_2.metadata_store_client_mut() = MetadataClientKind::Replicated {
         addresses: vec![cluster.nodes[0].node_address().clone()],

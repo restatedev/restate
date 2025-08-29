@@ -8,31 +8,33 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::convert::Infallible;
+use std::num::{NonZeroU8, NonZeroUsize};
+use std::time::{Duration, Instant};
+
 use anyhow::anyhow;
-use enumset::enum_set;
+use enumset::EnumSet;
 use futures_util::StreamExt;
 use googletest::IntoTestResult;
 use http::header::CONTENT_TYPE;
 use rand::prelude::IndexedMutRandom;
 use rand::seq::IndexedRandom;
 use regex::Regex;
+use tokio::sync::{oneshot, watch};
+use tracing::{debug, info};
+
 use restate_core::{TaskCenter, TaskKind, cancellation_token};
 use restate_local_cluster_runner::cluster::StartedCluster;
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, Node},
 };
+use restate_types::config::Configuration;
 use restate_types::config::RaftOptions;
 use restate_types::logs::metadata::{
     NodeSetSize, ProviderConfiguration, ProviderKind, ReplicatedLogletConfig,
 };
 use restate_types::replication::ReplicationProperty;
-use restate_types::{config::Configuration, nodes_config::Role};
-use std::convert::Infallible;
-use std::num::{NonZeroU8, NonZeroUsize};
-use std::time::{Duration, Instant};
-use tokio::sync::{oneshot, watch};
-use tracing::{debug, info};
 
 mod common;
 
@@ -46,7 +48,7 @@ async fn replicated_loglet() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
-        enum_set!(Role::Admin | Role::MetadataServer | Role::Worker | Role::LogServer),
+        EnumSet::all(),
         3,
         false,
     );
@@ -105,7 +107,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
     let nodes = Node::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
-        enum_set!(Role::Admin | Role::Worker | Role::LogServer | Role::MetadataServer),
+        EnumSet::all(),
         num_nodes,
         false,
     );
