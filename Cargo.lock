@@ -516,9 +516,9 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "autocfg"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
+checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "autotools"
@@ -1082,7 +1082,18 @@ version = "0.1013.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "640b021fedf44f44640771b2c3e5ec53ff0122d89b3fd1448e6880da0ace787b"
 dependencies = [
- "bilrost-derive",
+ "bilrost-derive 0.1013.0",
+ "bytes",
+ "bytestring",
+ "thin-vec",
+]
+
+[[package]]
+name = "bilrost"
+version = "0.1014.0-dev"
+dependencies = [
+ "autocfg",
+ "bilrost-derive 0.1014.0-dev",
  "bytes",
  "bytestring",
  "thin-vec",
@@ -1093,6 +1104,17 @@ name = "bilrost-derive"
 version = "0.1013.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9910598cd6a5c5ee053af712bbb3385e96b4eb4adc043b24a69b6c37004ba22"
+dependencies = [
+ "eyre",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.104",
+]
+
+[[package]]
+name = "bilrost-derive"
+version = "0.1014.0-dev"
 dependencies = [
  "eyre",
  "itertools 0.14.0",
@@ -6823,7 +6845,7 @@ dependencies = [
 name = "restate-encoding"
 version = "1.5.0-dev"
 dependencies = [
- "bilrost",
+ "bilrost 0.1014.0-dev",
  "bytes",
  "bytestring",
  "rand 0.9.1",
@@ -7107,7 +7129,7 @@ version = "1.5.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
- "bilrost",
+ "bilrost 0.1014.0-dev",
  "bytes",
  "bytestring",
  "ciborium",
@@ -7697,7 +7719,7 @@ dependencies = [
  "arc-swap",
  "base62",
  "base64 0.22.1",
- "bilrost",
+ "bilrost 0.1014.0-dev",
  "bincode",
  "bitflags 2.9.1",
  "bytes",
@@ -7796,7 +7818,7 @@ name = "restate-wal-protocol"
 version = "1.5.0-dev"
 dependencies = [
  "anyhow",
- "bilrost",
+ "bilrost 0.1014.0-dev",
  "bytes",
  "bytestring",
  "enum-map",
@@ -7908,7 +7930,7 @@ dependencies = [
  "axum",
  "axum-core",
  "base64 0.22.1",
- "bilrost",
+ "bilrost 0.1013.0",
  "bitflags 2.9.1",
  "byteorder",
  "bytes",
