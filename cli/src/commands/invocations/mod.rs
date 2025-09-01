@@ -26,7 +26,7 @@ pub enum Invocations {
     /// Cancel a given invocation, or a set of invocations, and its children
     Cancel(cancel::Cancel),
     /// Cancel a given invocation, or a set of invocations, and its children
-    Kill(cancel::Cancel),
+    Kill(kill::Kill),
     /// Purge a completed invocation, or a set of invocations. This command affects only completed invocations.
     Purge(purge::Purge),
     /// Restart a completed invocation, or a set of invocations. This command affects only completed invocations. Note: this command doesn't work on workflows yet.

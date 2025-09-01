@@ -7,17 +7,18 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
-
-use restate_cli_util::ui::console::{Styled, confirm_or_exit};
+use comfy_table::{Cell, Color, Table};
+use futures::TryFutureExt;
+use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{c_error, c_println, c_success};
+use restate_cli_util::{c_error, c_indent_table, c_println, c_success, c_warn};
 use restate_types::identifiers::InvocationId;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{InvocationState, find_active_invocations_simple};
-use crate::clients::{self, AdminClientInterface};
+use crate::clients::{self, AdminClientInterface, collect_and_split_futures};
 use crate::ui::invocations::render_simple_invocation_list;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -94,13 +95,87 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
     );
     confirm_or_exit(&prompt)?;
 
-    for inv in invocations {
-        let result = client.cancel_invocation(&inv.id, opts.kill).await?;
-        let _ = result.success_or_error()?;
-    }
+    if opts.kill {
+        // Kill invocations
+        let (killed, failed_to_kill) =
+            collect_and_split_futures(invocations.into_iter().map(|invocation| invocation.id).map(
+                |invocation_id| async {
+                    client
+                        .kill_invocation(&invocation_id)
+                        .map_err(anyhow::Error::from)
+                        .await
+                        .map(|_| invocation_id.clone())
+                        .map_err(|e| (invocation_id, e))
+                },
+            ))
+            .await;
 
-    c_println!();
-    c_success!("Request was sent successfully");
+        c_println!();
+        c_success!("Killed invocations:");
+
+        // Print success
+        let mut invocations_table = Table::new_styled();
+        invocations_table.set_styled_header(vec!["KILLED INVOCATIONS"]);
+        for id in killed {
+            invocations_table.add_row(vec![Cell::new(&id)]);
+        }
+        c_indent_table!(0, invocations_table);
+
+        // Print failed ones, if any
+        if !failed_to_kill.is_empty() {
+            c_println!();
+            c_warn!("Failed to kill:");
+            let mut failed_to_kill_table = Table::new_styled();
+            failed_to_kill_table.set_styled_header(vec!["ID", "REASON"]);
+            for (id, reason) in failed_to_kill {
+                failed_to_kill_table
+                    .add_row(vec![Cell::new(&id), Cell::new(reason).fg(Color::DarkRed)]);
+            }
+            c_indent_table!(0, failed_to_kill_table);
+
+            return Err(anyhow!("Failed to kill some invocations"));
+        }
+    } else {
+        // Cancel invocations
+        let (cancelled, failed_to_cancel) =
+            collect_and_split_futures(invocations.into_iter().map(|invocation| invocation.id).map(
+                |invocation_id| async {
+                    client
+                        .cancel_invocation(&invocation_id)
+                        .map_err(anyhow::Error::from)
+                        .await
+                        .map(|_| invocation_id.clone())
+                        .map_err(|e| (invocation_id, e))
+                },
+            ))
+            .await;
+
+        c_println!();
+        c_success!("Cancelled invocations:");
+
+        // Print success
+        let mut invocations_table = Table::new_styled();
+        invocations_table.set_styled_header(vec!["CANCELLED INVOCATIONS"]);
+        for id in cancelled {
+            invocations_table.add_row(vec![Cell::new(&id)]);
+        }
+        c_indent_table!(0, invocations_table);
+
+        // Print failed ones, if any
+        if !failed_to_cancel.is_empty() {
+            c_println!();
+            c_warn!("Failed to cancel:");
+            let mut failed_to_cancel_table = Table::new_styled();
+            failed_to_cancel_table.set_styled_header(vec!["ID", "REASON"]);
+            for (id, reason) in failed_to_cancel {
+                failed_to_cancel_table
+                    .add_row(vec![Cell::new(&id), Cell::new(reason).fg(Color::DarkRed)]);
+            }
+            c_indent_table!(0, failed_to_cancel_table);
+
+            return Err(anyhow!("Failed to cancel some invocations"));
+        }
+    }
 
     Ok(())
 }
