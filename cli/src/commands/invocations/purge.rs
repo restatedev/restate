@@ -10,13 +10,15 @@
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
-use crate::clients::{self, AdminClientInterface};
+use crate::clients::{self, AdminClientInterface, collect_and_split_futures};
 use crate::ui::invocations::render_simple_invocation_list;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
-use restate_cli_util::ui::console::confirm_or_exit;
-use restate_cli_util::{c_println, c_success};
+use comfy_table::{Cell, Color, Table};
+use futures::TryFutureExt;
+use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
+use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
 use restate_types::identifiers::InvocationId;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -72,13 +74,45 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
     // Get the invocation and confirm
     confirm_or_exit("Are you sure you want to purge these invocations?")?;
 
-    for inv in invocations {
-        let result = client.purge_invocation(&inv.id).await?;
-        let _ = result.success_or_error()?;
-    }
+    // Purge invocations
+    let (purged, failed_to_purge) =
+        collect_and_split_futures(invocations.into_iter().map(|invocation| invocation.id).map(
+            |invocation_id| async {
+                client
+                    .purge_invocation(&invocation_id)
+                    .map_err(anyhow::Error::from)
+                    .await
+                    .map(|_| invocation_id.clone())
+                    .map_err(|e| (invocation_id, e))
+            },
+        ))
+        .await;
 
     c_println!();
-    c_success!("Request was sent successfully");
+    c_success!("Purged invocations:");
+
+    // Print new ids
+    let mut invocations_table = Table::new_styled();
+    invocations_table.set_styled_header(vec!["PURGED INVOCATIONS"]);
+    for id in purged {
+        invocations_table.add_row(vec![Cell::new(&id)]);
+    }
+    c_indent_table!(0, invocations_table);
+
+    // Print failed ones, if any
+    if !failed_to_purge.is_empty() {
+        c_println!();
+        c_warn!("Failed to purge:");
+        let mut failed_to_purge_table = Table::new_styled();
+        failed_to_purge_table.set_styled_header(vec!["ID", "REASON"]);
+        for (id, reason) in failed_to_purge {
+            failed_to_purge_table
+                .add_row(vec![Cell::new(&id), Cell::new(reason).fg(Color::DarkRed)]);
+        }
+        c_indent_table!(0, failed_to_purge_table);
+
+        return Err(anyhow!("Failed to purge some invocations"));
+    }
 
     Ok(())
 }

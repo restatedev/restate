@@ -10,14 +10,13 @@
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
-use crate::clients::{self, AdminClientInterface};
+use crate::clients::{self, AdminClientInterface, collect_and_split_futures};
 use crate::ui::invocations::render_simple_invocation_list;
 
 use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
 use comfy_table::{Attribute, Cell, Color, Table};
 use futures::TryFutureExt;
-use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
 use restate_types::identifiers::InvocationId;
@@ -72,34 +71,30 @@ pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) 
     confirm_or_exit("Are you sure you want to restart these invocations?")?;
 
     // Restart invocations
-    let mut restarted = Vec::with_capacity(invocations.len());
-    let mut failed_to_restart = vec![];
-    for inv in invocations {
-        match client
-            .restart_invocation(&inv.id)
-            .map_err(anyhow::Error::from)
-            .and_then(|e| async { e.into_body().map_err(anyhow::Error::from).await })
-            .await
-        {
-            Ok(RestartAsNewInvocationResponse { new_invocation_id }) => {
-                restarted.push((inv.id, new_invocation_id));
-            }
-            Err(err) => {
-                failed_to_restart.push((inv.id, err));
-            }
-        }
-    }
+    let (restarted, failed_to_restart) =
+        collect_and_split_futures(invocations.into_iter().map(|invocation| invocation.id).map(
+            |invocation_id| async {
+                client
+                    .restart_invocation(&invocation_id)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|e| async { e.into_body().map_err(anyhow::Error::from).await })
+                    .await
+                    .map(|response| (invocation_id.clone(), response.new_invocation_id))
+                    .map_err(|e| (invocation_id, e))
+            },
+        ))
+        .await;
 
     c_println!();
     c_success!("Restarted invocations:");
 
-    // Print new ids
+    // Print success
     let mut invocations_table = Table::new_styled();
     invocations_table.set_styled_header(vec!["OLD ID", "NEW ID"]);
-    for (old_id, new_id) in restarted {
+    for (old_id, restart_as_new_response) in restarted {
         invocations_table.add_row(vec![
             Cell::new(&old_id),
-            Cell::new(new_id).add_attribute(Attribute::Bold),
+            Cell::new(restart_as_new_response).add_attribute(Attribute::Bold),
         ]);
     }
     c_indent_table!(0, invocations_table);
