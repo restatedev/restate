@@ -10,6 +10,7 @@
 
 mod cancel;
 mod describe;
+mod kill;
 mod list;
 mod purge;
 mod restart_as_new;
@@ -24,6 +25,8 @@ pub enum Invocations {
     Describe(describe::Describe),
     /// Cancel a given invocation, or a set of invocations, and its children
     Cancel(cancel::Cancel),
+    /// Cancel a given invocation, or a set of invocations, and its children
+    Kill(cancel::Cancel),
     /// Purge a completed invocation, or a set of invocations. This command affects only completed invocations.
     Purge(purge::Purge),
     /// Restart a completed invocation, or a set of invocations. This command affects only completed invocations. Note: this command doesn't work on workflows yet.

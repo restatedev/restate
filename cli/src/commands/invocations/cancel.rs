@@ -33,10 +33,10 @@ pub struct Cancel {
     /// * `workflowName`
     /// * `workflowName/key`
     /// * `workflowName/key/handler`
-    query: String,
+    pub(super) query: String,
     /// Ungracefully kill the invocation and its children
     #[clap(long)]
-    kill: bool,
+    pub(super) kill: bool,
 }
 
 pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> {
