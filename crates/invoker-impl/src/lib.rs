@@ -63,13 +63,12 @@ use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
+use restate_types::journal_events::raw::RawEvent;
+use restate_types::journal_events::{Event, TransientErrorEvent};
 use restate_types::journal_v2;
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawEvent, RawNotification};
-use restate_types::journal_v2::{
-    CommandIndex, EntryMetadata, Event, NotificationId, TransientErrorEvent,
-};
+use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
+use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -1200,12 +1199,7 @@ where
                         None
                     };
                 let invocation_error_report = error.into_invocation_error_report();
-                if options.experimental_features_propose_events()
-                    && ism
-                        .selected_service_protocol()
-                        .is_some_and(|sp| sp >= ServiceProtocolVersion::V4)
-                {
-                    // Only if protocol version >= 4 was selected we can propose the transient error
+                if options.experimental_features_propose_events() {
                     let transient_error_event = TransientErrorEvent {
                         error_code: invocation_error_report.err.code(),
                         error_message: invocation_error_report.err.message().to_owned(),
@@ -1244,7 +1238,7 @@ where
                             .send(Box::new(Effect {
                                 invocation_id,
                                 invocation_epoch: ism.invocation_epoch,
-                                kind: EffectKind::journal_entry(raw_event, None),
+                                kind: EffectKind::JournalEvent { event: raw_event },
                             }))
                             .await;
                     }
@@ -1390,8 +1384,7 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use googletest::prelude::{eq, predicate, some};
-    use googletest::{assert_that, pat};
+    use googletest::prelude::*;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -1411,9 +1404,9 @@ mod tests {
     use restate_types::invocation::ServiceType;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
+    use restate_types::journal_events::EventType;
     use restate_types::journal_v2::{
-        Command, CompletionType, Encoder, Entry, EventType, NotificationType, OutputCommand,
-        OutputResult,
+        Command, CompletionType, Encoder, Entry, NotificationType, OutputCommand, OutputResult,
     };
     use restate_types::live::Constant;
     use restate_types::retries::RetryPolicy;
@@ -1422,7 +1415,7 @@ mod tests {
         InvocationAttemptOptions, InvocationTargetMetadata,
     };
     use restate_types::schema::service::ServiceMetadata;
-    use restate_types::storage::StoredRawEntry;
+    use restate_types::service_protocol::ServiceProtocolVersion;
 
     // -- Mocks
 
@@ -2284,12 +2277,8 @@ mod tests {
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 invocation_epoch: eq(0),
-                kind: pat!(EffectKind::JournalEntryV2 {
-                    entry: some(pat!(StoredRawEntry {
-                        inner: predicate(|e: &journal_v2::raw::RawEntry| e
-                            .try_as_event_ref()
-                            .is_some_and(|e| e.event_type() == EventType::TransientError))
-                    }))
+                kind: pat!(EffectKind::JournalEvent {
+                    event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
                 })
             })
         );
@@ -2342,12 +2331,8 @@ mod tests {
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 invocation_epoch: eq(0),
-                kind: pat!(EffectKind::JournalEntryV2 {
-                    entry: some(pat!(StoredRawEntry {
-                        inner: predicate(|e: &journal_v2::raw::RawEntry| e
-                            .try_as_event_ref()
-                            .is_some_and(|e| e.event_type() == EventType::TransientError))
-                    }))
+                kind: pat!(EffectKind::JournalEvent {
+                    event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
                 })
             })
         );

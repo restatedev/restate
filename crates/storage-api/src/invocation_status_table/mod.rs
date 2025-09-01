@@ -25,7 +25,7 @@ use restate_types::invocation::{
     Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
-use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
+use restate_types::journal_v2::{CompletionId, NotificationId};
 use restate_types::time::MillisSinceEpoch;
 
 use crate::Result;
@@ -363,27 +363,31 @@ pub enum InvocationStatusDiscriminants {
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]
 pub struct JournalMetadata {
-    pub length: EntryIndex,
+    pub length: u32,
     /// Number of commands stored in the current journal
-    pub commands: EntryIndex,
+    pub commands: u32,
+    /// Number of events stored
+    pub events: u32,
     pub span_context: ServiceInvocationSpanContext,
 }
 
 impl JournalMetadata {
     pub fn new(
-        length: EntryIndex,
-        commands: EntryIndex,
+        length: u32,
+        commands: u32,
+        events: u32,
         span_context: ServiceInvocationSpanContext,
     ) -> Self {
         Self {
             span_context,
             length,
             commands,
+            events,
         }
     }
 
     pub fn initialize(span_context: ServiceInvocationSpanContext) -> Self {
-        Self::new(0, 0, span_context)
+        Self::new(0, 0, 0, span_context)
     }
 
     pub fn empty() -> Self {

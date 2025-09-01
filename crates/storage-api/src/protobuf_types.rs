@@ -140,7 +140,7 @@ pub mod v1 {
         use restate_types::logs::Lsn;
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
-        use restate_types::{GenerationalNodeId, journal_v2};
+        use restate_types::{GenerationalNodeId, journal_events, journal_v2};
 
         use super::dedup_sequence_number::Variant;
         use super::enriched_entry_header::{
@@ -172,6 +172,7 @@ pub mod v1 {
             outbox_message, promise, response_result, source, span_relation,
             submit_notification_sink, timer, virtual_object_status,
         };
+        use super::{Event, event};
         use crate::invocation_status_table::{CompletionRangeEpochMap, JournalMetadata};
         use crate::protobuf_types::ConversionError;
 
@@ -407,6 +408,7 @@ pub mod v1 {
                     inbox_sequence_number,
                     journal_length,
                     commands,
+                    events,
                     deployment_id,
                     service_protocol_version,
                     current_invocation_epoch,
@@ -509,6 +511,7 @@ pub mod v1 {
                                 journal_metadata: crate::invocation_status_table::JournalMetadata {
                                     length: journal_length,
                                     commands,
+                                    events,
                                     span_context: expect_or_fail!(span_context)?.try_into()?,
                                 },
                                 pinned_deployment: derive_pinned_deployment(
@@ -545,6 +548,7 @@ pub mod v1 {
                                 journal_metadata: crate::invocation_status_table::JournalMetadata {
                                     length: journal_length,
                                     commands,
+                                    events,
                                     span_context: expect_or_fail!(span_context)?.try_into()?,
                                 },
                                 pinned_deployment: derive_pinned_deployment(
@@ -606,6 +610,7 @@ pub mod v1 {
                                 journal_metadata: crate::invocation_status_table::JournalMetadata {
                                     length: journal_length,
                                     commands,
+                                    events,
                                     span_context: expect_or_fail!(span_context)?.try_into()?,
                                 },
                                 pinned_deployment: derive_pinned_deployment(
@@ -677,6 +682,7 @@ pub mod v1 {
                         inbox_sequence_number: None,
                         journal_length: 0,
                         commands: 0,
+                        events: 0,
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
@@ -739,6 +745,7 @@ pub mod v1 {
                         inbox_sequence_number: Some(inbox_sequence_number),
                         journal_length: 0,
                         commands: 0,
+                        events: 0,
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
@@ -811,6 +818,7 @@ pub mod v1 {
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
                             commands: journal_metadata.commands,
+                            events: journal_metadata.events,
                             deployment_id,
                             service_protocol_version,
                             waiting_for_completions: vec![],
@@ -909,6 +917,7 @@ pub mod v1 {
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
                             commands: journal_metadata.commands,
+                            events: journal_metadata.events,
                             deployment_id,
                             service_protocol_version,
                             waiting_for_completions,
@@ -982,6 +991,7 @@ pub mod v1 {
                             inbox_sequence_number: None,
                             journal_length: journal_metadata.length,
                             commands: journal_metadata.commands,
+                            events: journal_metadata.events,
                             deployment_id,
                             service_protocol_version,
                             hotfix_apply_cancellation_after_deployment_is_pinned: false,
@@ -1629,6 +1639,7 @@ pub mod v1 {
                 Ok(crate::invocation_status_table::JournalMetadata {
                     length,
                     commands: 0,
+                    events: 0,
                     span_context,
                 })
             }
@@ -3097,7 +3108,6 @@ pub mod v1 {
                             EntryType::Unknown,
                         ));
                     }
-                    EntryType::Event => journal_v2::EntryType::Event,
                     EntryType::InputCommand => {
                         journal_v2::EntryType::Command(journal_v2::CommandType::Input)
                     }
@@ -3331,7 +3341,6 @@ pub mod v1 {
                     journal_v2::EntryType::Notification(journal_v2::NotificationType::Signal) => {
                         EntryType::Signal
                     }
-                    journal_v2::EntryType::Event => EntryType::Event,
                 }
             }
         }
@@ -3348,17 +3357,6 @@ pub mod v1 {
                         .map_err(|e| ConversionError::unexpected_enum_variant("ty", e.0))?
                         .try_into()?
                     {
-                        journal_v2::EntryType::Event => {
-                            let event_type = journal_v2::EventType::from(
-                                entry::EventType::try_from(value.event_type).unwrap_or_default(),
-                            );
-                            let mut raw_event =
-                                journal_v2::raw::RawEvent::new(event_type, value.content);
-                            if let Some(deduplication_hash) = value.event_deduplication_hash {
-                                raw_event.set_deduplication_hash(deduplication_hash);
-                            }
-                            restate_types::storage::StoredRawEntry::new(header, raw_event)
-                        }
                         journal_v2::EntryType::Notification(notification_ty) => {
                             let notification_id = match value
                                 .notification_id
@@ -3420,8 +3418,6 @@ pub mod v1 {
                 let ty = EntryType::from(raw_entry.ty());
                 let append_time = raw_entry.header.append_time.into();
 
-                let mut event_type = entry::EventType::UnknownEvent;
-                let mut event_deduplication_hash = None;
                 let mut call_or_send_command_metadata: Option<entry::CallOrSendCommandMetadata> =
                     None;
                 let mut notification_id: Option<entry::NotificationId> = None;
@@ -3454,12 +3450,6 @@ pub mod v1 {
 
                         notification.serialized_content()
                     }
-                    journal_v2::raw::RawEntry::Event(event) => {
-                        let (ty, deduplication_hash, value) = event.into_inner();
-                        event_type = ty.into();
-                        event_deduplication_hash = deduplication_hash;
-                        value
-                    }
                 };
 
                 Entry {
@@ -3467,27 +3457,73 @@ pub mod v1 {
                     content,
                     append_time,
                     call_or_send_command_metadata,
-                    event_type: event_type.into(),
-                    event_deduplication_hash,
                     notification_id,
                 }
             }
         }
 
-        impl From<journal_v2::EventType> for entry::EventType {
-            fn from(value: journal_v2::EventType) -> Self {
+        impl From<journal_events::EventType> for event::EventType {
+            fn from(value: journal_events::EventType) -> Self {
                 match value {
-                    journal_v2::EventType::TransientError => entry::EventType::TransientError,
-                    journal_v2::EventType::Unknown => entry::EventType::UnknownEvent,
+                    journal_events::EventType::TransientError => Self::TransientError,
+                    journal_events::EventType::Unknown => Self::UnknownEvent,
                 }
             }
         }
 
-        impl From<entry::EventType> for journal_v2::EventType {
-            fn from(value: entry::EventType) -> Self {
+        impl From<event::EventType> for journal_events::EventType {
+            fn from(value: event::EventType) -> Self {
                 match value {
-                    entry::EventType::TransientError => journal_v2::EventType::TransientError,
-                    entry::EventType::UnknownEvent => journal_v2::EventType::Unknown,
+                    event::EventType::TransientError => Self::TransientError,
+                    event::EventType::UnknownEvent => Self::Unknown,
+                }
+            }
+        }
+
+        impl TryFrom<Event> for crate::journal_events::StoredEvent {
+            type Error = ConversionError;
+
+            fn try_from(value: Event) -> Result<Self, Self::Error> {
+                let Event {
+                    event_type,
+                    event_deduplication_hash,
+                    content,
+                    append_time,
+                    after_journal_entry_index,
+                } = value;
+
+                let event_type = journal_events::EventType::from(
+                    event::EventType::try_from(event_type).unwrap_or_default(),
+                );
+
+                let mut event = journal_events::raw::RawEvent::new(event_type, content);
+                if let Some(deduplication_hash) = event_deduplication_hash {
+                    event.set_deduplication_hash(deduplication_hash);
+                }
+
+                Ok(Self {
+                    after_journal_entry_index,
+                    append_time: MillisSinceEpoch::from(append_time),
+                    event,
+                })
+            }
+        }
+
+        impl From<crate::journal_events::StoredEvent> for Event {
+            fn from(
+                crate::journal_events::StoredEvent {
+                    after_journal_entry_index,
+                    append_time,
+                    event,
+                }: crate::journal_events::StoredEvent,
+            ) -> Self {
+                let (ty, deduplication_hash, value) = event.into_inner();
+                Self {
+                    event_type: event::EventType::from(ty).into(),
+                    event_deduplication_hash: deduplication_hash,
+                    content: value,
+                    append_time: append_time.into(),
+                    after_journal_entry_index,
                 }
             }
         }

@@ -10,19 +10,15 @@
 
 use std::time::Duration;
 
-use anyhow::Context;
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
 
-use crate::errors::GenericError;
 use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::encoding::DecodingError;
 use crate::journal_v2::{
-    CommandType, Decoder, Entry, EntryMetadata, EntryType, Event, EventType, NotificationId,
-    NotificationType,
+    CommandType, Decoder, Entry, EntryMetadata, EntryType, NotificationId, NotificationType,
 };
-mod events;
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -58,7 +54,6 @@ pub enum RawEntryError {
 pub enum RawEntry {
     Command(RawCommand),
     Notification(RawNotification),
-    Event(RawEvent),
 }
 
 impl RawEntry {
@@ -180,76 +175,5 @@ impl RawNotification {
 impl EntryMetadata for RawNotification {
     fn ty(&self) -> EntryType {
         EntryType::Notification(self.ty)
-    }
-}
-
-// -- Raw event
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RawEvent {
-    ty: EventType,
-    deduplication_hash: Option<Bytes>,
-    value: Bytes,
-}
-
-impl RawEvent {
-    pub fn new(ty: EventType, value: Bytes) -> Self {
-        RawEvent {
-            ty,
-            deduplication_hash: None,
-            value,
-        }
-    }
-
-    pub fn unknown() -> Self {
-        RawEvent {
-            ty: EventType::Unknown,
-            deduplication_hash: None,
-            value: Bytes::default(),
-        }
-    }
-
-    /// See [self.set_deduplication_hash].
-    pub fn deduplication_hash(&self) -> Option<&Bytes> {
-        self.deduplication_hash.as_ref()
-    }
-
-    /// When setting the deduplication hash, the Partition processor will try to deduplicate this event with the last event in the journal (if present) by matching the deduplication_hash.
-    ///
-    /// When unset, no deduplication will happen and the event is stored as is.
-    pub fn set_deduplication_hash(&mut self, hash: impl Into<Bytes>) {
-        self.deduplication_hash = Some(hash.into());
-    }
-
-    pub fn event_type(&self) -> EventType {
-        self.ty
-    }
-
-    pub fn into_inner(self) -> (EventType, Option<Bytes>, Bytes) {
-        (self.ty, self.deduplication_hash, self.value)
-    }
-}
-
-impl EntryMetadata for RawEvent {
-    fn ty(&self) -> EntryType {
-        EntryType::Event
-    }
-}
-
-// The conversion RawEvent <-> Event is defined at this level directly.
-
-impl TryFrom<RawEvent> for Event {
-    type Error = GenericError;
-
-    fn try_from(value: RawEvent) -> Result<Self, Self::Error> {
-        events::decode(value.ty, value.value)
-            .context("error when decoding event")
-            .map_err(Into::into)
-    }
-}
-
-impl From<Event> for RawEvent {
-    fn from(value: Event) -> Self {
-        events::encode(value)
     }
 }

@@ -33,7 +33,7 @@ use restate_types::journal_v2::lite::{
     SignalResultLite, SleepCommandLite,
 };
 use restate_types::journal_v2::raw::{
-    CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawEvent, RawNotification,
+    CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawNotification,
 };
 use restate_types::journal_v2::*;
 
@@ -576,8 +576,6 @@ impl Encoder for ServiceProtocolV4Codec {
                 )
                 .into()
             }
-
-            Entry::Event(e) => RawEvent::from(e.clone()).into(),
         }
     }
 }
@@ -1069,10 +1067,6 @@ impl Decoder for ServiceProtocolV4Codec {
                     .into()
                 }
             },
-
-            RawEntry::Event(e) => Event::try_from(e.clone())
-                .map_err(|e| DecodingError::from(GenericError::from(e)))?
-                .into(),
         })
     }
 
@@ -1332,10 +1326,6 @@ impl Decoder for ServiceProtocolV4Codec {
                     },
                 })
             }
-
-            RawEntry::Event(e) => Event::try_from(e.clone())
-                .map_err(|e| DecodingError::from(GenericError::from(e)))?
-                .into(),
         })
     }
 }
