@@ -1384,8 +1384,7 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use googletest::prelude::{eq, predicate, some};
-    use googletest::{assert_that, pat};
+    use googletest::prelude::*;
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -1405,9 +1404,9 @@ mod tests {
     use restate_types::invocation::ServiceType;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
+    use restate_types::journal_events::EventType;
     use restate_types::journal_v2::{
-        Command, CompletionType, Encoder, Entry, EventType, NotificationType, OutputCommand,
-        OutputResult,
+        Command, CompletionType, Encoder, Entry, NotificationType, OutputCommand, OutputResult,
     };
     use restate_types::live::Constant;
     use restate_types::retries::RetryPolicy;
@@ -1416,7 +1415,7 @@ mod tests {
         InvocationAttemptOptions, InvocationTargetMetadata,
     };
     use restate_types::schema::service::ServiceMetadata;
-    use restate_types::storage::StoredRawEntry;
+    use restate_types::service_protocol::ServiceProtocolVersion;
 
     // -- Mocks
 
@@ -2278,12 +2277,8 @@ mod tests {
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 invocation_epoch: eq(0),
-                kind: pat!(EffectKind::JournalEntryV2 {
-                    entry: some(pat!(StoredRawEntry {
-                        inner: predicate(|e: &journal_v2::raw::RawEntry| e
-                            .try_as_event_ref()
-                            .is_some_and(|e| e.event_type() == EventType::TransientError))
-                    }))
+                kind: pat!(EffectKind::JournalEvent {
+                    event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
                 })
             })
         );
@@ -2336,12 +2331,8 @@ mod tests {
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 invocation_epoch: eq(0),
-                kind: pat!(EffectKind::JournalEntryV2 {
-                    entry: some(pat!(StoredRawEntry {
-                        inner: predicate(|e: &journal_v2::raw::RawEntry| e
-                            .try_as_event_ref()
-                            .is_some_and(|e| e.event_type() == EventType::TransientError))
-                    }))
+                kind: pat!(EffectKind::JournalEvent {
+                    event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
                 })
             })
         );
