@@ -124,6 +124,10 @@ spec:
         {{- if .Values.extraVolumes }}
         {{- toYaml .Values.extraVolumes | nindent 8 }}
         {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
   # It's important to start multiple pods at the same time in case multiple pods died. Otherwise, we risk
   # unavailability of an already configured metadata cluster
   podManagementPolicy: Parallel
