@@ -12,10 +12,10 @@ use std::fmt::Debug;
 use std::ops::{ControlFlow, RangeInclusive};
 use std::sync::Arc;
 
-use restate_partition_store::invocation_status_table::ScanInvocationStatusAccessor;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::ScanInvocationStatusTable;
+use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 
@@ -60,7 +60,7 @@ struct StatusScanner;
 
 impl ScanLocalPartition for StatusScanner {
     type Builder = SysInvocationStatusBuilder;
-    type Item<'a> = (InvocationId, ScanInvocationStatusAccessor<'a>);
+    type Item<'a> = (InvocationId, InvocationStatusV2Lazy<'a>);
     type ConversionError = ConversionError;
 
     fn for_each_row<
@@ -73,7 +73,7 @@ impl ScanLocalPartition for StatusScanner {
         range: RangeInclusive<PartitionKey>,
         f: F,
     ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
-        partition_store.for_each_invocation_status(range, f)
+        partition_store.for_each_invocation_status_lazy(range, f)
     }
 
     fn append_row<'a>(

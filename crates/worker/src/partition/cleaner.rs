@@ -201,10 +201,9 @@ mod tests {
     use restate_storage_api::StorageError;
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
-        InvocationStatusAccessor, InvokedInvocationStatusLite, JournalMetadata,
-        ScanInvocationStatusTable,
+        InvokedInvocationStatusLite, JournalMetadata, ScanInvocationStatusTable,
     };
-    use restate_storage_api::protobuf_types::v1::InvocationStatusV2Lazy;
+    use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::partition_table::{FindPartition, PartitionTable};
@@ -214,10 +213,6 @@ mod tests {
     struct MockInvocationStatusReader(Vec<(InvocationId, InvocationStatus)>);
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
-        type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
-        type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
-        type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy;
-
         fn scan_invocation_statuses(
             &self,
             _: RangeInclusive<PartitionKey>,
@@ -228,17 +223,10 @@ mod tests {
             Ok(stream::iter(self.0.clone()).map(Ok))
         }
 
-        fn for_each_invocation_status<
+        fn for_each_invocation_status_lazy<
             E: Into<anyhow::Error>,
             F: for<'a> FnMut(
-                    (
-                        InvocationId,
-                        InvocationStatusAccessor<
-                            Self::PreFlightInvocationMetadataAccessor<'a>,
-                            Self::InFlightInvocationMetadataAccessor<'a>,
-                            Self::CompletedInvocationMetadataAccessor<'a>,
-                        >,
-                    ),
+                    (InvocationId, InvocationStatusV2Lazy<'a>),
                 ) -> std::ops::ControlFlow<std::result::Result<(), E>>
                 + Send
                 + Sync

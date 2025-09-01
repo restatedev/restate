@@ -16,9 +16,9 @@ use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusAccessor, InvocationStatusDiscriminants,
-    InvocationStatusTable, InvocationStatusV1, InvokedInvocationStatusLite,
-    ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
+    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
+    InvocationStatusV1, InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
+    ScanInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError, Transaction};
@@ -171,17 +171,7 @@ impl ReadOnlyInvocationStatusTable for PartitionStore {
     }
 }
 
-pub type ScanInvocationStatusAccessor<'a> = InvocationStatusAccessor<
-    &'a InvocationStatusV2Lazy<'a>,
-    &'a InvocationStatusV2Lazy<'a>,
-    &'a InvocationStatusV2Lazy<'a>,
->;
-
 impl ScanInvocationStatusTable for PartitionStore {
-    type PreFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy<'a>;
-    type InFlightInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy<'a>;
-    type CompletedInvocationMetadataAccessor<'a> = &'a InvocationStatusV2Lazy<'a>;
-
     fn scan_invoked_invocations(
         &self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
@@ -224,17 +214,10 @@ impl ScanInvocationStatusTable for PartitionStore {
         .map_err(|_| StorageError::OperationalError)
     }
 
-    fn for_each_invocation_status<
+    fn for_each_invocation_status_lazy<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
-                (
-                    InvocationId,
-                    InvocationStatusAccessor<
-                        Self::PreFlightInvocationMetadataAccessor<'a>,
-                        Self::InFlightInvocationMetadataAccessor<'a>,
-                        Self::CompletedInvocationMetadataAccessor<'a>,
-                    >,
-                ),
+                (InvocationId, InvocationStatusV2Lazy<'a>),
             ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync
@@ -269,21 +252,14 @@ impl ScanInvocationStatusTable for PartitionStore {
                             return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into())));
                         };
 
-                        let inv_status_v2 = break_on_err(restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value).map_err(|e| StorageError::Conversion(e.into())))?;
-
-
-                        let accessor = break_on_err(
-                            inv_status_v2
-                                .accessor()
-                                .map_err(|err| StorageError::Conversion(err.into())),
-                        )?;
+                        let inv_status_v2_lazy = break_on_err(restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value).map_err(|e| StorageError::Conversion(e.into())))?;
 
                         let (partition_key, invocation_uuid) =
                             break_on_err(state_key.into_inner_ok_or())?;
 
                         let result = f((
                             InvocationId::from_parts(partition_key, invocation_uuid),
-                            accessor,
+                            inv_status_v2_lazy,
                         ));
 
                         result.map_break(|result| {
