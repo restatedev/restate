@@ -10,7 +10,7 @@
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
-use crate::clients::{self, AdminClientInterface};
+use crate::clients::{self, AdminClientInterface, collect_and_split_futures};
 use crate::ui::invocations::render_simple_invocation_list;
 
 use anyhow::{Result, anyhow, bail};
@@ -71,25 +71,30 @@ pub async fn run_resume(State(env): State<CliEnv>, opts: &Resume) -> Result<()> 
     // Get the invocation and confirm
     confirm_or_exit("Are you sure you want to resume these invocations?")?;
 
-    // Restart invocations
-    let mut resumed = Vec::with_capacity(invocations.len());
-    let mut failed_to_resume = vec![];
-    for inv in invocations {
-        match client
-            .resume_invocation(&inv.id)
-            .map_err(anyhow::Error::from)
-            .await
-        {
-            Ok(_) => {
-                resumed.push(inv.id);
-            }
-            Err(err) => {
-                failed_to_resume.push((inv.id, err));
-            }
-        }
-    }
+    // Resume invocations
+    let (resumed, failed_to_resume) =
+        collect_and_split_futures(invocations.into_iter().map(|invocation| invocation.id).map(
+            |invocation_id| async {
+                client
+                    .resume_invocation(&invocation_id)
+                    .map_err(anyhow::Error::from)
+                    .await
+                    .map(|_| invocation_id.clone())
+                    .map_err(|e| (invocation_id, e))
+            },
+        ))
+        .await;
 
     c_println!();
+    c_success!("Resumed invocations:");
+
+    // Print new ids
+    let mut invocations_table = Table::new_styled();
+    invocations_table.set_styled_header(vec!["RESUMED INVOCATIONS"]);
+    for id in resumed {
+        invocations_table.add_row(vec![Cell::new(&id)]);
+    }
+    c_indent_table!(0, invocations_table);
 
     // Print failed ones, if any
     if !failed_to_resume.is_empty() {
