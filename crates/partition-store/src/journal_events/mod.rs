@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::Cursor;
 use std::ops::RangeInclusive;
 
 use crate::TableKind::JournalEvent;
@@ -68,8 +67,12 @@ fn get_journal_event<S: StorageAccess>(
 fn get_journal_events<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
-    events_length: EntryIndex,
+    events_length: u32,
 ) -> Result<Vec<Result<(EntryIndex, StoredEvent)>>> {
+    if events_length == 0 {
+        return Ok(vec![]);
+    }
+
     let _x = RocksDbPerfGuard::new("get-journal-events");
     let key = JournalEventKey::default()
         .partition_key(invocation_id.partition_key())
@@ -78,8 +81,8 @@ fn get_journal_events<S: StorageAccess>(
     let mut n = 0;
     storage.for_each_key_value_in_place(
         TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), key),
-        move |k, mut v| {
-            let key = JournalEventKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
+        move |mut k, mut v| {
+            let key = JournalEventKey::deserialize_from(&mut k).map(|journal_key| {
                 journal_key
                     .event_index
                     .expect("The event index must be part of the journal key.")
@@ -102,7 +105,7 @@ fn get_journal_events<S: StorageAccess>(
 fn delete_journal_events<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
-    events_length: EntryIndex,
+    events_length: u32,
 ) -> Result<()> {
     let _x = RocksDbPerfGuard::new("delete-journal-events");
 
@@ -129,7 +132,7 @@ impl ReadOnlyJournalEventsTable for PartitionStore {
     fn get_journal_events(
         &mut self,
         invocation_id: InvocationId,
-        length: EntryIndex,
+        length: u32,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredEvent)>> + Send> {
         Ok(stream::iter(get_journal_events(
             self,
@@ -183,7 +186,7 @@ impl ReadOnlyJournalEventsTable for PartitionStoreTransaction<'_> {
     fn get_journal_events(
         &mut self,
         invocation_id: InvocationId,
-        length: EntryIndex,
+        length: u32,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredEvent)>> + Send> {
         Ok(stream::iter(get_journal_events(
             self,
@@ -207,7 +210,7 @@ impl JournalEventsTable for PartitionStoreTransaction<'_> {
     async fn delete_journal_events(
         &mut self,
         invocation_id: InvocationId,
-        length: EntryIndex,
+        length: u32,
     ) -> Result<()> {
         self.assert_partition_key(&invocation_id)?;
         delete_journal_events(self, &invocation_id, length)

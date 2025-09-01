@@ -181,6 +181,7 @@ message InvocationStatusV2 {
   uint32 current_invocation_epoch = 27;
   // Used to reconstruct the completion_range_epoch_map
   repeated JournalTrimPoint trim_points = 28;
+  // The number of events stored for this invocation
   uint32 events = 31;
 
   // Suspended
