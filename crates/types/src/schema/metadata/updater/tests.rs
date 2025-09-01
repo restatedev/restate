@@ -1886,6 +1886,7 @@ mod modify_service {
 
     use crate::config::{Configuration, DEFAULT_ABORT_TIMEOUT, DEFAULT_INACTIVITY_TIMEOUT};
     use crate::invocation::InvocationRetention;
+    use crate::schema::invocation_target::{InvocationAttemptOptions, InvocationTargetMetadata};
     use crate::schema::service::ServiceMetadata;
     use googletest::prelude::*;
     use test_log::test;
@@ -2113,6 +2114,24 @@ mod modify_service {
                 inactivity_timeout: eq(new_inactivity_timeout),
                 abort_timeout: eq(new_abort_timeout),
             })
+        );
+        assert_that!(
+            schema.assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME),
+            pat!(InvocationTargetMetadata {
+                completion_retention: eq(new_workflow_completion_retention),
+                journal_retention: eq(new_journal_retention),
+            })
+        );
+        assert_that!(
+            schema.resolve_invocation_attempt_options(
+                &deployment_id,
+                GREETER_SERVICE_NAME,
+                GREET_HANDLER_NAME
+            ),
+            some(pat!(InvocationAttemptOptions {
+                inactivity_timeout: some(eq(new_inactivity_timeout)),
+                abort_timeout: some(eq(new_abort_timeout)),
+            }))
         );
 
         // Now register a second version of greeter, identical to the first
