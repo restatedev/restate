@@ -27,6 +27,10 @@ define_table!(state(
     /// The `utf8` state key.
     key: DataType::LargeUtf8,
 
+    /// The byte length of the state key. If you are writing a query that only needs to know the length,
+    /// reading this field will be much more efficient than reading octet_length(key).
+    key_length: DataType::UInt64,
+
     /// Only contains meaningful values when a service stores state as `utf8`. This is the case for
     /// services that serialize state using JSON (default for Typescript SDK, Java/Kotlin SDK if
     /// using JsonSerdes).
@@ -35,4 +39,8 @@ define_table!(state(
     /// A binary, uninterpreted representation of the value. You can use the more specific column
     /// `value_utf8` if the value is a string.
     value: DataType::LargeBinary,
+
+    /// The byte length of the value. If you are writing a query that only needs to know the length,
+    /// reading this field will be much more efficient than reading length(value).
+    value_length: DataType::UInt64,
 ));

@@ -28,6 +28,12 @@ pub(crate) fn append_state_row(
     {
         row.key(str);
     }
+    row.key_length(
+        state_key
+            .len()
+            .try_into()
+            .expect("key length to fit in a u64"),
+    );
     if row.is_value_utf8_defined()
         && let Ok(str) = std::str::from_utf8(state_value)
     {
@@ -36,4 +42,10 @@ pub(crate) fn append_state_row(
     if row.is_value_defined() {
         row.value(state_value);
     }
+    row.value_length(
+        state_value
+            .len()
+            .try_into()
+            .expect("value length to fit in a u64"),
+    );
 }
