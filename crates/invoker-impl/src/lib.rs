@@ -2367,7 +2367,8 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         // Mock service and register partition
-        let (_, _status_tx, mut service_inner) = ServiceInner::mock((), None);
+        let (_, _status_tx, mut service_inner) =
+            ServiceInner::mock((), MockSchemas::default(), None);
         let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
 
         // Start invocation epoch 0
