@@ -784,7 +784,7 @@ mod tests {
     use crate::nodes_config::{
         LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
-    use crate::{GenerationalNodeId, PlainNodeId, Version};
+    use crate::{GenerationalNodeId, PlainNodeId};
 
     fn generate_logserver_node(
         id: impl Into<PlainNodeId>,
@@ -807,7 +807,7 @@ mod tests {
         const NUM_NODES: u32 = 10;
         const LOCATION: &str = "";
         // all_authoritative, all flat structure (no location)
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         // all_authoritative
         for i in 1..=NUM_NODES {
             nodes_config.upsert_node(generate_logserver_node(
@@ -852,7 +852,7 @@ mod tests {
         const NUM_NODES: u32 = 2;
         const LOCATION: &str = "";
         // all_authoritative, all flat structure (no location)
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         // all_authoritative
         for i in 1..=NUM_NODES {
             nodes_config.upsert_node(generate_logserver_node(
@@ -943,7 +943,7 @@ mod tests {
     fn nodeset_checker_non_existent_nodes() -> Result<()> {
         const LOCATION: &str = "";
         // all_authoritative, all flat structure (no location)
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         // add 2 nodes to config N1, N2
         for i in 1..=2 {
             nodes_config.upsert_node(generate_logserver_node(
@@ -988,7 +988,7 @@ mod tests {
     fn nodeset_checker_mixed() -> Result<()> {
         const LOCATION: &str = "";
         // still flat
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         nodes_config.upsert_node(generate_logserver_node(1, StorageState::Disabled, LOCATION));
         nodes_config.upsert_node(generate_logserver_node(
             2,
@@ -1067,7 +1067,7 @@ mod tests {
     fn nodeset_checker_non_authoritative() -> Result<()> {
         const LOCATION: &str = "";
         // still flat
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         nodes_config.upsert_node(generate_logserver_node(1, StorageState::Disabled, LOCATION));
         nodes_config.upsert_node(generate_logserver_node(
             2,
@@ -1165,7 +1165,7 @@ mod tests {
         const NUM_NODES: u32 = 1;
         const LOCATION: &str = "";
         // all_authoritative, all flat structure (no location)
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         // all_authoritative
         for i in 1..=NUM_NODES {
             nodes_config.upsert_node(generate_logserver_node(
@@ -1195,7 +1195,7 @@ mod tests {
         const NUM_NODES: u32 = 3;
         const LOCATION: &str = "";
         // all_authoritative, all flat structure (no location)
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         // all_authoritative
         for i in 1..=NUM_NODES {
             nodes_config.upsert_node(generate_logserver_node(
@@ -1232,7 +1232,7 @@ mod tests {
         // region2
         //      .az1  [N7, N8, N9]
         // -         [N10(Provisioning/Not In Config) N11(D)]  - D = Disabled
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         // all authoritative
         // region1.az1
         for i in 1..=3 {
@@ -1406,7 +1406,7 @@ mod tests {
         // region2
         //      .az1  [N7, N8, N9]
         // -         [N10, N11(P)] - P = Provisioning
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         // region1.az1
         nodes_config.upsert_node(generate_logserver_node(
             1,
@@ -1478,7 +1478,7 @@ mod tests {
         //      .az1  [N8, N9, N10]
         // region3
         //      .az1  [N11]
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         // region1.az1
         for i in 1..=4 {
             nodes_config.upsert_node(generate_logserver_node(
@@ -1576,7 +1576,7 @@ mod tests {
         //      .az1  [N11]
         // region4 -- region is Disabled
         //      .az1  [N12(D)]
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         // region1.az1
         nodes_config.upsert_node(generate_logserver_node(
             1,

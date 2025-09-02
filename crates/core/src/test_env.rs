@@ -69,7 +69,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         let metadata_writer = metadata_manager.writer();
         let router_builder = MessageRouterBuilder::default();
-        let nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let nodes_config = NodesConfiguration::new_for_testing();
         let partition_table = PartitionTable::with_equally_sized_partitions(Version::MIN, 10);
         TaskCenter::try_set_global_metadata(metadata.clone());
 
@@ -236,7 +236,7 @@ impl<T: TransportConnect> TestCoreEnv<T> {
 }
 
 pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfiguration {
-    let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+    let mut nodes_config = NodesConfiguration::new_for_testing();
     let address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
     let node_id = GenerationalNodeId::new(node_id, generation);
     let roles = Role::Admin | Role::Worker;
