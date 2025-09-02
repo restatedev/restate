@@ -44,7 +44,7 @@ use restate_types::live::LiveLoadExt;
 use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration, ProviderKind};
 use restate_types::metadata::{GlobalMetadata, Precondition};
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::{
@@ -470,7 +470,8 @@ impl Node {
             location = %my_node_config.location,
             nodes_config_version = %metadata.nodes_config_version(),
             cluster_name = %nodes_config.cluster_name(),
-            cluster_fingerprint =?nodes_config.cluster_fingerprint(),
+            cluster_fingerprint = %nodes_config.cluster_fingerprint().map(|f|
+                f.to_string()).unwrap_or_default(),
             %partition_table_version,
             %logs_version,
             "My Node ID is {}", my_node_config.current_generation,
@@ -636,8 +637,11 @@ async fn provision_cluster_metadata(
 }
 
 fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfiguration {
-    let mut initial_nodes_configuration =
-        NodesConfiguration::new(Version::MIN, common_opts.cluster_name().to_owned());
+    let mut initial_nodes_configuration = NodesConfiguration::new(
+        Version::MIN,
+        common_opts.cluster_name().to_owned(),
+        ClusterFingerprint::generate(),
+    );
     let node_config = NodeConfig::builder()
         .name(common_opts.node_name().to_owned())
         .current_generation(

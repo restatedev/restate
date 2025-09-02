@@ -324,7 +324,7 @@ mod tests {
     use googletest::matchers::{contains_substring, displays_as, err};
     use restate_core::TestCoreEnvBuilder;
     use restate_types::config::{Configuration, set_current_config};
-    use restate_types::nodes_config::{NodeConfig, NodesConfiguration};
+    use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration};
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 
     #[test_log::test(restate_core::test)]
@@ -343,7 +343,8 @@ mod tests {
             .address("http://localhost:1337".parse().unwrap())
             .roles(EnumSet::default())
             .build();
-        let mut nodes_configuration = NodesConfiguration::new(Version::MIN, cluster_name);
+        let mut nodes_configuration =
+            NodesConfiguration::new(Version::MIN, cluster_name, ClusterFingerprint::generate());
         nodes_configuration.upsert_node(node_config);
 
         let builder = TestCoreEnvBuilder::with_incoming_only_connector()
@@ -373,7 +374,11 @@ mod tests {
         config.common.set_node_name(&node_name);
         set_current_config(config);
 
-        let nodes_configuration = NodesConfiguration::new(Version::MIN, other_cluster_name);
+        let nodes_configuration = NodesConfiguration::new(
+            Version::MIN,
+            other_cluster_name,
+            ClusterFingerprint::generate(),
+        );
 
         let builder = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_nodes_config(nodes_configuration);
