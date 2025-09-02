@@ -32,7 +32,7 @@ use tracing::{Span, debug, error, info, instrument, trace, warn};
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{Oneshot, Reciprocal, ServiceMessage, Verdict};
-use restate_core::{ShutdownError, cancellation_watcher, my_node_id};
+use restate_core::{Metadata, ShutdownError, cancellation_watcher, my_node_id};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
@@ -53,6 +53,7 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::{RetryPolicy, with_jitter};
+use restate_types::schema::Schema;
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
@@ -390,6 +391,7 @@ where
         }
 
         let mut live_config = Configuration::live();
+        let mut live_schemas = Metadata::with_current(|m| m.updateable_schema());
 
         // Telemetry setup
         let leader_record_write_to_read_latency =
@@ -474,7 +476,7 @@ where
                             let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
                             // note: split() decodes the payload
                             let (response_tx, body) = msg.split();
-                            self.on_rpc(response_tx, body, &mut partition_store).await;
+                            self.on_rpc(response_tx, body, &mut partition_store, live_schemas.live_load()).await;
                         }
                         msg => { msg.fail(Verdict::MessageUnrecognized); }
                     }
@@ -610,9 +612,10 @@ where
         >,
         body: PartitionProcessorRpcRequest,
         partition_store: &mut PartitionStore,
+        schemas: &Schema,
     ) {
         let _ = rpc::RpcHandler::handle(
-            rpc::RpcContext::new(&mut self.leadership_state, partition_store),
+            rpc::RpcContext::new(&mut self.leadership_state, schemas, partition_store),
             body,
             rpc::Replier::new(response_tx),
         )

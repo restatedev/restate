@@ -34,7 +34,7 @@ pub(super) struct Request {
     pub(super) response_mode: GetInvocationOutputResponseMode,
 }
 
-impl<'a, TActuator, TStorage> RpcContext<'a, TActuator, TStorage>
+impl<'a, TActuator, TSchemas, TStorage> RpcContext<'a, TActuator, TSchemas, TStorage>
 where
     TActuator: Actuator,
     TStorage:
@@ -95,7 +95,8 @@ where
     }
 }
 
-impl<'a, Proposer: Actuator, Storage> RpcHandler<Request> for RpcContext<'a, Proposer, Storage>
+impl<'a, Proposer: Actuator, TSchemas, Storage> RpcHandler<Request>
+    for RpcContext<'a, Proposer, TSchemas, Storage>
 where
     Storage:
         ReadOnlyInvocationStatusTable + ReadOnlyVirtualObjectStatusTable + ReadOnlyIdempotencyTable,

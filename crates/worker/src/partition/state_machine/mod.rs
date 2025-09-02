@@ -550,6 +550,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             Command::ResumeInvocation(resume_invocation_request) => {
                 lifecycle::OnManualResumeCommand {
                     invocation_id: resume_invocation_request.invocation_id,
+                    update_pinned_deployment_id: resume_invocation_request
+                        .update_pinned_deployment_id,
                     response_sink: resume_invocation_request.response_sink,
                 }
                 .apply(self)

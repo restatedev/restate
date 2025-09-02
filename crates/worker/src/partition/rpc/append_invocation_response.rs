@@ -18,8 +18,8 @@ pub(super) struct Request {
     pub(super) invocation_response: InvocationResponse,
 }
 
-impl<'a, TActuator: Actuator, TStorage> RpcHandler<Request>
-    for RpcContext<'a, TActuator, TStorage>
+impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
+    for RpcContext<'a, TActuator, TSchemas, TStorage>
 {
     type Output = PartitionProcessorRpcResponse;
     type Error = ();

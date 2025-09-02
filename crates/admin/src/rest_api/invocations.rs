@@ -17,7 +17,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
 use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
-use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
+use restate_types::identifiers::{
+    DeploymentId, InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey,
+};
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
     PurgeInvocationResponse, ResumeInvocationResponse,
@@ -370,12 +372,30 @@ where
     }
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub enum ResumeInvocationDeploymentId {
+    #[default]
+    #[serde(alias = "keep")]
+    Keep,
+    #[serde(alias = "latest")]
+    Latest,
+    #[serde(untagged)]
+    Id(String),
+}
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ResumeInvocationQueryParams {
+    pub deployment: Option<ResumeInvocationDeploymentId>,
+}
+
 generate_meta_api_error!(ResumeInvocationError: [
     InvocationNotFoundError,
     InvocationClientError,
     InvalidFieldError,
     ResumeInvocationNotStartedError,
-    ResumeInvocationCompletedError
+    ResumeInvocationCompletedError,
+    ResumeInvocationCannotChangeDeploymentIdError,
+    ResumeInvocationDeploymentNotFoundError,
+    ResumeInvocationIncompatibleDeploymentIdError
 ]);
 
 /// Resume an invocation
@@ -384,15 +404,29 @@ generate_meta_api_error!(ResumeInvocationError: [
     description = "Resume the given invocation. In case the invocation is backing-off, this will immediately trigger the retry timer. If the invocation is suspended or paused, this will resume it.",
     operation_id = "resume_invocation",
     tags = "invocation",
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    ))
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        query(
+            name = "deployment",
+            description = "When resuming from paused/suspended, provide a deployment id to use to replace the currently pinned deployment id. \
+            If latest, use the latest deployment id. \
+            When not provided, the invocation will resume on the pinned deployment id.\
+            When provided and the invocation is either running, or no deployment is pinned, this operation will fail.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = "ResumeInvocationDeploymentId",
+        )
+    )
 )]
 pub async fn resume_invocation<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
     Path(invocation_id): Path<String>,
+    Query(ResumeInvocationQueryParams { deployment }): Query<ResumeInvocationQueryParams>,
 ) -> Result<(), ResumeInvocationError>
 where
     IC: InvocationClient,
@@ -401,9 +435,23 @@ where
         .parse::<InvocationId>()
         .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
 
+    let deployment_id = match deployment.unwrap_or_default() {
+        ResumeInvocationDeploymentId::Keep => client::ResumeInvocationDeploymentId::KeepPinned,
+        ResumeInvocationDeploymentId::Latest => client::ResumeInvocationDeploymentId::PinToLatest,
+        ResumeInvocationDeploymentId::Id(dp_id) => client::ResumeInvocationDeploymentId::PinTo {
+            id: dp_id
+                .parse::<DeploymentId>()
+                .map_err(|e| InvalidFieldError("deployment_id", e.to_string()))?,
+        },
+    };
+
     match state
         .invocation_client
-        .resume_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .resume_invocation(
+            PartitionProcessorRpcRequestId::new(),
+            invocation_id,
+            deployment_id,
+        )
         .await
         .map_err(InvocationClientError)?
     {
@@ -417,6 +465,23 @@ where
         ResumeInvocationResponse::Completed => {
             Err(ResumeInvocationCompletedError(invocation_id.to_string()))?
         }
+        ResumeInvocationResponse::CannotChangeDeploymentId => Err(
+            ResumeInvocationCannotChangeDeploymentIdError(invocation_id.to_string()),
+        )?,
+        ResumeInvocationResponse::DeploymentNotFound => Err(
+            ResumeInvocationDeploymentNotFoundError(invocation_id.to_string()),
+        )?,
+        ResumeInvocationResponse::IncompatibleDeploymentId {
+            pinned_protocol_version,
+            deployment_id,
+            supported_protocol_versions,
+        } => Err(ResumeInvocationIncompatibleDeploymentIdError {
+            invocation_id: invocation_id.to_string(),
+
+            pinned_protocol_version,
+            deployment_id: deployment_id.to_string(),
+            supported_protocol_versions,
+        })?,
     };
 
     Ok(())

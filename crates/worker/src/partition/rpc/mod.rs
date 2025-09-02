@@ -33,6 +33,7 @@ use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
+use restate_types::schema::deployment::DeploymentResolver;
 use restate_wal_protocol::Command;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -119,14 +120,23 @@ impl<
     }
 }
 
-pub(super) struct RpcContext<'a, Actuator, Storage> {
+pub(super) struct RpcContext<'a, Actuator, Schemas, Storage> {
     proposer: &'a mut Actuator,
+    schemas: &'a Schemas,
     storage: &'a mut Storage,
 }
 
-impl<'a, Actuator, Storage> RpcContext<'a, Actuator, Storage> {
-    pub(super) fn new(proposer: &'a mut Actuator, storage: &'a mut Storage) -> Self {
-        Self { proposer, storage }
+impl<'a, Actuator, Schemas, Storage> RpcContext<'a, Actuator, Schemas, Storage> {
+    pub(super) fn new(
+        proposer: &'a mut Actuator,
+        schemas: &'a Schemas,
+        storage: &'a mut Storage,
+    ) -> Self {
+        Self {
+            proposer,
+            schemas,
+            storage,
+        }
     }
 }
 
@@ -168,10 +178,12 @@ pub(super) trait RpcHandler<Input> {
     ) -> impl Future<Output = Result<(), Self::Error>>;
 }
 
-impl<'a, A, S> RpcHandler<PartitionProcessorRpcRequest> for RpcContext<'a, A, S>
+impl<'a, TActuator, TSchemas, TStorage> RpcHandler<PartitionProcessorRpcRequest>
+    for RpcContext<'a, TActuator, TSchemas, TStorage>
 where
-    A: Actuator,
-    S: ReadOnlyInvocationStatusTable
+    TActuator: Actuator,
+    TSchemas: DeploymentResolver,
+    TStorage: ReadOnlyInvocationStatusTable
         + ReadOnlyVirtualObjectStatusTable
         + ReadOnlyIdempotencyTable
         + ReadOnlyJournalTable,
@@ -286,11 +298,15 @@ where
                 )
                 .await
             }
-            PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id } => {
+            PartitionProcessorRpcRequestInner::ResumeInvocation {
+                invocation_id,
+                deployment_id,
+            } => {
                 self.handle(
                     resume_invocation::Request {
                         request_id,
                         invocation_id,
+                        update_deployment_id: deployment_id,
                     },
                     replier.map(),
                 )
