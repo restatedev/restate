@@ -667,6 +667,7 @@ where
 
             // todo: redesign to pass the arc (or reference) further down
             let record_created_at = record.created_at;
+            let record_lsn = record.lsn;
             let envelope = Arc::unwrap_or_clone(record.envelope);
 
             if let Command::AnnounceLeader(announce_leader) = envelope.command {
@@ -699,6 +700,7 @@ where
                     .apply(
                         envelope.command,
                         record_created_at.into(),
+                        record_lsn,
                         transaction,
                         action_collector,
                         self.leadership_state.is_leader(),

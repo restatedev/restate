@@ -291,7 +291,6 @@ mod tests {
                     journal_metadata: JournalMetadata {
                         length: 2,
                         commands: 2,
-                        events: 0,
                         span_context: Default::default(),
                     },
                     ..CompletedInvocation::mock_neo()

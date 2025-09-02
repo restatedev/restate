@@ -44,17 +44,6 @@ pub mod storage {
         )
     }
 
-    pub fn has_events(events: EntryIndex) -> impl Matcher<ActualT = InvocationStatus> {
-        predicate(move |is: &InvocationStatus| {
-            is.get_journal_metadata()
-                .is_some_and(|jm| jm.events == events)
-        })
-        .with_description(
-            format!("has journal events {events}"),
-            format!("hasn't journal events {events}"),
-        )
-    }
-
     pub fn has_commands(commands: EntryIndex) -> impl Matcher<ActualT = InvocationStatus> {
         predicate(move |is: &InvocationStatus| {
             is.get_journal_metadata()

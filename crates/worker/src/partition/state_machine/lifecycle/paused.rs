@@ -123,9 +123,9 @@ mod tests {
                 ))
             )
         );
-        assert_eq!(
-            test_env.read_journal_event(invocation_id, 0).await,
-            paused_event
+        assert_that!(
+            test_env.read_journal_events(invocation_id).await,
+            elements_are![eq(paused_event)]
         );
 
         test_env.shutdown().await;

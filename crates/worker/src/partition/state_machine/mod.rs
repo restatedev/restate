@@ -94,6 +94,7 @@ use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{
     CommandType, CompletionId, EntryMetadata, NotificationId, Signal, SignalResult,
 };
+use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
@@ -229,6 +230,7 @@ impl StateMachine {
 pub(crate) struct StateMachineApplyContext<'a, S> {
     storage: &'a mut S,
     record_created_at: MillisSinceEpoch,
+    record_lsn: Lsn,
     action_collector: &'a mut ActionCollector,
     inbox_seq_number: &'a mut MessageIndex,
     outbox_seq_number: &'a mut MessageIndex,
@@ -253,6 +255,7 @@ impl StateMachine {
         &mut self,
         command: Command,
         record_created_at: MillisSinceEpoch,
+        record_lsn: Lsn,
         transaction: &mut TransactionType,
         action_collector: &mut ActionCollector,
         is_leader: bool,
@@ -265,6 +268,7 @@ impl StateMachine {
             let res = StateMachineApplyContext {
                 storage: transaction,
                 record_created_at,
+                record_lsn,
                 action_collector,
                 inbox_seq_number: &mut self.inbox_seq_number,
                 outbox_seq_number: &mut self.outbox_seq_number,
@@ -2055,7 +2059,6 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
-        let events_length = invocation_metadata.journal_metadata.events;
         let completion_retention = invocation_metadata.completion_retention_duration;
         let journal_retention = invocation_metadata.journal_retention_duration;
 
@@ -2147,7 +2150,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.do_drop_journal(
                 invocation_id,
                 journal_length,
-                events_length,
                 should_remove_journal_table_v2,
             )
             .await?;
@@ -4028,7 +4030,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-        events_length: EntryIndex,
         should_remove_journal_table_v2: bool,
     ) -> Result<(), Error>
     where
@@ -4053,11 +4054,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await
                 .map_err(Error::Storage)?;
         }
-        if events_length != 0 {
-            JournalEventsTable::delete_journal_events(self.storage, invocation_id, events_length)
-                .await
-                .map_err(Error::Storage)?;
-        }
+        JournalEventsTable::delete_journal_events(self.storage, invocation_id)
+            .await
+            .map_err(Error::Storage)?;
         Ok(())
     }
 
