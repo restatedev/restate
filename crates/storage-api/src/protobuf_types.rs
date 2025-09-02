@@ -4515,6 +4515,7 @@ pub mod v1 {
                     | Status::Inboxed
                     | Status::Invoked
                     | Status::Suspended
+                    | Status::Paused
                     | Status::Completed => {}
                     Status::UnknownStatus => return Ok(None),
                 }
@@ -4540,6 +4541,7 @@ pub mod v1 {
                     | Status::Inboxed
                     | Status::Invoked
                     | Status::Suspended
+                    | Status::Paused
                     | Status::Completed => {}
                     Status::UnknownStatus => {
                         return Err(ConversionError::invalid_data("status"));
