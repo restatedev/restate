@@ -21,9 +21,6 @@ define_table!(sys_journal_events (
     /// [Invocation ID](/operate/invocation#invocation-identifier).
     id: DataType::LargeUtf8,
 
-    /// The index of this journal event.
-    index: DataType::UInt32,
-
     /// The journal index after which this event happened. This can be used to establish a total order between events and journal entries.
     after_journal_entry_index: DataType::UInt32,
 

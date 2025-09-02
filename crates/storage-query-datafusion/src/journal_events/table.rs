@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::journal_events::{ScanJournalEventsTable, StoredEvent};
-use restate_types::identifiers::{JournalEventId, PartitionKey};
+use restate_storage_api::journal_events::{EventView, ScanJournalEventsTable};
+use restate_types::identifiers::{InvocationId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::journal_events::row::append_journal_event_row;
@@ -54,7 +54,7 @@ struct JournalEventsScanner;
 
 impl ScanLocalPartition for JournalEventsScanner {
     type Builder = SysJournalEventsBuilder;
-    type Item<'a> = (JournalEventId, StoredEvent);
+    type Item<'a> = (InvocationId, EventView);
     type ConversionError = std::convert::Infallible;
 
     fn for_each_row<
