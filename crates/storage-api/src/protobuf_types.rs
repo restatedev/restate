@@ -238,6 +238,17 @@ pub mod v1 {
             }
         }
 
+        impl TryFrom<&InvocationId> for restate_types::identifiers::InvocationId {
+            type Error = ConversionError;
+
+            fn try_from(value: &InvocationId) -> Result<Self, ConversionError> {
+                Ok(restate_types::identifiers::InvocationId::from_parts(
+                    value.partition_key,
+                    try_bytes_into_invocation_uuid(&value.invocation_uuid)?,
+                ))
+            }
+        }
+
         impl From<restate_types::identifiers::IdempotencyId> for IdempotencyId {
             fn from(value: restate_types::identifiers::IdempotencyId) -> Self {
                 IdempotencyId {
@@ -381,6 +392,7 @@ pub mod v1 {
                 $field.ok_or(ConversionError::missing_field(stringify!($field)))
             };
         }
+        pub(super) use expect_or_fail;
 
         impl TryFrom<InvocationStatusV2> for crate::invocation_status_table::InvocationStatus {
             type Error = ConversionError;
@@ -2262,7 +2274,7 @@ pub mod v1 {
         }
 
         fn try_bytes_into_invocation_uuid(
-            bytes: Bytes,
+            bytes: impl AsRef<[u8]>,
         ) -> Result<restate_types::identifiers::InvocationUuid, ConversionError> {
             restate_types::identifiers::InvocationUuid::from_slice(bytes.as_ref())
                 .map_err(ConversionError::invalid_data)
@@ -2390,10 +2402,10 @@ pub mod v1 {
             }
         }
 
-        fn try_bytes_into_trace_id(
-            mut bytes: Bytes,
+        pub(super) fn try_bytes_into_trace_id(
+            mut bytes: impl Buf,
         ) -> Result<opentelemetry::trace::TraceId, ConversionError> {
-            if bytes.len() != 16 {
+            if bytes.remaining() != 16 {
                 return Err(ConversionError::InvalidData(anyhow!(
                     "trace id pb definition needs to contain exactly 16 bytes"
                 )));
@@ -4197,6 +4209,434 @@ pub mod v1 {
                 restate_types::RestateVersion::unknown()
             } else {
                 restate_types::RestateVersion::new(restate_version)
+            }
+        }
+    }
+
+    pub mod lazy {
+        use std::fmt::Display;
+
+        use bytes::Bytes;
+        use prost::Message;
+        use restate_types::{
+            errors::ConversionError,
+            identifiers::{DeploymentId, InvocationId, SubscriptionId},
+            invocation::ServiceType,
+            service_protocol::ServiceProtocolVersion,
+        };
+
+        use crate::protobuf_types::v1::{
+            InvocationTarget, ResponseResult, Source, SpanContextLite,
+            pb_conversion::{expect_or_fail, try_bytes_into_trace_id},
+            response_result, source,
+        };
+
+        fn merge_bytes_zerocopy<'a>(
+            wire_type: prost::encoding::WireType,
+            value: &mut &'a [u8],
+            buf: &mut &'a [u8],
+            _ctx: prost::encoding::DecodeContext,
+        ) -> Result<(), prost::DecodeError> {
+            use prost::encoding::*;
+            check_wire_type(WireType::LengthDelimited, wire_type)?;
+            let len = decode_varint(buf)?;
+            if len > buf.len() as u64 {
+                return Err(prost::DecodeError::new("buffer underflow"));
+            }
+            let len = len as usize;
+
+            (*value, *buf) = buf.split_at(len);
+            Ok(())
+        }
+
+        #[derive(Debug, Default)]
+        pub struct InvocationStatusV2Lazy<'a> {
+            pub inner: super::InvocationStatusV2Lazy,
+            // 2
+            invocation_target_lazy: Option<&'a [u8]>,
+            // 3
+            source_lazy: Option<&'a [u8]>,
+            // 4
+            span_context_lazy: Option<&'a [u8]>,
+            // 11
+            completion_retention_duration_lazy: Option<&'a [u8]>,
+            // 12
+            idempotency_key: Option<&'a [u8]>,
+            // 15
+            deployment_id: Option<&'a [u8]>,
+            // 18
+            result_lazy: Option<&'a [u8]>,
+            // 29
+            journal_retention_duration_lazy: Option<&'a [u8]>,
+            // 30
+            created_using_restate_version: &'a [u8],
+        }
+
+        impl<'a> InvocationStatusV2Lazy<'a> {
+            pub fn decode(
+                mut buf: &'a [u8],
+            ) -> Result<InvocationStatusV2Lazy<'a>, prost::DecodeError> {
+                let mut message = InvocationStatusV2Lazy::default();
+                let ctx = prost::encoding::DecodeContext::default();
+                while !buf.is_empty() {
+                    let (tag, wire_type) = prost::encoding::decode_key(&mut buf)?;
+                    message.merge_field(tag, wire_type, &mut buf, ctx.clone())?;
+                }
+
+                Ok(message)
+            }
+
+            fn merge_field<'b>(
+                &mut self,
+                tag: u32,
+                wire_type: ::prost::encoding::wire_type::WireType,
+                buf: &'b mut &'a [u8],
+                ctx: ::prost::encoding::DecodeContext,
+            ) -> ::core::result::Result<(), ::prost::DecodeError> {
+                const STRUCT_NAME: &str = "InvocationStatusV2Lazy";
+                match tag {
+                    2u32 => {
+                        let value = &mut self.invocation_target_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "invocation_target_lazy");
+                                error
+                            })
+                    }
+                    3u32 => {
+                        let value = &mut self.source_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "source_lazy");
+                                error
+                            })
+                    }
+                    4u32 => {
+                        let value = &mut self.span_context_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "span_context_lazy");
+                                error
+                            })
+                    }
+                    11u32 => {
+                        let value = &mut self.completion_retention_duration_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "completion_retention_duration_lazy");
+                                error
+                            })
+                    }
+                    12u32 => {
+                        let value = &mut self.idempotency_key;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "idempotency_key");
+                                error
+                            })
+                    }
+                    15u32 => {
+                        let value = &mut self.deployment_id;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "deployment_id");
+                                error
+                            })
+                    }
+                    18u32 => {
+                        let value = &mut self.result_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "result_lazy");
+                                error
+                            })
+                    }
+                    29u32 => {
+                        let value = &mut self.journal_retention_duration_lazy;
+                        merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "journal_retention_duration_lazy");
+                                error
+                            })
+                    }
+                    30u32 => {
+                        let value = &mut self.created_using_restate_version;
+                        merge_bytes_zerocopy(wire_type, value, buf, ctx).map_err(|mut error| {
+                            error.push(STRUCT_NAME, "created_using_restate_version");
+                            error
+                        })
+                    }
+                    _ => prost::Message::merge_field(&mut self.inner, tag, wire_type, buf, ctx),
+                }
+            }
+
+            pub fn service_protocol_version(
+                &self,
+            ) -> std::result::Result<std::option::Option<ServiceProtocolVersion>, ConversionError>
+            {
+                match self.inner.service_protocol_version {
+                    Some(service_protocol_version) => {
+                        ServiceProtocolVersion::try_from(service_protocol_version)
+                            .map_err(|_| ConversionError::invalid_data("service_protocol_version"))
+                            .map(Some)
+                    }
+                    None => Ok(None),
+                }
+            }
+
+            pub fn invocation_target(
+                &self,
+            ) -> std::result::Result<Option<InvocationTarget>, ConversionError> {
+                use super::invocation_status_v2::Status;
+                match self.inner.status() {
+                    Status::Scheduled
+                    | Status::Inboxed
+                    | Status::Invoked
+                    | Status::Suspended
+                    | Status::Completed => {}
+                    Status::UnknownStatus => return Ok(None),
+                }
+
+                let invocation_target = self.invocation_target_lazy.as_ref();
+                let invocation_target = expect_or_fail!(invocation_target)?;
+
+                // almost of invocation_target is bytes in 2 or 3 fields. if we provide the data as a slice,
+                // prost will copy those fields out separately into bytes (2 or 3 small allocations). if we instead
+                // do one copy now, prost will make each field a shallow reference into one heap-allocated buffer.
+
+                let invocation_target = Bytes::copy_from_slice(invocation_target);
+
+                InvocationTarget::decode(invocation_target)
+                    .map_err(|_| ConversionError::invalid_data("invocation_target"))
+                    .map(Some)
+            }
+
+            pub fn source(&self) -> std::result::Result<source::Source, ConversionError> {
+                use super::invocation_status_v2::Status;
+                match self.inner.status() {
+                    Status::Scheduled
+                    | Status::Inboxed
+                    | Status::Invoked
+                    | Status::Suspended
+                    | Status::Completed => {}
+                    Status::UnknownStatus => {
+                        return Err(ConversionError::invalid_data("status"));
+                    }
+                }
+
+                let source = self.source_lazy;
+                let source = expect_or_fail!(source)?;
+
+                // almost of source is bytes (ids and the invocation target). if we provide the data as a slice,
+                // prost will copy those fields out separately into bytes. if we instead
+                // do one copy now, prost will make each field a shallow reference into one heap-allocated buffer.
+
+                let source = Bytes::copy_from_slice(source);
+
+                let source =
+                    Source::decode(source).map_err(|_| ConversionError::invalid_data("source"))?;
+
+                source
+                    .source
+                    .ok_or(ConversionError::missing_field("source"))
+            }
+
+            pub fn trace_id(&self) -> Result<opentelemetry::trace::TraceId, ConversionError> {
+                use ConversionError;
+                let span_context = self.span_context_lazy.as_ref();
+                let span_context = expect_or_fail!(span_context)?;
+
+                let span_context = SpanContextLite::decode(*span_context)
+                    .map_err(|_| ConversionError::invalid_data("span_context"))?;
+
+                let trace_id = try_bytes_into_trace_id(span_context.trace_id.as_ref())
+                    .map_err(|_| ConversionError::InvalidData("trace_id"))?;
+                Ok(trace_id)
+            }
+
+            pub fn completion_retention_duration(
+                &self,
+            ) -> Result<std::time::Duration, ConversionError> {
+                match self.completion_retention_duration_lazy {
+                    Some(completion_retention_duration) => {
+                        super::Duration::decode(completion_retention_duration).map_err(|_| {
+                            ConversionError::invalid_data("completion_retention_duration")
+                        })?
+                    }
+                    None => super::Duration::default(),
+                }
+                .try_into()
+                .map_err(|_| ConversionError::invalid_data("completion_retention_duration"))
+            }
+
+            pub fn idempotency_key(&self) -> std::result::Result<Option<&str>, ConversionError> {
+                self.idempotency_key
+                    .map(str::from_utf8)
+                    .transpose()
+                    .map_err(|_| ConversionError::invalid_data("idempotency_key"))
+            }
+
+            pub fn deployment_id(
+                &self,
+            ) -> std::result::Result<Option<DeploymentId>, ConversionError> {
+                use ConversionError;
+
+                match self.deployment_id {
+                    Some(deployment_id) => str::from_utf8(deployment_id)
+                        .map_err(|_| ConversionError::invalid_data("deployment_id"))?
+                        .parse()
+                        .map_err(|_| ConversionError::invalid_data("deployment_id"))
+                        .map(Some),
+                    None => Ok(None),
+                }
+            }
+
+            pub fn response_result(
+                &self,
+            ) -> Result<response_result::ResponseResult, ConversionError> {
+                use ConversionError;
+
+                let result = self.result_lazy.as_ref();
+                let result = expect_or_fail!(result)?;
+
+                let result = ResponseResult::decode(*result)
+                    .map_err(|_| ConversionError::invalid_data("result"))?;
+
+                let response_result = result.response_result.as_ref();
+                let response_result = expect_or_fail!(response_result)?;
+
+                Ok(response_result.clone())
+            }
+
+            pub fn journal_retention_duration(
+                &self,
+            ) -> Result<std::time::Duration, ConversionError> {
+                match self.journal_retention_duration_lazy {
+                    Some(journal_retention_duration) => {
+                        super::Duration::decode(journal_retention_duration).map_err(|_| {
+                            ConversionError::invalid_data("journal_retention_duration")
+                        })?
+                    }
+                    None => super::Duration::default(),
+                }
+                .try_into()
+                .map_err(|_| ConversionError::invalid_data("journal_retention_duration"))
+            }
+
+            pub fn created_using_restate_version(
+                &self,
+            ) -> std::result::Result<&str, ConversionError> {
+                if self.created_using_restate_version.is_empty() {
+                    Ok(restate_types::RestateVersion::UNKNOWN_STR)
+                } else {
+                    str::from_utf8(self.created_using_restate_version)
+                        .map_err(|_| ConversionError::invalid_data("created_using_restate_version"))
+                }
+            }
+        }
+
+        impl super::source::Service {
+            pub fn invocation_target(
+                &self,
+            ) -> std::result::Result<&InvocationTarget, ConversionError> {
+                self.invocation_target
+                    .as_ref()
+                    .ok_or(ConversionError::missing_field("invocation_target"))
+            }
+
+            pub fn invocation_id(&self) -> std::result::Result<InvocationId, ConversionError> {
+                InvocationId::try_from(
+                    self.invocation_id
+                        .as_ref()
+                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                )
+                .map_err(|_| ConversionError::invalid_data("invocation_id"))
+            }
+        }
+
+        impl super::source::Subscription {
+            pub fn subscription_id(&self) -> std::result::Result<SubscriptionId, ConversionError> {
+                SubscriptionId::from_slice(self.subscription_id.as_ref())
+                    .map_err(|_| ConversionError::invalid_data("subscription_id"))
+            }
+        }
+
+        impl super::source::RestartAsNew {
+            pub fn invocation_id(&self) -> std::result::Result<InvocationId, ConversionError> {
+                InvocationId::try_from(
+                    self.invocation_id
+                        .as_ref()
+                        .ok_or(ConversionError::missing_field("invocation_id"))?,
+                )
+                .map_err(|_| ConversionError::invalid_data("invocation_id"))
+            }
+        }
+
+        impl InvocationTarget {
+            pub fn service_name(&self) -> std::result::Result<&str, ConversionError> {
+                str::from_utf8(self.name.as_ref())
+                    .map_err(|_| ConversionError::invalid_data("name"))
+            }
+
+            pub fn key(&self) -> std::result::Result<Option<&str>, ConversionError> {
+                use super::invocation_target::Ty;
+                match Ty::try_from(self.service_and_handler_ty) {
+                    Ok(
+                        Ty::VirtualObjectExclusive
+                        | Ty::VirtualObjectShared
+                        | Ty::WorkflowWorkflow
+                        | Ty::WorkflowShared,
+                    ) => {
+                        let key = str::from_utf8(self.key.as_ref())
+                            .map_err(|_| ConversionError::invalid_data("key"))?;
+
+                        Ok(Some(key))
+                    }
+                    Ok(Ty::Service) => Ok(None),
+                    Err(_) | Ok(Ty::UnknownTy) => {
+                        Err(ConversionError::invalid_data("service_and_handler_ty"))
+                    }
+                }
+            }
+
+            pub fn handler_name(&self) -> std::result::Result<&str, ConversionError> {
+                str::from_utf8(self.handler.as_ref())
+                    .map_err(|_| ConversionError::invalid_data("name"))
+            }
+
+            pub fn service_ty(&self) -> Result<ServiceType, ConversionError> {
+                use super::invocation_target::Ty;
+                match Ty::try_from(self.service_and_handler_ty) {
+                    Ok(Ty::Service) => Ok(ServiceType::Service),
+                    Ok(Ty::VirtualObjectExclusive | Ty::VirtualObjectShared) => {
+                        Ok(ServiceType::VirtualObject)
+                    }
+                    Ok(Ty::WorkflowWorkflow | Ty::WorkflowShared) => Ok(ServiceType::Workflow),
+                    Err(_) | Ok(Ty::UnknownTy) => {
+                        Err(ConversionError::invalid_data("service_and_handler_ty"))
+                    }
+                }
+            }
+
+            pub fn target_fmt<'a>(
+                &'a self,
+            ) -> std::result::Result<TargetFormatter<'a>, ConversionError> {
+                let service_name = self.service_name()?;
+                let key = self.key()?;
+                let handler_name = self.handler_name()?;
+                Ok(TargetFormatter(service_name, key, handler_name))
+            }
+        }
+
+        pub struct TargetFormatter<'a>(&'a str, Option<&'a str>, &'a str);
+
+        impl<'a> Display for TargetFormatter<'a> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                if let Some(key) = self.1 {
+                    write!(f, "{}/{}/{}", self.0, key, self.2)
+                } else {
+                    write!(f, "{}/{}", self.0, self.2)
+                }
             }
         }
     }

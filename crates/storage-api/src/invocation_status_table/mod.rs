@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 use std::future::Future;
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -30,6 +30,7 @@ use restate_types::time::MillisSinceEpoch;
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
@@ -747,8 +748,11 @@ pub trait ScanInvocationStatusTable {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
 
-    fn for_each_invocation_status<
-        F: FnMut((InvocationId, InvocationStatus)) -> std::ops::ControlFlow<()>
+    fn for_each_invocation_status_lazy<
+        E: Into<anyhow::Error>,
+        F: for<'a> FnMut(
+                (InvocationId, InvocationStatusV2Lazy<'a>),
+            ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync
             + 'static,
