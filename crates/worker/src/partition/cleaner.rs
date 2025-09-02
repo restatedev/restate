@@ -203,6 +203,7 @@ mod tests {
         CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
         InvokedInvocationStatusLite, JournalMetadata, ScanInvocationStatusTable,
     };
+    use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::partition_table::{FindPartition, PartitionTable};
@@ -222,28 +223,24 @@ mod tests {
             Ok(stream::iter(self.0.clone()).map(Ok))
         }
 
-        fn for_each_invocation_status<
-            F: FnMut((InvocationId, InvocationStatus)) -> std::ops::ControlFlow<()>
+        fn for_each_invocation_status_lazy<
+            E: Into<anyhow::Error>,
+            F: for<'a> FnMut(
+                    (InvocationId, InvocationStatusV2Lazy<'a>),
+                ) -> std::ops::ControlFlow<std::result::Result<(), E>>
                 + Send
                 + Sync
                 + 'static,
         >(
             &self,
             _: RangeInclusive<PartitionKey>,
-            mut f: F,
+            _: F,
         ) -> restate_storage_api::Result<impl Future<Output = restate_storage_api::Result<()>> + Send>
         {
-            let inner = self.0.clone();
-            Ok(async move {
-                for (id, status) in inner {
-                    match f((id, status)) {
-                        std::ops::ControlFlow::Continue(()) => continue,
-                        std::ops::ControlFlow::Break(()) => break,
-                    }
-                }
+            unimplemented!();
 
-                Ok(())
-            })
+            #[allow(unreachable_code)]
+            Ok(std::future::pending())
         }
 
         fn scan_invoked_invocations(
@@ -294,6 +291,7 @@ mod tests {
                     journal_metadata: JournalMetadata {
                         length: 2,
                         commands: 2,
+                        events: 0,
                         span_context: Default::default(),
                     },
                     ..CompletedInvocation::mock_neo()

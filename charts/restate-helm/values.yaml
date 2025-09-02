@@ -86,3 +86,4 @@ topologySpreadConstraints:
 # podDisruptionBudget:
 #   maxUnavailable: 1
 
+nodeSelector: {}

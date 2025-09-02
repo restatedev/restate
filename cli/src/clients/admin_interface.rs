@@ -43,14 +43,16 @@ pub trait AdminClientInterface {
         body: RegisterDeploymentRequest,
     ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>>;
 
+    async fn cancel_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
+
+    async fn kill_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
+
     async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
 
     async fn restart_invocation(
         &self,
         id: &str,
     ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>>;
-
-    async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>>;
 
     async fn patch_state(
         &self,
@@ -115,11 +117,28 @@ impl AdminClientInterface for AdminClient {
         self.run_with_body(reqwest::Method::POST, url, body).await
     }
 
-    async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
-        let mut url = self.versioned_url(["invocations", id]);
-        url.set_query(Some("mode=purge"));
+    async fn cancel_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
+        self.run(
+            reqwest::Method::PATCH,
+            self.versioned_url(["invocations", id, "cancel"]),
+        )
+        .await
+    }
 
-        self.run(reqwest::Method::DELETE, url).await
+    async fn kill_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
+        self.run(
+            reqwest::Method::PATCH,
+            self.versioned_url(["invocations", id, "kill"]),
+        )
+        .await
+    }
+
+    async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
+        self.run(
+            reqwest::Method::PATCH,
+            self.versioned_url(["invocations", id, "purge"]),
+        )
+        .await
     }
 
     async fn restart_invocation(
@@ -128,16 +147,6 @@ impl AdminClientInterface for AdminClient {
     ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>> {
         let url = self.versioned_url(["invocations", id, "restart-as-new"]);
         self.run(reqwest::Method::PATCH, url).await
-    }
-
-    async fn cancel_invocation(&self, id: &str, kill: bool) -> reqwest::Result<Envelope<()>> {
-        let mut url = self.versioned_url(["invocations", id]);
-        url.set_query(Some(&format!(
-            "mode={}",
-            if kill { "kill" } else { "cancel" }
-        )));
-
-        self.run(reqwest::Method::DELETE, url).await
     }
 
     async fn patch_state(

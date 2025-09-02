@@ -11,6 +11,7 @@
 use std::ops::{ControlFlow, RangeInclusive};
 
 use futures::Stream;
+use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
@@ -213,8 +214,14 @@ impl ScanInvocationStatusTable for PartitionStore {
         .map_err(|_| StorageError::OperationalError)
     }
 
-    fn for_each_invocation_status<
-        F: FnMut((InvocationId, InvocationStatus)) -> ControlFlow<()> + Send + Sync + 'static,
+    fn for_each_invocation_status_lazy<
+        E: Into<anyhow::Error>,
+        F: for<'a> FnMut(
+                (InvocationId, InvocationStatusV2Lazy<'a>),
+            ) -> ControlFlow<std::result::Result<(), E>>
+            + Send
+            + Sync
+            + 'static,
     >(
         &self,
         range: RangeInclusive<PartitionKey>,
@@ -229,16 +236,35 @@ impl ScanInvocationStatusTable for PartitionStore {
                     move |(mut key, mut value)| {
                         let state_key =
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
-                        let state_value = break_on_err(InvocationStatus::decode(&mut value))?;
+
+                        if value.len() < std::mem::size_of::<u8>() {
+                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                                "remaining bytes in buf '{}' < version bytes '{}'",
+                                value.len(),
+                                std::mem::size_of::<u8>()
+                            )).into())));
+                        }
+
+                        // read version
+                        let codec = break_on_err(restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value)).map_err(|e|StorageError::Conversion(e.into())))?;
+
+                        let restate_types::storage::StorageCodecKind::Protobuf = codec else {
+                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into())));
+                        };
+
+                        let inv_status_v2_lazy = break_on_err(restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value).map_err(|e| StorageError::Conversion(e.into())))?;
 
                         let (partition_key, invocation_uuid) =
                             break_on_err(state_key.into_inner_ok_or())?;
 
-                        f((
+                        let result = f((
                             InvocationId::from_parts(partition_key, invocation_uuid),
-                            state_value,
-                        ))
-                        .map_break(Ok)
+                            inv_status_v2_lazy,
+                        ));
+
+                        result.map_break(|result| {
+                            result.map_err(|err| StorageError::Conversion(err.into()))
+                        })
                     }
                 },
             )

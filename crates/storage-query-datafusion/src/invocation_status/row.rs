@@ -8,39 +8,54 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
-};
+use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use restate_storage_api::protobuf_types::v1::source::Source;
+use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::{
-    ResponseResult, ServiceInvocationSpanContext, ServiceType, Source, TraceId,
-};
+use restate_types::invocation::{ServiceType, TraceId};
 
 use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 
 #[inline]
-pub(crate) fn append_invocation_status_row(
+pub(crate) fn append_invocation_status_row<'a>(
     builder: &mut SysInvocationStatusBuilder,
     invocation_id: InvocationId,
-    invocation_status: InvocationStatus,
-) {
+    invocation_status: InvocationStatusV2Lazy<'a>,
+) -> Result<(), ConversionError> {
     let mut row = builder.row();
 
-    row.partition_key(invocation_id.partition_key());
-    if let Some(invocation_target) = invocation_status.invocation_target() {
-        row.target_service_name(invocation_target.service_name());
-        if let Some(key) = invocation_target.key() {
+    if row.is_partition_key_defined() {
+        row.partition_key(invocation_id.partition_key());
+    }
+
+    if (row.is_target_service_name_defined()
+        || row.is_target_service_key_defined()
+        || row.is_target_handler_name_defined()
+        || row.is_target_defined()
+        || row.is_target_service_ty_defined())
+        && let Some(invocation_target) = invocation_status.invocation_target()?
+    {
+        if row.is_target_service_name_defined() {
+            row.target_service_name(invocation_target.service_name()?);
+        }
+        if row.is_target_service_key_defined()
+            && let Some(key) = invocation_target.key()?
+        {
             row.target_service_key(key);
         }
-        row.target_handler_name(invocation_target.handler_name());
-        if row.is_target_defined() {
-            row.fmt_target(invocation_target);
+        if row.is_target_handler_name_defined() {
+            row.target_handler_name(invocation_target.handler_name()?);
         }
-        row.target_service_ty(match invocation_target.service_ty() {
-            ServiceType::Service => "service",
-            ServiceType::VirtualObject => "virtual_object",
-            ServiceType::Workflow => "workflow",
-        });
+        if row.is_target_defined() {
+            row.fmt_target(invocation_target.target_fmt()?);
+        }
+        if row.is_target_service_ty_defined() {
+            row.target_service_ty(match invocation_target.service_ty()? {
+                ServiceType::Service => "service",
+                ServiceType::VirtualObject => "virtual_object",
+                ServiceType::Workflow => "workflow",
+            });
+        }
     }
 
     // Invocation id
@@ -49,183 +64,263 @@ pub(crate) fn append_invocation_status_row(
     }
 
     if row.is_idempotency_key_defined()
-        && let Some(key) = invocation_status.idempotency_key()
+        && let Some(key) = invocation_status.idempotency_key()?
     {
         row.idempotency_key(key)
     }
 
-    // Journal metadata
-    if let Some(journal_metadata) = invocation_status.get_journal_metadata() {
-        fill_journal_metadata(&mut row, journal_metadata)
+    if needs_invoked_by(&row) {
+        fill_invoked_by(&mut row, invocation_status.source()?)?;
     }
 
-    // Stat
-    if let Some(timestamps) = invocation_status.get_timestamps() {
-        fill_timestamps(&mut row, timestamps);
-    }
+    fill_timestamps(&mut row, &invocation_status);
 
     // Additional invocation metadata
-    match invocation_status {
-        InvocationStatus::Scheduled(scheduled) => {
+    use restate_storage_api::protobuf_types::v1::invocation_status_v2::Status;
+    match invocation_status.inner.status() {
+        Status::Scheduled => {
             row.status("scheduled");
-            row.created_using_restate_version(
-                scheduled.metadata.created_using_restate_version.as_str(),
-            );
-            fill_invoked_by(&mut row, scheduled.metadata.source);
-            if let Some(execution_time) = scheduled.metadata.execution_time {
-                row.scheduled_start_at(execution_time.as_u64() as i64)
+            if row.is_created_using_restate_version_defined() {
+                row.created_using_restate_version(
+                    invocation_status.created_using_restate_version()?,
+                );
             }
-            row.completion_retention(
-                scheduled.metadata.completion_retention_duration.as_millis() as i64
-            );
-            row.journal_retention(scheduled.metadata.journal_retention_duration.as_millis() as i64);
+            if row.is_scheduled_at_defined()
+                && let Some(execution_time) = invocation_status.inner.execution_time
+            {
+                row.scheduled_start_at(execution_time as i64)
+            }
+            if row.is_completion_retention_defined() {
+                row.completion_retention(
+                    invocation_status
+                        .completion_retention_duration()?
+                        .as_millis() as i64,
+                );
+            }
+            if row.is_journal_retention_defined() {
+                row.journal_retention(
+                    invocation_status.journal_retention_duration()?.as_millis() as i64
+                );
+            }
         }
-        InvocationStatus::Inboxed(inboxed) => {
+        Status::Inboxed => {
             row.status("inboxed");
-            row.created_using_restate_version(
-                inboxed.metadata.created_using_restate_version.as_str(),
-            );
-            fill_invoked_by(&mut row, inboxed.metadata.source);
-            if let Some(execution_time) = inboxed.metadata.execution_time {
-                row.scheduled_start_at(execution_time.as_u64() as i64)
+            if row.is_created_using_restate_version_defined() {
+                row.created_using_restate_version(
+                    invocation_status.created_using_restate_version()?,
+                );
             }
-            row.completion_retention(
-                inboxed.metadata.completion_retention_duration.as_millis() as i64
-            );
-            row.journal_retention(inboxed.metadata.journal_retention_duration.as_millis() as i64);
-        }
-        InvocationStatus::Invoked(metadata) => {
-            row.status("invoked");
-            fill_in_flight_invocation_metadata(&mut row, metadata);
-        }
-        InvocationStatus::Suspended { metadata, .. } => {
-            row.status("suspended");
-            fill_in_flight_invocation_metadata(&mut row, metadata);
-        }
-        InvocationStatus::Completed(completed) => {
-            row.status("completed");
-            row.created_using_restate_version(completed.created_using_restate_version.as_str());
-            fill_invoked_by(&mut row, completed.source);
-            if let Some(execution_time) = completed.execution_time {
-                row.scheduled_start_at(execution_time.as_u64() as i64)
+            if row.is_scheduled_at_defined()
+                && let Some(execution_time) = invocation_status.inner.execution_time
+            {
+                row.scheduled_start_at(execution_time as i64)
             }
-            row.completion_retention(completed.completion_retention_duration.as_millis() as i64);
-            row.journal_retention(completed.journal_retention_duration.as_millis() as i64);
+            if row.is_completion_retention_defined() {
+                row.completion_retention(
+                    invocation_status
+                        .completion_retention_duration()?
+                        .as_millis() as i64,
+                );
+            }
+            if row.is_journal_retention_defined() {
+                row.journal_retention(
+                    invocation_status.journal_retention_duration()?.as_millis() as i64
+                );
+            }
+        }
+        Status::Invoked => {
+            fill_journal_metadata(&mut row, &invocation_status)?;
 
-            match completed.response_result {
-                ResponseResult::Success(_) => {
-                    row.completion_result("success");
-                }
-                ResponseResult::Failure(failure) => {
-                    row.completion_result("failure");
-                    if row.is_completion_failure_defined() {
-                        row.fmt_completion_failure(failure);
+            row.status("invoked");
+            fill_in_flight_invocation_metadata(&mut row, &invocation_status)?;
+        }
+        Status::Suspended => {
+            fill_journal_metadata(&mut row, &invocation_status)?;
+
+            row.status("suspended");
+            fill_in_flight_invocation_metadata(&mut row, &invocation_status)?;
+        }
+        Status::Completed => {
+            fill_journal_metadata(&mut row, &invocation_status)?;
+
+            row.status("completed");
+            if row.is_created_using_restate_version_defined() {
+                row.created_using_restate_version(
+                    invocation_status.created_using_restate_version()?,
+                );
+            }
+            if row.is_scheduled_at_defined()
+                && let Some(execution_time) = invocation_status.inner.execution_time
+            {
+                row.scheduled_start_at(execution_time as i64)
+            }
+            if row.is_completion_retention_defined() {
+                row.completion_retention(
+                    invocation_status
+                        .completion_retention_duration()?
+                        .as_millis() as i64,
+                );
+            }
+            if row.is_journal_retention_defined() {
+                row.journal_retention(
+                    invocation_status.journal_retention_duration()?.as_millis() as i64
+                );
+            }
+
+            if row.is_completion_result_defined() || row.is_completion_failure_defined() {
+                use restate_storage_api::protobuf_types::v1::response_result::ResponseResult;
+                match invocation_status.response_result()? {
+                    ResponseResult::ResponseSuccess(_) => {
+                        row.completion_result("success");
+                    }
+                    ResponseResult::ResponseFailure(
+                        restate_storage_api::protobuf_types::v1::response_result::ResponseFailure {
+                            failure_code,
+                            failure_message,
+                        },
+                    ) => {
+                        row.completion_result("failure");
+                        if row.is_completion_failure_defined() {
+                            let message = str::from_utf8(failure_message.as_ref())
+                                .map_err(|_| ConversionError::invalid_data("failure_message"))?;
+                            row.fmt_completion_failure(format_args!(
+                                "[{}] {}",
+                                failure_code, message,
+                            ));
+                        }
                     }
                 }
             }
         }
-        InvocationStatus::Free => {
-            row.status("free");
-        }
+        Status::UnknownStatus => return Err(ConversionError::invalid_data("status")),
     };
+
+    Ok(())
 }
 
 fn fill_in_flight_invocation_metadata(
     row: &mut SysInvocationStatusRowBuilder,
-    meta: InFlightInvocationMetadata,
-) {
-    row.created_using_restate_version(meta.created_using_restate_version.as_str());
+    status: &InvocationStatusV2Lazy,
+) -> Result<(), ConversionError> {
+    if row.is_created_using_restate_version_defined() {
+        row.created_using_restate_version(status.created_using_restate_version()?);
+    }
     // journal_metadata and stats are filled by other functions
-    if let Some(pinned_deployment) = meta.pinned_deployment {
-        if row.is_pinned_deployment_id_defined() {
-            row.fmt_pinned_deployment_id(pinned_deployment.deployment_id);
-        }
-        row.pinned_service_protocol_version(
-            pinned_deployment
-                .service_protocol_version
-                .as_repr()
-                .unsigned_abs(),
-        );
+    if row.is_pinned_deployment_id_defined()
+        && let Some(deployment_id) = status.deployment_id()?
+    {
+        row.fmt_pinned_deployment_id(deployment_id);
     }
-    fill_invoked_by(row, meta.source);
-    if let Some(execution_time) = meta.execution_time {
-        row.scheduled_start_at(execution_time.as_u64() as i64)
+    if row.is_pinned_service_protocol_version_defined()
+        && let Some(service_protocol_version) = status.service_protocol_version()?
+    {
+        row.pinned_service_protocol_version(service_protocol_version.as_repr().unsigned_abs());
     }
-    row.completion_retention(meta.completion_retention_duration.as_millis() as i64);
-    row.journal_retention(meta.journal_retention_duration.as_millis() as i64);
+    if row.is_scheduled_at_defined()
+        && let Some(execution_time) = status.inner.execution_time
+    {
+        row.scheduled_start_at(execution_time as i64)
+    }
+    if row.is_completion_retention_defined() {
+        row.completion_retention(status.completion_retention_duration()?.as_millis() as i64);
+    }
+    if row.is_journal_retention_defined() {
+        row.journal_retention(status.journal_retention_duration()?.as_millis() as i64);
+    }
+
+    Ok(())
+}
+
+fn needs_invoked_by(row: &SysInvocationStatusRowBuilder) -> bool {
+    row.is_invoked_by_defined()
+        || row.is_invoked_by_service_name_defined()
+        || row.is_invoked_by_id_defined()
+        || row.is_invoked_by_target_defined()
+        || row.is_invoked_by_subscription_id_defined()
+        || row.is_restarted_from_defined()
 }
 
 #[inline]
-fn fill_invoked_by(row: &mut SysInvocationStatusRowBuilder, source: Source) {
+fn fill_invoked_by(
+    row: &mut SysInvocationStatusRowBuilder,
+    source: Source,
+) -> Result<(), ConversionError> {
     match source {
-        Source::Service(invocation_id, invocation_target) => {
+        Source::Service(service) => {
             row.invoked_by("service");
-            row.invoked_by_service_name(invocation_target.service_name());
-            if row.is_invoked_by_id_defined() {
-                row.fmt_invoked_by_id(invocation_id);
+            if row.is_invoked_by_service_name_defined() || row.is_invoked_by_target_defined() {
+                let invocation_target = service.invocation_target()?;
+
+                if row.is_invoked_by_service_name_defined() {
+                    row.invoked_by_service_name(invocation_target.service_name()?);
+                }
+
+                if row.is_invoked_by_target_defined() {
+                    row.fmt_invoked_by_target(invocation_target.target_fmt()?);
+                }
             }
-            if row.is_invoked_by_target_defined() {
-                row.fmt_invoked_by_target(invocation_target);
+            if row.is_invoked_by_id_defined() {
+                row.fmt_invoked_by_id(service.invocation_id()?);
             }
         }
         Source::Ingress(_) => {
             row.invoked_by("ingress");
         }
-        Source::Internal => {
+        Source::Internal(()) => {
             row.invoked_by("restate");
         }
-        Source::Subscription(sub_id) => {
+        Source::Subscription(subscription) => {
             row.invoked_by("subscription");
             if row.is_invoked_by_subscription_id_defined() {
-                row.fmt_invoked_by_subscription_id(sub_id)
+                row.fmt_invoked_by_subscription_id(subscription.subscription_id()?)
             }
         }
-        Source::RestartAsNew(invocation_id) => {
+        Source::RestartAsNew(restart_as_new) => {
             row.invoked_by("restart_as_new");
             if row.is_restarted_from_defined() {
-                row.fmt_restarted_from(invocation_id)
+                row.fmt_restarted_from(restart_as_new.invocation_id()?)
             }
         }
     }
+
+    Ok(())
 }
 
 #[inline]
-fn fill_timestamps(row: &mut SysInvocationStatusRowBuilder, stat: &StatusTimestamps) {
-    row.created_at(stat.creation_time().as_u64() as i64);
-    row.modified_at(stat.modification_time().as_u64() as i64);
-    if let Some(inboxed_at) = stat.inboxed_transition_time() {
-        row.inboxed_at(inboxed_at.as_u64() as i64);
+fn fill_timestamps(row: &mut SysInvocationStatusRowBuilder, status: &InvocationStatusV2Lazy) {
+    row.created_at(status.inner.creation_time as i64);
+    row.modified_at(status.inner.modification_time as i64);
+    if let Some(inboxed_at) = status.inner.inboxed_transition_time {
+        row.inboxed_at(inboxed_at as i64);
     }
-    if let Some(scheduled_at) = stat.scheduled_transition_time() {
-        row.scheduled_at(scheduled_at.as_u64() as i64);
+    if let Some(scheduled_at) = status.inner.scheduled_transition_time {
+        row.scheduled_at(scheduled_at as i64);
     }
-    if let Some(running_at) = stat.running_transition_time() {
-        row.running_at(running_at.as_u64() as i64);
+    if let Some(running_at) = status.inner.running_transition_time {
+        row.running_at(running_at as i64);
     }
-    if let Some(completed_at) = stat.completed_transition_time() {
-        row.completed_at(completed_at.as_u64() as i64);
+    if let Some(completed_at) = status.inner.completed_transition_time {
+        row.completed_at(completed_at as i64);
     }
 }
 
 #[inline]
 fn fill_journal_metadata(
     row: &mut SysInvocationStatusRowBuilder,
-    journal_metadata: &JournalMetadata,
-) {
-    fill_span_context(row, &journal_metadata.span_context);
-    row.journal_size(journal_metadata.length);
-    row.journal_commands_size(journal_metadata.commands);
-}
-
-#[inline]
-fn fill_span_context(
-    row: &mut SysInvocationStatusRowBuilder,
-    span_context: &ServiceInvocationSpanContext,
-) {
+    status: &InvocationStatusV2Lazy,
+) -> Result<(), ConversionError> {
     if row.is_trace_id_defined() {
-        let tid = span_context.trace_id();
+        let tid = status.trace_id()?;
         if tid != TraceId::INVALID {
             row.fmt_trace_id(tid);
         }
     }
+    if row.is_journal_size_defined() {
+        row.journal_size(status.inner.journal_length);
+    }
+    if row.is_journal_commands_size_defined() {
+        row.journal_commands_size(status.inner.commands);
+    }
+
+    Ok(())
 }

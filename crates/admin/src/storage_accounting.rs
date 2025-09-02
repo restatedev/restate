@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use bytesize::ByteSize;
-use datafusion::arrow::array::{Array, Int64Array};
+use datafusion::arrow::array::{Array, UInt64Array};
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use metrics::{counter, gauge, histogram};
@@ -29,7 +29,7 @@ use crate::metric_definitions::{
 };
 
 pub(crate) const STORAGE_QUERY: &str =
-    "SELECT sum(octet_length(key) + length(value)) AS total_state_size FROM state";
+    "SELECT sum(key_length + value_length) AS total_state_size FROM state";
 
 pub struct StorageAccountingTask {
     query_context: QueryContext,
@@ -99,7 +99,7 @@ impl StorageAccountingTask {
 
             let Some(array) = total_state_size_column
                 .as_any()
-                .downcast_ref::<Int64Array>()
+                .downcast_ref::<UInt64Array>()
             else {
                 anyhow::bail!(format!(
                     "Unexpected total_state_size column type: {}",
@@ -107,12 +107,7 @@ impl StorageAccountingTask {
                 ));
             };
 
-            current_bytes = current_bytes.saturating_add(
-                array
-                    .iter()
-                    .filter_map(|opt_val| opt_val.map(|v| v as u64))
-                    .sum::<u64>(),
-            );
+            current_bytes = current_bytes.saturating_add(array.iter().flatten().sum::<u64>());
         }
 
         let added_byte_seconds = if let (Some(previous_bytes), Some(last_measurement_instant)) =

@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 use std::future::Future;
-use std::ops::RangeInclusive;
+use std::ops::{ControlFlow, RangeInclusive};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -25,11 +25,12 @@ use restate_types::invocation::{
     Header, InvocationEpoch, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
-use restate_types::journal_v2::{CompletionId, EntryIndex, NotificationId};
+use restate_types::journal_v2::{CompletionId, NotificationId};
 use restate_types::time::MillisSinceEpoch;
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
@@ -363,27 +364,31 @@ pub enum InvocationStatusDiscriminants {
 /// Metadata associated with a journal
 #[derive(Debug, Clone, PartialEq)]
 pub struct JournalMetadata {
-    pub length: EntryIndex,
+    pub length: u32,
     /// Number of commands stored in the current journal
-    pub commands: EntryIndex,
+    pub commands: u32,
+    /// Number of events stored
+    pub events: u32,
     pub span_context: ServiceInvocationSpanContext,
 }
 
 impl JournalMetadata {
     pub fn new(
-        length: EntryIndex,
-        commands: EntryIndex,
+        length: u32,
+        commands: u32,
+        events: u32,
         span_context: ServiceInvocationSpanContext,
     ) -> Self {
         Self {
             span_context,
             length,
             commands,
+            events,
         }
     }
 
     pub fn initialize(span_context: ServiceInvocationSpanContext) -> Self {
-        Self::new(0, 0, span_context)
+        Self::new(0, 0, 0, span_context)
     }
 
     pub fn empty() -> Self {
@@ -743,8 +748,11 @@ pub trait ScanInvocationStatusTable {
         range: RangeInclusive<PartitionKey>,
     ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
 
-    fn for_each_invocation_status<
-        F: FnMut((InvocationId, InvocationStatus)) -> std::ops::ControlFlow<()>
+    fn for_each_invocation_status_lazy<
+        E: Into<anyhow::Error>,
+        F: for<'a> FnMut(
+                (InvocationId, InvocationStatusV2Lazy<'a>),
+            ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync
             + 'static,

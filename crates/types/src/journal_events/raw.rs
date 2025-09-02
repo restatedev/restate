@@ -8,20 +8,88 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::journal_v2::raw::RawEvent;
-use crate::journal_v2::{Event, EventType};
+use crate::errors::GenericError;
+use crate::journal_events::{Event, EventType};
+use anyhow::Context;
 use bytes::Bytes;
 use prost::Message;
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RawEvent {
+    ty: EventType,
+    deduplication_hash: Option<Bytes>,
+    value: Bytes,
+}
+
+impl RawEvent {
+    pub fn new(ty: EventType, value: Bytes) -> Self {
+        RawEvent {
+            ty,
+            deduplication_hash: None,
+            value,
+        }
+    }
+
+    pub fn unknown() -> Self {
+        RawEvent {
+            ty: EventType::Unknown,
+            deduplication_hash: None,
+            value: Bytes::default(),
+        }
+    }
+
+    /// See [self.set_deduplication_hash].
+    pub fn deduplication_hash(&self) -> Option<&Bytes> {
+        self.deduplication_hash.as_ref()
+    }
+
+    /// When setting the deduplication hash, the Partition processor will try to deduplicate this event with the last event in the journal (if present) by matching the deduplication_hash.
+    ///
+    /// When unset, no deduplication will happen and the event is stored as is.
+    pub fn set_deduplication_hash(&mut self, hash: impl Into<Bytes>) {
+        self.deduplication_hash = Some(hash.into());
+    }
+
+    pub fn ty(&self) -> EventType {
+        self.ty
+    }
+
+    pub fn into_inner(self) -> (EventType, Option<Bytes>, Bytes) {
+        (self.ty, self.deduplication_hash, self.value)
+    }
+
+    pub fn into_event_or_unknown(self) -> Event {
+        Event::try_from(self).unwrap_or(Event::Unknown)
+    }
+}
+
+// The conversion RawEvent <-> Event is defined at this level directly.
+
+impl TryFrom<RawEvent> for Event {
+    type Error = GenericError;
+
+    fn try_from(value: RawEvent) -> Result<Self, Self::Error> {
+        decode(value.ty, value.value)
+            .context("error when decoding event")
+            .map_err(Into::into)
+    }
+}
+
+impl From<Event> for RawEvent {
+    fn from(value: Event) -> Self {
+        encode(value)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
-pub(super) enum EventDecodingError {
+enum EventDecodingError {
     #[error("decoding error: {0:?}")]
     Protobuf(#[from] prost::DecodeError),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
-pub(super) fn decode(ty: EventType, value: Bytes) -> Result<Event, EventDecodingError> {
+fn decode(ty: EventType, value: Bytes) -> Result<Event, EventDecodingError> {
     match ty {
         EventType::TransientError => Ok(Event::TransientError(
             pb::TransientErrorEvent::decode(value)?.try_into()?,
@@ -30,7 +98,7 @@ pub(super) fn decode(ty: EventType, value: Bytes) -> Result<Event, EventDecoding
     }
 }
 
-pub(super) fn encode(event: Event) -> RawEvent {
+fn encode(event: Event) -> RawEvent {
     match event {
         Event::TransientError(e) => RawEvent::new(
             EventType::TransientError,
@@ -42,8 +110,8 @@ pub(super) fn encode(event: Event) -> RawEvent {
 
 mod pb {
     use crate::errors::InvocationErrorCode;
+    use crate::journal_events as event;
     use crate::journal_v2;
-    use crate::journal_v2::event;
     use anyhow::Context;
 
     include!(concat!(env!("OUT_DIR"), "/restate.journal.events.rs"));

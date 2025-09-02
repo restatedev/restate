@@ -22,3 +22,26 @@ pub use self::admin_client::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 pub use self::admin_interface::AdminClientInterface;
 pub use self::admin_interface::Deployment;
 pub use self::datafusion_http_client::DataFusionHttpClient;
+
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
+
+pub(crate) async fn collect_and_split_futures<Fut, Ok, Err>(
+    iter: impl IntoIterator<Item = Fut>,
+) -> (Vec<Ok>, Vec<Err>)
+where
+    Fut: Future<Output = Result<Ok, Err>> + Send,
+    Ok: Send,
+    Err: Send,
+{
+    iter.into_iter()
+        .collect::<FuturesUnordered<_>>()
+        .fold((vec![], vec![]), |(mut done, mut failed), result| async {
+            match result {
+                Ok(ok) => done.push(ok),
+                Err(err) => failed.push(err),
+            }
+            (done, failed)
+        })
+        .await
+}
