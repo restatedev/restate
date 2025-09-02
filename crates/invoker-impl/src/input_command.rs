@@ -180,7 +180,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .map_err(|_| NotRunningError)
     }
 
-    async fn retry_now_invocation(
+    async fn retry_invocation_now(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,

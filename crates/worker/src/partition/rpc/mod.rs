@@ -114,7 +114,7 @@ impl<
             return;
         };
         let _ = invoker_handle
-            .retry_now_invocation(partition_leader_epoch, invocation_id, invocation_epoch)
+            .retry_invocation_now(partition_leader_epoch, invocation_id, invocation_epoch)
             .await;
     }
 }

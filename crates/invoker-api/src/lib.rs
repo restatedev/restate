@@ -155,7 +155,7 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn retry_now_invocation(
+        async fn retry_invocation_now(
             &mut self,
             _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,

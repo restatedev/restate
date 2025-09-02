@@ -55,7 +55,7 @@ pub trait InvokerHandle<SR> {
         entry: RawNotification,
     ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
 
-    fn retry_now_invocation(
+    fn retry_invocation_now(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
