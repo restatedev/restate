@@ -1243,7 +1243,7 @@ where
                     };
                 let invocation_error_report = error.into_invocation_error_report();
                 if options.experimental_features_propose_events() {
-                    let transient_error_event = TransientErrorEvent {
+                    let event = TransientErrorEvent {
                         error_code: invocation_error_report.err.code(),
                         error_message: invocation_error_report.err.message().to_owned(),
                         // Note from the review:
@@ -1261,19 +1261,9 @@ where
                         related_command_name: invocation_error_report.related_entry_name.clone(),
                         related_command_type: journal_v2_related_command_type,
                     };
-                    // Modify or remove this to disable the deduplication logic!
-                    let deduplication_hash = transient_error_event.deduplication_hash();
 
                     // Some trivial deduplication here: if we already sent this transient error in the previous retry, don't send it again
-                    if ism.last_transient_error_event_deduplication_hash.as_ref()
-                        != Some(&deduplication_hash)
-                    {
-                        ism.last_transient_error_event_deduplication_hash =
-                            Some(deduplication_hash.clone());
-                        let mut raw_event =
-                            RawEvent::from(Event::TransientError(transient_error_event));
-                        raw_event.set_deduplication_hash(deduplication_hash);
-
+                    if ism.should_emit_transient_error_event(&event) {
                         let _ = self
                             .invocation_state_machine_manager
                             .resolve_partition_sender(partition)
@@ -1281,7 +1271,9 @@ where
                             .send(Box::new(Effect {
                                 invocation_id,
                                 invocation_epoch: ism.invocation_epoch,
-                                kind: EffectKind::JournalEvent { event: raw_event },
+                                kind: EffectKind::JournalEvent {
+                                    event: RawEvent::from(Event::TransientError(event)),
+                                },
                             }))
                             .await;
                     }
