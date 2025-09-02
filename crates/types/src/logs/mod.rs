@@ -13,7 +13,7 @@ use std::ops::{Add, RangeInclusive};
 use bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
 
-use restate_encoding::{BilrostAs, BilrostNewType, NetSerde};
+use restate_encoding::{BilrostNewType, NetSerde};
 
 use crate::identifiers::PartitionId;
 use crate::storage::StorageEncode;
@@ -174,20 +174,34 @@ where
     fn prev(self) -> Self;
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, BilrostAs, NetSerde)]
-#[bilrost_as(dto::Keys)]
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    NetSerde,
+    bilrost::Oneof,
+    bilrost::Message,
+)]
 /// The keys that are associated with a record. This is used to filter the log when reading.
 pub enum Keys {
     /// No keys are associated with the record. This record will appear to *all* readers regardless
     /// of the KeyFilter they use.
     #[default]
+    #[bilrost(empty)]
     None,
     /// A single key is associated with the record
+    #[bilrost(1)]
     Single(u64),
     /// A pair of keys are associated with the record
-    Pair(u64, u64),
+    #[bilrost(tag(2), message)]
+    Pair(#[bilrost(0)] u64, #[bilrost(1)] u64),
     /// The record is associated with all keys within this range (inclusive)
-    RangeInclusive(std::ops::RangeInclusive<u64>),
+    #[bilrost(3)]
+    RangeInclusive(RangeInclusive<u64>),
 }
 
 impl MatchKeyQuery for Keys {
@@ -232,17 +246,21 @@ impl IntoIterator for Keys {
 }
 
 /// A type that describes which records a reader should pick
-#[derive(Debug, Clone, Default, Serialize, Deserialize, BilrostAs, NetSerde)]
-#[bilrost_as(dto::KeyFilter)]
+#[derive(
+    Debug, Clone, Default, Serialize, Deserialize, NetSerde, bilrost::Oneof, bilrost::Message,
+)]
 pub enum KeyFilter {
+    /// Matches any record
     #[default]
-    // Matches any record
+    #[bilrost(empty)]
     Any,
-    // Match records that have a specific key, or no keys at all.
+    /// Match records that have a specific key, or no keys at all.
+    #[bilrost(1)]
     Include(u64),
-    // Match records that have _any_ keys falling within this inclusive range,
-    // in addition to records with no keys.
-    Within(std::ops::RangeInclusive<u64>),
+    /// Match records that have _any_ keys falling within this inclusive range,
+    /// in addition to records with no keys.
+    #[bilrost(2)]
+    Within(RangeInclusive<u64>),
 }
 
 impl From<u64> for KeyFilter {
@@ -403,94 +421,6 @@ impl SequenceNumber for LogletOffset {
     /// Saturates to Self::OLDEST.
     fn prev(self) -> Self {
         Self(std::cmp::max(Self::OLDEST.0, self.0.saturating_sub(1)))
-    }
-}
-
-mod dto {
-
-    #[derive(Clone, Copy, Debug, bilrost::Oneof, Default)]
-    enum KeyFilterInner {
-        #[default]
-        Any,
-        #[bilrost(1)]
-        Include(u64),
-        // in addition to records with no keys.
-        #[bilrost(2)]
-        Within((u64, u64)),
-    }
-
-    #[derive(Clone, Copy, bilrost::Message)]
-    pub struct KeyFilter {
-        #[bilrost(oneof(1, 2))]
-        inner: KeyFilterInner,
-    }
-
-    impl From<&super::KeyFilter> for KeyFilter {
-        fn from(value: &crate::logs::KeyFilter) -> Self {
-            let inner = match value {
-                crate::logs::KeyFilter::Any => KeyFilterInner::Any,
-                crate::logs::KeyFilter::Include(key) => KeyFilterInner::Include(*key),
-                crate::logs::KeyFilter::Within(range) => {
-                    KeyFilterInner::Within((*range.start(), *range.end()))
-                }
-            };
-
-            Self { inner }
-        }
-    }
-
-    impl From<KeyFilter> for super::KeyFilter {
-        fn from(value: KeyFilter) -> Self {
-            match value.inner {
-                KeyFilterInner::Any => Self::Any,
-                KeyFilterInner::Include(key) => Self::Include(key),
-                KeyFilterInner::Within((start, end)) => Self::Within(start..=end),
-            }
-        }
-    }
-
-    #[derive(Debug, Clone, Default, bilrost::Oneof)]
-    enum KeysInner {
-        #[default]
-        None,
-        #[bilrost(1)]
-        Single(u64),
-        #[bilrost(2)]
-        Pair((u64, u64)),
-        #[bilrost(3)]
-        RangeInclusive((u64, u64)),
-    }
-
-    #[derive(Debug, Clone, Default, bilrost::Message)]
-    pub struct Keys {
-        #[bilrost(oneof(1, 2, 3))]
-        inner: KeysInner,
-    }
-
-    impl From<&super::Keys> for Keys {
-        fn from(value: &super::Keys) -> Self {
-            let inner = match value {
-                super::Keys::None => KeysInner::None,
-                super::Keys::Single(key) => KeysInner::Single(*key),
-                super::Keys::Pair(k1, k2) => KeysInner::Pair((*k1, *k2)),
-                super::Keys::RangeInclusive(range) => {
-                    KeysInner::RangeInclusive((*range.start(), *range.end()))
-                }
-            };
-
-            Self { inner }
-        }
-    }
-
-    impl From<Keys> for super::Keys {
-        fn from(value: Keys) -> Self {
-            match value.inner {
-                KeysInner::None => Self::None,
-                KeysInner::Single(key) => Self::Single(key),
-                KeysInner::Pair((k1, k2)) => Self::Pair(k1, k2),
-                KeysInner::RangeInclusive((start, end)) => Self::RangeInclusive(start..=end),
-            }
-        }
     }
 }
 
