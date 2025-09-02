@@ -16,7 +16,7 @@ use restate_types::config::Configuration;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{
-    MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
+    ClusterFingerprint, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
 };
 use restate_types::retries::RetryPolicy;
 use std::sync::Arc;
@@ -305,6 +305,12 @@ impl<'a> NodeInit<'a> {
                     };
 
                     nodes_config.upsert_node(my_node_config);
+                    // generate a new cluster fingerprint if the old configuration didn't have one.
+                    // This is an automatic migration step for clusters created before v1.5.0.
+                    if nodes_config.cluster_fingerprint().is_none() {
+                        nodes_config.set_cluster_fingerprint(ClusterFingerprint::generate());
+                    }
+
                     nodes_config.increment_version();
 
                     Ok(nodes_config)

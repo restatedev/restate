@@ -9,16 +9,21 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZero;
+use std::str::FromStr;
 use std::sync::Arc;
 
+use anyhow::Context;
 use enumset::{EnumSet, EnumSetType};
 use serde_with::serde_as;
 
+use crate::base62_util::base62_max_length_for_type;
 use crate::locality::NodeLocation;
 use crate::metadata::GlobalMetadata;
 use crate::net::AdvertisedAddress;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
-use crate::{GenerationalNodeId, NodeId, PlainNodeId, flexbuffers_storage_encode_decode};
+use crate::{
+    GenerationalNodeId, NodeId, PlainNodeId, base62_util, flexbuffers_storage_encode_decode,
+};
 use crate::{Version, Versioned};
 use ahash::HashMap;
 
@@ -26,7 +31,6 @@ use ahash::HashMap;
     Clone,
     Copy,
     derive_more::Debug,
-    derive_more::Display,
     derive_more::From,
     Eq,
     PartialEq,
@@ -34,8 +38,7 @@ use ahash::HashMap;
     serde::Deserialize,
 )]
 #[serde(transparent)]
-#[debug("{_0}")]
-#[display("{_0}")]
+#[debug("ClusterFingerprint({_0})")]
 pub struct ClusterFingerprint(NonZero<u64>);
 
 #[derive(Debug, thiserror::Error)]
@@ -57,6 +60,47 @@ impl ClusterFingerprint {
 
     pub fn to_u64(self) -> u64 {
         self.0.get()
+    }
+}
+
+impl std::fmt::Display for ClusterFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = [b'0'; base62_max_length_for_type::<u64>()];
+        let written = base62_util::base62_encode_fixed_width_u64(self.0.get(), &mut buf);
+        // SAFETY; the array was initialised with valid utf8 and base_encode_fixed_width_u64 only writes utf8
+        f.write_str(unsafe { std::str::from_utf8_unchecked(&buf[0..written]) })
+    }
+}
+
+impl FromStr for ClusterFingerprint {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let size_to_read = base62_max_length_for_type::<u64>();
+        if s.len() < size_to_read {
+            return Err(anyhow::anyhow!(
+                "invalid cluster fingerprint: too short (expected at least {} chars, got {})",
+                size_to_read,
+                s.len()
+            ));
+        }
+
+        let decoded =
+            base62::decode_alternative(s.trim_start_matches('0')).or_else(|e| match e {
+                // If we trim all zeros and nothing left, we assume there was a
+                // single zero value in the original input.
+                base62::DecodeError::EmptyInput => Ok(0),
+                _ => Err(anyhow::anyhow!("malformed cluster fingerprint: {e}")),
+            })?;
+        let out = u64::from_be(
+            decoded
+                .try_into()
+                .context("malformed cluster fingerprint")?,
+        );
+
+        Ok(Self(NonZero::new(out).ok_or(anyhow::anyhow!(
+            "cluster fingerprint must be a non-zero value"
+        ))?))
     }
 }
 
@@ -129,6 +173,25 @@ impl GlobalMetadata for NodesConfiguration {
 
     fn into_container(self: Arc<Self>) -> MetadataContainer {
         MetadataContainer::NodesConfiguration(self)
+    }
+
+    fn validate_update(&self, previous: Option<&Arc<Self>>) -> Result<(), anyhow::Error> {
+        // never accept new configuration that changes the cluster fingerprint
+        if let Some(current_config) = previous
+            && let Some(current_fingerprint) = current_config.cluster_fingerprint()
+            && self
+                .cluster_fingerprint()
+                .is_none_or(|incoming| incoming != current_fingerprint)
+        {
+            Err(anyhow::anyhow!(
+                "Cannot accept nodes-configuration update that mutates the cluster fingerprint. Rejected a change of fingerprint from '{current_fingerprint}' to incoming value of '{}'.",
+                self.cluster_fingerprint()
+                    .map(|f| f.to_string())
+                    .unwrap_or_default()
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -228,6 +291,13 @@ impl NodesConfiguration {
 
     pub fn cluster_fingerprint(&self) -> Option<ClusterFingerprint> {
         self.cluster_fingerprint
+    }
+
+    /// Should be carefully used.
+    ///
+    /// A cluster fingerprint should never change once it's set.
+    pub fn set_cluster_fingerprint(&mut self, fingerprint: ClusterFingerprint) {
+        self.cluster_fingerprint = Some(fingerprint);
     }
 
     pub fn cluster_name(&self) -> &str {
@@ -627,9 +697,27 @@ flexbuffers_storage_encode_decode!(NodesConfiguration);
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
     use super::*;
 
     use restate_test_util::assert_eq;
+
+    #[test]
+    fn cluster_fingerprint_str_roundtrip() {
+        let fingerprint = ClusterFingerprint::generate();
+        let str = fingerprint.to_string();
+        assert_eq!(11, str.len());
+        assert_eq!(fingerprint, str.parse().unwrap());
+
+        assert!(ClusterFingerprint::from_str("").is_err());
+        assert!(ClusterFingerprint::from_str("5").is_err());
+        assert!(ClusterFingerprint::from_str("00000000000").is_err());
+        assert_eq!(
+            ClusterFingerprint::from_str("01000000000").unwrap(),
+            ClusterFingerprint(NonZeroU64::new(17700569142996992).unwrap())
+        );
+    }
 
     #[test]
     fn test_upsert_node() {
