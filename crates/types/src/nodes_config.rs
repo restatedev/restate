@@ -174,6 +174,25 @@ impl GlobalMetadata for NodesConfiguration {
     fn into_container(self: Arc<Self>) -> MetadataContainer {
         MetadataContainer::NodesConfiguration(self)
     }
+
+    fn validate_update(&self, previous: Option<&Arc<Self>>) -> Result<(), anyhow::Error> {
+        // never accept new configuration that changes the cluster fingerprint
+        if let Some(current_config) = previous
+            && let Some(current_fingerprint) = current_config.cluster_fingerprint()
+            && self
+                .cluster_fingerprint()
+                .is_none_or(|incoming| incoming != current_fingerprint)
+        {
+            Err(anyhow::anyhow!(
+                "Cannot accept nodes-configuration update that mutates the cluster fingerprint. Rejected a change of fingerprint from '{current_fingerprint}' to incoming value of '{}'.",
+                self.cluster_fingerprint()
+                    .map(|f| f.to_string())
+                    .unwrap_or_default()
+            ))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, strum::EnumIs, serde::Serialize, serde::Deserialize)]

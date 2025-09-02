@@ -139,14 +139,18 @@ where
                 }
                 Some(Ok(Some(value))) = self.in_flight_peer_requests.join_next() => {
                     // future proofing for native rpc use
-                    self.update_internal(value);
+                    if let Err(err) = self.update_internal(value) {
+                        error!("Metadata peer fetch: {err}");
+                    }
                 }
                 Some(res) = OptionFuture::from(in_flight_metadata_store_fetch.as_mut()) => {
                     match res {
                         Ok(value) => {
                             let version = (&value as &Arc<T>).version();
                             debug!(kind = %T::KIND, %version, "Received metadata from metadata store");
-                            self.update_internal(value);
+                            if let Err(err) = self.update_internal(value) {
+                                error!("Metadata store fetch: {err}");
+                            }
                             self.last_metadata_store_fetch = Instant::now();
                         }
                         Err(e) => {
@@ -158,7 +162,9 @@ where
                     in_flight_metadata_store_fetch = None;
                 }
                 Some(update) = self.writes_rx.recv() => {
-                    self.handle_external_update(update);
+                    if let Err(err) = self.handle_external_update(update) {
+                        error!("External metadata update: {err}");
+                    }
                 }
                 _ = self.next_fetch_interval.tick() => {
                     let latest_observed = observer.borrow();
@@ -312,18 +318,20 @@ where
         }
     }
 
-    fn handle_external_update(&mut self, update: Command<T>) {
+    fn handle_external_update(&mut self, update: Command<T>) -> Result<(), anyhow::Error> {
         match update {
             Command::Update { value, callback } => {
-                let version = self.update_internal(value);
+                let version = self.update_internal(value)?;
+
                 if let Some(callback) = callback {
                     let _ = callback.send(version);
                 }
             }
         }
+        Ok(())
     }
 
-    fn update_internal(&mut self, new_value: Arc<T>) -> Version {
+    fn update_internal(&mut self, new_value: Arc<T>) -> Result<Version, anyhow::Error> {
         let current_value = self.item.load();
         let mut maybe_new_version = new_value.version();
 
@@ -334,6 +342,9 @@ where
                 current_value.version(),
                 new_value.version(),
             );
+            // validate the update before applying it.
+            new_value.validate_update(Some(&current_value))?;
+
             self.item.store(new_value);
             self.write_watch.send_replace(maybe_new_version);
             self.last_update = Instant::now();
@@ -348,7 +359,7 @@ where
             self.peers_attempted_for_this_version.clear();
         }
 
-        maybe_new_version
+        Ok(maybe_new_version)
     }
 }
 
