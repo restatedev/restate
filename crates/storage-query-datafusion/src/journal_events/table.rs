@@ -55,18 +55,28 @@ struct JournalEventsScanner;
 impl ScanLocalPartition for JournalEventsScanner {
     type Builder = SysJournalEventsBuilder;
     type Item<'a> = (JournalEventId, StoredEvent);
+    type ConversionError = std::convert::Infallible;
 
     fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+        F: for<'a> FnMut(
+                Self::Item<'a>,
+            ) -> std::ops::ControlFlow<Result<(), Self::ConversionError>>
+            + Send
+            + Sync
+            + 'static,
     >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
-        f: F,
+        mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_journal_event(range, f)
+        partition_store.for_each_journal_event(range, move |item| f(item).map_break(Result::unwrap))
     }
 
-    fn append_row<'a>(row_builder: &mut Self::Builder, value: Self::Item<'a>) {
-        append_journal_event_row(row_builder, value.0, value.1)
+    fn append_row<'a>(
+        row_builder: &mut Self::Builder,
+        value: Self::Item<'a>,
+    ) -> Result<(), Self::ConversionError> {
+        append_journal_event_row(row_builder, value.0, value.1);
+        Ok(())
     }
 }
