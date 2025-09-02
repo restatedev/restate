@@ -752,7 +752,13 @@ impl Configuration {
         }
 
         #[allow(deprecated)]
-        match &self.worker.invoker.retry_policy {
+        match self
+            .worker
+            .invoker
+            .retry_policy
+            .as_ref()
+            .unwrap_or(&RetryPolicy::None)
+        {
             RetryPolicy::None => ComputedRetryPolicy {
                 initial_interval: Default::default(),
                 exponentiation_factor: 1.0,
