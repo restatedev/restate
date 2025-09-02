@@ -44,7 +44,7 @@ use restate_types::live::LiveLoadExt;
 use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration, ProviderKind};
 use restate_types::metadata::{GlobalMetadata, Precondition};
-use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::{
@@ -636,8 +636,11 @@ async fn provision_cluster_metadata(
 }
 
 fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfiguration {
-    let mut initial_nodes_configuration =
-        NodesConfiguration::new(Version::MIN, common_opts.cluster_name().to_owned());
+    let mut initial_nodes_configuration = NodesConfiguration::new(
+        Version::MIN,
+        common_opts.cluster_name().to_owned(),
+        ClusterFingerprint::generate(),
+    );
     let node_config = NodeConfig::builder()
         .name(common_opts.node_name().to_owned())
         .current_generation(
