@@ -507,7 +507,7 @@ mod tests {
     }
 
     fn create_mock_nodes_config() -> NodesConfiguration {
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         let address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
         let node_id = GenerationalNodeId::new(1, 1);
         let roles = Role::Admin | Role::Worker;

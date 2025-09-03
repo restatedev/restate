@@ -11,7 +11,7 @@
 use restate_types::nodes_config::{
     LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
 };
-use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+use restate_types::{GenerationalNodeId, PlainNodeId};
 
 pub fn generate_logserver_node(
     id: impl Into<PlainNodeId>,
@@ -32,7 +32,7 @@ pub fn generate_logserver_nodes_config(
     num_nodes: u32,
     storage_state: StorageState,
 ) -> NodesConfiguration {
-    let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+    let mut nodes_config = NodesConfiguration::new_for_testing();
     // all_authoritative
     for i in 1..=num_nodes {
         nodes_config.upsert_node(generate_logserver_node(i, storage_state));
