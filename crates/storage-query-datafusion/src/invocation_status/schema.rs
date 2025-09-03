@@ -21,7 +21,7 @@ define_table!(sys_invocation_status(
     /// [Invocation ID](/operate/invocation#invocation-identifier).
     id: DataType::LargeUtf8,
 
-    /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `completed`
+    /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
     status: DataType::LargeUtf8,
 
     /// If `status = 'completed'`, this contains either `success` or `failure`

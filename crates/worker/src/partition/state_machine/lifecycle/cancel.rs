@@ -49,7 +49,9 @@ where
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         match self.invocation_status {
-            is @ InvocationStatus::Invoked(_) | is @ InvocationStatus::Suspended { .. } => {
+            is @ InvocationStatus::Invoked(_)
+            | is @ InvocationStatus::Suspended { .. }
+            | is @ InvocationStatus::Paused(_) => {
                 OnJournalEntryCommand::from_entry(self.invocation_id, is, CANCEL_SIGNAL.into())
                     .apply(ctx)
                     .await?;

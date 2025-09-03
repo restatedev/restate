@@ -91,6 +91,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
                 WHEN ss.status = 'scheduled' THEN 'scheduled'
                 WHEN ss.status = 'completed' THEN 'completed'
                 WHEN ss.status = 'suspended' THEN 'suspended'
+                WHEN ss.status = 'paused' THEN 'paused'
                 WHEN sis.in_flight THEN 'running'
                 WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
                 ELSE 'ready'

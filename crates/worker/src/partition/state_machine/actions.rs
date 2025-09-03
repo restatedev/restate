@@ -14,7 +14,7 @@ use restate_storage_api::timer_table::TimerKey;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
-    PurgeInvocationResponse,
+    PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::Completion;
@@ -95,6 +95,10 @@ pub enum Action {
     ForwardPurgeJournalResponse {
         request_id: PartitionProcessorRpcRequestId,
         response: PurgeInvocationResponse,
+    },
+    ForwardResumeInvocationResponse {
+        request_id: PartitionProcessorRpcRequestId,
+        response: ResumeInvocationResponse,
     },
 }
 

@@ -21,8 +21,8 @@ pub(super) struct Request {
     pub(super) append_invocation_reply_on: AppendInvocationReplyOn,
 }
 
-impl<'a, Proposer: CommandProposer, Storage> RpcHandler<Request>
-    for RpcContext<'a, Proposer, Storage>
+impl<'a, TActuator: Actuator, TStorage> RpcHandler<Request>
+    for RpcContext<'a, TActuator, TStorage>
 {
     type Output = PartitionProcessorRpcResponse;
     type Error = ();
@@ -80,7 +80,7 @@ impl<'a, Proposer: CommandProposer, Storage> RpcHandler<Request>
 mod tests {
     use super::*;
 
-    use crate::partition::rpc::MockCommandProposer;
+    use crate::partition::rpc::MockActuator;
     use futures::FutureExt;
     use googletest::prelude::*;
     use restate_test_util::let_assert;
@@ -89,7 +89,7 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn reply_on_appended() {
-        let mut proposer = MockCommandProposer::new();
+        let mut proposer = MockActuator::new();
         proposer
             .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .return_once_st(|_, cmd, _, _| {
@@ -124,7 +124,7 @@ mod tests {
     #[test(restate_core::test)]
     async fn reply_on_submitted() {
         let request_id = PartitionProcessorRpcRequestId::new();
-        let mut proposer = MockCommandProposer::new();
+        let mut proposer = MockActuator::new();
         proposer
             .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .never();
@@ -162,7 +162,7 @@ mod tests {
     #[test(restate_core::test)]
     async fn reply_on_output() {
         let request_id = PartitionProcessorRpcRequestId::new();
-        let mut proposer = MockCommandProposer::new();
+        let mut proposer = MockActuator::new();
         proposer
             .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .never();

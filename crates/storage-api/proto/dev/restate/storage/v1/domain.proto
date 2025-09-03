@@ -134,6 +134,7 @@ message InvocationStatusV2 {
     INVOKED = 3;
     SUSPENDED = 4;
     COMPLETED = 5;
+    PAUSED = 7;
   }
 
   message JournalTrimPoint {
@@ -616,6 +617,7 @@ message Event {
   enum EventType {
     UNKNOWN_EVENT = 0;
     TRANSIENT_ERROR = 1;
+    PAUSED = 2;
   }
 
   // Additional metadata for EVENT

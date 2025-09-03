@@ -122,6 +122,7 @@ pub fn invocation_status_style(status: InvocationState) -> Style {
         InvocationState::Suspended => DStyle::new().dim(),
         InvocationState::BackingOff => DStyle::new().red(),
         InvocationState::Completed => DStyle::new().blue(),
+        InvocationState::Paused => DStyle::new().yellow(),
     }
 }
 
