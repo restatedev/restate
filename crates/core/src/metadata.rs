@@ -151,6 +151,49 @@ impl Metadata {
         self.inner.partition_table.load().version()
     }
 
+    /// Sets the metadata container unconditionally to the supplied value.
+    /// Used for testing to mutate the global metadata object without using the metadata writer.
+    ///
+    /// Note: This doesn't trigger any validation or version checks and can race with the metadata
+    /// writer if it's running.
+    #[cfg(feature = "test-util")]
+    pub fn set(&self, value: MetadataContainer) {
+        let new_version = value.version();
+
+        tracing::info!(
+            kind = %value.kind(),
+            ?value,
+            "[testing] Manually updating to {new_version}",
+        );
+
+        match value {
+            MetadataContainer::NodesConfiguration(value) => {
+                self.inner.nodes_config.store(value);
+                self.inner.write_watches[MetadataKind::NodesConfiguration]
+                    .sender
+                    .send_replace(new_version);
+            }
+            MetadataContainer::PartitionTable(value) => {
+                self.inner.partition_table.store(value);
+                self.inner.write_watches[MetadataKind::PartitionTable]
+                    .sender
+                    .send_replace(new_version);
+            }
+            MetadataContainer::Logs(value) => {
+                self.inner.logs.store(value);
+                self.inner.write_watches[MetadataKind::Logs]
+                    .sender
+                    .send_replace(new_version);
+            }
+            MetadataContainer::Schema(value) => {
+                self.inner.schema.store(value);
+                self.inner.write_watches[MetadataKind::Schema]
+                    .sender
+                    .send_replace(new_version);
+            }
+        }
+    }
+
     pub fn version(&self, metadata_kind: MetadataKind) -> Version {
         match metadata_kind {
             MetadataKind::NodesConfiguration => self.nodes_config_version(),

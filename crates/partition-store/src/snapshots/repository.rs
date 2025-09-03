@@ -16,6 +16,7 @@ use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
 use object_store::path::Path as ObjectPath;
 use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
+use restate_core::Metadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tempfile::TempDir;
@@ -56,8 +57,6 @@ pub struct SnapshotRepository {
     prefix: ObjectPath,
     /// Ingested snapshots staging location.
     staging_dir: PathBuf,
-    /// Expected cluster name for the snapshots in this repository.
-    cluster_name: String,
 }
 
 /// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
@@ -113,6 +112,44 @@ impl LatestSnapshot {
             path: UniqueSnapshotKey::from_metadata(snapshot).padded_key(),
         }
     }
+
+    pub fn validate(
+        &self,
+        cluster_name: &str,
+        cluster_fingerprint: Option<ClusterFingerprint>,
+    ) -> anyhow::Result<()> {
+        if cluster_name != self.cluster_name {
+            anyhow::bail!(
+                "snapshot does not match the cluster name of this cluster, \
+                 expected: '{cluster_name}' got: '{}'",
+                self.cluster_name
+            );
+        }
+
+        // Does our nodes configuration have a fingerprint?
+        //
+        // If not, we will completely ignore the fingerprint check because we assume
+        // that there is a race and the nodes configuration will be updated soon. This
+        // can be made more strict in v1.6.0 since we'll be sure that nodes
+        // configuration will always contain a fingerprint.
+        //
+        //
+        // If we have a fingerprint in nodes configuration, we will use it to compare
+        // with the snapshot's fingerprint, if and only if the snapshot has a
+        // fingerprint as well.
+        if let Some(cluster_fingerprint) = cluster_fingerprint
+            && let Some(incoming_fingerprint) = self.cluster_fingerprint
+            && cluster_fingerprint != incoming_fingerprint
+        {
+            bail!(
+                "cluster fingerprint mismatch, \
+                 expected:'{cluster_fingerprint}' {cluster_fingerprint:?} got:'{incoming_fingerprint}' {incoming_fingerprint:?}. \
+                 This often happens if this cluster is reusing a snapshot repository path from a different cluster"
+            );
+        }
+
+        Ok(())
+    }
 }
 
 struct UniqueSnapshotKey {
@@ -144,7 +181,6 @@ impl SnapshotRepository {
     pub async fn create_if_configured(
         snapshots_options: &SnapshotsOptions,
         staging_dir: PathBuf,
-        cluster_name: String,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
         let mut destination = if let Some(ref destination) = snapshots_options.destination {
             Url::parse(destination).context("Failed parsing snapshot repository URL")?
@@ -170,7 +206,6 @@ impl SnapshotRepository {
             destination,
             prefix: ObjectPath::from(prefix),
             staging_dir,
-            cluster_name,
         }))
     }
 
@@ -329,7 +364,6 @@ impl SnapshotRepository {
         name = "get-latest-snapshot",
         level = "error",
         skip_all,
-        err,
         fields(%partition_id, snapshot_id = tracing::field::Empty),
     )]
     pub async fn get_latest(
@@ -350,6 +384,16 @@ impl SnapshotRepository {
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
         tracing::Span::current().record("snapshot_id", tracing::field::display(latest.snapshot_id));
         debug!("Latest snapshot metadata: {latest:?}");
+        Metadata::with_current(|m| {
+            let nodes_config = m.nodes_config_ref();
+
+            latest.validate(
+                nodes_config.cluster_name(),
+                nodes_config.cluster_fingerprint(),
+            )?;
+            anyhow::Ok(())
+        })
+        .with_context(|| format!("'{latest_path}' has validation errors"))?;
 
         let snapshot_metadata_path = self
             .prefix
@@ -361,9 +405,9 @@ impl SnapshotRepository {
         let snapshot_metadata = match snapshot_metadata {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => {
-                // todo(pavel): revisit whether we shouldn't just panic at this point - this is a bad sign!
-                warn!("Latest snapshot points to a snapshot that was not found in the repository!");
-                return Ok(None); // arguably this could also be an error
+                bail!(
+                    "Latest snapshot points to '{snapshot_metadata_path}' that was not found in the repository!"
+                );
             }
             Err(e) => return Err(e.into()),
         };
@@ -371,21 +415,27 @@ impl SnapshotRepository {
         let mut snapshot_metadata: PartitionSnapshotMetadata =
             serde_json::from_slice(&snapshot_metadata.bytes().await?)?;
         if snapshot_metadata.version != SnapshotFormatVersion::V1 {
-            return Err(anyhow!(
+            bail!(
                 "Unsupported snapshot format version: {:?}",
                 snapshot_metadata.version
-            ));
+            );
         }
 
-        if snapshot_metadata.cluster_name != self.cluster_name {
-            // todo(pavel): revisit whether we shouldn't just panic at this point - this is a bad sign!
-            warn!(
-                "Snapshot cluster name does not match node configuration! \
-                Expected: \"{}\", found: \"{}\"",
-                self.cluster_name, snapshot_metadata.cluster_name
-            );
-            return Ok(None); // perhaps this needs to be a configuration error
-        }
+        Metadata::with_current(|m| {
+            let nodes_config = m.nodes_config_ref();
+
+            snapshot_metadata.validate(
+                nodes_config.cluster_name(),
+                nodes_config.cluster_fingerprint(),
+            )?;
+            anyhow::Ok(())
+        })
+        .with_context(|| {
+            format!(
+                "failed validating metadata of snapshot {}",
+                snapshot_metadata.snapshot_id
+            )
+        })?;
 
         if !self.staging_dir.exists() {
             std::fs::create_dir_all(&self.staging_dir)?;
@@ -502,7 +552,11 @@ impl SnapshotRepository {
                 debug!("Latest snapshot data not found in repository");
                 return Ok(Lsn::INVALID);
             }
-            Err(e) => return Err(e.into()),
+            Err(e) => {
+                return Err(anyhow::Error::new(e).context(format!(
+                    "couldn't fetch '{latest_path}' from snapshot repository"
+                )));
+            }
         };
 
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
@@ -535,22 +589,16 @@ impl SnapshotRepository {
                     )
                     })
                     .map_err(|e| anyhow!("Failed to parse latest snapshot metadata: {}", e))?;
-                if snapshot.cluster_name != latest.cluster_name {
-                    // This indicates a serious misconfiguration and we should complain loudly
-                    bail!(
-                        "Snapshot does not match the cluster name of latest snapshot at destination!"
-                    );
-                }
-                // The check is disabled until we pass the point where fingerprints are enforced.
-                //
-                // If this check is turned on, nodes will not be able to migrate from "no
-                // fingerprint" to "fingerprint" being set.
-                // It's estimated that this will happen in v1.5.0
-                // if snapshot.cluster_fingerprint != latest.cluster_fingerprint {
-                //     bail!(
-                //         "Snapshot does not match the cluster fingerprint of latest snapshot at destination!"
-                //     );
-                // }
+
+                Metadata::with_current(|m| {
+                    let nodes_config = m.nodes_config_ref();
+                    let fingerprint = nodes_config.cluster_fingerprint();
+                    let cluster_name = nodes_config.cluster_name();
+                    latest.validate(cluster_name, fingerprint)?;
+                    snapshot.validate(cluster_name, fingerprint)?;
+                    anyhow::Ok(())
+                })?;
+
                 Ok(Some((latest, version)))
             }
             Err(object_store::Error::NotFound { .. }) => {
@@ -699,6 +747,7 @@ mod tests {
     use bytes::Bytes;
     use object_store::ObjectStore;
     use object_store::path::Path as ObjectPath;
+    use std::sync::Arc;
     use std::time::SystemTime;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
@@ -708,6 +757,8 @@ mod tests {
     use tracing_subscriber::{EnvFilter, fmt};
     use url::Url;
 
+    use restate_core::test_env::create_mock_nodes_config;
+    use restate_core::{Metadata, MetadataBuilder, TaskCenter};
     use restate_object_store_util::create_object_store_client;
     use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
@@ -717,12 +768,20 @@ mod tests {
     use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};
     use super::{PartitionSnapshotMetadata, SnapshotFormatVersion};
 
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_overwrite_unparsable_latest() -> anyhow::Result<()> {
         tracing_subscriber::registry()
             .with(fmt::layer())
             .with(EnvFilter::from_default_env())
             .init();
+
+        let metadata_builder = MetadataBuilder::default();
+        TaskCenter::try_set_global_metadata(metadata_builder.to_metadata());
+        // ensure we have a valid nodes configuration to set the cluster name and fingerprint for
+        // us.
+        metadata_builder
+            .to_metadata()
+            .set(Arc::new(create_mock_nodes_config(1, 1)).into());
 
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
@@ -748,13 +807,10 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository = SnapshotRepository::create_if_configured(
-            &opts,
-            TempDir::new().unwrap().keep(),
-            "cluster".to_owned(),
-        )
-        .await?
-        .unwrap();
+        let repository =
+            SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().keep())
+                .await?
+                .unwrap();
 
         // Write invalid JSON to latest.json
         let latest_path = destination_dir
@@ -771,7 +827,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_put_snapshot_local_filesystem() -> anyhow::Result<()> {
         let snapshots_destination = TempDir::new()?;
         test_put_snapshot(
@@ -783,7 +839,7 @@ mod tests {
     }
 
     /// For this test to run, set RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME to a writable S3 bucket name
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_put_snapshot_s3() -> anyhow::Result<()> {
         let Ok(bucket_name) = std::env::var("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME") else {
             return Ok(());
@@ -796,6 +852,14 @@ mod tests {
             .with(fmt::layer())
             .with(EnvFilter::from_default_env())
             .init();
+
+        let metadata_builder = MetadataBuilder::default();
+        TaskCenter::try_set_global_metadata(metadata_builder.to_metadata());
+        // ensure we have a valid nodes configuration to set the cluster name and fingerprint for
+        // us.
+        metadata_builder
+            .to_metadata()
+            .set(Arc::new(create_mock_nodes_config(1, 1)).into());
 
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
@@ -835,13 +899,10 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::create_if_configured(
-            &opts,
-            TempDir::new().unwrap().keep(),
-            "cluster".to_owned(),
-        )
-        .await?
-        .unwrap();
+        let repository =
+            SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().keep())
+                .await?
+                .unwrap();
 
         repository.put(&snapshot1, source_dir.clone()).await?;
 
@@ -913,8 +974,12 @@ mod tests {
     ) -> PartitionSnapshotMetadata {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
-            cluster_name: "cluster".to_string(),
-            cluster_fingerprint: None,
+            cluster_name: Metadata::with_current(|m| {
+                m.nodes_config_ref().cluster_name().to_string()
+            }),
+            cluster_fingerprint: Metadata::with_current(|m| {
+                m.nodes_config_ref().cluster_fingerprint()
+            }),
             node_name: "node".to_string(),
             partition_id: PartitionId::MIN,
             created_at: humantime::Timestamp::from(SystemTime::now()),
