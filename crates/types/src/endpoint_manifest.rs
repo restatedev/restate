@@ -43,6 +43,13 @@ impl Service {
     pub fn idempotency_retention_duration(&self) -> Option<Duration> {
         self.idempotency_retention.map(Duration::from_millis)
     }
+    pub fn retry_policy_initial_interval(&self) -> Option<Duration> {
+        self.retry_policy_initial_interval
+            .map(Duration::from_millis)
+    }
+    pub fn retry_policy_max_interval(&self) -> Option<Duration> {
+        self.retry_policy_max_interval.map(Duration::from_millis)
+    }
 }
 
 impl Handler {
@@ -61,5 +68,12 @@ impl Handler {
     pub fn workflow_completion_retention_duration(&self) -> Option<Duration> {
         self.workflow_completion_retention
             .map(Duration::from_millis)
+    }
+    pub fn retry_policy_initial_interval(&self) -> Option<Duration> {
+        self.retry_policy_initial_interval
+            .map(Duration::from_millis)
+    }
+    pub fn retry_policy_max_interval(&self) -> Option<Duration> {
+        self.retry_policy_max_interval.map(Duration::from_millis)
     }
 }

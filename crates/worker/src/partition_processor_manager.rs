@@ -548,7 +548,7 @@ impl PartitionProcessorManager {
                                     }
                                 }
                                 Err(err) => {
-                                    warn!(%partition_id, %err, "Partition processor exited unexpectedly");
+                                    error!(%partition_id, %err, "Partition processor exited unexpectedly");
                                     RestartDelay::Exponential {
                                         start_time,
                                         last_delay: delay,

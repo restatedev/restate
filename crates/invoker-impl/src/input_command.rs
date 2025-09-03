@@ -59,6 +59,13 @@ pub(crate) enum InputCommand<SR> {
         invocation_epoch: InvocationEpoch,
     },
 
+    /// Retry now specific invocation id
+    RetryNow {
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    },
+
     /// Command used to clean up internal state when a partition leader is going away
     AbortAllPartition {
         partition: PartitionLeaderEpoch,
@@ -166,6 +173,21 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Abort {
+                partition,
+                invocation_id,
+                invocation_epoch,
+            })
+            .map_err(|_| NotRunningError)
+    }
+
+    async fn retry_invocation_now(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::RetryNow {
                 partition,
                 invocation_id,
                 invocation_epoch,

@@ -2,19 +2,23 @@ mod openapi;
 mod serde_hacks;
 pub mod updater;
 
-use crate::config::Configuration;
+use crate::config::{Configuration, InvocationRetryPolicyOptions};
 use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::live::Pinned;
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
+use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeliveryOptions, DeploymentResolver, DeploymentType};
 use crate::schema::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InputRules,
-    InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver, OutputRules,
+    InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver, OnMaxAttempts,
+    OutputRules,
 };
 use crate::schema::metadata::openapi::ServiceOpenAPI;
-use crate::schema::service::ServiceMetadataResolver;
+use crate::schema::service::{
+    HandlerRetryPolicyMetadata, ServiceMetadataResolver, ServiceRetryPolicyMetadata,
+};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
 use crate::schema::{deployment, service};
 use crate::time::MillisSinceEpoch;
@@ -25,6 +29,7 @@ use serde_json::Value;
 use serde_with::serde_as;
 use std::cmp;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
@@ -215,6 +220,25 @@ struct ServiceRevision {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     enable_lazy_state: Option<bool>,
 
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    retry_policy_initial_interval: Option<Duration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_policy_exponentiation_factor: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_policy_max_attempts: Option<usize>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    retry_policy_max_interval: Option<Duration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_policy_on_max_attempts: Option<OnMaxAttempts>,
+
     /// This is a cache for the computed value of ServiceOpenAPI
     #[serde(skip)]
     service_openapi_cache: Arc<ArcSwapOption<ServiceOpenAPI>>,
@@ -231,6 +255,9 @@ impl MapAsVecItem for ServiceRevision {
 impl ServiceRevision {
     fn to_service_metadata(&self, deployment_id: DeploymentId) -> service::ServiceMetadata {
         let configuration = Configuration::pinned();
+
+        let mut retry_policy = configuration.resolve_default_retry_policy();
+        retry_policy.merge_with_service_revision_overrides(self);
 
         service::ServiceMetadata {
             name: self.name.clone(),
@@ -276,6 +303,7 @@ impl ServiceRevision {
                 .abort_timeout
                 .unwrap_or_else(|| configuration.worker.invoker.abort_timeout.into()),
             enable_lazy_state: self.enable_lazy_state.unwrap_or(false),
+            retry_policy,
         }
     }
 
@@ -337,6 +365,24 @@ struct Handler {
     enable_lazy_state: Option<bool>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    retry_policy_initial_interval: Option<Duration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_policy_exponentiation_factor: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_policy_max_attempts: Option<usize>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+    )]
+    retry_policy_max_interval: Option<Duration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_policy_on_max_attempts: Option<OnMaxAttempts>,
 }
 
 impl MapAsVecItem for Handler {
@@ -368,6 +414,13 @@ impl Handler {
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
+            retry_policy: HandlerRetryPolicyMetadata {
+                initial_interval: self.retry_policy_initial_interval,
+                exponentiation_factor: self.retry_policy_exponentiation_factor,
+                max_attempts: self.retry_policy_max_attempts,
+                max_interval: self.retry_policy_max_interval,
+                on_max_attempts: self.retry_policy_on_max_attempts,
+            },
         }
     }
 }
@@ -504,6 +557,49 @@ impl InvocationTargetResolver for Schema {
             .get(service_name.as_ref())
             .map(|revision| revision.service_revision.ty)
     }
+
+    fn resolve_invocation_retry_policy(
+        &self,
+        deployment_id: Option<&DeploymentId>,
+        service_name: impl AsRef<str>,
+        handler_name: impl AsRef<str>,
+    ) -> (RetryIter<'static>, OnMaxAttempts) {
+        let configuration = Configuration::pinned();
+        let mut retry_policy = configuration.resolve_default_retry_policy();
+
+        let Some(service_revision) = (if let Some(deployment_id) = deployment_id {
+            self.deployments
+                .get(deployment_id)
+                .and_then(|dp| dp.services.get(service_name.as_ref()))
+        } else {
+            self.active_service_revisions
+                .get(service_name.as_ref())
+                .map(|a| &a.service_revision)
+        }) else {
+            return (
+                retry_policy.as_retry_policy().into_iter(),
+                retry_policy.on_max_attempts,
+            );
+        };
+
+        retry_policy.merge_with_service_revision_overrides(service_revision);
+
+        let Some(handler) = service_revision.handlers.get(handler_name.as_ref()) else {
+            return (
+                retry_policy.as_retry_policy().into_iter(),
+                retry_policy.on_max_attempts,
+            );
+        };
+
+        retry_policy.merge_with_handler_overrides(handler);
+
+        retry_policy.max_attempts = configuration.clamp_max_attempts(retry_policy.max_attempts);
+
+        (
+            retry_policy.as_retry_policy().into_iter(),
+            retry_policy.on_max_attempts,
+        )
+    }
 }
 
 impl ServiceMetadataResolver for Schema {
@@ -560,14 +656,138 @@ impl SubscriptionResolver for Schema {
 
 impl Configuration {
     fn clamp_journal_retention(&self, requested: Option<Duration>) -> Option<Duration> {
-        let global_limit = self.invocation.max_journal_retention;
-        match (requested, global_limit) {
-            (None, Some(_)) => None,
-            (None, None) => None,
-            (Some(requested_duration), None) => Some(requested_duration),
-            (Some(requested_duration), Some(global_limit)) => {
-                Some(cmp::min(requested_duration, global_limit))
-            }
+        clamp_max(requested, self.invocation.max_journal_retention)
+    }
+
+    fn clamp_max_attempts(&self, requested: Option<usize>) -> Option<usize> {
+        clamp_max(requested, self.invocation.max_retry_policy_max_attempts)
+    }
+}
+
+fn clamp_max<T: Ord>(requested: Option<T>, limit: Option<T>) -> Option<T> {
+    match (requested, limit) {
+        (None, Some(_)) => None,
+        (None, None) => None,
+        (Some(requested_duration), None) => Some(requested_duration),
+        (Some(requested_duration), Some(global_limit)) => {
+            Some(cmp::min(requested_duration, global_limit))
+        }
+    }
+}
+
+type ComputedRetryPolicy = ServiceRetryPolicyMetadata;
+
+impl ComputedRetryPolicy {
+    fn merge_with_service_revision_overrides(&mut self, service_revision: &ServiceRevision) {
+        if let Some(initial_interval) = service_revision.retry_policy_initial_interval {
+            self.initial_interval = initial_interval;
+        }
+        if let Some(max_attempts) = service_revision.retry_policy_max_attempts {
+            self.max_attempts = Some(max_attempts);
+        }
+        if let Some(max_interval) = service_revision.retry_policy_max_interval {
+            self.max_interval = Some(max_interval);
+        }
+        if let Some(exponentiation_factor) = service_revision.retry_policy_exponentiation_factor {
+            self.exponentiation_factor = exponentiation_factor;
+        }
+        if let Some(on_max_attempts) = service_revision.retry_policy_on_max_attempts {
+            self.on_max_attempts = on_max_attempts;
+        }
+    }
+
+    fn merge_with_handler_overrides(&mut self, handler: &Handler) {
+        if let Some(initial_interval) = handler.retry_policy_initial_interval {
+            self.initial_interval = initial_interval;
+        }
+        if let Some(max_attempts) = handler.retry_policy_max_attempts {
+            self.max_attempts = Some(max_attempts);
+        }
+        if let Some(max_interval) = handler.retry_policy_max_interval {
+            self.max_interval = Some(max_interval);
+        }
+        if let Some(exponentiation_factor) = handler.retry_policy_exponentiation_factor {
+            self.exponentiation_factor = exponentiation_factor;
+        }
+        if let Some(on_max_attempts) = handler.retry_policy_on_max_attempts {
+            self.on_max_attempts = on_max_attempts;
+        }
+    }
+
+    pub(super) fn as_retry_policy(&self) -> RetryPolicy {
+        if self.max_attempts == Some(0) {
+            // No retries!
+            return RetryPolicy::None;
+        }
+        RetryPolicy::Exponential {
+            initial_interval: self.initial_interval,
+            factor: self.exponentiation_factor,
+            max_attempts: self.max_attempts.map(|u| NonZeroUsize::new(u).unwrap()),
+            max_interval: self.max_interval,
+        }
+    }
+}
+
+impl Configuration {
+    // TODO this method can be removed when the old retry policy configuration gets merged
+    fn resolve_default_retry_policy(&self) -> ComputedRetryPolicy {
+        if let Some(InvocationRetryPolicyOptions {
+            initial_interval,
+            exponentiation_factor,
+            max_attempts,
+            on_max_attempts,
+            max_interval,
+        }) = &self.invocation.default_retry_policy
+        {
+            return ComputedRetryPolicy {
+                initial_interval: *initial_interval,
+                exponentiation_factor: *exponentiation_factor,
+                max_attempts: *max_attempts,
+                max_interval: *max_interval,
+                on_max_attempts: match on_max_attempts {
+                    crate::config::OnMaxAttempts::Pause => OnMaxAttempts::Pause,
+                    crate::config::OnMaxAttempts::Kill => OnMaxAttempts::Kill,
+                },
+            };
+        }
+
+        #[allow(deprecated)]
+        match self
+            .worker
+            .invoker
+            .retry_policy
+            .as_ref()
+            .unwrap_or(&RetryPolicy::None)
+        {
+            RetryPolicy::None => ComputedRetryPolicy {
+                initial_interval: Default::default(),
+                exponentiation_factor: 1.0,
+                max_attempts: Some(0),
+                max_interval: None,
+                on_max_attempts: OnMaxAttempts::Kill,
+            },
+            RetryPolicy::FixedDelay {
+                max_attempts,
+                interval,
+            } => ComputedRetryPolicy {
+                initial_interval: *interval,
+                exponentiation_factor: 1.0,
+                max_attempts: max_attempts.map(|u| u.get()),
+                max_interval: Some(*interval),
+                on_max_attempts: OnMaxAttempts::Kill,
+            },
+            RetryPolicy::Exponential {
+                max_attempts,
+                initial_interval,
+                factor,
+                max_interval,
+            } => ComputedRetryPolicy {
+                initial_interval: *initial_interval,
+                exponentiation_factor: *factor,
+                max_attempts: max_attempts.map(|u| u.get()),
+                max_interval: *max_interval,
+                on_max_attempts: OnMaxAttempts::Kill,
+            },
         }
     }
 }

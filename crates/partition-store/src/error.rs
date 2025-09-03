@@ -27,7 +27,7 @@ pub enum OpenError {
     SnapshotUnsuitable,
     #[error("partition store for partition does not exist in local database")]
     NoLocalStore,
-    #[error("open failed due to snapshot-related error: {0}")]
+    #[error("open failed due to snapshot-related error: {0:#}")]
     Snapshot(#[from] anyhow::Error),
     #[error("open failed due to rocksdb error: {0}")]
     RocksDb(#[from] RocksError),
@@ -46,7 +46,7 @@ pub enum BuildError {
     #[error("db contains no storage format version")]
     #[code(restate_errors::RT0009)]
     MissingStorageFormatVersion,
-    #[error("snapshot repository configuration error: {0}")]
+    #[error("snapshot repository configuration error: {0:#}")]
     #[code(unknown)]
     Snapshots(anyhow::Error),
     #[error(transparent)]
@@ -74,11 +74,11 @@ pub enum SnapshotErrorKind {
     InvalidState,
     #[error("Snapshot repository is not configured")]
     RepositoryNotConfigured,
-    #[error("export error: {0}")]
+    #[error("export error: {0:#}")]
     Export(#[source] anyhow::Error),
-    #[error("snapshot repository IO error: {0}")]
+    #[error("snapshot repository IO error: {0:#}")]
     RepositoryIo(#[source] anyhow::Error),
-    #[error("Internal error: {0}")]
+    #[error("Internal error: {0:#}")]
     Internal(#[source] anyhow::Error),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),

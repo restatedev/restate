@@ -22,9 +22,8 @@ use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
 
 #[derive(Run, Parser, Collect, Clone)]
-#[cling(run = "run_purge")]
-#[clap(visible_alias = "rm")]
-pub struct Purge {
+#[cling(run = "run_resume")]
+pub struct Resume {
     /// Either an invocation id, or a target string exact match or prefix, e.g.:
     /// * `invocationId`
     /// * `serviceName`
@@ -32,26 +31,23 @@ pub struct Purge {
     /// * `virtualObjectName`
     /// * `virtualObjectName/key`
     /// * `virtualObjectName/key/handler`
-    /// * `workflowName`
-    /// * `workflowName/key`
-    /// * `workflowName/key/handler`
     query: String,
 }
 
-pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
+pub async fn run_resume(State(env): State<CliEnv>, opts: &Resume) -> Result<()> {
     let client = clients::AdminClient::new(&env).await?;
     let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
+    // Filter only by invoked/suspended/paused, this command has no effect on non-completed invocations
     let filter = format!(
-        "{} AND status = 'completed'",
+        "{} AND status IN ('paused', 'running', 'backing-off', 'suspended', 'ready')",
         create_query_filter(&opts.query)
     );
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {
         bail!(
-            "No invocations found for query {}! Note that the purge command only works on completed invocations. \
-            If you need to cancel/kill an invocation, consider using the cancel command instead.",
+            "No invocations found for query {}! Note that the resume command only works on invocations either 'running', 'backing-off', 'suspended' or 'paused'.",
             opts.query
         );
     };
@@ -59,14 +55,14 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
     render_simple_invocation_list(&invocations);
 
     // Get the invocation and confirm
-    confirm_or_exit("Are you sure you want to purge these invocations?")?;
+    confirm_or_exit("Are you sure you want to resume these invocations?")?;
 
-    // Purge invocations
-    let (purged, failed_to_purge) =
+    // Resume invocations
+    let (resumed, failed_to_resume) =
         collect_and_split_futures(invocations.into_iter().map(|invocation| invocation.id).map(
             |invocation_id| async {
                 client
-                    .purge_invocation(&invocation_id)
+                    .resume_invocation(&invocation_id)
                     .map_err(anyhow::Error::from)
                     .await
                     .map(|_| invocation_id.clone())
@@ -76,29 +72,30 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
         .await;
 
     c_println!();
-    c_success!("Purged invocations:");
+    c_success!("Resumed invocations:");
 
     // Print new ids
     let mut invocations_table = Table::new_styled();
-    invocations_table.set_styled_header(vec!["PURGED INVOCATIONS"]);
-    for id in purged {
+    invocations_table.set_styled_header(vec!["RESUMED INVOCATIONS"]);
+    for id in resumed {
         invocations_table.add_row(vec![Cell::new(&id)]);
     }
     c_indent_table!(0, invocations_table);
 
     // Print failed ones, if any
-    if !failed_to_purge.is_empty() {
-        c_println!();
-        c_warn!("Failed to purge:");
-        let mut failed_to_purge_table = Table::new_styled();
-        failed_to_purge_table.set_styled_header(vec!["ID", "REASON"]);
-        for (id, reason) in failed_to_purge {
-            failed_to_purge_table
+    if !failed_to_resume.is_empty() {
+        c_warn!("Failed to resume:");
+        let mut failed_to_restart_table = Table::new_styled();
+        failed_to_restart_table.set_styled_header(vec!["ID", "REASON"]);
+        for (id, reason) in failed_to_resume {
+            failed_to_restart_table
                 .add_row(vec![Cell::new(&id), Cell::new(reason).fg(Color::DarkRed)]);
         }
-        c_indent_table!(0, failed_to_purge_table);
+        c_indent_table!(0, failed_to_restart_table);
 
-        return Err(anyhow!("Failed to purge some invocations"));
+        return Err(anyhow!("Failed to resume some invocations"));
+    } else {
+        c_success!("Request was sent successfully");
     }
 
     Ok(())

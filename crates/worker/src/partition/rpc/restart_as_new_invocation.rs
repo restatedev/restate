@@ -29,11 +29,10 @@ pub(super) struct Request {
     pub(super) invocation_id: InvocationId,
 }
 
-impl<'a, Proposer: CommandProposer, Storage> RpcHandler<Request>
-    for RpcContext<'a, Proposer, Storage>
+impl<'a, TActuator: Actuator, TStorage> RpcHandler<Request> for RpcContext<'a, TActuator, TStorage>
 where
-    Proposer: CommandProposer,
-    Storage: ReadOnlyInvocationStatusTable + ReadOnlyJournalTable,
+    TActuator: Actuator,
+    TStorage: ReadOnlyInvocationStatusTable + ReadOnlyJournalTable,
 {
     type Output = RestartAsNewInvocationRpcResponse;
     type Error = ();
@@ -198,7 +197,7 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::rpc::MockCommandProposer;
+    use crate::partition::rpc::MockActuator;
     use assert2::let_assert;
     use futures::{FutureExt, Stream, stream};
     use googletest::prelude::*;
@@ -288,7 +287,7 @@ mod tests {
         let headers = vec![Header::new("key", "value")];
         let payload = rand::bytes();
 
-        let mut proposer = MockCommandProposer::new();
+        let mut proposer = MockActuator::new();
         let invocation_target_clone = invocation_target.clone();
         let headers_clone = vec![Header::new("key", "value")];
         let payload_clone = payload.clone();
@@ -363,7 +362,7 @@ mod tests {
     async fn reply_not_found_for_unknown_invocation() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockCommandProposer::new();
+        let mut proposer = MockActuator::new();
         proposer
             .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .never();
@@ -401,7 +400,7 @@ mod tests {
     async fn reply_missing_input() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockCommandProposer::new();
+        let mut proposer = MockActuator::new();
         proposer
             .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .never();
@@ -445,7 +444,7 @@ mod tests {
     async fn reply_unsupported() {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockCommandProposer::new();
+        let mut proposer = MockActuator::new();
         proposer
             .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .never();
@@ -508,7 +507,7 @@ mod tests {
     ) {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockCommandProposer::new();
+        let mut proposer = MockActuator::new();
         proposer
             .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .never();
@@ -558,7 +557,7 @@ mod tests {
     ) {
         let invocation_id = InvocationId::mock_random();
 
-        let mut proposer = MockCommandProposer::new();
+        let mut proposer = MockActuator::new();
         proposer
             .expect_self_propose_and_respond_asynchronously::<PartitionProcessorRpcResponse>()
             .never();

@@ -227,7 +227,7 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         TableColumn {
             name: "status",
             column_type: "Utf8",
-            description: "Either `pending` or `scheduled` or `ready` or `running` or `backing-off` or `suspended` or `completed`.",
+            description: "Either `pending` or `scheduled` or `ready` or `running` or `paused` or `backing-off` or `suspended` or `completed`.",
         },
         sys_invocation_status
             .remove("completion_result")

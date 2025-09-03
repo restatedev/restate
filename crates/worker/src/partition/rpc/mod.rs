@@ -17,15 +17,18 @@ mod kill_invocation;
 mod purge_invocation;
 mod purge_journal;
 mod restart_as_new_invocation;
+mod resume_invocation;
 
+use crate::partition;
 use crate::partition::leadership::LeadershipState;
 use restate_core::network::{Oneshot, Reciprocal};
+use restate_invoker_api::InvokerHandle;
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
 use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
 use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
-use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
-use restate_types::invocation::InvocationRequest;
+use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
+use restate_types::invocation::{InvocationEpoch, InvocationRequest};
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
@@ -35,7 +38,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 #[cfg_attr(test, mockall::automock)]
-pub(super) trait CommandProposer {
+pub(super) trait Actuator {
     fn self_propose_and_respond_asynchronously<O: 'static + Into<PartitionProcessorRpcResponse>>(
         &mut self,
         partition_key: PartitionKey,
@@ -51,9 +54,22 @@ pub(super) trait CommandProposer {
         request_id: PartitionProcessorRpcRequestId,
         replier: Replier<O>,
     ) -> impl Future<Output = ()>;
+
+    fn notify_invoker_to_retry_now(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> impl Future<Output = ()>;
 }
 
-impl<I> CommandProposer for LeadershipState<I> {
+impl<
+    I: InvokerHandle<
+        partition::invoker_storage_reader::InvokerStorageReader<
+            restate_partition_store::PartitionStore,
+        >,
+    >,
+> Actuator for LeadershipState<I>
+{
     async fn self_propose_and_respond_asynchronously<O: Into<PartitionProcessorRpcResponse>>(
         &mut self,
         partition_key: PartitionKey,
@@ -87,15 +103,29 @@ impl<I> CommandProposer for LeadershipState<I> {
         )
         .await
     }
+
+    async fn notify_invoker_to_retry_now(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) {
+        let Some((partition_leader_epoch, invoker_handle)) = LeadershipState::invoker_handle(self)
+        else {
+            return;
+        };
+        let _ = invoker_handle
+            .retry_invocation_now(partition_leader_epoch, invocation_id, invocation_epoch)
+            .await;
+    }
 }
 
-pub(super) struct RpcContext<'a, Proposer, Storage> {
-    proposer: &'a mut Proposer,
+pub(super) struct RpcContext<'a, Actuator, Storage> {
+    proposer: &'a mut Actuator,
     storage: &'a mut Storage,
 }
 
-impl<'a, Proposer, Storage> RpcContext<'a, Proposer, Storage> {
-    pub(super) fn new(proposer: &'a mut Proposer, storage: &'a mut Storage) -> Self {
+impl<'a, Actuator, Storage> RpcContext<'a, Actuator, Storage> {
+    pub(super) fn new(proposer: &'a mut Actuator, storage: &'a mut Storage) -> Self {
         Self { proposer, storage }
     }
 }
@@ -138,11 +168,10 @@ pub(super) trait RpcHandler<Input> {
     ) -> impl Future<Output = Result<(), Self::Error>>;
 }
 
-impl<'a, Proposer, Storage> RpcHandler<PartitionProcessorRpcRequest>
-    for RpcContext<'a, Proposer, Storage>
+impl<'a, A, S> RpcHandler<PartitionProcessorRpcRequest> for RpcContext<'a, A, S>
 where
-    Proposer: CommandProposer,
-    Storage: ReadOnlyInvocationStatusTable
+    A: Actuator,
+    S: ReadOnlyInvocationStatusTable
         + ReadOnlyVirtualObjectStatusTable
         + ReadOnlyIdempotencyTable
         + ReadOnlyJournalTable,
@@ -250,6 +279,16 @@ where
             PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id } => {
                 self.handle(
                     restart_as_new_invocation::Request {
+                        request_id,
+                        invocation_id,
+                    },
+                    replier.map(),
+                )
+                .await
+            }
+            PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id } => {
+                self.handle(
+                    resume_invocation::Request {
                         request_id,
                         invocation_id,
                     },
