@@ -13,13 +13,13 @@ use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface, collect_and_split_futures};
 use crate::ui::invocations::render_simple_invocation_list;
 
+use crate::commands::invocations::create_query_filter;
 use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
 use comfy_table::{Cell, Color, Table};
 use futures::TryFutureExt;
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
-use restate_types::identifiers::InvocationId;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_purge")]
@@ -42,23 +42,10 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
     let client = clients::AdminClient::new(&env).await?;
     let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
-    let q = opts.query.trim();
-    let filter = if let Ok(id) = q.parse::<InvocationId>() {
-        format!("id = '{id}'")
-    } else {
-        match q.find('/').unwrap_or_default() {
-            0 => format!("target LIKE '{q}/%'"),
-            // If there's one slash, let's add the wildcard depending on the service type,
-            // so we discriminate correctly with serviceName/handlerName with workflowName/workflowKey
-            1 => format!(
-                "(target = '{q}' AND target_service_ty = 'service') OR (target LIKE '{q}/%' AND target_service_ty != 'service'))"
-            ),
-            // Can only be exact match here
-            _ => format!("target LIKE '{q}'"),
-        }
-    };
-    // Filter only by completed, this command has no effect on non-completed invocations
-    let filter = format!("{filter} AND status = 'completed'");
+    let filter = format!(
+        "{} AND status = 'completed'",
+        create_query_filter(&opts.query)
+    );
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {
