@@ -21,8 +21,8 @@ pub(super) struct Request {
     pub(super) append_invocation_reply_on: AppendInvocationReplyOn,
 }
 
-impl<'a, TActuator: Actuator, TStorage> RpcHandler<Request>
-    for RpcContext<'a, TActuator, TStorage>
+impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
+    for RpcContext<'a, TActuator, TSchemas, TStorage>
 {
     type Output = PartitionProcessorRpcResponse;
     type Error = ();
@@ -109,7 +109,7 @@ mod tests {
 
         let (tx, _rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &mut ()),
+            RpcContext::new(&mut proposer, &(), &mut ()),
             Request {
                 request_id: Default::default(),
                 invocation_request: Arc::new(InvocationRequest::mock()),
@@ -147,7 +147,7 @@ mod tests {
 
         let (tx, _rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &mut ()),
+            RpcContext::new(&mut proposer, &(), &mut ()),
             Request {
                 request_id,
                 invocation_request: Arc::new(InvocationRequest::mock()),
@@ -187,7 +187,7 @@ mod tests {
 
         let (tx, _rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &mut ()),
+            RpcContext::new(&mut proposer, &(), &mut ()),
             Request {
                 request_id,
                 invocation_request: Arc::new(InvocationRequest::mock()),

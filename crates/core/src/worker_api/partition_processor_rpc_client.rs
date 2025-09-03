@@ -21,8 +21,8 @@ use restate_types::identifiers::{
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationResponse,
-    SubmittedInvocationNotification,
+    PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationDeploymentId,
+    ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
@@ -520,11 +520,15 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
+        deployment_id: ResumeInvocationDeploymentId,
     ) -> Result<ResumeInvocationResponse, InvocationClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
-                PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id },
+                PartitionProcessorRpcRequestInner::ResumeInvocation {
+                    invocation_id,
+                    deployment_id,
+                },
             )
             .await?;
 

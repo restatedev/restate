@@ -8,14 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use crate::identifiers::{
-    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
+    DeploymentId, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
+    WithPartitionKey,
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PurgeInvocationResponse,
-    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
+    RestartAsNewInvocationResponse, ResumeInvocationDeploymentId, ResumeInvocationResponse,
+    SubmittedInvocationNotification,
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
@@ -70,12 +73,25 @@ pub enum PartitionProcessorRpcRequestInner {
     GetInvocationOutput(InvocationQuery, GetInvocationOutputResponseMode),
     AppendInvocationResponse(InvocationResponse),
     AppendSignal(InvocationId, Signal),
-    CancelInvocation { invocation_id: InvocationId },
-    KillInvocation { invocation_id: InvocationId },
-    PurgeInvocation { invocation_id: InvocationId },
-    PurgeJournal { invocation_id: InvocationId },
-    RestartAsNewInvocation { invocation_id: InvocationId },
-    ResumeInvocation { invocation_id: InvocationId },
+    CancelInvocation {
+        invocation_id: InvocationId,
+    },
+    KillInvocation {
+        invocation_id: InvocationId,
+    },
+    PurgeInvocation {
+        invocation_id: InvocationId,
+    },
+    PurgeJournal {
+        invocation_id: InvocationId,
+    },
+    RestartAsNewInvocation {
+        invocation_id: InvocationId,
+    },
+    ResumeInvocation {
+        invocation_id: InvocationId,
+        deployment_id: ResumeInvocationDeploymentId,
+    },
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
@@ -100,7 +116,7 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
             PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id } => {
                 invocation_id.partition_key()
             }
-            PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id } => {
+            PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id, .. } => {
                 invocation_id.partition_key()
             }
         }
@@ -308,6 +324,13 @@ pub enum ResumeInvocationRpcResponse {
     NotFound,
     NotStarted,
     Completed,
+    CannotChangeDeploymentId,
+    DeploymentNotFound,
+    IncompatibleDeploymentId {
+        pinned_protocol_version: i32,
+        deployment_id: DeploymentId,
+        supported_protocol_versions: RangeInclusive<i32>,
+    },
 }
 
 impl From<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
@@ -317,6 +340,21 @@ impl From<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
             ResumeInvocationRpcResponse::NotFound => ResumeInvocationResponse::NotFound,
             ResumeInvocationRpcResponse::NotStarted => ResumeInvocationResponse::NotStarted,
             ResumeInvocationRpcResponse::Completed => ResumeInvocationResponse::Completed,
+            ResumeInvocationRpcResponse::CannotChangeDeploymentId => {
+                ResumeInvocationResponse::CannotChangeDeploymentId
+            }
+            ResumeInvocationRpcResponse::DeploymentNotFound => {
+                ResumeInvocationResponse::DeploymentNotFound
+            }
+            ResumeInvocationRpcResponse::IncompatibleDeploymentId {
+                pinned_protocol_version,
+                deployment_id,
+                supported_protocol_versions,
+            } => ResumeInvocationResponse::IncompatibleDeploymentId {
+                pinned_protocol_version,
+                deployment_id,
+                supported_protocol_versions,
+            },
         }
     }
 }
@@ -328,6 +366,21 @@ impl From<ResumeInvocationResponse> for ResumeInvocationRpcResponse {
             ResumeInvocationResponse::NotFound => ResumeInvocationRpcResponse::NotFound,
             ResumeInvocationResponse::NotStarted => ResumeInvocationRpcResponse::NotStarted,
             ResumeInvocationResponse::Completed => ResumeInvocationRpcResponse::Completed,
+            ResumeInvocationResponse::CannotChangeDeploymentId => {
+                ResumeInvocationRpcResponse::CannotChangeDeploymentId
+            }
+            ResumeInvocationResponse::DeploymentNotFound => {
+                ResumeInvocationRpcResponse::DeploymentNotFound
+            }
+            ResumeInvocationResponse::IncompatibleDeploymentId {
+                pinned_protocol_version,
+                deployment_id,
+                supported_protocol_versions,
+            } => ResumeInvocationRpcResponse::IncompatibleDeploymentId {
+                pinned_protocol_version,
+                deployment_id,
+                supported_protocol_versions,
+            },
         }
     }
 }

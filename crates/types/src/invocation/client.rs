@@ -9,11 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::errors::InvocationError;
-use crate::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+use crate::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget};
 use crate::journal_v2::Signal;
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -126,12 +127,33 @@ pub enum RestartAsNewInvocationResponse {
     NotStarted,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ResumeInvocationDeploymentId {
+    #[default]
+    KeepPinned,
+    PinToLatest,
+    PinTo {
+        id: DeploymentId,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResumeInvocationResponse {
     Ok,
     NotFound,
     /// The invocation isn't started yet (it's enqueued or scheduled)
     NotStarted,
+    /// The user provided a deployment id to override the pinned id,
+    /// but it cannot be changed because there is no pinned deployment yet or the invocation is running.
+    CannotChangeDeploymentId,
+    /// No deployment found for the given service, or the given deployment id doesn't exist.
+    DeploymentNotFound,
+    /// The chosen deployment id is incompatible
+    IncompatibleDeploymentId {
+        pinned_protocol_version: i32,
+        deployment_id: DeploymentId,
+        supported_protocol_versions: RangeInclusive<i32>,
+    },
     /// Invocation is completed
     Completed,
 }
@@ -221,5 +243,6 @@ pub trait InvocationClient {
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
+        resume_invocation_deployment_id: ResumeInvocationDeploymentId,
     ) -> impl Future<Output = Result<ResumeInvocationResponse, InvocationClientError>> + Send;
 }

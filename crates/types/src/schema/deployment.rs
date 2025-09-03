@@ -384,14 +384,12 @@ pub mod test_util {
     }
 
     impl MockDeploymentMetadataRegistry {
-        pub fn mock_service(&mut self, service: &str) {
-            self.mock_service_with_metadata(service, Deployment::mock());
+        pub fn mock_deployment(&mut self, deployment: Deployment) {
+            self.deployments.insert(deployment.id, deployment.metadata);
         }
 
-        pub fn mock_service_with_metadata(&mut self, service: &str, deployment: Deployment) {
-            self.latest_deployment
-                .insert(service.to_string(), deployment.id);
-            self.deployments.insert(deployment.id, deployment.metadata);
+        pub fn mock_latest_service(&mut self, service: &str, deployment_id: DeploymentId) {
+            self.latest_deployment.insert(service.into(), deployment_id);
         }
     }
 

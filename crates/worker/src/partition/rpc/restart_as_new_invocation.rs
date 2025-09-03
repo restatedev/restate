@@ -29,7 +29,8 @@ pub(super) struct Request {
     pub(super) invocation_id: InvocationId,
 }
 
-impl<'a, TActuator: Actuator, TStorage> RpcHandler<Request> for RpcContext<'a, TActuator, TStorage>
+impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
+    for RpcContext<'a, TActuator, TSchemas, TStorage>
 where
     TActuator: Actuator,
     TStorage: ReadOnlyInvocationStatusTable + ReadOnlyJournalTable,
@@ -347,7 +348,7 @@ mod tests {
 
         let (tx, _rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id: old_invocation_id,
@@ -378,7 +379,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,
@@ -422,7 +423,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,
@@ -475,7 +476,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,
@@ -523,7 +524,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,
@@ -573,7 +574,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,

@@ -9,13 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use crate::schema_registry::SchemaRegistryError;
-use anyhow::bail;
+use assert2::let_assert;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use codederror::{Code, CodedError};
 use okapi_operation::okapi::map;
-use okapi_operation::okapi::openapi3::Responses;
+use okapi_operation::okapi::openapi3::{RefOr, Responses};
 use okapi_operation::{Components, ToMediaTypes, ToResponses, okapi};
 use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
@@ -23,6 +23,8 @@ use restate_types::invocation::ServiceType;
 use restate_types::schema::updater;
 use schemars::JsonSchema;
 use serde::Serialize;
+use std::ops::RangeInclusive;
+
 // --- Few helpers to define Admin API errors.
 
 /// Macro to generate an Admin API Error enum with the given variants.
@@ -70,15 +72,13 @@ macro_rules! generate_meta_api_error {
                 ];
 
                 // Fold the responses into one
-                $crate::rest_api::error::merge_error_responses::<$enum_name>(responses)
+                $crate::rest_api::error::merge_error_responses(responses)
             }
         }
     };
 }
 
-pub(crate) fn merge_error_responses<T>(
-    responses: Vec<Responses>,
-) -> Result<Responses, anyhow::Error> {
+pub(crate) fn merge_error_responses(responses: Vec<Responses>) -> Result<Responses, anyhow::Error> {
     let mut result_responses = Responses::default();
     for t_responses in responses {
         assert!(
@@ -86,13 +86,16 @@ pub(crate) fn merge_error_responses<T>(
             "Errors should not define a default response"
         );
         for (status, response) in t_responses.responses {
-            if result_responses.responses.contains_key(&status) {
-                bail!(
-                    "Type {} has overlapping status {status} from different variants.",
-                    std::any::type_name::<T>()
-                )
-            }
-            result_responses.responses.insert(status, response);
+            let_assert!(RefOr::Object(new_response) = response);
+            result_responses
+                .responses
+                .entry(status)
+                .and_modify(|res| {
+                    let_assert!(RefOr::Object(old_response) = res);
+                    old_response.description =
+                        format!("{}\n{}", old_response.description, new_response.description);
+                })
+                .or_insert_with(|| RefOr::Object(new_response));
         }
     }
 
@@ -114,11 +117,13 @@ macro_rules! impl_meta_api_error {
     ($error_name:ident: $status_code:ident $description:literal) => {
         impl IntoResponse for $error_name {
             fn into_response(self) -> Response {
-
-                (StatusCode::$status_code, Json(ErrorDescriptionResponse {
+                (
+                    StatusCode::$status_code,
+                    Json(ErrorDescriptionResponse {
                         message: self.to_string(),
                         restate_code: None,
-                    })).into_response()
+                    })
+                ).into_response()
             }
         }
 
@@ -204,6 +209,30 @@ impl_meta_api_error!(ResumeInvocationCompletedError: CONFLICT "The invocation is
 #[error("The invocation '{0}' is either inboxed or scheduled, cannot be resumed.")]
 pub(crate) struct ResumeInvocationNotStartedError(pub(crate) String);
 impl_meta_api_error!(ResumeInvocationNotStartedError: TOO_EARLY "The invocation is either inboxed or scheduled. An invocation can be resumed only when running, paused or suspended.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The invocation '{0}' is still running or the deployment id is not pinned yet, deployment id cannot be changed."
+)]
+pub(crate) struct ResumeInvocationCannotChangeDeploymentIdError(pub(crate) String);
+impl_meta_api_error!(ResumeInvocationCannotChangeDeploymentIdError: CONFLICT "The invocation is still running or the deployment id is not pinned yet, deployment id cannot be changed. The deployment id can be changed only if the invocation is paused or suspended, and a deployment id is already pinned.");
+
+#[derive(Debug, thiserror::Error)]
+#[error("The given deployment was not found when trying to resume the invocation '{0}'.")]
+pub(crate) struct ResumeInvocationDeploymentNotFoundError(pub(crate) String);
+impl_meta_api_error!(ResumeInvocationDeploymentNotFoundError: BAD_REQUEST "The given deployment was not found.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The invocation '{invocation_id}' is running on protocol version '{pinned_protocol_version}', while the chosen deployment '{deployment_id}' supports the range {supported_protocol_versions:?}."
+)]
+pub(crate) struct ResumeInvocationIncompatibleDeploymentIdError {
+    pub(crate) invocation_id: String,
+    pub(crate) pinned_protocol_version: i32,
+    pub(crate) deployment_id: String,
+    pub(crate) supported_protocol_versions: RangeInclusive<i32>,
+}
+impl_meta_api_error!(ResumeInvocationIncompatibleDeploymentIdError: BAD_REQUEST "The selected deployment id to resume the invocation doesn't support the currently pinned service protocol version.");
 
 // --- Old Meta API errors. Please don't use these anymore.
 

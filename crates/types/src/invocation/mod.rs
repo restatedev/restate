@@ -14,8 +14,8 @@ pub mod client;
 
 use crate::errors::InvocationError;
 use crate::identifiers::{
-    EntryIndex, IdempotencyId, InvocationId, PartitionKey, PartitionProcessorRpcRequestId,
-    ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
+    DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
+    PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
 };
 use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::time::MillisSinceEpoch;
@@ -973,7 +973,9 @@ impl WithInvocationId for PurgeInvocationRequest {
 #[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResumeInvocationRequest {
     pub invocation_id: InvocationId,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_pinned_deployment_id: Option<DeploymentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 

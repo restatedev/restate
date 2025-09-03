@@ -27,7 +27,8 @@ pub mod storage {
         InFlightInvocationMetadata, InvocationStatus, InvocationStatusDiscriminants,
     };
     use restate_storage_api::journal_table::JournalEntry;
-    use restate_types::identifiers::InvocationId;
+    use restate_types::deployment::PinnedDeployment;
+    use restate_types::identifiers::{DeploymentId, InvocationId};
     use restate_types::invocation::InvocationTarget;
     use restate_types::journal::Entry;
 
@@ -103,6 +104,17 @@ pub mod storage {
             "get_invocation_metadata()",
             some(inner),
         )
+    }
+
+    pub fn pinned_deployment_id_eq(
+        deployment_id: DeploymentId,
+    ) -> impl Matcher<ActualT = InvocationStatus> {
+        in_flight_metadata(field!(
+            InFlightInvocationMetadata.pinned_deployment,
+            some(pat!(PinnedDeployment {
+                deployment_id: eq(deployment_id)
+            }))
+        ))
     }
 }
 
