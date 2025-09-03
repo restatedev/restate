@@ -25,6 +25,12 @@ pub trait GlobalMetadata: Versioned + StorageEncode + StorageDecode {
 
     /// Wrap into MetadataContainer
     fn into_container(self: Arc<Self>) -> MetadataContainer;
+
+    /// Runs an optional validation step before replacing the previous value with the incoming
+    /// (self) one.
+    fn validate_update(&self, _previous: Option<&Arc<Self>>) -> Result<(), anyhow::Error> {
+        Ok(())
+    }
 }
 
 #[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
