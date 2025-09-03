@@ -76,6 +76,37 @@ pub struct PartitionSnapshotMetadata {
     pub files: Vec<LiveFile>,
 }
 
+impl PartitionSnapshotMetadata {
+    pub fn validate(
+        &self,
+        cluster_name: &str,
+        cluster_fingerprint: Option<ClusterFingerprint>,
+    ) -> anyhow::Result<()> {
+        if cluster_name != self.cluster_name {
+            anyhow::bail!(
+                "Snapshot does not match the cluster name of latest snapshot at destination!. Expected: {cluster_name}, got: {}",
+                self.cluster_name
+            );
+        }
+
+        // If the snapshot doesn't have a fingerprint on it, we'll ignore the
+        // check. Eventually all new snapshots will have a fingerprint and this
+        // check will be kept for very old snapshots only.
+        if let Some(cluster_fingerprint) = cluster_fingerprint
+            && let Some(snapshot_cluster_fingerprint) = self.cluster_fingerprint
+            && snapshot_cluster_fingerprint != cluster_fingerprint
+        {
+            // At this point, if nodes_config, latest, and snapshot have a
+            // fingerprint, the **must** match.
+            anyhow::bail!(
+                "Snapshot {} does not match the cluster fingerprint. Expected: '{cluster_fingerprint}' {cluster_fingerprint:?}, got: '{snapshot_cluster_fingerprint}' {snapshot_cluster_fingerprint:?}",
+                self.snapshot_id,
+            );
+        }
+        Ok(())
+    }
+}
+
 #[serde_as]
 #[derive(Clone, Debug, Deserialize)]
 struct PartitionSnapshotMetadataShadow {
