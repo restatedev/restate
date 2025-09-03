@@ -274,6 +274,17 @@ impl NodesConfiguration {
         self.cluster_fingerprint
     }
 
+    /// Should be carefully used.
+    ///
+    /// A cluster fingerprint should never change once it's set.
+    pub fn set_cluster_fingerprint(&mut self, fingerprint: ClusterFingerprint) {
+        assert!(
+            self.cluster_fingerprint.is_none(),
+            "cluster fingerprint cannot be changed once set"
+        );
+        self.cluster_fingerprint = Some(fingerprint);
+    }
+
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
     }
