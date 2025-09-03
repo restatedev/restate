@@ -58,8 +58,7 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
 
     let my_generation = 1;
     let zero_plain_node_id = PlainNodeId::from(0);
-    let mut nodes_configuration =
-        NodesConfiguration::new(Version::MIN, "migration-local-to-replicated".to_owned());
+    let mut nodes_configuration = NodesConfiguration::new_for_testing();
     let my_node_config = NodeConfig::builder()
         .name(Configuration::pinned().common.node_name().to_owned())
         .current_generation(

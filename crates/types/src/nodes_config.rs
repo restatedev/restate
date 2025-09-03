@@ -51,6 +51,10 @@ impl TryFrom<u64> for ClusterFingerprint {
 }
 
 impl ClusterFingerprint {
+    pub fn generate() -> Self {
+        Self(rand::random())
+    }
+
     pub fn to_u64(self) -> u64 {
         self.0.get()
     }
@@ -186,11 +190,22 @@ impl NodeConfig {
 }
 
 impl NodesConfiguration {
-    pub fn new(version: Version, cluster_name: String) -> Self {
+    pub fn new(version: Version, cluster_name: String, fingerprint: ClusterFingerprint) -> Self {
         Self {
             version,
-            cluster_fingerprint: None,
+            cluster_fingerprint: Some(fingerprint),
             cluster_name,
+            nodes: HashMap::default(),
+            name_lookup: HashMap::default(),
+        }
+    }
+
+    #[cfg(feature = "test-util")]
+    pub fn new_for_testing() -> Self {
+        Self {
+            version: Version::MIN,
+            cluster_fingerprint: Some(ClusterFingerprint::generate()),
+            cluster_name: String::from("test-cluster"),
             nodes: HashMap::default(),
             name_lookup: HashMap::default(),
         }
@@ -618,7 +633,7 @@ mod tests {
 
     #[test]
     fn test_upsert_node() {
-        let mut config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut config = NodesConfiguration::new_for_testing();
         let address: AdvertisedAddress = "unix:/tmp/my_socket".parse().unwrap();
         let roles = EnumSet::only(Role::Worker);
         let current_gen = GenerationalNodeId::new(1, 1);
@@ -702,7 +717,7 @@ mod tests {
 
     #[test]
     fn test_remove_node() {
-        let mut config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut config = NodesConfiguration::new_for_testing();
         let address: AdvertisedAddress = "unix:/tmp/my_socket".parse().unwrap();
         let node1 = NodeConfig::new(
             "node1".to_owned(),

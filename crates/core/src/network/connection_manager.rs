@@ -305,7 +305,7 @@ impl ConnectionManager {
             && let Some(cluster_fingerprint) = nodes_config.cluster_fingerprint()
             && incoming_fingerprint != cluster_fingerprint
         {
-            return Err(HandshakeError::Failed("Cluster fingerprint mismatch".to_owned()).into());
+            return Err(HandshakeError::Failed("cluster fingerprint mismatch".to_owned()).into());
         }
 
         // NodeId **must** be generational at this layer, we may support accepting connections from
@@ -317,7 +317,7 @@ impl ConnectionManager {
 
         // we don't allow node-id 0 in this version.
         if peer_node_id.id == 0 {
-            return Err(HandshakeError::Failed("Peer cannot have node Id of 0".to_owned()).into());
+            return Err(HandshakeError::Failed("peer cannot have node Id of 0".to_owned()).into());
         }
 
         if peer_node_id.generation == 0 {
@@ -798,7 +798,7 @@ mod tests {
         assert_that!(
             err,
             pat!(AcceptError::Handshake(pat!(HandshakeError::Failed(eq(
-                "cluster name mismatch"
+                "cluster fingerprint mismatch"
             )))))
         );
         Ok(())
@@ -844,7 +844,7 @@ mod tests {
 
     #[test(restate_core::test(start_paused = true))]
     async fn fetching_metadata_updates_through_message_headers() -> Result<()> {
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
 
         let node_id = GenerationalNodeId::new(42, 42);
         let node_config = NodeConfig::builder()
