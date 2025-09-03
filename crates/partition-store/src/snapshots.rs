@@ -39,7 +39,6 @@ impl Snapshots {
         let repository = SnapshotRepository::create_if_configured(
             &config.worker.snapshots,
             config.worker.storage.snapshots_staging_dir(),
-            config.common.cluster_name().to_owned(),
         )
         .await?;
 

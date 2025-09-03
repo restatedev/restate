@@ -57,8 +57,6 @@ pub struct SnapshotRepository {
     prefix: ObjectPath,
     /// Ingested snapshots staging location.
     staging_dir: PathBuf,
-    /// Expected cluster name for the snapshots in this repository.
-    cluster_name: String,
 }
 
 /// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
@@ -183,7 +181,6 @@ impl SnapshotRepository {
     pub async fn create_if_configured(
         snapshots_options: &SnapshotsOptions,
         staging_dir: PathBuf,
-        cluster_name: String,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
         let mut destination = if let Some(ref destination) = snapshots_options.destination {
             Url::parse(destination).context("Failed parsing snapshot repository URL")?
@@ -209,7 +206,6 @@ impl SnapshotRepository {
             destination,
             prefix: ObjectPath::from(prefix),
             staging_dir,
-            cluster_name,
         }))
     }
 
@@ -751,6 +747,7 @@ mod tests {
     use bytes::Bytes;
     use object_store::ObjectStore;
     use object_store::path::Path as ObjectPath;
+    use std::sync::Arc;
     use std::time::SystemTime;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
@@ -760,6 +757,8 @@ mod tests {
     use tracing_subscriber::{EnvFilter, fmt};
     use url::Url;
 
+    use restate_core::test_env::create_mock_nodes_config;
+    use restate_core::{Metadata, MetadataBuilder, TaskCenter};
     use restate_object_store_util::create_object_store_client;
     use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
@@ -769,12 +768,20 @@ mod tests {
     use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};
     use super::{PartitionSnapshotMetadata, SnapshotFormatVersion};
 
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_overwrite_unparsable_latest() -> anyhow::Result<()> {
         tracing_subscriber::registry()
             .with(fmt::layer())
             .with(EnvFilter::from_default_env())
             .init();
+
+        let metadata_builder = MetadataBuilder::default();
+        TaskCenter::try_set_global_metadata(metadata_builder.to_metadata());
+        // ensure we have a valid nodes configuration to set the cluster name and fingerprint for
+        // us.
+        metadata_builder
+            .to_metadata()
+            .set(Arc::new(create_mock_nodes_config(1, 1)).into());
 
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
@@ -800,13 +807,10 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository = SnapshotRepository::create_if_configured(
-            &opts,
-            TempDir::new().unwrap().keep(),
-            "cluster".to_owned(),
-        )
-        .await?
-        .unwrap();
+        let repository =
+            SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().keep())
+                .await?
+                .unwrap();
 
         // Write invalid JSON to latest.json
         let latest_path = destination_dir
@@ -823,7 +827,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_put_snapshot_local_filesystem() -> anyhow::Result<()> {
         let snapshots_destination = TempDir::new()?;
         test_put_snapshot(
@@ -835,7 +839,7 @@ mod tests {
     }
 
     /// For this test to run, set RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME to a writable S3 bucket name
-    #[tokio::test]
+    #[restate_core::test]
     async fn test_put_snapshot_s3() -> anyhow::Result<()> {
         let Ok(bucket_name) = std::env::var("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME") else {
             return Ok(());
@@ -848,6 +852,14 @@ mod tests {
             .with(fmt::layer())
             .with(EnvFilter::from_default_env())
             .init();
+
+        let metadata_builder = MetadataBuilder::default();
+        TaskCenter::try_set_global_metadata(metadata_builder.to_metadata());
+        // ensure we have a valid nodes configuration to set the cluster name and fingerprint for
+        // us.
+        metadata_builder
+            .to_metadata()
+            .set(Arc::new(create_mock_nodes_config(1, 1)).into());
 
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
@@ -887,13 +899,10 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::create_if_configured(
-            &opts,
-            TempDir::new().unwrap().keep(),
-            "cluster".to_owned(),
-        )
-        .await?
-        .unwrap();
+        let repository =
+            SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().keep())
+                .await?
+                .unwrap();
 
         repository.put(&snapshot1, source_dir.clone()).await?;
 
@@ -965,8 +974,12 @@ mod tests {
     ) -> PartitionSnapshotMetadata {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
-            cluster_name: "cluster".to_string(),
-            cluster_fingerprint: None,
+            cluster_name: Metadata::with_current(|m| {
+                m.nodes_config_ref().cluster_name().to_string()
+            }),
+            cluster_fingerprint: Metadata::with_current(|m| {
+                m.nodes_config_ref().cluster_fingerprint()
+            }),
             node_name: "node".to_string(),
             partition_id: PartitionId::MIN,
             created_at: humantime::Timestamp::from(SystemTime::now()),

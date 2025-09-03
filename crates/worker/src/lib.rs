@@ -156,7 +156,6 @@ impl Worker {
             SnapshotRepository::create_if_configured(
                 snapshots_options,
                 config.worker.storage.snapshots_staging_dir(),
-                config.common.cluster_name().to_owned(),
             )
             .await
             .map_err(BuildError::SnapshotRepository)?,
