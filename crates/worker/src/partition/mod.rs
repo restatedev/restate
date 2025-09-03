@@ -220,26 +220,35 @@ pub struct PartitionProcessor<InvokerSender> {
     trim_queue: TrimQueue,
 }
 
-#[derive(Debug, derive_more::Display, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum ProcessorError {
     /// Indicates that the processor encountered a trim gap in the log.
     /// This is a signal to the PartitionProcessorManager to attempt to restart
     /// the processor for this partition. This might occur after the first startup
     /// of a worker that's been down while a log trim occurred, and recoverable
     /// as long as we can find a snapshot with a min LSN of trim_gap_end or later.
-    #[display("[{read_pointer}..{trim_gap_end}]")]
+    #[error("[{read_pointer}..{trim_gap_end}]")]
     TrimGapEncountered {
         read_pointer: Lsn,
         trim_gap_end: Lsn,
     },
+    #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
     Decode(#[from] StorageDecodeError),
+    #[error(transparent)]
     Bifrost(#[from] restate_bifrost::Error),
+    #[error(transparent)]
     StoreOpen(#[from] restate_partition_store::OpenError),
+    #[error(transparent)]
     StateMachine(#[from] state_machine::Error),
+    #[error(transparent)]
     ActionEffect(#[from] leadership::Error),
+    #[error(transparent)]
     ShutdownError(#[from] ShutdownError),
+    #[error("log read stream has terminated")]
     LogReadStreamTerminated,
+    #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
