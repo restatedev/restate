@@ -1019,7 +1019,7 @@ mod tests {
     use restate_types::net::node::{GetNodeState, GossipService, NodeStateResponse};
     use restate_types::net::partition_processor_manager::PartitionManagerService;
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
-    use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+    use restate_types::{GenerationalNodeId, PlainNodeId};
 
     #[test(restate_core::test)]
     async fn manual_log_trim() -> anyhow::Result<()> {
@@ -1561,7 +1561,7 @@ mod tests {
         let mut cs_updater = TaskCenter::with_current(|h| h.cluster_state_updater());
         let mut write_guard = cs_updater.write();
 
-        let mut nodes_config = NodesConfiguration::new(Version::MIN, "test-cluster".to_owned());
+        let mut nodes_config = NodesConfiguration::new_for_testing();
         for i in 1..=num_nodes {
             let node_id = GenerationalNodeId::new(i as u32, i as u32);
             nodes_config.upsert_node(
