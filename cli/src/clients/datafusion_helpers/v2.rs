@@ -330,7 +330,8 @@ pub async fn find_active_invocations(
         invocations_with_latest_deployment_id AS
         (SELECT
             inv.*,
-            svc.deployment_id as comp_latest_deployment
+            svc.deployment_id as comp_latest_deployment,
+            svc.ty as service_type
         FROM sys_service svc
         RIGHT JOIN invocations inv ON svc.name = inv.target_service_name
         ),
