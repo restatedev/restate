@@ -23,6 +23,7 @@ use arrow::{
 };
 use bytes::Buf;
 use itertools::Itertools;
+use restate_types::SemanticRestateVersion;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
@@ -100,10 +101,7 @@ impl DataFusionHttpClient {
             _ => {
                 return Err(Error::JSONSupport(
                     self.inner.base_url.clone(),
-                    self.inner
-                        .restate_server_version
-                        .clone()
-                        .unwrap_or_else(|| "unknown".into()),
+                    self.inner.restate_server_version.to_string(),
                 ));
             }
         }
@@ -178,6 +176,10 @@ impl DataFusionHttpClient {
             .await?;
 
         Ok(actual_count as usize == expected_count)
+    }
+
+    pub fn server_version(&self) -> &SemanticRestateVersion {
+        &self.inner.restate_server_version
     }
 }
 
