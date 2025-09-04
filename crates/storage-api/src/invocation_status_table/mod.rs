@@ -757,13 +757,6 @@ pub struct InvokedInvocationStatusLite {
     pub current_invocation_epoch: InvocationEpoch,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct ExpiredInvocation {
-    pub invocation_id: InvocationId,
-    pub invocation_expired: bool,
-    pub journal_expired: bool,
-}
-
 pub trait ReadOnlyInvocationStatusTable {
     fn get_invocation_status(
         &mut self,
@@ -786,14 +779,24 @@ pub trait ScanInvocationStatusTable {
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 
+    fn filter_map_invocation_status_lazy<
+        O: Send + 'static,
+        E: Into<anyhow::Error>,
+        F: for<'a> FnMut(
+                (InvocationId, InvocationStatusV2Lazy<'a>),
+            ) -> std::result::Result<Option<O>, E>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        f: F,
+    ) -> Result<impl Stream<Item = Result<O>> + Send>;
+
     fn scan_invoked_invocations(
         &self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
-
-    fn scan_expired_invocations(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<ExpiredInvocation>> + Send>;
 }
 
 pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {

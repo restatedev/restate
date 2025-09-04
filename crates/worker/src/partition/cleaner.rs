@@ -110,7 +110,8 @@ where
         let mut purged_invocation_count = 0;
         let mut purged_journal_count = 0;
 
-        let invocations_stream = storage.scan_expired_invocations(partition_key_range)?;
+        let invocations_stream =
+            storage.filter_map_invocation_status_lazy(partition_key_range, read_expired)?;
         tokio::pin!(invocations_stream);
 
         while let Some(expired_invocation) = invocations_stream
@@ -187,8 +188,7 @@ struct ExpiredInvocation {
 }
 
 fn read_expired(
-    invocation_id: InvocationId,
-    invocation_status_v2_lazy: InvocationStatusV2Lazy,
+    (invocation_id, invocation_status_v2_lazy): (InvocationId, InvocationStatusV2Lazy),
 ) -> Result<Option<ExpiredInvocation>, ConversionError> {
     let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
         invocation_status_v2_lazy.inner.status()
@@ -231,6 +231,10 @@ fn read_expired(
         false
     };
 
+    if !invocation_expired && !journal_expired {
+        return Ok(None);
+    }
+
     Ok(Some(ExpiredInvocation {
         invocation_id,
         invocation_expired,
@@ -244,18 +248,30 @@ mod tests {
 
     use futures::{Stream, stream};
     use googletest::prelude::*;
+    use prost::Message;
     use restate_core::{Metadata, TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_storage_api::invocation_status_table::{
-        ExpiredInvocation, InvokedInvocationStatusLite, ScanInvocationStatusTable,
+        InvokedInvocationStatusLite, ScanInvocationStatusTable,
     };
     use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+    use restate_storage_api::{StorageError, protobuf_types};
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
     use restate_types::partition_table::{FindPartition, PartitionTable};
+    use restate_types::time::MillisSinceEpoch;
     use test_log::test;
 
+    #[derive(Clone)]
+    struct MockCompletedInvocation {
+        invocation_id: InvocationId,
+        completed_transition_time: Option<u64>,
+        completion_retention_duration: Duration,
+        journal_retention_duration: Duration,
+        journal_length: u32,
+    }
+
     #[allow(dead_code)]
-    struct MockInvocationStatusReader(Vec<ExpiredInvocation>);
+    struct MockInvocationStatusReader(Vec<MockCompletedInvocation>);
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
         fn for_each_invocation_status_lazy<
@@ -278,21 +294,65 @@ mod tests {
             Ok(std::future::pending())
         }
 
+        fn filter_map_invocation_status_lazy<
+            O: Send + 'static,
+            E: Into<anyhow::Error>,
+            F: for<'a> FnMut(
+                    (InvocationId, InvocationStatusV2Lazy<'a>),
+                ) -> std::result::Result<Option<O>, E>
+                + Send
+                + Sync
+                + 'static,
+        >(
+            &self,
+            _: RangeInclusive<PartitionKey>,
+            mut f: F,
+        ) -> restate_storage_api::Result<impl Stream<Item = restate_storage_api::Result<O>> + Send>
+        {
+            Ok(
+                stream::iter(self.0.clone()).filter_map(move |expired_invocation| {
+                    let completion_retention_duration = protobuf_types::v1::Duration::from(
+                        expired_invocation.completion_retention_duration,
+                    )
+                    .encode_to_vec();
+                    let journal_retention_duration = protobuf_types::v1::Duration::from(
+                        expired_invocation.journal_retention_duration,
+                    )
+                    .encode_to_vec();
+
+                    std::future::ready({
+                        match f((
+                            expired_invocation.invocation_id,
+                            InvocationStatusV2Lazy {
+                                inner: protobuf_types::v1::InvocationStatusV2Lazy {
+                                    status: 5,
+                                    completed_transition_time: expired_invocation
+                                        .completed_transition_time,
+                                    journal_length: expired_invocation.journal_length,
+                                    ..Default::default()
+                                },
+                                completion_retention_duration_lazy: Some(
+                                    &completion_retention_duration,
+                                ),
+                                journal_retention_duration_lazy: Some(&journal_retention_duration),
+                                ..Default::default()
+                            },
+                        )) {
+                            Ok(Some(val)) => Some(Ok(val)),
+                            Ok(None) => None,
+                            Err(err) => Some(Err(StorageError::Conversion(err.into()))),
+                        }
+                    })
+                }),
+            )
+        }
+
         fn scan_invoked_invocations(
             &self,
         ) -> restate_storage_api::Result<
             impl Stream<Item = restate_storage_api::Result<InvokedInvocationStatusLite>> + Send,
         > {
             Ok(stream::empty())
-        }
-
-        fn scan_expired_invocations(
-            &self,
-            _: RangeInclusive<PartitionKey>,
-        ) -> restate_storage_api::Result<
-            impl Stream<Item = restate_storage_api::Result<ExpiredInvocation>> + Send,
-        > {
-            Ok(stream::iter(self.0.clone()).map(Ok))
         }
     }
 
@@ -314,22 +374,39 @@ mod tests {
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
         let not_expired_invocation_1 =
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
+        let not_expired_invocation_2 =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
+
+        let now = MillisSinceEpoch::now().as_u64();
 
         let mock_storage = MockInvocationStatusReader(vec![
-            ExpiredInvocation {
+            MockCompletedInvocation {
                 invocation_id: expired_invocation,
-                invocation_expired: true,
-                journal_expired: false,
+                completed_transition_time: Some(now),
+                completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
+                journal_length: 0,
             },
-            ExpiredInvocation {
+            MockCompletedInvocation {
                 invocation_id: expired_journal,
-                invocation_expired: false,
-                journal_expired: true,
+                completed_transition_time: Some(now),
+                completion_retention_duration: Duration::MAX,
+                journal_retention_duration: Duration::ZERO,
+                journal_length: 2,
             },
-            ExpiredInvocation {
+            MockCompletedInvocation {
                 invocation_id: not_expired_invocation_1,
-                invocation_expired: false,
-                journal_expired: false,
+                completed_transition_time: Some(now),
+                completion_retention_duration: Duration::MAX,
+                journal_retention_duration: Duration::ZERO,
+                journal_length: 0,
+            },
+            MockCompletedInvocation {
+                invocation_id: not_expired_invocation_2,
+                completed_transition_time: None,
+                completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
+                journal_length: 0,
             },
         ]);
 
