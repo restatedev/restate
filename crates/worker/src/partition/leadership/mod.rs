@@ -459,6 +459,7 @@ where
                 .map_err(Error::Storage)?;
             tokio::pin!(invoked_invocations);
 
+            let start = tokio::time::Instant::now();
             let mut count = 0;
             while let Some(invoked_invocation) = invoked_invocations.next().await {
                 let InvokedInvocationStatusLite {
@@ -478,7 +479,11 @@ where
                     .map_err(Error::Invoker)?;
                 count += 1;
             }
-            debug!("Leader partition resumed {} invocations", count);
+            debug!(
+                "Leader partition resumed {} invocations in {:?}",
+                count,
+                start.elapsed(),
+            );
         }
 
         Ok(ReceiverStream::new(invoker_rx))
