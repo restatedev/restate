@@ -14,13 +14,15 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use futures::StreamExt;
+use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use restate_types::errors::ConversionError;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, cancellation_watcher};
-use restate_storage_api::invocation_status_table::{InvocationStatus, ScanInvocationStatusTable};
-use restate_types::identifiers::WithPartitionKey;
+use restate_storage_api::invocation_status_table::ScanInvocationStatusTable;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::invocation::PurgeInvocationRequest;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
@@ -105,49 +107,31 @@ where
         bifrost_envelope_source: &Source,
     ) -> anyhow::Result<()> {
         let start = tokio::time::Instant::now();
-        let mut completed_count = 0;
         let mut purged_invocation_count = 0;
         let mut purged_journal_count = 0;
 
-        let invocations_stream = storage.scan_invocation_statuses(partition_key_range)?;
+        let invocations_stream = storage.scan_expired_invocations(partition_key_range)?;
         tokio::pin!(invocations_stream);
 
-        while let Some((invocation_id, invocation_status)) = invocations_stream
+        while let Some(expired_invocation) = invocations_stream
             .next()
             .await
             .transpose()
-            .context("Cannot read the next item of the invocation status table")?
+            .context("Cannot read the next expired item of the invocation status table")?
         {
-            let InvocationStatus::Completed(completed_invocation) = invocation_status else {
-                continue;
-            };
-
-            completed_count += 1;
-
-            let Some(completed_time) = completed_invocation.timestamps.completed_transition_time()
-            else {
-                // If completed time is unavailable, the invocation is on the old invocation table,
-                //  thus it will be cleaned up with the old timer.
-                continue;
-            };
-
-            let now = SystemTime::now();
-            if let Some(status_expiration_time) = SystemTime::from(completed_time)
-                .checked_add(completed_invocation.completion_retention_duration)
-                && now >= status_expiration_time
-            {
+            if expired_invocation.invocation_expired {
                 restate_bifrost::append_to_bifrost(
                     bifrost,
                     Arc::new(Envelope {
                         header: Header {
                             source: bifrost_envelope_source.clone(),
                             dest: Destination::Processor {
-                                partition_key: invocation_id.partition_key(),
+                                partition_key: expired_invocation.invocation_id.partition_key(),
                                 dedup: None,
                             },
                         },
                         command: Command::PurgeInvocation(PurgeInvocationRequest {
-                            invocation_id,
+                            invocation_id: expired_invocation.invocation_id,
                             response_sink: None,
                         }),
                     }),
@@ -161,41 +145,31 @@ where
             // We don't cleanup the status yet, let's check if there's a journal to cleanup
             // When length != 0 it means that the purge journal feature was activated from the SDK side (through annotations and the new manifest),
             // or from the relative experimental feature in the Admin API. In this case, the user opted-in this feature and it can't go back to 1.3
-            if completed_invocation.journal_metadata.length != 0 {
-                let Some(journal_expiration_time) = SystemTime::from(completed_time)
-                    .checked_add(completed_invocation.journal_retention_duration)
-                else {
-                    // If sum overflow, then the cleanup time lies far enough in the future
-                    continue;
-                };
-
-                if now >= journal_expiration_time {
-                    restate_bifrost::append_to_bifrost(
-                        bifrost,
-                        Arc::new(Envelope {
-                            header: Header {
-                                source: bifrost_envelope_source.clone(),
-                                dest: Destination::Processor {
-                                    partition_key: invocation_id.partition_key(),
-                                    dedup: None,
-                                },
+            if expired_invocation.journal_expired {
+                restate_bifrost::append_to_bifrost(
+                    bifrost,
+                    Arc::new(Envelope {
+                        header: Header {
+                            source: bifrost_envelope_source.clone(),
+                            dest: Destination::Processor {
+                                partition_key: expired_invocation.invocation_id.partition_key(),
+                                dedup: None,
                             },
-                            command: Command::PurgeJournal(PurgeInvocationRequest {
-                                invocation_id,
-                                response_sink: None,
-                            }),
+                        },
+                        command: Command::PurgeJournal(PurgeInvocationRequest {
+                            invocation_id: expired_invocation.invocation_id,
+                            response_sink: None,
                         }),
-                    )
-                    .await
-                    .context("Cannot append to bifrost purge journal")?;
-                    purged_journal_count += 1;
-                    continue;
-                }
+                    }),
+                )
+                .await
+                .context("Cannot append to bifrost purge journal")?;
+                purged_journal_count += 1;
+                continue;
             }
         }
 
         debug!(
-            completed_count,
             purged_invocation_count,
             purged_journal_count,
             "Executed completed invocations cleanup in {:?}",
@@ -206,6 +180,64 @@ where
     }
 }
 
+struct ExpiredInvocation {
+    invocation_id: InvocationId,
+    invocation_expired: bool,
+    journal_expired: bool,
+}
+
+fn read_expired(
+    invocation_id: InvocationId,
+    invocation_status_v2_lazy: InvocationStatusV2Lazy,
+) -> Result<Option<ExpiredInvocation>, ConversionError> {
+    let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
+        invocation_status_v2_lazy.inner.status()
+    else {
+        return Ok(None);
+    };
+
+    let Some(completed_time) = invocation_status_v2_lazy.inner.completed_transition_time else {
+        // If completed time is unavailable, the invocation is on the old invocation table,
+        //  thus it will be cleaned up with the old timer.
+        return Ok(None);
+    };
+
+    let completed_time = restate_types::time::MillisSinceEpoch::new(completed_time);
+    let now = SystemTime::now();
+
+    let completion_retention_duration =
+        invocation_status_v2_lazy.completion_retention_duration()?;
+
+    let invocation_expired = if let Some(status_expiration_time) =
+        SystemTime::from(completed_time).checked_add(completion_retention_duration)
+    {
+        now >= status_expiration_time
+    } else {
+        false
+    };
+
+    let journal_expired = if invocation_status_v2_lazy.inner.journal_length != 0 {
+        let journal_retention_duration = invocation_status_v2_lazy.journal_retention_duration()?;
+
+        if let Some(journal_expiration_time) =
+            SystemTime::from(completed_time).checked_add(journal_retention_duration)
+        {
+            now >= journal_expiration_time
+        } else {
+            // If sum overflow, then the cleanup time lies far enough in the future
+            false
+        }
+    } else {
+        false
+    };
+
+    Ok(Some(ExpiredInvocation {
+        invocation_id,
+        invocation_expired,
+        journal_expired,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,10 +245,8 @@ mod tests {
     use futures::{Stream, stream};
     use googletest::prelude::*;
     use restate_core::{Metadata, TaskCenter, TaskKind, TestCoreEnvBuilder};
-    use restate_storage_api::StorageError;
     use restate_storage_api::invocation_status_table::{
-        CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
-        InvokedInvocationStatusLite, JournalMetadata, ScanInvocationStatusTable,
+        ExpiredInvocation, InvokedInvocationStatusLite, ScanInvocationStatusTable,
     };
     use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
     use restate_types::Version;
@@ -225,19 +255,9 @@ mod tests {
     use test_log::test;
 
     #[allow(dead_code)]
-    struct MockInvocationStatusReader(Vec<(InvocationId, InvocationStatus)>);
+    struct MockInvocationStatusReader(Vec<ExpiredInvocation>);
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
-        fn scan_invocation_statuses(
-            &self,
-            _: RangeInclusive<PartitionKey>,
-        ) -> std::result::Result<
-            impl Stream<Item = restate_storage_api::Result<(InvocationId, InvocationStatus)>> + Send,
-            StorageError,
-        > {
-            Ok(stream::iter(self.0.clone()).map(Ok))
-        }
-
         fn for_each_invocation_status_lazy<
             E: Into<anyhow::Error>,
             F: for<'a> FnMut(
@@ -265,6 +285,15 @@ mod tests {
         > {
             Ok(stream::empty())
         }
+
+        fn scan_expired_invocations(
+            &self,
+            _: RangeInclusive<PartitionKey>,
+        ) -> restate_storage_api::Result<
+            impl Stream<Item = restate_storage_api::Result<ExpiredInvocation>> + Send,
+        > {
+            Ok(stream::iter(self.0.clone()).map(Ok))
+        }
     }
 
     // Start paused makes sure the timer is immediately fired
@@ -285,49 +314,23 @@ mod tests {
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
         let not_expired_invocation_1 =
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
-        let not_expired_invocation_2 =
-            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
-        let not_completed_invocation =
-            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
 
         let mock_storage = MockInvocationStatusReader(vec![
-            (
-                expired_invocation,
-                InvocationStatus::Completed(CompletedInvocation {
-                    completion_retention_duration: Duration::ZERO,
-                    ..CompletedInvocation::mock_neo()
-                }),
-            ),
-            (
-                expired_journal,
-                InvocationStatus::Completed(CompletedInvocation {
-                    completion_retention_duration: Duration::MAX,
-                    journal_retention_duration: Duration::ZERO,
-                    journal_metadata: JournalMetadata {
-                        length: 2,
-                        commands: 2,
-                        events: 0,
-                        span_context: Default::default(),
-                    },
-                    ..CompletedInvocation::mock_neo()
-                }),
-            ),
-            (
-                not_expired_invocation_1,
-                InvocationStatus::Completed(CompletedInvocation {
-                    completion_retention_duration: Duration::MAX,
-                    ..CompletedInvocation::mock_neo()
-                }),
-            ),
-            (
-                not_expired_invocation_2,
-                // Old status invocations are still processed with the cleanup timer in the PP
-                InvocationStatus::Completed(CompletedInvocation::mock_old()),
-            ),
-            (
-                not_completed_invocation,
-                InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
-            ),
+            ExpiredInvocation {
+                invocation_id: expired_invocation,
+                invocation_expired: true,
+                journal_expired: false,
+            },
+            ExpiredInvocation {
+                invocation_id: expired_journal,
+                invocation_expired: false,
+                journal_expired: true,
+            },
+            ExpiredInvocation {
+                invocation_id: not_expired_invocation_1,
+                invocation_expired: false,
+                journal_expired: false,
+            },
         ]);
 
         TaskCenter::spawn(

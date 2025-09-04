@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::{ControlFlow, RangeInclusive};
+use std::time::SystemTime;
 
 use futures::Stream;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
@@ -16,9 +17,9 @@ use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
-    InvocationStatusV1, InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
-    ScanInvocationStatusTable,
+    ExpiredInvocation, InvocationLite, InvocationStatus, InvocationStatusDiscriminants,
+    InvocationStatusTable, InvocationStatusV1, InvokedInvocationStatusLite,
+    ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError, Transaction};
@@ -119,6 +120,90 @@ fn read_invoked_full_invocation_id(
     }
 }
 
+fn read_invocation_status_v2_lazy<'a>(mut value: &'a [u8]) -> Result<InvocationStatusV2Lazy<'a>> {
+    if value.len() < std::mem::size_of::<u8>() {
+        return Err(StorageError::Conversion(
+            restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                "remaining bytes in buf '{}' < version bytes '{}'",
+                value.len(),
+                std::mem::size_of::<u8>()
+            ))
+            .into(),
+        ));
+    }
+
+    // read version
+    let codec = restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value))
+        .map_err(|e| StorageError::Conversion(e.into()))?;
+
+    let restate_types::storage::StorageCodecKind::Protobuf = codec else {
+        return Err(StorageError::Conversion(
+            restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into(),
+        ));
+    };
+
+    let inv_status_v2_lazy =
+        restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value)
+            .map_err(|e| StorageError::Conversion(e.into()))?;
+
+    Ok(inv_status_v2_lazy)
+}
+
+fn read_expired(mut kv: (&[u8], &[u8])) -> Result<Option<ExpiredInvocation>> {
+    let invocation_id = invocation_id_from_key_bytes(&mut kv.0)?;
+    let inv_status_v2_lazy = read_invocation_status_v2_lazy(kv.1)?;
+
+    let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
+        inv_status_v2_lazy.inner.status()
+    else {
+        return Ok(None);
+    };
+
+    let Some(completed_time) = inv_status_v2_lazy.inner.completed_transition_time else {
+        // If completed time is unavailable, the invocation is on the old invocation table,
+        //  thus it will be cleaned up with the old timer.
+        return Ok(None);
+    };
+
+    let completed_time = restate_types::time::MillisSinceEpoch::new(completed_time);
+    let now = SystemTime::now();
+
+    let completion_retention_duration = inv_status_v2_lazy
+        .completion_retention_duration()
+        .map_err(|err| StorageError::Conversion(err.into()))?;
+
+    let invocation_expired = if let Some(status_expiration_time) =
+        SystemTime::from(completed_time).checked_add(completion_retention_duration)
+    {
+        now >= status_expiration_time
+    } else {
+        false
+    };
+
+    let journal_expired = if inv_status_v2_lazy.inner.journal_length != 0 {
+        let journal_retention_duration = inv_status_v2_lazy
+            .journal_retention_duration()
+            .map_err(|err| StorageError::Conversion(err.into()))?;
+
+        if let Some(journal_expiration_time) =
+            SystemTime::from(completed_time).checked_add(journal_retention_duration)
+        {
+            now >= journal_expiration_time
+        } else {
+            // If sum overflow, then the cleanup time lies far enough in the future
+            false
+        }
+    } else {
+        false
+    };
+
+    Ok(Some(ExpiredInvocation {
+        invocation_id,
+        invocation_expired,
+        journal_expired,
+    }))
+}
+
 const MIGRATION_BATCH_SIZE: usize = 1000;
 
 pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionStore) -> Result<()> {
@@ -184,24 +269,15 @@ impl ScanInvocationStatusTable for PartitionStore {
         .map_err(|_| StorageError::OperationalError)
     }
 
-    fn scan_invocation_statuses(
+    fn scan_expired_invocations(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send> {
-        self.run_iterator(
-            "df-invocation-status",
-            Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
-            |(mut key, mut value)| {
-                let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
-                let state_value = InvocationStatus::decode(&mut value)?;
-
-                let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
-                Ok((
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    state_value,
-                ))
-            },
+    ) -> Result<impl Stream<Item = Result<ExpiredInvocation>> + Send> {
+        self.iterator_filter_map(
+            "scan-all-completed",
+            Priority::High,
+            FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+            read_expired,
         )
         .map_err(|_| StorageError::OperationalError)
     }
@@ -225,26 +301,12 @@ impl ScanInvocationStatusTable for PartitionStore {
                 Priority::Low,
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
                 {
-                    move |(mut key, mut value)| {
+                    move |(mut key, value)| {
                         let state_key =
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
 
-                        if value.len() < std::mem::size_of::<u8>() {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format!(
-                                "remaining bytes in buf '{}' < version bytes '{}'",
-                                value.len(),
-                                std::mem::size_of::<u8>()
-                            )).into())));
-                        }
-
-                        // read version
-                        let codec = break_on_err(restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value)).map_err(|e|StorageError::Conversion(e.into())))?;
-
-                        let restate_types::storage::StorageCodecKind::Protobuf = codec else {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into())));
-                        };
-
-                        let inv_status_v2_lazy = break_on_err(restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value).map_err(|e| StorageError::Conversion(e.into())))?;
+                        let inv_status_v2_lazy =
+                            break_on_err(read_invocation_status_v2_lazy(value))?;
 
                         let (partition_key, invocation_uuid) =
                             break_on_err(state_key.into_inner_ok_or())?;
