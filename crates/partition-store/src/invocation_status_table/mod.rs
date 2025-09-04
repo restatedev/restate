@@ -175,21 +175,13 @@ impl ScanInvocationStatusTable for PartitionStore {
     fn scan_invoked_invocations(
         &self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send> {
-        Ok(self
-            .run_iterator(
-                "scan-all-invoked",
-                Priority::High,
-                FullScanPartitionKeyRange::<InvocationStatusKey>(
-                    self.partition_key_range().clone(),
-                ),
-                read_invoked_full_invocation_id,
-            )
-            .map_err(|_| StorageError::OperationalError)?
-            .filter_map(|result| match result {
-                Ok(Some(res)) => Some(Ok(res)),
-                Ok(None) => None,
-                Err(e) => Some(Err(e)),
-            }))
+        self.iterator_filter_map(
+            "scan-all-invoked",
+            Priority::High,
+            FullScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range().clone()),
+            read_invoked_full_invocation_id,
+        )
+        .map_err(|_| StorageError::OperationalError)
     }
 
     fn scan_invocation_statuses(

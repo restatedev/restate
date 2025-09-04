@@ -415,6 +415,41 @@ impl PartitionStore {
     }
 
     #[allow(clippy::type_complexity)]
+    fn iterator_step_filter_map<O: Send + 'static>(
+        tx: mpsc::Sender<Result<O>>,
+        f: impl Fn((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
+    ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static {
+        move |item| {
+            let res = match item {
+                // apply the caller's function
+                Ok((key, value)) => match f((key, value)) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        if tx.is_closed() {
+                            return IterAction::Stop;
+                        } else {
+                            return IterAction::Next;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.blocking_send(Err(e));
+                        return IterAction::Stop;
+                    }
+                },
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(StorageError::Generic(e.into())));
+                    return IterAction::Stop;
+                }
+            };
+            if tx.blocking_send(Ok(res)).is_err() {
+                return IterAction::Stop;
+            }
+            // the channel is not closed yet, keep iterating
+            IterAction::Next
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
     fn iterator_step_for_each(
         tx: oneshot::Sender<StorageError>,
         mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
@@ -486,6 +521,19 @@ impl PartitionStore {
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_map(tx, f);
+        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        Ok(ReceiverStream::new(rx))
+    }
+
+    pub fn iterator_filter_map<K: TableKey, O: Send + 'static>(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        scan: TableScan<K>,
+        f: impl Fn((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
+    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
+        let (tx, rx) = mpsc::channel(8);
+        let on_iter = Self::iterator_step_filter_map(tx, f);
         self.run_iterator_internal(name, priority, scan, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
