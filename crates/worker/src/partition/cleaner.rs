@@ -104,7 +104,10 @@ where
         partition_key_range: RangeInclusive<PartitionKey>,
         bifrost_envelope_source: &Source,
     ) -> anyhow::Result<()> {
-        debug!("Executing completed invocations cleanup");
+        let start = tokio::time::Instant::now();
+        let mut completed_count = 0;
+        let mut purged_invocation_count = 0;
+        let mut purged_journal_count = 0;
 
         let invocations_stream = storage.scan_invocation_statuses(partition_key_range)?;
         tokio::pin!(invocations_stream);
@@ -118,6 +121,8 @@ where
             let InvocationStatus::Completed(completed_invocation) = invocation_status else {
                 continue;
             };
+
+            completed_count += 1;
 
             let Some(completed_time) = completed_invocation.timestamps.completed_transition_time()
             else {
@@ -149,6 +154,7 @@ where
                 )
                 .await
                 .context("Cannot append to bifrost purge invocation")?;
+                purged_invocation_count += 1;
                 continue;
             }
 
@@ -182,10 +188,19 @@ where
                     )
                     .await
                     .context("Cannot append to bifrost purge journal")?;
+                    purged_journal_count += 1;
                     continue;
                 }
             }
         }
+
+        debug!(
+            completed_count,
+            purged_invocation_count,
+            purged_journal_count,
+            "Executed completed invocations cleanup in {:?}",
+            start.elapsed()
+        );
 
         Ok(())
     }
