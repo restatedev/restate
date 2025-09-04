@@ -1078,22 +1078,12 @@ dependencies = [
 
 [[package]]
 name = "bilrost"
-version = "0.1013.0"
+version = "0.1014.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "640b021fedf44f44640771b2c3e5ec53ff0122d89b3fd1448e6880da0ace787b"
-dependencies = [
- "bilrost-derive 0.1013.0",
- "bytes",
- "bytestring",
- "thin-vec",
-]
-
-[[package]]
-name = "bilrost"
-version = "0.1014.0-dev"
+checksum = "b1ec781b82aaa1ead5e8c6ab1cf7b3485f8909e76521f87eb3091a8db5bc00df"
 dependencies = [
  "autocfg",
- "bilrost-derive 0.1014.0-dev",
+ "bilrost-derive",
  "bytes",
  "bytestring",
  "thin-vec",
@@ -1101,20 +1091,9 @@ dependencies = [
 
 [[package]]
 name = "bilrost-derive"
-version = "0.1013.0"
+version = "0.1014.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9910598cd6a5c5ee053af712bbb3385e96b4eb4adc043b24a69b6c37004ba22"
-dependencies = [
- "eyre",
- "itertools 0.14.0",
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
-name = "bilrost-derive"
-version = "0.1014.0-dev"
+checksum = "7f96db92d1373235cede86875c0589f1e053eb36f8e26f2fc131690bf7d03de6"
 dependencies = [
  "eyre",
  "itertools 0.14.0",
@@ -4413,7 +4392,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -6845,7 +6824,7 @@ dependencies = [
 name = "restate-encoding"
 version = "1.5.0-dev"
 dependencies = [
- "bilrost 0.1014.0-dev",
+ "bilrost",
  "bytes",
  "bytestring",
  "rand 0.9.1",
@@ -7129,7 +7108,7 @@ version = "1.5.0-dev"
 dependencies = [
  "anyhow",
  "async-trait",
- "bilrost 0.1014.0-dev",
+ "bilrost",
  "bytes",
  "bytestring",
  "ciborium",
@@ -7719,7 +7698,7 @@ dependencies = [
  "arc-swap",
  "base62",
  "base64 0.22.1",
- "bilrost 0.1014.0-dev",
+ "bilrost",
  "bincode",
  "bitflags 2.9.1",
  "bytes",
@@ -7818,7 +7797,7 @@ name = "restate-wal-protocol"
 version = "1.5.0-dev"
 dependencies = [
  "anyhow",
- "bilrost 0.1014.0-dev",
+ "bilrost",
  "bytes",
  "bytestring",
  "enum-map",
@@ -7930,7 +7909,7 @@ dependencies = [
  "axum",
  "axum-core",
  "base64 0.22.1",
- "bilrost 0.1013.0",
+ "bilrost",
  "bitflags 2.9.1",
  "byteorder",
  "bytes",
