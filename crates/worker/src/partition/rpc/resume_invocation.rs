@@ -78,7 +78,8 @@ where
             })) => {
                 // Let's look at the deployment id here, and see if we need to do some changes
                 let update_pinned_deployment_id = match (update_deployment_id, pinned_deployment) {
-                    (ResumeInvocationDeploymentId::KeepPinned, _) => {
+                    (ResumeInvocationDeploymentId::KeepPinned, _)
+                    | (ResumeInvocationDeploymentId::PinToLatest, None) => {
                         // If the request is to keep pinned, no change will be applied.
                         None
                     }
