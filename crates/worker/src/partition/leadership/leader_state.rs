@@ -209,11 +209,9 @@ impl LeaderState {
         // It's ok to not check the abort_result because either it succeeded or the invoker
         // is not running. If the invoker is not running, and we are not shutting down, then
         // we will fail the next time we try to invoke.
-        let (shuffle_result, cleaner_result, _abort_result) = tokio::join!(
-            shuffle_handle,
-            cleaner_handle,
-            invoker_handle.abort_all_partition((self.partition_id, self.leader_epoch)),
-        );
+        let _ = invoker_handle.abort_all_partition((self.partition_id, self.leader_epoch));
+
+        let (shuffle_result, cleaner_result) = tokio::join!(shuffle_handle, cleaner_handle);
 
         if let Some(shuffle_result) = shuffle_result {
             let _ = shuffle_result.expect("graceful termination of shuffle task");
@@ -369,13 +367,13 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action, invoker_tx).await?;
+            self.handle_action(action, invoker_tx)?;
         }
 
         Ok(())
     }
 
-    async fn handle_action(
+    fn handle_action(
         &mut self,
         action: Action,
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
@@ -395,7 +393,6 @@ impl LeaderState {
                     invocation_target,
                     invoke_input_journal,
                 )
-                .await
                 .map_err(Error::Invoker)?,
             Action::NewOutboxMessage {
                 seq_number,
@@ -421,7 +418,6 @@ impl LeaderState {
                         invocation_epoch,
                         command_index,
                     )
-                    .await
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardCompletion {
@@ -429,14 +425,12 @@ impl LeaderState {
                 completion,
             } => invoker_tx
                 .notify_completion(partition_leader_epoch, invocation_id, completion)
-                .await
                 .map_err(Error::Invoker)?,
             Action::AbortInvocation {
                 invocation_id,
                 invocation_epoch,
             } => invoker_tx
                 .abort_invocation(partition_leader_epoch, invocation_id, invocation_epoch)
-                .await
                 .map_err(Error::Invoker)?,
             Action::IngressResponse {
                 request_id,
@@ -493,7 +487,6 @@ impl LeaderState {
                         invocation_epoch,
                         notification,
                     )
-                    .await
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardKillResponse {

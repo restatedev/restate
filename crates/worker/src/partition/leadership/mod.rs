@@ -350,7 +350,7 @@ where
         } = &mut self.state
         {
             let invoker_rx = Self::resume_invoked_invocations(
-                &mut self.invoker_tx,
+                self.invoker_tx.clone(),
                 (self.partition.partition_id, *leader_epoch),
                 self.partition.key_range.clone(),
                 partition_store,
@@ -435,7 +435,7 @@ where
     }
 
     async fn resume_invoked_invocations(
-        invoker_handle: &mut I,
+        invoker_handle: I,
         partition_leader_epoch: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         partition_store: &mut PartitionStore,
@@ -450,40 +450,42 @@ where
                 InvokerStorageReader::new(partition_store.clone()),
                 invoker_tx,
             )
-            .await
             .map_err(Error::Invoker)?;
 
         {
-            let invoked_invocations = partition_store
-                .scan_invoked_invocations()
-                .map_err(Error::Storage)?;
-            tokio::pin!(invoked_invocations);
-
             let start = tokio::time::Instant::now();
-            let mut count = 0;
-            while let Some(invoked_invocation) = invoked_invocations.next().await {
-                let InvokedInvocationStatusLite {
-                    invocation_id,
-                    invocation_target,
-                    current_invocation_epoch,
-                } = invoked_invocation?;
-                invoker_handle
-                    .invoke(
+            let invoker_handle = invoker_handle.clone();
+            partition_store
+                .for_each_invoked_invocation(move |invoked_invocation| {
+                    use std::ops::ControlFlow;
+
+                    let InvokedInvocationStatusLite {
+                        invocation_id,
+                        invocation_target,
+                        current_invocation_epoch,
+                    } = invoked_invocation;
+
+                    if let Err(err) = invoker_handle.invoke(
                         partition_leader_epoch,
                         invocation_id,
                         current_invocation_epoch,
                         invocation_target,
                         InvokeInputJournal::NoCachedJournal,
-                    )
-                    .await
-                    .map_err(Error::Invoker)?;
-                count += 1;
-            }
+                    ) {
+                        ControlFlow::Break(Err(Error::Invoker(err)))
+                    } else {
+                        // *count += 1;
+                        std::ops::ControlFlow::Continue(())
+                    }
+                })?
+                .await?;
+
             debug!(
-                "Leader partition resumed {} invocations in {:?}",
-                count,
+                "Leader partition resumed invocations in {:?}",
                 start.elapsed(),
             );
+
+            // debug!("Leader partition resumed {} invocations", count);
         }
 
         Ok(ReceiverStream::new(invoker_rx))

@@ -1760,7 +1760,7 @@ mod tests {
             entry_enricher::test_util::MockEntryEnricher,
         );
 
-        let mut handle = service.handle();
+        let handle = service.handle();
 
         let invoker_task = TaskCenter::spawn_unmanaged(
             TaskKind::SystemService,
@@ -1783,7 +1783,6 @@ mod tests {
                 EmptyStorageReader,
                 output_tx,
             )
-            .await
             .unwrap();
         handle
             .invoke(
@@ -1793,7 +1792,6 @@ mod tests {
                 invocation_target,
                 InvokeInputJournal::NoCachedJournal,
             )
-            .await
             .unwrap();
 
         // If input order between 'register partition' and 'invoke' is not maintained, then it can happen

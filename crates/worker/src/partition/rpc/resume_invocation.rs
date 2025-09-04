@@ -58,8 +58,7 @@ where
 
                 // Let's poke the invoker to retry now, if possible
                 self.proposer
-                    .notify_invoker_to_retry_now(invocation_id, metadata.current_invocation_epoch)
-                    .await;
+                    .notify_invoker_to_retry_now(invocation_id, metadata.current_invocation_epoch);
                 replier.send(ResumeInvocationRpcResponse::Ok);
             }
             Ok(InvocationStatus::Suspended {

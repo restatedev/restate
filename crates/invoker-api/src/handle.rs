@@ -19,7 +19,6 @@ use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::Completion;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
-use std::future::Future;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 
@@ -30,64 +29,61 @@ pub enum InvokeInputJournal {
     CachedJournal(JournalMetadata, Vec<JournalEntry>),
 }
 
-pub trait InvokerHandle<SR> {
+pub trait InvokerHandle<SR>: Clone + Send + Sync + 'static {
     fn invoke(
-        &mut self,
+        &self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
-    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+    ) -> Result<(), NotRunningError>;
 
     fn notify_completion(
-        &mut self,
+        &self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         completion: Completion,
-    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+    ) -> Result<(), NotRunningError>;
 
     fn notify_notification(
-        &mut self,
+        &self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
         entry: RawNotification,
-    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+    ) -> Result<(), NotRunningError>;
 
     fn retry_invocation_now(
-        &mut self,
+        &self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
-    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+    ) -> Result<(), NotRunningError>;
 
     fn notify_stored_command_ack(
-        &mut self,
+        &self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
         command_index: CommandIndex,
-    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+    ) -> Result<(), NotRunningError>;
 
-    fn abort_all_partition(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+    fn abort_all_partition(&self, partition: PartitionLeaderEpoch) -> Result<(), NotRunningError>;
 
     /// *Note*: When aborting an invocation, and restarting it, the `invocation_epoch` MUST be bumped.
     fn abort_invocation(
-        &mut self,
+        &self,
         partition_leader_epoch: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
-    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+    ) -> Result<(), NotRunningError>;
 
     fn register_partition(
-        &mut self,
+        &self,
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
         sender: mpsc::Sender<Box<Effect>>,
-    ) -> impl Future<Output = Result<(), NotRunningError>> + Send;
+    ) -> Result<(), NotRunningError>;
 }

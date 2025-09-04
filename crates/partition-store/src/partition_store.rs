@@ -415,9 +415,9 @@ impl PartitionStore {
     }
 
     #[allow(clippy::type_complexity)]
-    fn iterator_step_for_each(
-        tx: oneshot::Sender<StorageError>,
-        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+    fn iterator_step_for_each<E: From<StorageError> + Send>(
+        tx: oneshot::Sender<E>,
+        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<std::result::Result<(), E>> + Send + 'static,
     ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
         let mut tx = Some(tx);
         move |item| {
@@ -449,20 +449,22 @@ impl PartitionStore {
                     }
                 },
                 Err(e) => {
-                    let _ = must_send(StorageError::Generic(e.into()));
+                    let _ = must_send(StorageError::Generic(e.into()).into());
                     IterAction::Stop
                 }
             }
         }
     }
 
-    pub fn iterator_for_each<K: TableKey>(
+    pub fn iterator_for_each<K: TableKey, E: From<StorageError> + Send + 'static>(
         &self,
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
-    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+        f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<std::result::Result<(), E>>
+        + Send
+        + 'static,
+    ) -> Result<impl Future<Output = std::result::Result<(), E>>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
         let on_iter = Self::iterator_step_for_each(tx, f);
         self.run_iterator_internal(name, priority, scan, on_iter)?;

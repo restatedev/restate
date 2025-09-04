@@ -784,9 +784,16 @@ pub trait ScanInvocationStatusTable {
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 
-    fn scan_invoked_invocations(
+    fn for_each_invoked_invocation<
+        E: From<crate::StorageError> + Send + 'static,
+        F: FnMut(InvokedInvocationStatusLite) -> ControlFlow<std::result::Result<(), E>>
+            + Send
+            + Sync
+            + 'static,
+    >(
         &self,
-    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
+        f: F,
+    ) -> Result<impl Future<Output = std::result::Result<(), E>> + Send>;
 }
 
 pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {

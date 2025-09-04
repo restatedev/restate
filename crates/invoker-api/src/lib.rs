@@ -85,7 +85,7 @@ pub mod test_util {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct MockInvokerHandle<SR> {
         phantom_data: PhantomData<SR>,
     }
@@ -98,9 +98,9 @@ pub mod test_util {
         }
     }
 
-    impl<SR: Send> InvokerHandle<SR> for MockInvokerHandle<SR> {
-        async fn invoke(
-            &mut self,
+    impl<SR: Send + Sync + Clone + 'static> InvokerHandle<SR> for MockInvokerHandle<SR> {
+        fn invoke(
+            &self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _invocation_epoch: InvocationEpoch,
@@ -110,8 +110,8 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn notify_completion(
-            &mut self,
+        fn notify_completion(
+            &self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _completion: Completion,
@@ -119,8 +119,8 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn notify_notification(
-            &mut self,
+        fn notify_notification(
+            &self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _invocation_epoch: InvocationEpoch,
@@ -129,8 +129,8 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn notify_stored_command_ack(
-            &mut self,
+        fn notify_stored_command_ack(
+            &self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _invocation_epoch: InvocationEpoch,
@@ -139,15 +139,15 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn abort_all_partition(
-            &mut self,
+        fn abort_all_partition(
+            &self,
             _partition: PartitionLeaderEpoch,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }
 
-        async fn abort_invocation(
-            &mut self,
+        fn abort_invocation(
+            &self,
             _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _invocation_epoch: InvocationEpoch,
@@ -155,8 +155,8 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn retry_invocation_now(
-            &mut self,
+        fn retry_invocation_now(
+            &self,
             _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _invocation_epoch: InvocationEpoch,
@@ -164,8 +164,8 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn register_partition(
-            &mut self,
+        fn register_partition(
+            &self,
             _partition: PartitionLeaderEpoch,
             _partition_key_range: RangeInclusive<PartitionKey>,
             _storage_reader: SR,

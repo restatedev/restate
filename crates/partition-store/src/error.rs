@@ -85,10 +85,10 @@ pub enum SnapshotErrorKind {
 }
 
 pub(crate) fn break_on_err<T, E>(
-    r: std::result::Result<T, E>,
+    r: std::result::Result<T, impl Into<E>>,
 ) -> ControlFlow<std::result::Result<(), E>, T> {
     match r {
         Ok(val) => ControlFlow::Continue(val),
-        Err(err) => ControlFlow::Break(Err(err)),
+        Err(err) => ControlFlow::Break(Err(err.into())),
     }
 }
