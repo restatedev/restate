@@ -122,6 +122,10 @@ where
 
     pub(super) async fn do_cleanup(&self, tx: &Sender<CleanerEffect>) -> anyhow::Result<()> {
         debug!(partition_id=%self.partition_id, "Starting invocation cleanup");
+        let start = tokio::time::Instant::now();
+        let mut completed_count = 0;
+        let mut purged_invocation_count = 0;
+        let mut purged_journal_count = 0;
 
         let invocations_stream = self
             .storage
@@ -138,6 +142,8 @@ where
                 continue;
             };
 
+            completed_count += 1;
+
             let Some(completed_time) = completed_invocation.timestamps.completed_transition_time()
             else {
                 // If completed time is unavailable, the invocation is on the old invocation table,
@@ -153,6 +159,7 @@ where
                 tx.send(CleanerEffect::PurgeInvocation(invocation_id))
                     .await
                     .context("Cannot append to bifrost purge invocation")?;
+                purged_invocation_count += 1;
                 continue;
             }
 
@@ -171,10 +178,20 @@ where
                     tx.send(CleanerEffect::PurgeJournal(invocation_id))
                         .await
                         .context("Cannot append to bifrost purge journal")?;
+                    purged_journal_count += 1;
                     continue;
                 }
             }
         }
+
+        debug!(
+            partition_id=%self.partition_id,
+            completed_count,
+            purged_invocation_count,
+            purged_journal_count,
+            "Completed invocation cleanup in {:?}",
+            start.elapsed()
+        );
 
         Ok(())
     }
