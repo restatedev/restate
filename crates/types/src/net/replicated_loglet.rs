@@ -78,7 +78,7 @@ pub enum SequencerStatus {
         #[bilrost(0)]
         retryable: bool,
         #[bilrost(1)]
-        message: String
+        message: String,
     },
     /// Future unknown error type
     #[default]
@@ -210,7 +210,7 @@ pub struct SequencerState {
 }
 
 mod dto {
-    use super::{Serialize, Deserialize, LogletOffset, SequencerStatus, CommonResponseHeader};
+    use super::{CommonResponseHeader, Deserialize, LogletOffset, SequencerStatus, Serialize};
 
     // This is for backward compatibility with serde/flexbuffers
     // only needed during update from v1.3.2 to v1.4.
@@ -245,9 +245,7 @@ mod dto {
                 SequencerStatus::Gone => SequencerStatusV1::Gone,
                 SequencerStatus::LogletIdMismatch => SequencerStatusV1::LogletIdMismatch,
                 SequencerStatus::UnknownLogId => SequencerStatusV1::UnknownLogId,
-                SequencerStatus::UnknownSegmentIndex => {
-                    SequencerStatusV1::UnknownSegmentIndex
-                }
+                SequencerStatus::UnknownSegmentIndex => SequencerStatusV1::UnknownSegmentIndex,
                 SequencerStatus::NotSequencer => SequencerStatusV1::NotSequencer,
                 SequencerStatus::Shutdown => SequencerStatusV1::Shutdown,
                 SequencerStatus::Error { retryable, message } => {
