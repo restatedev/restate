@@ -31,16 +31,6 @@ use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, error, info, info_span, instrument, trace, warn};
 
-use crate::metric_definitions::NUM_PARTITIONS;
-use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
-use crate::metric_definitions::PARTITION_LABEL;
-use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
-use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
-use crate::partition::ProcessorError;
-use crate::partition_processor_manager::processor_state::{
-    LeaderEpochToken, ProcessorState, StartedProcessor,
-};
-use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{
@@ -61,6 +51,7 @@ use restate_partition_store::snapshots::{
     PartitionSnapshotMetadata, SnapshotPartitionTask, SnapshotRepository,
 };
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
+use restate_time_util::DurationExt;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
@@ -85,6 +76,17 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString};
+
+use crate::metric_definitions::NUM_PARTITIONS;
+use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
+use crate::metric_definitions::PARTITION_LABEL;
+use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
+use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
+use crate::partition::ProcessorError;
+use crate::partition_processor_manager::processor_state::{
+    LeaderEpochToken, ProcessorState, StartedProcessor,
+};
+use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProcessorTask;
 
 #[derive(Debug, Clone, derive_more::Display)]
 #[display("{}", snapshot_id)]
@@ -151,6 +153,44 @@ enum RestartDelay {
         last_delay: Option<Duration>,
     },
     MaxBackoff,
+}
+
+impl RestartDelay {
+    pub fn next_delay(&self) -> Option<Duration> {
+        const DELAY_BASE: Duration = Duration::from_secs(1);
+        const DELAY_MAX: Duration = Duration::from_secs(30);
+        const RESET_RUNNING_TIME: Duration = Duration::from_secs(60);
+
+        match self {
+            RestartDelay::Immediate => None,
+            RestartDelay::Fixed => Some(DELAY_BASE),
+            RestartDelay::Exponential {
+                start_time,
+                last_delay,
+            } => {
+                if start_time.elapsed() > RESET_RUNNING_TIME {
+                    // if we have been running for a while, reset back to the base delay
+                    Some(DELAY_BASE)
+                } else {
+                    Some(last_delay.unwrap_or(DELAY_BASE).mul_f64(2.0).min(DELAY_MAX))
+                }
+            }
+            RestartDelay::MaxBackoff => Some(DELAY_MAX),
+        }
+    }
+}
+
+impl std::fmt::Display for RestartDelay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestartDelay::Immediate => write!(f, "will retry immediately"),
+            _ => write!(
+                f,
+                "will retry after {}",
+                self.next_delay().unwrap().friendly()
+            ),
+        }
+    }
 }
 
 type ChannelStatusReaderList = Vec<(RangeInclusive<PartitionKey>, ChannelStatusReader)>;
@@ -548,11 +588,12 @@ impl PartitionProcessorManager {
                                     }
                                 }
                                 Err(err) => {
-                                    error!(%partition_id, %err, "Partition processor exited unexpectedly");
-                                    RestartDelay::Exponential {
+                                    let next_delay = RestartDelay::Exponential {
                                         start_time,
                                         last_delay: delay,
-                                    }
+                                    };
+                                    error!(%partition_id, %err, "Partition processor exited unexpectedly, {}", next_delay);
+                                    next_delay
                                 }
                                 Ok(_) => {
                                     info!(%partition_id, "Partition processor stopped");
@@ -1185,43 +1226,20 @@ impl PartitionProcessorManager {
         partition_id: PartitionId,
         delay: RestartDelay,
     ) -> bool {
-        const PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE: Duration = Duration::from_secs(1);
-        const PARTITION_PROCESSOR_ERROR_RESTART_DELAY_MAX: Duration = Duration::from_secs(30);
-        const PARTITION_PROCESSOR_DELAY_RESET_RUNNING_TIME: Duration = Duration::from_secs(60);
-
         // only restart partition processors if the partition processor manager is still supposed to run
         if restate_core::is_cancellation_requested() {
             return false;
         }
-
-        let delay = match delay {
-            RestartDelay::Immediate => None,
-            RestartDelay::Fixed => Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE),
-            RestartDelay::Exponential {
-                start_time,
-                last_delay: previous_backoff,
-            } => {
-                if start_time.elapsed() > PARTITION_PROCESSOR_DELAY_RESET_RUNNING_TIME {
-                    // if we have been running for a while, reset back to the base delay
-                    Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE)
-                } else {
-                    Some(
-                        previous_backoff
-                            .unwrap_or(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_BASE)
-                            .mul_f64(2.0)
-                            .min(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_MAX),
-                    )
-                }
-            }
-            RestartDelay::MaxBackoff => Some(PARTITION_PROCESSOR_ERROR_RESTART_DELAY_MAX),
-        };
 
         if self
             .replica_set_states
             .membership_state(partition_id)
             .contains(Metadata::with_current(|m| m.my_node_id().as_plain()))
         {
-            self.start_partition_processor(partition_id, delay.map(|d| with_jitter(d, 0.3)));
+            self.start_partition_processor(
+                partition_id,
+                delay.next_delay().map(|d| with_jitter(d, 0.3)),
+            );
             true
         } else {
             false
