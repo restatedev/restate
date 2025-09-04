@@ -6511,6 +6511,7 @@ dependencies = [
  "restate-service-protocol",
  "restate-storage-query-datafusion",
  "restate-test-util",
+ "restate-time-util",
  "restate-types",
  "restate-wal-protocol",
  "restate-web-ui",
@@ -6676,6 +6677,7 @@ dependencies = [
  "restate-cli-util",
  "restate-cloud-tunnel-client",
  "restate-serde-util",
+ "restate-time-util",
  "restate-types",
  "restate-workspace-hack",
  "rustls",
@@ -6908,6 +6910,7 @@ dependencies = [
  "restate-errors",
  "restate-serde-util",
  "restate-test-util",
+ "restate-time-util",
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-workspace-hack",
@@ -7394,8 +7397,8 @@ dependencies = [
  "bytesize",
  "http 1.3.1",
  "http-serde",
- "jiff",
  "prost",
+ "restate-time-util",
  "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
@@ -7625,6 +7628,15 @@ dependencies = [
  "prost-types",
  "rand 0.9.1",
  "restate-workspace-hack",
+]
+
+[[package]]
+name = "restate-time-util"
+version = "1.5.0-dev"
+dependencies = [
+ "jiff",
+ "restate-workspace-hack",
+ "thiserror 2.0.12",
 ]
 
 [[package]]
