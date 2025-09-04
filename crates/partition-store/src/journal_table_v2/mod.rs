@@ -43,7 +43,8 @@ define_table_key!(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
         journal_index: u32
-    )
+    ),
+    invocation_prefix = [partition_key, invocation_uuid],
 );
 
 define_table_key!(
@@ -53,7 +54,8 @@ define_table_key!(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
         completion_id: CompletionId
-    )
+    ),
+    invocation_prefix = [partition_key, invocation_uuid],
 );
 
 define_table_key!(
@@ -63,7 +65,8 @@ define_table_key!(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
         notification_id: NotificationId
-    )
+    ),
+    invocation_prefix = [partition_key, invocation_uuid],
 );
 
 fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> JournalKey {
@@ -150,66 +153,28 @@ fn get_journal<S: StorageAccess>(
     )
 }
 
-fn delete_journal<S: StorageAccess>(
-    storage: &mut S,
-    invocation_id: &InvocationId,
-    journal_length: EntryIndex,
-) -> Result<()> {
-    let _x = RocksDbPerfGuard::new("delete-journal");
+fn delete_journal<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) -> Result<()> {
+    let prefix = JournalKey::default()
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid())
+        .invocation_prefix();
 
-    let mut key = write_journal_entry_key(invocation_id, 0);
-    let k = &mut key;
-    for journal_index in 0..journal_length {
-        k.journal_index = Some(journal_index);
-        storage.delete_key(k)?;
-    }
+    storage.delete_prefix(Journal, prefix)?;
 
     // Delete the indexes
     let notification_id_to_notification_index =
         JournalNotificationIdToNotificationIndexKey::default()
             .partition_key(invocation_id.partition_key())
-            .invocation_uuid(invocation_id.invocation_uuid());
-    let notification_id_index = OwnedIterator::new(storage.iterator_from(
-        TableScan::SinglePartitionKeyPrefix(
-            invocation_id.partition_key(),
-            notification_id_to_notification_index.clone(),
-        ),
-    )?)
-    .map(|(mut key, _)| {
-        let journal_key = JournalNotificationIdToNotificationIndexKey::deserialize_from(&mut key)?;
-        let (_, _, notification_id) = journal_key.into_inner_ok_or()?;
-        Ok(notification_id)
-    })
-    .collect::<Result<Vec<_>>>()?;
-    for notification_id in notification_id_index {
-        storage.delete_key(
-            &notification_id_to_notification_index
-                .clone()
-                .notification_id(notification_id),
-        )?;
-    }
+            .invocation_uuid(invocation_id.invocation_uuid())
+            .invocation_prefix();
+    storage.delete_prefix(Journal, notification_id_to_notification_index)?;
 
     let completion_id_to_command_index = JournalCompletionIdToCommandIndexKey::default()
         .partition_key(invocation_id.partition_key())
-        .invocation_uuid(invocation_id.invocation_uuid());
-    let notification_id_index =
-        OwnedIterator::new(storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
-            invocation_id.partition_key(),
-            notification_id_to_notification_index.clone(),
-        ))?)
-        .map(|(mut key, _)| {
-            let journal_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key)?;
-            let (_, _, completion_id) = journal_key.into_inner_ok_or()?;
-            Ok(completion_id)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    for notification_id in notification_id_index {
-        storage.delete_key(
-            &completion_id_to_command_index
-                .clone()
-                .completion_id(notification_id),
-        )?;
-    }
+        .invocation_uuid(invocation_id.invocation_uuid())
+        .invocation_prefix();
+
+    storage.delete_prefix(Journal, completion_id_to_command_index)?;
 
     Ok(())
 }
@@ -406,14 +371,9 @@ impl JournalTable for PartitionStoreTransaction<'_> {
         put_journal_entry(self, &invocation_id, index, entry, related_completion_ids)
     }
 
-    async fn delete_journal(
-        &mut self,
-        invocation_id: InvocationId,
-        journal_length: EntryIndex,
-    ) -> Result<()> {
+    async fn delete_journal(&mut self, invocation_id: InvocationId) -> Result<()> {
         self.assert_partition_key(&invocation_id)?;
-        let _x = RocksDbPerfGuard::new("delete-journal");
-        delete_journal(self, &invocation_id, journal_length)
+        delete_journal(self, &invocation_id)
     }
 }
 

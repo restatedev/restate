@@ -26,7 +26,8 @@ use crate::{
 define_table_key!(
     Outbox,
     KeyKind::Outbox,
-    OutboxKey(partition_id: PaddedPartitionId, message_index: u64)
+    OutboxKey(partition_id: PaddedPartitionId, message_index: u64),
+    outbox_prefix = [partition_id, message_index],
 );
 
 fn add_message<S: StorageAccess>(
@@ -112,12 +113,18 @@ fn truncate_outbox<S: StorageAccess>(
     range: RangeInclusive<u64>,
 ) -> Result<()> {
     let _x = RocksDbPerfGuard::new("truncate-outbox");
-    let mut key = OutboxKey::default().partition_id(partition_id.into());
-    for seq in range {
-        key.message_index = Some(seq);
-        storage.delete_key(&key)?;
-    }
-    Ok(())
+    let from = OutboxKey::default()
+        .partition_id(partition_id.into())
+        .message_index(*range.start())
+        .outbox_prefix();
+
+    let to = OutboxKey::default()
+        .partition_id(partition_id.into())
+        .message_index(*range.end())
+        .outbox_prefix()
+        // we want the exclusive upper bound
+        .next_prefix();
+    storage.delete_range_cf(Outbox, from, to)
 }
 
 impl ReadOnlyOutboxTable for PartitionStore {

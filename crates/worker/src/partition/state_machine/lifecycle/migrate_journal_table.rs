@@ -70,7 +70,7 @@ where
                     &[],
                 )
                 .await?;
-                journal_table_v1::JournalTable::delete_journal(ctx.storage, &self.invocation_id, 1)
+                journal_table_v1::JournalTable::delete_journal(ctx.storage, &self.invocation_id)
                     .await
                     .map_err(Error::Storage)?;
 

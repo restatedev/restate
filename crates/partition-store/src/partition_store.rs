@@ -44,6 +44,7 @@ use restate_types::storage::StorageCodec;
 use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::fsm_table::{get_locally_durable_lsn, get_schema_version, put_schema_version};
 use crate::keys::KeyKind;
+use crate::keys::KeyPrefix;
 use crate::keys::TableKey;
 use crate::migrations::{LATEST_VERSION, SchemaVersion};
 use crate::partition_db::PartitionDb;
@@ -849,6 +850,19 @@ impl StorageAccess for PartitionStore {
             .delete_cf(table, key)
             .map_err(|error| StorageError::Generic(error.into()))
     }
+
+    #[inline]
+    fn delete_range_cf<K: AsRef<[u8]>>(&mut self, table: TableKind, from: K, to: K) -> Result<()> {
+        let table = self.table_handle(table);
+        let opts = rocksdb::WriteOptions::default();
+        println!("partition store delete");
+        self.db
+            .rocksdb()
+            .inner()
+            .as_raw_db()
+            .delete_range_cf_opt(table, from, to, &opts)
+            .map_err(|error| StorageError::Generic(error.into()))
+    }
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -1087,6 +1101,13 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
             .delete_cf(self.data_cf_handle, key);
         Ok(())
     }
+
+    #[inline]
+    fn delete_range_cf<K: AsRef<[u8]>>(&mut self, _table: TableKind, from: K, to: K) -> Result<()> {
+        self.write_batch_with_index
+            .delete_range_cf(self.data_cf_handle, from, to);
+        Ok(())
+    }
 }
 
 pub(crate) trait StorageAccess {
@@ -1123,6 +1144,8 @@ pub(crate) trait StorageAccess {
     ) -> Result<()>;
 
     fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) -> Result<()>;
+
+    fn delete_range_cf<K: AsRef<[u8]>>(&mut self, table: TableKind, from: K, to: K) -> Result<()>;
 
     #[inline]
     fn put_kv_raw<K: TableKey, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<()> {
@@ -1161,6 +1184,13 @@ pub(crate) trait StorageAccess {
         let buffer = buffer.split();
 
         self.delete_cf(K::TABLE, buffer)
+    }
+
+    #[inline]
+    fn delete_prefix(&mut self, table: TableKind, prefix: KeyPrefix) -> Result<()> {
+        let to = prefix.next_prefix();
+        println!("delete_range_cf {:?} {:?}", prefix.0, to.0);
+        self.delete_range_cf(table, prefix, to)
     }
 
     #[inline]

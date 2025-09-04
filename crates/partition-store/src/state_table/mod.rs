@@ -33,7 +33,8 @@ define_table_key!(
         service_name: ByteString,
         service_key: ByteString,
         state_key: Bytes
-    )
+    ),
+    service_key_prefix = [partition_key, service_name, service_key],
 );
 
 #[inline]
@@ -46,6 +47,9 @@ fn write_state_entry_key(service_id: &ServiceId, state_key: impl AsRef<[u8]>) ->
 }
 
 fn user_state_key_from_slice(key: &[u8]) -> Result<Bytes> {
+    // note that this is to let a single allocation to be done which will later be decomposed into
+    // a few ByteStrings that indexes that allocation. This is to avoid smaller allocations on
+    // every portion of the key.
     let mut key = Bytes::copy_from_slice(key);
     let key = StateKey::deserialize_from(&mut key)?;
     let key = key
@@ -80,17 +84,7 @@ fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &Service
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
 
-    let keys = storage.for_each_key_value_in_place(
-        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
-        |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
-    )?;
-
-    for k in keys {
-        let key = k?;
-        storage.delete_cf(State, &key)?;
-    }
-
-    Ok(())
+    storage.delete_prefix(State, prefix_key.service_key_prefix())
 }
 
 fn get_user_state<S: StorageAccess>(

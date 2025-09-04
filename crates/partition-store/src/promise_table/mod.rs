@@ -23,10 +23,7 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::scan::TableScan;
-use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
-    TableScanIterationDecision, break_on_err,
-};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
 define_table_key!(
     TableKind::Promise,
@@ -36,7 +33,8 @@ define_table_key!(
         service_name: ByteString,
         service_key: Bytes,
         key: ByteString
-    )
+    ),
+    service_key_prefix = [partition_key, service_name, service_key],
 );
 
 fn create_key(service_id: &ServiceId, key: &ByteString) -> PromiseKey {
@@ -53,7 +51,8 @@ fn get_promise<S: StorageAccess>(
     key: &ByteString,
 ) -> Result<Option<Promise>> {
     let _x = RocksDbPerfGuard::new("get-promise");
-    storage.get_value(create_key(service_id, key))
+    let key = create_key(service_id, key);
+    storage.get_value(key)
 }
 
 fn put_promise<S: StorageAccess>(
@@ -69,18 +68,9 @@ fn delete_all_promises<S: StorageAccess>(storage: &mut S, service_id: &ServiceId
     let prefix_key = PromiseKey::default()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.as_bytes().clone());
-
-    let keys = storage.for_each_key_value_in_place(
-        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
-        |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
-    )?;
-
-    for k in keys {
-        let key = k?;
-        storage.delete_cf(TableKind::Promise, key)?;
-    }
-    Ok(())
+        .service_key(service_id.key.as_bytes().clone())
+        .service_key_prefix();
+    storage.delete_prefix(TableKind::Promise, prefix_key)
 }
 
 impl ReadOnlyPromiseTable for PartitionStore {

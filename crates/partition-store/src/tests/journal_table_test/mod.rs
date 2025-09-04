@@ -122,7 +122,7 @@ async fn point_lookups<T: JournalTable>(txn: &mut T) {
 }
 
 async fn delete_journal<T: JournalTable>(txn: &mut T) {
-    txn.delete_journal(&MOCK_INVOCATION_ID_1, 5).await.unwrap();
+    txn.delete_journal(&MOCK_INVOCATION_ID_1).await.unwrap();
 }
 
 async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {
