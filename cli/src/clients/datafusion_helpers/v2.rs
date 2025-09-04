@@ -325,7 +325,6 @@ pub async fn find_active_invocations(
             {select_completion_columns}
         FROM sys_invocation inv
         {filter}
-        {order}
         ),
 
         invocations_with_latest_deployment_id AS
@@ -344,8 +343,9 @@ pub async fn find_active_invocations(
         RIGHT JOIN invocations_with_latest_deployment_id inv ON dp.id = inv.pinned_deployment_id
         )
 
-        SELECT *, COUNT(1) OVER() AS full_count from invocations_with_known_deployment_id
+        SELECT *, COUNT(1) OVER() AS full_count from invocations_with_known_deployment_id inv
         {post_filter}
+        {order}
         LIMIT {limit}"
     );
     let rows = client
@@ -392,7 +392,7 @@ pub async fn get_service_invocations(
         client,
         &format!("WHERE inv.target_service_name = '{service}'"),
         "",
-        "ORDER BY inv.created_at DESC",
+        "ORDER BY inv.created_at DESC, inv.id",
         limit_active,
     )
     .await?

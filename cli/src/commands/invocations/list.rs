@@ -76,9 +76,9 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let mut post_filters: Vec<String> = vec![];
 
     let order_by = if opts.oldest_first {
-        "ORDER BY inv.created_at ASC"
+        "ORDER BY inv.created_at ASC, inv.id"
     } else {
-        "ORDER BY inv.created_at DESC"
+        "ORDER BY inv.created_at DESC, inv.id"
     };
 
     if !opts.service.is_empty() {
