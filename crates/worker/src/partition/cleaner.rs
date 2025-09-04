@@ -19,7 +19,7 @@ use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, cancellation_watcher};
-use restate_storage_api::invocation_status_table::{InvocationStatus, ScanInvocationStatusTable};
+use restate_storage_api::invocation_status_table::ScanInvocationStatusTable;
 use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::invocation::PurgeInvocationRequest;
@@ -109,23 +109,18 @@ where
         let mut purged_invocation_count = 0;
         let mut purged_journal_count = 0;
 
-        let invocations_stream = storage.scan_invocation_statuses(partition_key_range)?;
+        let invocations_stream = storage.scan_completed_invocations(partition_key_range)?;
         tokio::pin!(invocations_stream);
 
-        while let Some((invocation_id, invocation_status)) = invocations_stream
+        while let Some(completed_invocation) = invocations_stream
             .next()
             .await
             .transpose()
-            .context("Cannot read the next item of the invocation status table")?
+            .context("Cannot read the next completed item of the invocation status table")?
         {
-            let InvocationStatus::Completed(completed_invocation) = invocation_status else {
-                continue;
-            };
-
             completed_count += 1;
 
-            let Some(completed_time) = completed_invocation.timestamps.completed_transition_time()
-            else {
+            let Some(completed_time) = completed_invocation.completed_transition_time else {
                 // If completed time is unavailable, the invocation is on the old invocation table,
                 //  thus it will be cleaned up with the old timer.
                 continue;
@@ -142,12 +137,12 @@ where
                         header: Header {
                             source: bifrost_envelope_source.clone(),
                             dest: Destination::Processor {
-                                partition_key: invocation_id.partition_key(),
+                                partition_key: completed_invocation.invocation_id.partition_key(),
                                 dedup: None,
                             },
                         },
                         command: Command::PurgeInvocation(PurgeInvocationRequest {
-                            invocation_id,
+                            invocation_id: completed_invocation.invocation_id,
                             response_sink: None,
                         }),
                     }),
@@ -161,7 +156,7 @@ where
             // We don't cleanup the status yet, let's check if there's a journal to cleanup
             // When length != 0 it means that the purge journal feature was activated from the SDK side (through annotations and the new manifest),
             // or from the relative experimental feature in the Admin API. In this case, the user opted-in this feature and it can't go back to 1.3
-            if completed_invocation.journal_metadata.length != 0 {
+            if completed_invocation.journal_metadata_length != 0 {
                 let Some(journal_expiration_time) = SystemTime::from(completed_time)
                     .checked_add(completed_invocation.journal_retention_duration)
                 else {
@@ -176,12 +171,14 @@ where
                             header: Header {
                                 source: bifrost_envelope_source.clone(),
                                 dest: Destination::Processor {
-                                    partition_key: invocation_id.partition_key(),
+                                    partition_key: completed_invocation
+                                        .invocation_id
+                                        .partition_key(),
                                     dedup: None,
                                 },
                             },
                             command: Command::PurgeJournal(PurgeInvocationRequest {
-                                invocation_id,
+                                invocation_id: completed_invocation.invocation_id,
                                 response_sink: None,
                             }),
                         }),
@@ -213,10 +210,8 @@ mod tests {
     use futures::{Stream, stream};
     use googletest::prelude::*;
     use restate_core::{Metadata, TaskCenter, TaskKind, TestCoreEnvBuilder};
-    use restate_storage_api::StorageError;
     use restate_storage_api::invocation_status_table::{
-        CompletedInvocation, InFlightInvocationMetadata, InvocationStatus,
-        InvokedInvocationStatusLite, JournalMetadata, ScanInvocationStatusTable,
+        CompletedInvocationStatusLite, InvokedInvocationStatusLite, ScanInvocationStatusTable,
     };
     use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
     use restate_types::Version;
@@ -225,19 +220,9 @@ mod tests {
     use test_log::test;
 
     #[allow(dead_code)]
-    struct MockInvocationStatusReader(Vec<(InvocationId, InvocationStatus)>);
+    struct MockInvocationStatusReader(Vec<CompletedInvocationStatusLite>);
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
-        fn scan_invocation_statuses(
-            &self,
-            _: RangeInclusive<PartitionKey>,
-        ) -> std::result::Result<
-            impl Stream<Item = restate_storage_api::Result<(InvocationId, InvocationStatus)>> + Send,
-            StorageError,
-        > {
-            Ok(stream::iter(self.0.clone()).map(Ok))
-        }
-
         fn for_each_invocation_status_lazy<
             E: Into<anyhow::Error>,
             F: for<'a> FnMut(
@@ -265,6 +250,19 @@ mod tests {
         > {
             Ok(stream::empty())
         }
+
+        fn scan_completed_invocations(
+            &self,
+            _: RangeInclusive<PartitionKey>,
+        ) -> restate_storage_api::Result<
+            impl Stream<
+                Item = restate_storage_api::Result<
+                    restate_storage_api::invocation_status_table::CompletedInvocationStatusLite,
+                >,
+            > + Send,
+        > {
+            Ok(stream::iter(self.0.clone()).map(Ok))
+        }
     }
 
     // Start paused makes sure the timer is immediately fired
@@ -287,47 +285,26 @@ mod tests {
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
         let not_expired_invocation_2 =
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
-        let not_completed_invocation =
-            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
 
         let mock_storage = MockInvocationStatusReader(vec![
-            (
-                expired_invocation,
-                InvocationStatus::Completed(CompletedInvocation {
-                    completion_retention_duration: Duration::ZERO,
-                    ..CompletedInvocation::mock_neo()
-                }),
-            ),
-            (
-                expired_journal,
-                InvocationStatus::Completed(CompletedInvocation {
-                    completion_retention_duration: Duration::MAX,
-                    journal_retention_duration: Duration::ZERO,
-                    journal_metadata: JournalMetadata {
-                        length: 2,
-                        commands: 2,
-                        events: 0,
-                        span_context: Default::default(),
-                    },
-                    ..CompletedInvocation::mock_neo()
-                }),
-            ),
-            (
-                not_expired_invocation_1,
-                InvocationStatus::Completed(CompletedInvocation {
-                    completion_retention_duration: Duration::MAX,
-                    ..CompletedInvocation::mock_neo()
-                }),
-            ),
-            (
-                not_expired_invocation_2,
-                // Old status invocations are still processed with the cleanup timer in the PP
-                InvocationStatus::Completed(CompletedInvocation::mock_old()),
-            ),
-            (
-                not_completed_invocation,
-                InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
-            ),
+            CompletedInvocationStatusLite {
+                completion_retention_duration: Duration::ZERO,
+                ..CompletedInvocationStatusLite::mock(expired_invocation)
+            },
+            CompletedInvocationStatusLite {
+                completion_retention_duration: Duration::MAX,
+                journal_retention_duration: Duration::ZERO,
+                journal_metadata_length: 2,
+                ..CompletedInvocationStatusLite::mock(expired_journal)
+            },
+            CompletedInvocationStatusLite {
+                completion_retention_duration: Duration::MAX,
+                ..CompletedInvocationStatusLite::mock(not_expired_invocation_1)
+            },
+            CompletedInvocationStatusLite {
+                completed_transition_time: None,
+                ..CompletedInvocationStatusLite::mock(not_expired_invocation_2)
+            },
         ]);
 
         TaskCenter::spawn(

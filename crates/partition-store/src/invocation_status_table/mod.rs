@@ -16,9 +16,9 @@ use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
-    InvocationStatusV1, InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
-    ScanInvocationStatusTable,
+    CompletedInvocationStatusLite, InvocationLite, InvocationStatus, InvocationStatusDiscriminants,
+    InvocationStatusTable, InvocationStatusV1, InvokedInvocationStatusLite,
+    ReadOnlyInvocationStatusTable, ScanInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError, Transaction};
@@ -119,6 +119,61 @@ fn read_invoked_full_invocation_id(
     }
 }
 
+fn read_invocation_status_v2_lazy<'a>(mut value: &'a [u8]) -> Result<InvocationStatusV2Lazy<'a>> {
+    if value.len() < std::mem::size_of::<u8>() {
+        return Err(StorageError::Conversion(
+            restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                "remaining bytes in buf '{}' < version bytes '{}'",
+                value.len(),
+                std::mem::size_of::<u8>()
+            ))
+            .into(),
+        ));
+    }
+
+    // read version
+    let codec = restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value))
+        .map_err(|e| StorageError::Conversion(e.into()))?;
+
+    let restate_types::storage::StorageCodecKind::Protobuf = codec else {
+        return Err(StorageError::Conversion(
+            restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into(),
+        ));
+    };
+
+    let inv_status_v2_lazy =
+        restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value)
+            .map_err(|e| StorageError::Conversion(e.into()))?;
+
+    Ok(inv_status_v2_lazy)
+}
+
+fn read_completed(mut kv: (&[u8], &[u8])) -> Result<Option<CompletedInvocationStatusLite>> {
+    let invocation_id = invocation_id_from_key_bytes(&mut kv.0)?;
+    let inv_status_v2_lazy = read_invocation_status_v2_lazy(&mut kv.1)?;
+
+    if let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
+        inv_status_v2_lazy.inner.status()
+    {
+        Ok(Some(CompletedInvocationStatusLite {
+            invocation_id,
+            completed_transition_time: inv_status_v2_lazy
+                .inner
+                .completed_transition_time
+                .map(restate_types::time::MillisSinceEpoch::from),
+            completion_retention_duration: inv_status_v2_lazy
+                .completion_retention_duration()
+                .map_err(|err| StorageError::Conversion(err.into()))?,
+            journal_retention_duration: inv_status_v2_lazy
+                .completion_retention_duration()
+                .map_err(|err| StorageError::Conversion(err.into()))?,
+            journal_metadata_length: inv_status_v2_lazy.inner.journal_length,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
 const MIGRATION_BATCH_SIZE: usize = 1000;
 
 pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionStore) -> Result<()> {
@@ -184,24 +239,15 @@ impl ScanInvocationStatusTable for PartitionStore {
         .map_err(|_| StorageError::OperationalError)
     }
 
-    fn scan_invocation_statuses(
+    fn scan_completed_invocations(
         &self,
         range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send> {
-        self.run_iterator(
-            "df-invocation-status",
-            Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
-            |(mut key, mut value)| {
-                let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
-                let state_value = InvocationStatus::decode(&mut value)?;
-
-                let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
-                Ok((
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    state_value,
-                ))
-            },
+    ) -> Result<impl Stream<Item = Result<CompletedInvocationStatusLite>> + Send> {
+        self.iterator_filter_map(
+            "scan-all-completed",
+            Priority::High,
+            FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+            read_completed,
         )
         .map_err(|_| StorageError::OperationalError)
     }
@@ -229,22 +275,8 @@ impl ScanInvocationStatusTable for PartitionStore {
                         let state_key =
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
 
-                        if value.len() < std::mem::size_of::<u8>() {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format!(
-                                "remaining bytes in buf '{}' < version bytes '{}'",
-                                value.len(),
-                                std::mem::size_of::<u8>()
-                            )).into())));
-                        }
-
-                        // read version
-                        let codec = break_on_err(restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value)).map_err(|e|StorageError::Conversion(e.into())))?;
-
-                        let restate_types::storage::StorageCodecKind::Protobuf = codec else {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into())));
-                        };
-
-                        let inv_status_v2_lazy = break_on_err(restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value).map_err(|e| StorageError::Conversion(e.into())))?;
+                        let inv_status_v2_lazy =
+                            break_on_err(read_invocation_status_v2_lazy(&mut value))?;
 
                         let (partition_key, invocation_uuid) =
                             break_on_err(state_key.into_inner_ok_or())?;

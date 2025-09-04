@@ -757,6 +757,15 @@ pub struct InvokedInvocationStatusLite {
     pub current_invocation_epoch: InvocationEpoch,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CompletedInvocationStatusLite {
+    pub invocation_id: InvocationId,
+    pub completed_transition_time: Option<MillisSinceEpoch>,
+    pub completion_retention_duration: Duration,
+    pub journal_retention_duration: Duration,
+    pub journal_metadata_length: u32,
+}
+
 pub trait ReadOnlyInvocationStatusTable {
     fn get_invocation_status(
         &mut self,
@@ -765,11 +774,6 @@ pub trait ReadOnlyInvocationStatusTable {
 }
 
 pub trait ScanInvocationStatusTable {
-    fn scan_invocation_statuses(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
-
     fn for_each_invocation_status_lazy<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
@@ -787,6 +791,11 @@ pub trait ScanInvocationStatusTable {
     fn scan_invoked_invocations(
         &self,
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
+
+    fn scan_completed_invocations(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+    ) -> Result<impl Stream<Item = Result<CompletedInvocationStatusLite>> + Send>;
 }
 
 pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
@@ -861,6 +870,20 @@ mod test_util {
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 current_invocation_epoch: 0,
                 completion_range_epoch_map: Default::default(),
+            }
+        }
+    }
+
+    impl CompletedInvocationStatusLite {
+        pub fn mock(invocation_id: InvocationId) -> Self {
+            let now = MillisSinceEpoch::now();
+
+            Self {
+                invocation_id,
+                completed_transition_time: Some(now),
+                completion_retention_duration: Duration::from_secs(60 * 60),
+                journal_retention_duration: Duration::ZERO,
+                journal_metadata_length: 0,
             }
         }
     }
