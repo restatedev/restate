@@ -468,8 +468,11 @@ impl KeyCodec for InvocationUuid {
         if source.remaining() < InvocationUuid::RAW_BYTES_LEN {
             return Err(StorageError::DataIntegrityError);
         }
-        let bytes = source.copy_to_bytes(InvocationUuid::RAW_BYTES_LEN);
-        InvocationUuid::from_slice(&bytes).map_err(|err| StorageError::Generic(err.into()))
+        let mut buf = [0u8; InvocationUuid::RAW_BYTES_LEN];
+
+        debug_assert!(source.remaining() >= InvocationUuid::RAW_BYTES_LEN);
+        source.copy_to_slice(&mut buf);
+        Ok(InvocationUuid::from_bytes(buf))
     }
 
     fn serialized_length(&self) -> usize {
