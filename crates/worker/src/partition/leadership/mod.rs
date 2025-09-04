@@ -444,7 +444,6 @@ where
             let cleaner = Cleaner::new(
                 partition_store.clone(),
                 self.partition.partition_id,
-                self.partition.key_range.clone(),
                 config.worker.cleanup_interval(),
             );
 

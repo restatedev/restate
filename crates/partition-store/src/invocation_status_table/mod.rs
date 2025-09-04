@@ -9,14 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::{ControlFlow, RangeInclusive};
+use std::time::SystemTime;
 
 use futures::Stream;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvokedInvocationStatusLite,
-    ReadInvocationStatusTable, ScanInvocationStatusTable, WriteInvocationStatusTable,
+    ExpiredInvocation, InvocationLite, InvocationStatus, InvocationStatusDiscriminants,
+    InvokedInvocationStatusLite, ReadInvocationStatusTable, ScanInvocationStatusTable,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
@@ -126,23 +128,96 @@ impl ScanInvocationStatusTable for PartitionStore {
         .map_err(|_| StorageError::OperationalError)
     }
 
-    fn scan_invocation_statuses(
+    fn scan_expired_invocations(
         &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send> {
-        self.run_iterator(
-            "df-invocation-status",
-            Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
-            |(mut key, mut value)| {
-                let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
-                let state_value = InvocationStatus::decode(&mut value)?;
+    ) -> Result<impl Stream<Item = Result<ExpiredInvocation>> + Send> {
+        self.iterator_filter_map(
+            "scan-all-completed",
+            Priority::High,
+            FullScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range().clone()),
+            {
+                move |(mut key, mut value)| {
+                    let invocation_id = invocation_id_from_key_bytes(&mut key)?;
 
-                let (partition_key, invocation_uuid) = state_key.split();
-                Ok((
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    state_value,
-                ))
+                    if value.len() < std::mem::size_of::<u8>() {
+                        return Err(StorageError::Conversion(
+                            restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                                "remaining bytes in buf '{}' < version bytes '{}'",
+                                value.len(),
+                                std::mem::size_of::<u8>()
+                            ))
+                            .into(),
+                        ));
+                    }
+
+                    // read version
+                    let codec = restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value))
+                            .map_err(|e| StorageError::Conversion(e.into()))?;
+
+                    let restate_types::storage::StorageCodecKind::Protobuf = codec else {
+                        return Err(StorageError::Conversion(
+                            restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into(),
+                        ));
+                    };
+
+                    let mut inv_status_v2_lazy =
+                        restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::default();
+
+                    inv_status_v2_lazy
+                        .merge(value)
+                        .map_err(|e| StorageError::Conversion(e.into()))?;
+
+
+                    let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
+                        inv_status_v2_lazy.inner.status()
+                    else {
+                        return Ok(None);
+                    };
+
+                    let Some(completed_time) = inv_status_v2_lazy.inner.completed_transition_time else {
+                        // If completed time is unavailable, the invocation is on the old invocation table,
+                        //  thus it will be cleaned up with the old timer.
+                        return Ok(None);
+                    };
+
+                    let completed_time = restate_types::time::MillisSinceEpoch::new(completed_time);
+                    let now = SystemTime::now();
+
+                    let completion_retention_duration = inv_status_v2_lazy
+                        .completion_retention_duration()
+                        .map_err(|err| StorageError::Conversion(err.into()))?;
+
+                    let invocation_expired = if let Some(status_expiration_time) =
+                        SystemTime::from(completed_time).checked_add(completion_retention_duration)
+                    {
+                        now >= status_expiration_time
+                    } else {
+                        false
+                    };
+
+                    let journal_expired = if inv_status_v2_lazy.inner.journal_length != 0 {
+                        let journal_retention_duration = inv_status_v2_lazy
+                            .journal_retention_duration()
+                            .map_err(|err| StorageError::Conversion(err.into()))?;
+
+                        if let Some(journal_expiration_time) =
+                            SystemTime::from(completed_time).checked_add(journal_retention_duration)
+                        {
+                            now >= journal_expiration_time
+                        } else {
+                            // If sum overflow, then the cleanup time lies far enough in the future
+                            false
+                        }
+                    } else {
+                        false
+                    };
+
+                    Ok(Some(ExpiredInvocation {
+                        invocation_id,
+                        invocation_expired,
+                        journal_expired,
+                    }))
+                }
             },
         )
         .map_err(|_| StorageError::OperationalError)
