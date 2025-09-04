@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface};
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::Table;
 use indoc::indoc;
+
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_tip};
-use restate_serde_util::DurationString;
+use restate_time_util::DurationExt;
 use restate_types::invocation::ServiceType;
+
+use crate::cli_env::CliEnv;
+use crate::clients::{AdminClient, AdminClientInterface};
 
 // TODO we could infer this text from the OpenAPI docs!
 pub(super) const PUBLIC_DESCRIPTION: &str = indoc! {
@@ -94,7 +96,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     let mut table = Table::new_styled();
     table.add_kv_row(
         "Idempotent requests retention:",
-        DurationString::display(service.idempotency_retention),
+        service.idempotency_retention.friendly(),
     );
     c_println!("{table}");
     c_tip!("{}", IDEMPOTENCY_RETENTION);
@@ -104,11 +106,10 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         let mut table = Table::new_styled();
         table.add_kv_row(
             "Workflow retention time:",
-            DurationString::display(
-                service
-                    .workflow_completion_retention
-                    .expect("Workflows must have a well defined retention"),
-            ),
+            service
+                .workflow_completion_retention
+                .expect("Workflows must have a well defined retention")
+                .friendly(),
         );
         c_println!("{table}");
         c_tip!("{}", WORKFLOW_RETENTION);
@@ -120,7 +121,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         "Journal retention:",
         service
             .journal_retention
-            .map(DurationString::display)
+            .map(|d| d.friendly().to_string())
             .unwrap_or_else(|| "<UNSET>".to_string()),
     );
     c_println!("{table}");
@@ -128,19 +129,13 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     c_println!();
 
     let mut table = Table::new_styled();
-    table.add_kv_row(
-        "Inactivity timeout:",
-        DurationString::display(service.inactivity_timeout),
-    );
+    table.add_kv_row("Inactivity timeout:", service.inactivity_timeout.friendly());
     c_println!("{table}");
     c_tip!("{}", INACTIVITY_TIMEOUT);
     c_println!();
 
     let mut table = Table::new_styled();
-    table.add_kv_row(
-        "Abort timeout:",
-        DurationString::display(service.abort_timeout),
-    );
+    table.add_kv_row("Abort timeout:", service.abort_timeout.friendly());
     c_println!("{table}");
     c_tip!("{}", ABORT_TIMEOUT);
     c_println!();

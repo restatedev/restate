@@ -1,0 +1,17 @@
+[package]
+name = "restate-time-util"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+jiff = { workspace = true }
+thiserror = { workspace = true }
