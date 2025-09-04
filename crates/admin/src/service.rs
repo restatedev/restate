@@ -16,9 +16,9 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use restate_bifrost::Bifrost;
 use restate_core::MetadataWriter;
 use restate_core::network::net_util;
-use restate_serde_util::DurationString;
 use restate_service_client::HttpClient;
 use restate_service_protocol::discovery::ServiceDiscovery;
+use restate_time_util::DurationExt;
 use restate_types::config::AdminOptions;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
@@ -134,7 +134,7 @@ where
                             name: "access-log",
                             target: "restate_admin::api",
                             parent: span,
-                            { http.response.status_code = response.status().as_u16(), http.response.latency = DurationString::display(latency) },
+                            { http.response.status_code = response.status().as_u16(), http.response.latency = %latency.friendly().to_seconds_span() },
                             "Replied"
                         )
                     },
@@ -150,7 +150,7 @@ where
                                     name: "access-log",
                                     target: "restate_admin::api",
                                     parent: span,
-                                    { error.type = error_string, http.response.latency = DurationString::display(latency) },
+                                    { error.type = error_string, http.response.latency = %latency.friendly().to_seconds_span() },
                                     "Failed processing"
                                 )
                             }

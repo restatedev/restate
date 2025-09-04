@@ -54,12 +54,8 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     )
     .context("Cannot parse the edited config file")?;
 
-    super::patch::apply_service_configuration_patch(
-        opts.service.clone(),
-        admin_client,
-        modify_request,
-    )
-    .await
+    super::patch::apply_service_configuration_patch(&opts.service, admin_client, modify_request)
+        .await
 }
 
 // TODO generate this file from the JsonSchema
