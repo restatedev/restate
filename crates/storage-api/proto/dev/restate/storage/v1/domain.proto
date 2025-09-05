@@ -180,6 +180,8 @@ message InvocationStatusV2 {
   uint32 current_invocation_epoch = 27;
   // Used to reconstruct the completion_range_epoch_map
   repeated JournalTrimPoint trim_points = 28;
+  // Random seed to feed RNG
+  optional uint64 random_seed = 31;
 
   // Suspended
   repeated uint32 waiting_for_completions = 17;

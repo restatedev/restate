@@ -33,6 +33,9 @@ enum ServiceProtocolVersion {
   // * New command to attach to existing invocation
   // * New command to get output of existing invocation
   V5 = 5;
+  // Added:
+  // * StartMessage.random_seed
+  V6 = 6;
 }
 
 // --- Core frames ---
@@ -74,6 +77,10 @@ message StartMessage {
   // Please note this duration might not be accurate,
   // and might change depending on which Restate replica executes the request.
   uint64 duration_since_last_stored_entry = 8;
+
+  // Random seed to use to seed the deterministic RNG exposed in the context API.
+  // This will be stable across restarts.
+  uint64 random_seed = 9;
 }
 
 // Type: 0x0000 + 1

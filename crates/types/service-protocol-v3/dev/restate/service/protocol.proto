@@ -33,6 +33,9 @@ enum ServiceProtocolVersion {
   // * New command to attach to existing invocation
   // * New command to get output of existing invocation
   V5 = 5;
+  // Added:
+  // * StartMessage.random_seed
+  V6 = 6;
 }
 
 // --- Core frames ---

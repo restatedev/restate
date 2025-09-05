@@ -306,6 +306,10 @@ pub struct InvokerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     experimental_features_propose_events: bool,
+
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    experimental_features_allow_protocol_v6: bool,
 }
 
 impl InvokerOptions {
@@ -329,6 +333,10 @@ impl InvokerOptions {
 
     pub fn experimental_features_propose_events(&self) -> bool {
         self.experimental_features_propose_events
+    }
+
+    pub fn experimental_features_allow_protocol_v6(&self) -> bool {
+        self.experimental_features_allow_protocol_v6
     }
 
     #[allow(deprecated)]
@@ -362,6 +370,7 @@ impl Default for InvokerOptions {
             concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
             disable_eager_state: false,
             experimental_features_propose_events: false,
+            experimental_features_allow_protocol_v6: false,
         }
     }
 }

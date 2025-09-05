@@ -387,6 +387,7 @@ impl Message {
         state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
+        random_seed: u64,
     ) -> Self {
         Self::Start(proto::StartMessage {
             id,
@@ -402,6 +403,7 @@ impl Message {
                 .unwrap_or_default(),
             retry_count_since_last_stored_entry,
             duration_since_last_stored_entry: duration_since_last_stored_entry.as_millis() as u64,
+            random_seed,
         })
     }
 

@@ -488,6 +488,15 @@ impl InvocationId {
         buf[size_of::<PartitionKey>()..].copy_from_slice(&uuid);
         pk.len() + uuid.len()
     }
+
+    /// Generate random seed to feed RNG in SDKs.
+    pub fn to_random_seed(&self) -> u64 {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.to_bytes().hash(&mut hasher);
+        hasher.finish()
+    }
 }
 
 impl From<InvocationId> for Bytes {

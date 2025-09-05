@@ -171,7 +171,8 @@ where
                 journal_size,
                 state_iter,
                 self.invocation_task.retry_count_since_last_stored_entry,
-                journal_metadata.last_modification_date.elapsed()
+                journal_metadata.last_modification_date.elapsed(),
+                journal_metadata.random_seed
             )
             .await
         );
@@ -434,6 +435,7 @@ where
         state_entries: EagerState<I>,
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
+        random_seed: u64,
     ) -> Result<(), InvokerError> {
         let is_partial = state_entries.is_partial();
 
@@ -452,6 +454,7 @@ where
                 state_entries,
                 retry_count_since_last_stored_entry,
                 duration_since_last_stored_entry,
+                random_seed,
             ),
         )
         .await

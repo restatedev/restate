@@ -31,6 +31,7 @@ pub struct JournalMetadata {
     /// The upper bound for the total clock skew is the clock skew of the different machines
     /// and the max time difference between two replicas applying the journal append command.
     pub last_modification_date: MillisSinceEpoch,
+    pub random_seed: u64,
 }
 
 impl JournalMetadata {
@@ -40,6 +41,7 @@ impl JournalMetadata {
         pinned_deployment: Option<PinnedDeployment>,
         invocation_epoch: InvocationEpoch,
         last_modification_date: MillisSinceEpoch,
+        random_seed: u64,
     ) -> Self {
         Self {
             pinned_deployment,
@@ -47,6 +49,7 @@ impl JournalMetadata {
             length,
             last_modification_date,
             invocation_epoch,
+            random_seed,
         }
     }
 }

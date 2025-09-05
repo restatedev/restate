@@ -13,11 +13,15 @@
 use crate::errors::InvocationError;
 use std::ops::RangeInclusive;
 
-// Range of supported service protocol versions by this server
-pub const MIN_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V1;
+pub const MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
+    ServiceProtocolVersion::V1;
+pub const MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
+    ServiceProtocolVersion::V6;
+
 pub const MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
     ServiceProtocolVersion::V5;
-pub const MAX_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion = ServiceProtocolVersion::V5;
+pub const MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
+    MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION;
 
 pub const MAX_SERVICE_PROTOCOL_VERSION_VALUE: i32 = i32::MAX;
 
@@ -29,26 +33,33 @@ impl ServiceProtocolVersion {
     }
 
     pub fn is_acceptable_for_discovery(min_version: i32, max_version: i32) -> bool {
-        min_version <= i32::from(MAX_SERVICE_PROTOCOL_VERSION)
+        min_version <= i32::from(MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION)
             && max_version >= i32::from(MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION)
     }
 
-    fn is_compatible(min_version: i32, max_version: i32) -> bool {
-        min_version <= i32::from(MAX_SERVICE_PROTOCOL_VERSION)
-            && max_version >= i32::from(MIN_SERVICE_PROTOCOL_VERSION)
+    pub fn is_supported_for_inflight_invocation(&self) -> bool {
+        MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION <= *self
+            && *self <= MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION
     }
 
-    pub fn is_supported(&self) -> bool {
-        MIN_SERVICE_PROTOCOL_VERSION <= *self && *self <= MAX_SERVICE_PROTOCOL_VERSION
-    }
-
-    pub fn choose_max_supported_version(
-        versions: &RangeInclusive<i32>,
+    /// Pick the version to use for running an invocation
+    pub fn pick(
+        deployment_supported_versions: &RangeInclusive<i32>,
+        enable_protocol_v6: bool,
     ) -> Option<ServiceProtocolVersion> {
-        if ServiceProtocolVersion::is_compatible(*versions.start(), *versions.end()) {
+        let max_version = if enable_protocol_v6 {
+            ServiceProtocolVersion::V6.into()
+        } else {
+            ServiceProtocolVersion::V5.into()
+        };
+
+        if *deployment_supported_versions.start() <= max_version
+            && *deployment_supported_versions.end()
+                >= i32::from(MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION)
+        {
             ServiceProtocolVersion::try_from(std::cmp::min(
-                *versions.end(),
-                i32::from(MAX_SERVICE_PROTOCOL_VERSION),
+                *deployment_supported_versions.end(),
+                max_version,
             ))
             .ok()
         } else {
