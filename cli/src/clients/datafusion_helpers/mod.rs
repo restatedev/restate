@@ -1,21 +1,16 @@
 use std::{collections::HashMap, fmt::Display, str::FromStr};
 
-use super::DataFusionHttpClient;
 use anyhow::Result;
-use bytes::Bytes;
 use chrono::{DateTime, Duration, Local};
 use clap::ValueEnum;
-use restate_admin_rest_model::version::AdminApiVersion;
 use restate_types::journal_v2::Entry;
-use restate_types::{
-    identifiers::{AwakeableIdentifier, DeploymentId, ServiceId},
-    invocation::ServiceType,
-};
+use restate_types::{identifiers::AwakeableIdentifier, invocation::ServiceType};
 use serde::Deserialize;
 use serde_with::{DeserializeAs, serde_as};
 
-mod v1;
 mod v2;
+
+pub use v2::*;
 
 #[derive(Deserialize)]
 pub struct ServiceHandlerUsage {
@@ -432,25 +427,3 @@ pub struct HandlerStateStats {
     pub oldest_at: chrono::DateTime<Local>,
     pub oldest_invocation: String,
 }
-
-macro_rules! v1_converter_fn {
-    ($name:tt, ($($v:tt: $t:ty),+) -> $ret:ty) => {
-        pub async fn $name(client: &DataFusionHttpClient, $($v: $t),+) -> $ret {
-            match client.admin_api_version() {
-                AdminApiVersion::V1 => v1::$name(client, $($v),+).await,
-                _ => v2::$name(client, $($v),+).await,
-            }
-        }
-    };
-}
-
-v1_converter_fn!(count_deployment_active_inv, (deployment_id: &DeploymentId) -> Result<i64>);
-v1_converter_fn!(count_deployment_active_inv_by_method, (deployment_id: &DeploymentId) -> Result<Vec<ServiceHandlerUsage>>);
-v1_converter_fn!(find_active_invocations_simple, (filter: &str) -> Result<Vec<SimpleInvocation>>);
-v1_converter_fn!(get_invocation, (invocation_id: &str) -> Result<Option<Invocation>>);
-v1_converter_fn!(get_invocation_journal, (invocation_id: &str) -> Result<Vec<JournalEntry>>);
-v1_converter_fn!(find_active_invocations, (filter: &str, post_filter: &str, order: &str, limit: usize) -> Result<(Vec<Invocation>, usize)>);
-v1_converter_fn!(get_service_invocations, (service: &str, limit_active: usize) -> Result<Vec<Invocation>> );
-v1_converter_fn!(get_state_keys, (service: &str, key: Option<&str>) -> Result<HashMap<ServiceId, HashMap<String, Bytes>>> );
-v1_converter_fn!(get_locked_keys_status, (services_filter: impl IntoIterator<Item = impl AsRef<str>>) -> Result<ServiceHandlerLockedKeysMap> );
-v1_converter_fn!(get_service_status, (services_filter: impl IntoIterator<Item = impl AsRef<str>>) -> Result<ServiceStatusMap> );

@@ -45,10 +45,9 @@ pub async fn count_deployment_active_inv(
 ) -> Result<i64> {
     Ok(client
         .run_count_agg_query(format!(
-            "SELECT COUNT(id) AS inv_count \
-            FROM sys_invocation_status \
-            WHERE pinned_deployment_id = '{deployment_id}' \
-            GROUP BY pinned_deployment_id"
+            "SELECT COUNT(1) AS inv_count
+            FROM sys_invocation_status
+            WHERE pinned_deployment_id = '{deployment_id}'"
         ))
         .await?)
 }
@@ -61,7 +60,7 @@ pub async fn count_deployment_active_inv_by_method(
         "SELECT
             target_service_name as service,
             target_handler_name as handler,
-            COUNT(id) AS inv_count
+            COUNT(1) AS inv_count
             FROM sys_invocation_status
             WHERE pinned_deployment_id = '{deployment_id}'
             GROUP BY pinned_deployment_id, target_service_name, target_handler_name"
@@ -100,7 +99,7 @@ pub async fn get_service_status(
                 target_service_name,
                 target_handler_name,
                 'pending' as status,
-                COUNT(id) as num_invocations,
+                COUNT(1) as num_invocations,
                 MIN(created_at) as oldest_at,
                 FIRST_VALUE(id ORDER BY created_at ASC) as oldest_invocation
              FROM sys_invocation_status
@@ -128,7 +127,7 @@ pub async fn get_service_status(
                 target_service_name,
                 target_handler_name,
                 status,
-                COUNT(id) as num_invocations,
+                COUNT(1) as num_invocations,
                 MIN(created_at) as oldest_at,
                 FIRST_VALUE(id ORDER BY created_at ASC) as oldest_invocation
             FROM sys_invocation
@@ -183,11 +182,11 @@ pub async fn get_locked_keys_status(
             "SELECT
                 service_name,
                 service_key,
-                COUNT(id) as num_pending
+                COUNT(1) as num_pending
              FROM sys_inbox
              WHERE service_name IN {query_filter}
              GROUP BY service_name, service_key
-             ORDER BY COUNT(id) DESC"
+             ORDER BY num_pending DESC"
         );
         let rows = client
             .run_json_query::<LockedKeysQueryResult>(query)
@@ -326,13 +325,13 @@ pub async fn find_active_invocations(
             {select_completion_columns}
         FROM sys_invocation inv
         {filter}
-        {order}
         ),
 
         invocations_with_latest_deployment_id AS
         (SELECT
             inv.*,
-            svc.deployment_id as comp_latest_deployment
+            svc.deployment_id as comp_latest_deployment,
+            svc.ty as service_type
         FROM sys_service svc
         RIGHT JOIN invocations inv ON svc.name = inv.target_service_name
         ),
@@ -345,8 +344,9 @@ pub async fn find_active_invocations(
         RIGHT JOIN invocations_with_latest_deployment_id inv ON dp.id = inv.pinned_deployment_id
         )
 
-        SELECT *, COUNT(*) OVER() AS full_count from invocations_with_known_deployment_id
+        SELECT *, COUNT(1) OVER() AS full_count from invocations_with_known_deployment_id inv
         {post_filter}
+        {order}
         LIMIT {limit}"
     );
     let rows = client
@@ -393,7 +393,7 @@ pub async fn get_service_invocations(
         client,
         &format!("WHERE inv.target_service_name = '{service}'"),
         "",
-        "ORDER BY inv.created_at DESC",
+        "ORDER BY inv.created_at DESC, inv.id",
         limit_active,
     )
     .await?
