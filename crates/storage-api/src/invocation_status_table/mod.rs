@@ -359,6 +359,19 @@ impl InvocationStatus {
     }
 
     #[inline]
+    pub fn get_random_seed(&self) -> Option<u64> {
+        match self {
+            InvocationStatus::Scheduled(metadata) => metadata.metadata.random_seed,
+            InvocationStatus::Inboxed(metadata) => metadata.metadata.random_seed,
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => metadata.random_seed,
+            InvocationStatus::Completed(completed) => completed.random_seed,
+            InvocationStatus::Free => None,
+        }
+    }
+
+    #[inline]
     pub fn discriminant(&self) -> Option<InvocationStatusDiscriminants> {
         match self {
             InvocationStatus::Scheduled(_) => Some(InvocationStatusDiscriminants::Scheduled),
@@ -440,6 +453,13 @@ pub struct PreFlightInvocationMetadata {
     pub journal_retention_duration: Duration,
 
     pub idempotency_key: Option<ByteString>,
+
+    // TODO from Restate 1.6 we should always write this random seed,
+    //  such that we can avoid computing it all the times in the invoker.
+    /// The random seed is sent to the SDK to feed the RNG exposed in ctx.rand
+    ///
+    /// When None, infer the seed from the invocation id.
+    pub random_seed: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -478,6 +498,7 @@ impl PreFlightInvocationMetadata {
             journal_retention_duration: service_invocation.journal_retention_duration,
             idempotency_key: service_invocation.idempotency_key,
             created_using_restate_version: service_invocation.restate_version,
+            random_seed: None,
         }
     }
 }
@@ -612,6 +633,13 @@ pub struct InFlightInvocationMetadata {
     pub hotfix_apply_cancellation_after_deployment_is_pinned: bool,
     pub current_invocation_epoch: InvocationEpoch,
     pub completion_range_epoch_map: CompletionRangeEpochMap,
+
+    // TODO from Restate 1.6 we should always write this random seed,
+    //  such that we can avoid computing it all the times in the invoker.
+    /// The random seed is sent to the SDK to feed the RNG exposed in ctx.rand
+    ///
+    /// When None, infer the seed from the invocation id.
+    pub random_seed: Option<u64>,
 }
 
 impl InFlightInvocationMetadata {
@@ -644,6 +672,7 @@ impl InFlightInvocationMetadata {
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 current_invocation_epoch: 0,
                 completion_range_epoch_map: Default::default(),
+                random_seed: pre_flight_invocation_metadata.random_seed,
             },
             InvocationInput {
                 argument: pre_flight_invocation_metadata.argument,
@@ -694,6 +723,15 @@ pub struct CompletedInvocation {
 
     pub journal_metadata: JournalMetadata,
     pub pinned_deployment: Option<PinnedDeployment>,
+
+    // TODO from Restate 1.6 we should always write this random seed,
+    //  such that we can avoid computing it all the times in the invoker.
+    /// The random seed is sent to the SDK to feed the RNG exposed in ctx.rand
+    ///
+    /// In case of a restart from prefix, the random_seed should be copied over.
+    ///
+    /// When None, infer the seed from the invocation id.
+    pub random_seed: Option<u64>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -731,6 +769,7 @@ impl CompletedInvocation {
                 JournalMetadata::empty()
             },
             pinned_deployment: in_flight_invocation_metadata.pinned_deployment,
+            random_seed: in_flight_invocation_metadata.random_seed,
         }
     }
 
@@ -827,6 +866,7 @@ mod test_util {
                 journal_retention_duration: Duration::ZERO,
                 idempotency_key: None,
                 argument: Default::default(),
+                random_seed: None,
             }
         }
     }
@@ -853,6 +893,7 @@ mod test_util {
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 current_invocation_epoch: 0,
                 completion_range_epoch_map: Default::default(),
+                random_seed: None,
             }
         }
     }
@@ -881,6 +922,7 @@ mod test_util {
                 journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),
                 pinned_deployment: None,
+                random_seed: None,
             }
         }
 
@@ -902,6 +944,7 @@ mod test_util {
                 journal_metadata: JournalMetadata::empty(),
                 journal_retention_duration: Duration::ZERO,
                 pinned_deployment: None,
+                random_seed: None,
             }
         }
     }

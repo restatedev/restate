@@ -99,6 +99,7 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         hotfix_apply_cancellation_after_deployment_is_pinned: false,
         current_invocation_epoch: 1,
         completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points([(5, 1)]),
+        random_seed: None,
     })
 }
 
@@ -126,6 +127,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             hotfix_apply_cancellation_after_deployment_is_pinned: false,
             current_invocation_epoch: 1,
             completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points([(5, 1)]),
+            random_seed: None,
         },
         waiting_for_notifications: HashSet::default(),
     }

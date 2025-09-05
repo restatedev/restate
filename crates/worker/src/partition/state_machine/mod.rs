@@ -1010,6 +1010,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                 in_flight_invocation_metadata.current_invocation_epoch,
                 // This is safe to do as only the leader will execute the invoker command
                 MillisSinceEpoch::now(),
+                in_flight_invocation_metadata
+                    .random_seed
+                    .unwrap_or_else(|| invocation_id.to_random_seed()),
             ),
             vec![
                 restate_invoker_api::invocation_reader::JournalEntry::JournalV1(

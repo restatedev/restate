@@ -78,6 +78,10 @@ where
     ) -> Result<Option<(JournalMetadata, Self::JournalStream)>, Self::Error> {
         let invocation_status = self.txn.get_invocation_status(invocation_id).await?;
 
+        let random_seed = invocation_status
+            .get_random_seed()
+            .unwrap_or_else(|| invocation_id.to_random_seed());
+
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
             let (journal_metadata, journal_stream) = if invoked_status
                 .pinned_deployment
@@ -108,6 +112,7 @@ where
                     invoked_status.pinned_deployment,
                     invoked_status.current_invocation_epoch,
                     invoked_status.timestamps.modification_time(),
+                    random_seed,
                 );
 
                 (journal_metadata, entries)
@@ -120,6 +125,7 @@ where
                         invoked_status.pinned_deployment,
                         invoked_status.current_invocation_epoch,
                         invoked_status.timestamps.modification_time(),
+                        random_seed,
                     ),
                     journal_table_v1::ReadOnlyJournalTable::get_journal(
                         &mut self.txn,

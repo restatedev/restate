@@ -20,7 +20,8 @@ use restate_types::journal::{EntryIndex, EntryType};
 use restate_types::journal_v2;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::service_protocol::{
-    MAX_SERVICE_PROTOCOL_VERSION, MIN_SERVICE_PROTOCOL_VERSION, ServiceProtocolVersion,
+    MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION, MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION,
+    ServiceProtocolVersion,
 };
 use std::collections::HashSet;
 use std::error::Error as StdError;
@@ -160,7 +161,7 @@ pub(crate) enum InvokerError {
         SdkInvocationErrorV2,
     ),
 
-    #[error("cannot talk to service endpoint '{0}' because its service protocol versions [{start}, {end}] are incompatible with the server's service protocol versions [{min}, {max}].", start = .1.start(), end = .1.end(), min = i32::from(MIN_SERVICE_PROTOCOL_VERSION), max = i32::from(MAX_SERVICE_PROTOCOL_VERSION))]
+    #[error("cannot talk to service endpoint '{0}' because its service protocol versions [{start}, {end}] are incompatible with the server's service protocol versions [{min}, {max}].", start = .1.start(), end = .1.end(), min = i32::from(MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION), max = i32::from(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION))]
     #[code(restate_errors::RT0013)]
     IncompatibleServiceEndpoint(DeploymentId, RangeInclusive<i32>),
     #[error("cannot resume invocation because it was created with an incompatible service protocol version '{}' and the server does not support upgrading versions yet", .0.as_repr())]
