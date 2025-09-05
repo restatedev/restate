@@ -14,6 +14,7 @@ proto = ["dep:prost", "dep:bytes"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
+restate-time-util = { workspace = true }
 
 bytes = { workspace = true, optional = true }
 bytesize = { workspace = true }
@@ -24,7 +25,6 @@ schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true, optional = true }
 serde_with = { workspace = true }
-jiff = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
