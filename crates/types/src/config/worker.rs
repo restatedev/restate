@@ -68,6 +68,23 @@ pub struct WorkerOptions {
     #[serde(default)]
     pub snapshots: SnapshotsOptions,
 
+    /// # Durability mode
+    ///
+    /// Every partition store is backed up by a durable log that is used to recover the state of
+    /// the partition on restart or failover. The durability mode defines the criteria used
+    /// to determine whether a partition is considered fully durable or not at a given point in the
+    /// log history. Once a partition is fully durable, its backing log is allowed to be trimmed to
+    /// the durability point.
+    ///
+    /// This helps keeping the log's disk usage under control but it forces nodes that need to restore
+    /// the state of the partition to fetch a snapshot of that partition that covers the changes up to
+    /// and including the "durability point".
+    ///
+    /// Since v1.4.2 (not compatible with earlier versions)
+    // todo: auto enable in v1.6
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub durability_mode: Option<DurabilityMode>,
     /// # Delayed log trimming
     ///
     /// Log trimming normally happens immediately after the partition becomes fully durable. A
@@ -85,17 +102,11 @@ pub struct WorkerOptions {
     /// This setting is only effective if `worker.experimental-partition-driven-log-trimming` is
     /// set to `true`.
     #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    // todo: remove in v1.5 or v1.6
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "Option::is_none")]
     trim_delay_interval: Option<humantime::Duration>,
 
-    // todo: remove in v1.5 or v1.6
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub durability_mode: Option<DurabilityMode>,
-
-    // todo: remove and auto-enable in v1.5 (or v1.6)
+    // todo: remove and auto-enable in v1.6
     //
     // Underlying dependency `PartitionDurability` wal-protocol message is
     // supported since v1.4.2
