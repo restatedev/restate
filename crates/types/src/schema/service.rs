@@ -426,6 +426,7 @@ pub struct HandlerMetadata {
     /// # Retry policy
     ///
     /// Retry policy overrides applied for this handler.
+    #[serde(default)]
     pub retry_policy: HandlerRetryPolicyMetadata,
 }
 
