@@ -10,7 +10,6 @@
 
 use super::*;
 
-use bytes::Bytes;
 use restate_types::journal::Completion;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::retries;
@@ -26,7 +25,7 @@ use tokio::task::AbortHandle;
 pub(super) struct InvocationStateMachine {
     pub(super) invocation_target: InvocationTarget,
     pub(super) invocation_epoch: InvocationEpoch,
-    pub(super) last_transient_error_event_deduplication_hash: Option<Bytes>,
+    last_transient_error_event: Option<TransientErrorEvent>,
     selected_service_protocol: Option<ServiceProtocolVersion>,
     invocation_state: InvocationState,
     retry_policy_state: RetryPolicyState,
@@ -180,7 +179,7 @@ impl InvocationStateMachine {
         Self {
             invocation_target,
             invocation_epoch,
-            last_transient_error_event_deduplication_hash: None,
+            last_transient_error_event: None,
             selected_service_protocol: None,
             invocation_state: InvocationState::New,
             retry_policy_state: RetryPolicyState {
@@ -457,6 +456,29 @@ impl InvocationStateMachine {
             } => *timer_fired && journal_tracker.can_retry(),
             _ => false,
         }
+    }
+
+    pub(crate) fn should_emit_transient_error_event(
+        &mut self,
+        new_error_event: &TransientErrorEvent,
+    ) -> bool {
+        let Some(old_error_event) = &self.last_transient_error_event else {
+            // We don't have last transient error, all good, emit it.
+            self.last_transient_error_event = Some(new_error_event.clone());
+            return true;
+        };
+
+        let should_emit = !(old_error_event.error_code == new_error_event.error_code
+            && old_error_event.error_message == new_error_event.error_message
+            && old_error_event.related_command_index == new_error_event.related_command_index
+            && old_error_event.related_command_type == new_error_event.related_command_type
+            && old_error_event.related_command_name == new_error_event.related_command_name);
+
+        if should_emit {
+            self.last_transient_error_event = Some(new_error_event.clone());
+        }
+
+        should_emit
     }
 
     #[inline]

@@ -48,7 +48,6 @@ where
                     ctx.do_drop_journal(
                         invocation_id,
                         completed.journal_metadata.length,
-                        completed.journal_metadata.events,
                         should_remove_journal_table_v2,
                     )
                     .await?;

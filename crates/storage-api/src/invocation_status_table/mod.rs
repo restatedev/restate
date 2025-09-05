@@ -389,28 +389,20 @@ pub struct JournalMetadata {
     pub length: u32,
     /// Number of commands stored in the current journal
     pub commands: u32,
-    /// Number of events stored
-    pub events: u32,
     pub span_context: ServiceInvocationSpanContext,
 }
 
 impl JournalMetadata {
-    pub fn new(
-        length: u32,
-        commands: u32,
-        events: u32,
-        span_context: ServiceInvocationSpanContext,
-    ) -> Self {
+    pub fn new(length: u32, commands: u32, span_context: ServiceInvocationSpanContext) -> Self {
         Self {
             span_context,
             length,
             commands,
-            events,
         }
     }
 
     pub fn initialize(span_context: ServiceInvocationSpanContext) -> Self {
-        Self::new(0, 0, 0, span_context)
+        Self::new(0, 0, span_context)
     }
 
     pub fn empty() -> Self {

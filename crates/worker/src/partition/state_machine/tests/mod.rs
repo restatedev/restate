@@ -66,6 +66,7 @@ use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
 use restate_types::live::Constant;
+use restate_types::logs::SequenceNumber;
 use restate_types::partitions::Partition;
 use restate_types::state_mut::ExternalStateMutation;
 use std::collections::{HashMap, HashSet};
@@ -157,6 +158,7 @@ impl TestEnv {
             .apply(
                 command,
                 MillisSinceEpoch::now(),
+                Lsn::OLDEST,
                 &mut transaction,
                 &mut action_collector,
                 true,
@@ -176,6 +178,7 @@ impl TestEnv {
             .apply(
                 command,
                 MillisSinceEpoch::now(),
+                Lsn::OLDEST,
                 &mut transaction,
                 &mut action_collector,
                 true,
@@ -242,23 +245,24 @@ impl TestEnv {
         .expect("Entry to be of the specified type")
     }
 
-    pub async fn read_journal_event(
-        &mut self,
-        invocation_id: InvocationId,
-        idx: EntryIndex,
-    ) -> Event {
-        Event::try_from(
-            restate_storage_api::journal_events::ReadOnlyJournalEventsTable::get_journal_event(
+    /// Returns journal events ordered by timestamps
+    pub async fn read_journal_events(&mut self, invocation_id: InvocationId) -> Vec<Event> {
+        let mut events =
+            restate_storage_api::journal_events::ReadOnlyJournalEventsTable::get_journal_events(
                 self.storage(),
                 invocation_id,
-                idx,
             )
-            .await
             .expect("storage to be working")
-            .expect("event to be present")
-            .event,
-        )
-        .expect("to be decodable")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("to be decodable");
+
+        events.sort_by(|x, y| x.append_time.cmp(&y.append_time));
+
+        events
+            .into_iter()
+            .map(|e| e.event.into_event_or_unknown())
+            .collect()
     }
 
     pub async fn modify_invocation_status(
