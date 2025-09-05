@@ -53,6 +53,7 @@ datafusion = { workspace = true }
 derive_more = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
+gardal = { workspace = true }
 humantime = { workspace = true }
 itertools = { workspace = true }
 jiff = { workspace = true }

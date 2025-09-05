@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::future::poll_fn;
 use std::ops::Deref;
+use std::pin::Pin;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -54,7 +55,6 @@ use restate_types::schema::deployment::{
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
-use crate::Notification;
 use crate::error::{
     CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
 };
@@ -63,6 +63,8 @@ use crate::invocation_task::{
     ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
     invocation_id_to_header_value, service_protocol_version_to_header_value,
 };
+use crate::throttling::Throttler;
+use crate::{Notification, throttling};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
@@ -165,6 +167,13 @@ where
             &service_invocation_span_context,
         );
 
+        let throttler = self
+            .invocation_task
+            .action_token_bucket
+            .take()
+            .map(throttling::Throttler::limited)
+            .unwrap_or_else(throttling::Throttler::unlimited);
+
         crate::shortcircuit!(
             self.write_start(
                 &mut http_stream_tx,
@@ -180,9 +189,11 @@ where
         let mut http_stream_rx =
             ResponseStreamState::initialize(&self.invocation_task.client, request);
 
+        let mut throttler = std::pin::pin!(throttler);
+
         // Execute the replay
         crate::shortcircuit!(
-            self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
+            self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream,)
                 .await
         );
 
@@ -195,6 +206,7 @@ where
                     &service_invocation_span_context,
                     http_stream_tx,
                     &mut http_stream_rx,
+                    throttler.as_mut()
                 )
                 .await
             );
@@ -208,7 +220,11 @@ where
         // We don't have the invoker_rx, so we simply consume the response
         trace!("Sender side of the request has been dropped, now processing the response");
         let result = self
-            .response_stream_loop(&service_invocation_span_context, &mut http_stream_rx)
+            .response_stream_loop(
+                &service_invocation_span_context,
+                &mut http_stream_rx,
+                throttler.as_mut(),
+            )
             .await;
 
         // Sanity check of the stream decoder
@@ -356,7 +372,11 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: InvokerRequestStreamSender,
         http_stream_rx: &mut ResponseStreamState,
+        mut throttler: Pin<&mut Throttler>,
     ) -> TerminalLoopState<()> {
+        // when set to false will not read the next chunk until all buffered messages has been consumed
+        // this is to force a back pressure on the read stream
+        let mut read_next_chunk = true;
         loop {
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
@@ -380,22 +400,48 @@ where
                         },
                     }
                 },
-                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
+                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)), if read_next_chunk => {
+                    // don't read again until all buffered messages has been consumed
+                    // to force a back pressure on the read stream
                     match crate::shortcircuit!(chunk) {
                         ResponseChunk::Parts(parts) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        ResponseChunk::Data(buf) => {
+                            read_next_chunk = false;
+                            self.decoder.push(buf);
+                        }
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()))
                         }
                     }
                 },
+                _ = throttler.as_mut().next(), if !throttler.is_ready() => {
+                    // no-op
+                }
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
                     // Just return. This will drop the invoker_rx and http_stream_tx,
                     // closing the request stream and the invoker input channel.
                     return TerminalLoopState::Continue(())
                 },
+            }
+
+            while throttler.is_ready() {
+                match crate::shortcircuit!(self.decoder.consume_next()) {
+                    Some((frame_header, frame)) => {
+                        throttler.as_mut().consume();
+                        crate::shortcircuit!(self.handle_message(
+                            parent_span_context,
+                            frame_header,
+                            frame
+                        ));
+                    }
+                    None => {
+                        // we are done consuming messages, read next chunk
+                        read_next_chunk = true;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -404,23 +450,53 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         http_stream_rx: &mut ResponseStreamState,
+        mut throttler: Pin<&mut Throttler>,
     ) -> TerminalLoopState<()> {
+        // when set to false will not read the next chunk until all buffered messages has been consumed
+        // this is to force a back pressure on the read stream
+        let mut read_next_chunk = true;
         loop {
             tokio::select! {
-                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
+                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)), if read_next_chunk => {
+                    // don't read again until all buffered messages has been consumed
+                    // to force a back pressure on the read stream
                     match crate::shortcircuit!(chunk) {
                         ResponseChunk::Parts(parts) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        ResponseChunk::Data(buf) => {
+                            read_next_chunk = false;
+                            self.decoder.push(buf);
+                        }
                         ResponseChunk::End => {
                             // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()))
                         }
                     }
                 },
+                _ = throttler.as_mut().next(), if !throttler.is_ready() => {
+                    // no-op
+                }
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
                     warn!("Inactivity detected, going to close invocation");
                     return TerminalLoopState::Failed(InvokerError::AbortTimeoutFired(self.invocation_task.abort_timeout.into()))
                 },
+            }
+
+            while throttler.is_ready() {
+                match crate::shortcircuit!(self.decoder.consume_next()) {
+                    Some((frame_header, frame)) => {
+                        throttler.as_mut().consume();
+                        crate::shortcircuit!(self.handle_message(
+                            parent_span_context,
+                            frame_header,
+                            frame
+                        ));
+                    }
+                    None => {
+                        // we are done consuming messages, read next chunk
+                        read_next_chunk = true;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -572,20 +648,6 @@ where
         }
 
         Ok(())
-    }
-
-    fn handle_read(
-        &mut self,
-        parent_span_context: &ServiceInvocationSpanContext,
-        buf: Bytes,
-    ) -> TerminalLoopState<()> {
-        self.decoder.push(buf);
-
-        while let Some((frame_header, frame)) = crate::shortcircuit!(self.decoder.consume_next()) {
-            crate::shortcircuit!(self.handle_message(parent_span_context, frame_header, frame));
-        }
-
-        TerminalLoopState::Continue(())
     }
 
     fn handle_new_command(&mut self, mh: MessageHeader, command: RawCommand) {

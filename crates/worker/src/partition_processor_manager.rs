@@ -43,7 +43,7 @@ use restate_core::{
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
-use restate_invoker_impl::ChannelStatusReader;
+use restate_invoker_impl::{ChannelStatusReader, TokenBucket};
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
@@ -135,6 +135,10 @@ pub struct PartitionProcessorManager {
 
     partition_table: Live<PartitionTable>,
     wait_for_partition_table_update: bool,
+
+    // throttling
+    invocation_token_bucket: Option<TokenBucket>,
+    action_token_bucket: Option<TokenBucket>,
 }
 
 type SnapshotResult = Result<SnapshotCreated, SnapshotError>;
@@ -255,6 +259,36 @@ impl PartitionProcessorManager {
         let ppm_svc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
         let pp_rpc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
 
+        let config = updateable_config.pinned();
+        let invocation_token_bucket =
+            config
+                .worker
+                .invoker
+                .invocation_throttling
+                .as_ref()
+                .map(|opts| {
+                    let bucket = TokenBucket::from_parts(
+                        gardal::RateLimit::per_second_and_burst(opts.rate, opts.burst),
+                        gardal::TokioClock::default(),
+                    );
+                    bucket.add_tokens(opts.burst.get());
+                    bucket
+                });
+
+        let action_token_bucket = config
+            .worker
+            .invoker
+            .action_throttling
+            .as_ref()
+            .map(|opts| {
+                let bucket = TokenBucket::from_parts(
+                    gardal::RateLimit::per_second_and_burst(opts.rate, opts.burst),
+                    gardal::TokioClock::default(),
+                );
+                bucket.add_tokens(opts.burst.get());
+                bucket
+            });
+
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
         Self {
             health_status,
@@ -280,6 +314,8 @@ impl PartitionProcessorManager {
             fast_forward_on_startup: HashMap::default(),
             partition_table: Metadata::with_current(|m| m.updateable_partition_table()),
             wait_for_partition_table_update: false,
+            invocation_token_bucket,
+            action_token_bucket,
         }
     }
 
@@ -1273,6 +1309,8 @@ impl PartitionProcessorManager {
             self.replica_set_states.clone(),
             self.partition_store_manager.clone(),
             self.fast_forward_on_startup.remove(&partition_id),
+            self.invocation_token_bucket.clone(),
+            self.action_token_bucket.clone(),
         );
 
         self.asynchronous_operations

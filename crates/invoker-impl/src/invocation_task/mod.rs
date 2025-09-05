@@ -11,17 +11,25 @@
 mod service_protocol_runner;
 mod service_protocol_runner_v4;
 
-use super::Notification;
+use std::collections::HashSet;
+use std::convert::Infallible;
+use std::future::Future;
+use std::iter::Empty;
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
+use std::time::{Duration, Instant};
 
-use crate::error::InvokerError;
-use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
-use crate::metric_definitions::INVOKER_TASK_DURATION;
 use bytes::Bytes;
 use futures::{FutureExt, future, stream};
 use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::histogram;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::instrument;
+
 use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction,
 };
@@ -39,17 +47,12 @@ use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use std::collections::HashSet;
-use std::convert::Infallible;
-use std::future::Future;
-use std::iter::Empty;
-use std::pin::Pin;
-use std::task::{Context, Poll, ready};
-use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::instrument;
+
+use super::Notification;
+use crate::TokenBucket;
+use crate::error::InvokerError;
+use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
+use crate::metric_definitions::INVOKER_TASK_DURATION;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -150,6 +153,9 @@ pub(super) struct InvocationTask<IR, EE, DMR> {
     schemas: Live<DMR>,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
+
+    // throttling
+    action_token_bucket: Option<TokenBucket>,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
@@ -208,6 +214,7 @@ where
         deployment_metadata_resolver: Live<Schemas>,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
+        action_token_bucket: Option<TokenBucket>,
     ) -> Self {
         Self {
             client,
@@ -226,6 +233,7 @@ where
             message_size_limit,
             message_size_warning,
             retry_count_since_last_stored_entry,
+            action_token_bucket,
         }
     }
 
