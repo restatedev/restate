@@ -223,7 +223,7 @@ tikv-jemallocator = { version = "0.6", features = [
 ] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling"] }
 thiserror = "2.0"
-tokio = { version = "1.45.0", default-features = false, features = [
+tokio = { version = "1.47.0", default-features = false, features = [
     "rt-multi-thread",
     "signal",
     "macros",
