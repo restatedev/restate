@@ -38,7 +38,8 @@ define_table_key!(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid,
         journal_index: u32
-    )
+    ),
+    invocation_prefix = [partition_key, invocation_uuid],
 );
 
 fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> JournalKey {
@@ -101,18 +102,20 @@ fn get_journal<S: StorageAccess>(
     )
 }
 
-fn delete_journal<S: StorageAccess>(
-    storage: &mut S,
-    invocation_id: &InvocationId,
-    journal_length: EntryIndex,
-) -> Result<()> {
-    let mut key = write_journal_entry_key(invocation_id, 0);
-    let k = &mut key;
-    for journal_index in 0..journal_length {
-        k.journal_index = Some(journal_index);
-        storage.delete_key(k)?;
-    }
-    Ok(())
+fn delete_journal<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) -> Result<()> {
+    let prefix = JournalKey::default()
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid())
+        .invocation_prefix();
+
+    storage.delete_prefix(Journal, prefix)
+    // let mut key = write_journal_entry_key(invocation_id, 0);
+    // let k = &mut key;
+    // for journal_index in 0..journal_length {
+    //     k.journal_index = Some(journal_index);
+    //     storage.delete_key(k)?;
+    // }
+    // Ok(())
 }
 
 impl ReadOnlyJournalTable for PartitionStore {
@@ -207,14 +210,9 @@ impl JournalTable for PartitionStoreTransaction<'_> {
         put_journal_entry(self, invocation_id, journal_index, journal_entry)
     }
 
-    async fn delete_journal(
-        &mut self,
-        invocation_id: &InvocationId,
-        journal_length: EntryIndex,
-    ) -> Result<()> {
+    async fn delete_journal(&mut self, invocation_id: &InvocationId) -> Result<()> {
         self.assert_partition_key(invocation_id)?;
-        let _x = RocksDbPerfGuard::new("delete-journal");
-        delete_journal(self, invocation_id, journal_length)
+        delete_journal(self, invocation_id)
     }
 }
 

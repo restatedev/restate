@@ -74,7 +74,6 @@ pub trait JournalTable: ReadOnlyJournalTable {
     fn delete_journal(
         &mut self,
         invocation_id: InvocationId,
-        length: EntryIndex,
     ) -> impl Future<Output = Result<()>> + Send;
 }
 

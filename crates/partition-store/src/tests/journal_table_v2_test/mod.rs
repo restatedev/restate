@@ -190,10 +190,8 @@ async fn sleep_point_lookups<T: JournalTable>(txn: &mut T) {
     assert!(result.is_none());
 }
 
-async fn delete_journal<T: JournalTable>(txn: &mut T, length: usize) {
-    txn.delete_journal(MOCK_INVOCATION_ID_1, length as u32)
-        .await
-        .unwrap();
+async fn delete_journal<T: JournalTable>(txn: &mut T) {
+    txn.delete_journal(MOCK_INVOCATION_ID_1).await.unwrap();
 }
 
 async fn verify_journal_deleted<T: JournalTable>(txn: &mut T, length: usize) {
@@ -234,7 +232,7 @@ async fn test_sleep_journal() {
     check_sleep_notification_index(&mut txn).await;
 
     sleep_point_lookups(&mut txn).await;
-    delete_journal(&mut txn, 10).await;
+    delete_journal(&mut txn).await;
 
     txn.commit().await.expect("should not fail");
 

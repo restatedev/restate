@@ -4044,15 +4044,11 @@ impl<S> StateMachineApplyContext<'_, S> {
         );
 
         if should_remove_journal_table_v2 {
-            journal_table_v2::JournalTable::delete_journal(
-                self.storage,
-                invocation_id,
-                journal_length,
-            )
-            .await
-            .map_err(Error::Storage)?
+            journal_table_v2::JournalTable::delete_journal(self.storage, invocation_id)
+                .await
+                .map_err(Error::Storage)?
         } else {
-            JournalTable::delete_journal(self.storage, &invocation_id, journal_length)
+            JournalTable::delete_journal(self.storage, &invocation_id)
                 .await
                 .map_err(Error::Storage)?;
         }

@@ -44,6 +44,41 @@ pub enum KeyKind {
     Promise,
 }
 
+/// A prefix of a table key that can be used to traverse the table
+pub struct KeyPrefix(pub(crate) Vec<u8>);
+
+impl AsRef<[u8]> for KeyPrefix {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl KeyPrefix {
+    /// Returns the exclusive upper bound of this key prefix in its shortest form.
+    ///
+    /// Use this to compute the upper bound of an iterator over keys with this prefix
+    /// or to delete the range of keys that share this prefix from partition store.
+    pub fn next_prefix(&self) -> Self {
+        let mut out = self.0.clone();
+        let len = Self::next_prefix_into(&self.0, &mut out);
+        out.truncate(len);
+        Self(out)
+    }
+
+    #[inline]
+    fn next_prefix_into(prefix: &[u8], out: &mut [u8]) -> usize {
+        debug_assert!(out.len() >= prefix.len());
+        out[..prefix.len()].copy_from_slice(prefix);
+        for i in (0..prefix.len()).rev() {
+            if out[i] != 0xFF {
+                out[i] = out[i].wrapping_add(1);
+                return i + 1; // logical truncation point
+            }
+        }
+        unreachable!("Key prefix end overflowed, start prefix {:x?}", prefix);
+    }
+}
+
 impl KeyKind {
     pub const SERIALIZED_LENGTH: usize = 2;
 
@@ -242,7 +277,13 @@ pub trait TableKey: Sized + std::fmt::Debug + Send + 'static {
 ///
 macro_rules! define_table_key {
 
-    ($table_kind:expr, $key_kind:path, $key_name:ident ( $($element: ident: $ty: ty),+ $(,)? ) ) => (paste::paste! {
+    (
+        $table_kind:expr,
+        $key_kind:path,
+        $key_name:ident (
+          $($element: ident: $ty: ty),+ $(,)?
+        )$(,$($prefix_name: ident = [$($field: ident),+]),* $(,)?)?
+    ) => (paste::paste! {
         // main key holder
         #[derive(Default, Debug, Eq, PartialEq, Clone)]
         pub struct $key_name { $(pub $element: Option<$ty>),+ }
@@ -259,6 +300,23 @@ macro_rules! define_table_key {
              $(pub fn [< $element _ok_or >](&self) -> crate::Result<& $ty> {
                     self.$element.as_ref().ok_or_else(|| restate_storage_api::StorageError::DataIntegrityError)
              })+
+
+        $(
+             $(pub fn [< $prefix_name>](&self) -> crate::keys::KeyPrefix {
+                 // we always need space for the key kind
+                 let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
+                 $(
+                    serialized_length += $crate::keys::KeyCodec::serialized_length(&self.$field);
+                  )+
+                  let mut buf: Vec<u8> = Vec::with_capacity(serialized_length);
+                  Self::serialize_key_kind(&mut buf);
+                  $(
+                  $crate::keys::serialize(&self.$field, &mut buf);
+                  )+
+                  return crate::keys::KeyPrefix(buf);
+
+             })*
+        )?
 
             pub fn into_inner(self) -> ($(Option<$ty>,)+) {
                  return ( $(self.$element,)+ )
@@ -483,8 +541,11 @@ impl KeyCodec for InvocationUuid {
         if source.remaining() < InvocationUuid::RAW_BYTES_LEN {
             return Err(StorageError::DataIntegrityError);
         }
-        let bytes = source.copy_to_bytes(InvocationUuid::RAW_BYTES_LEN);
-        InvocationUuid::from_slice(&bytes).map_err(|err| StorageError::Generic(err.into()))
+        let mut buf = [0u8; InvocationUuid::RAW_BYTES_LEN];
+
+        debug_assert!(source.remaining() >= InvocationUuid::RAW_BYTES_LEN);
+        source.copy_to_slice(&mut buf);
+        Ok(InvocationUuid::from_bytes(buf))
     }
 
     fn serialized_length(&self) -> usize {

@@ -74,7 +74,7 @@ fn put_invocation_status<S: StorageAccess>(
     status: &InvocationStatus,
 ) -> Result<()> {
     match status {
-        InvocationStatus::Free => storage.delete_key(&create_invocation_status_key(invocation_id)),
+        InvocationStatus::Free => delete_invocation_status(storage, invocation_id),
         _ => storage.put_kv(create_invocation_status_key(invocation_id), status),
     }
 }
