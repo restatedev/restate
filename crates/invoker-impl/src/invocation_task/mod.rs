@@ -74,6 +74,10 @@ const SERVICE_PROTOCOL_VERSION_V5: HeaderValue =
     HeaderValue::from_static("application/vnd.restate.invocation.v5");
 
 #[allow(clippy::declare_interior_mutable_const)]
+const SERVICE_PROTOCOL_VERSION_V6: HeaderValue =
+    HeaderValue::from_static("application/vnd.restate.invocation.v6");
+
+#[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 pub(super) struct InvocationTaskOutput {
@@ -143,6 +147,7 @@ pub(super) struct InvocationTask<IR, EE, DMR> {
     message_size_warning: usize,
     message_size_limit: Option<usize>,
     retry_count_since_last_stored_entry: u32,
+    allow_protocol_v6: bool,
 
     // Invoker tx/rx
     invocation_reader: IR,
@@ -208,6 +213,7 @@ where
         deployment_metadata_resolver: Live<Schemas>,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
+        allow_protocol_v6: bool,
     ) -> Self {
         Self {
             client,
@@ -226,6 +232,7 @@ where
             message_size_limit,
             message_size_warning,
             retry_count_since_last_stored_entry,
+            allow_protocol_v6,
         }
     }
 
@@ -307,7 +314,10 @@ where
 
                 // todo: We should support resuming an invocation with a newer protocol version if
                 //  the endpoint supports it
-                if !pinned_deployment.service_protocol_version.is_supported() {
+                if !pinned_deployment
+                    .service_protocol_version
+                    .is_supported_for_inflight_invocation()
+                {
                     shortcircuit!(Err(InvokerError::ResumeWithWrongServiceProtocolVersion(
                         pinned_deployment.service_protocol_version
                     )));
@@ -330,8 +340,9 @@ where
                 );
 
                 let chosen_service_protocol_version = shortcircuit!(
-                    ServiceProtocolVersion::choose_max_supported_version(
+                    ServiceProtocolVersion::pick(
                         &deployment.metadata.supported_protocol_versions,
+                        self.allow_protocol_v6
                     )
                     .ok_or_else(|| {
                         InvokerError::IncompatibleServiceEndpoint(
@@ -432,6 +443,7 @@ fn service_protocol_version_to_header_value(
         ServiceProtocolVersion::V3 => SERVICE_PROTOCOL_VERSION_V3,
         ServiceProtocolVersion::V4 => SERVICE_PROTOCOL_VERSION_V4,
         ServiceProtocolVersion::V5 => SERVICE_PROTOCOL_VERSION_V5,
+        ServiceProtocolVersion::V6 => SERVICE_PROTOCOL_VERSION_V6,
     }
 }
 

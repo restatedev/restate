@@ -44,5 +44,6 @@ tracing = { workspace = true, optional = true }
 restate-service-protocol = { path = ".", features = ["codec"]}
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+googletest = { workspace = true }
 
 tokio = { workspace = true }
