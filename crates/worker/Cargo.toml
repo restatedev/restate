@@ -36,6 +36,7 @@ restate-service-protocol = { workspace = true, features = ["codec", "message"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
 restate-storage-api = { workspace = true }
 restate-storage-query-datafusion = { workspace = true }
+restate-time-util = { workspace = true }
 restate-timer = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
