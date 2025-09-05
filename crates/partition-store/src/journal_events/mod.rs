@@ -14,7 +14,6 @@ use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };
-use bytes::Bytes;
 use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
@@ -146,7 +145,7 @@ fn delete_journal_events<S: StorageAccess>(
 
     let keys = storage.for_each_key_value_in_place(
         TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), prefix_key),
-        |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
+        |k, _| TableScanIterationDecision::Emit(Ok(Box::from(k))),
     )?;
 
     for k in keys {
