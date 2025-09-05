@@ -11,7 +11,7 @@
 use super::storage_test_environment;
 use futures_util::StreamExt;
 use restate_storage_api::Transaction;
-use restate_storage_api::journal_events::StoredEvent;
+use restate_storage_api::journal_events::EventView;
 use restate_storage_api::journal_events::{JournalEventsTable, ReadOnlyJournalEventsTable};
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::journal_events::raw::RawEvent;
@@ -37,19 +37,16 @@ async fn test_event() {
         related_command_type: None,
     })
     .into();
-    let stored_event = StoredEvent::new(MillisSinceEpoch::now(), 0, event);
+    let event_view = EventView::new(MillisSinceEpoch::now(), 0, event);
 
     // Populate
-    txn.put_journal_event(MOCK_INVOCATION_ID_1, 0, &stored_event)
+    txn.put_journal_event(MOCK_INVOCATION_ID_1, event_view.clone(), 0)
         .await
         .unwrap();
 
     // Get all events
-    let mut journal_events = txn.get_journal_events(MOCK_INVOCATION_ID_1, 1).unwrap();
-    assert_eq!(
-        journal_events.next().await.unwrap().unwrap().1,
-        stored_event
-    );
+    let mut journal_events = txn.get_journal_events(MOCK_INVOCATION_ID_1).unwrap();
+    assert_eq!(journal_events.next().await.unwrap().unwrap(), event_view);
 
     assert!(journal_events.next().await.is_none());
     drop(journal_events);
@@ -59,13 +56,13 @@ async fn test_event() {
     // Verify we can remove events
 
     let mut txn = rocksdb.transaction();
-    txn.delete_journal_events(MOCK_INVOCATION_ID_1, 1)
+    txn.delete_journal_events(MOCK_INVOCATION_ID_1)
         .await
         .unwrap();
     txn.commit().await.expect("should not fail");
 
     // Should be empty
-    let mut journal_events = rocksdb.get_journal_events(MOCK_INVOCATION_ID_1, 1).unwrap();
+    let mut journal_events = rocksdb.get_journal_events(MOCK_INVOCATION_ID_1).unwrap();
     assert!(journal_events.next().await.is_none());
     drop(journal_events);
 }

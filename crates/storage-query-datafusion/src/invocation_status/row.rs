@@ -135,10 +135,12 @@ pub(crate) fn append_invocation_status_row<'a>(
         }
         Status::Paused => {
             row.status("paused");
+            fill_journal_metadata(&mut row, &invocation_status)?;
             fill_in_flight_invocation_metadata(&mut row, &invocation_status)?;
         }
         Status::Suspended => {
             row.status("suspended");
+            fill_journal_metadata(&mut row, &invocation_status)?;
             fill_in_flight_invocation_metadata(&mut row, &invocation_status)?;
         }
         Status::Completed => {

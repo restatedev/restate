@@ -419,6 +419,21 @@ impl KeyCodec for u32 {
     }
 }
 
+impl KeyCodec for u8 {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        // store u8 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
+        target.put_u8(*self);
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(source.get_u8())
+    }
+
+    fn serialized_length(&self) -> usize {
+        1
+    }
+}
+
 ///
 /// Blanket implementation for Option.
 ///

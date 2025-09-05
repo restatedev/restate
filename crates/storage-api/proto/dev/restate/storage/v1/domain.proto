@@ -180,8 +180,6 @@ message InvocationStatusV2 {
   uint32 current_invocation_epoch = 27;
   // Used to reconstruct the completion_range_epoch_map
   repeated JournalTrimPoint trim_points = 28;
-  // The number of events stored for this invocation
-  uint32 events = 31;
 
   // Suspended
   repeated uint32 waiting_for_completions = 17;
@@ -614,18 +612,8 @@ message ResponseResult {
 }
 
 message Event {
-  enum EventType {
-    UNKNOWN_EVENT = 0;
-    TRANSIENT_ERROR = 1;
-    PAUSED = 2;
-  }
-
-  // Additional metadata for EVENT
-  EventType event_type = 1;
-  optional bytes event_deduplication_hash = 2;
-  bytes content = 3;
-  uint64 append_time = 4;
-  uint32 after_journal_entry_index = 5;
+  bytes content = 1;
+  uint32 after_journal_entry_index = 2;
 }
 
 // ---------------------------------------------------------------------
