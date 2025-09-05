@@ -119,6 +119,35 @@ fn read_invoked_full_invocation_id(
     }
 }
 
+fn read_invocation_status_v2_lazy<'a>(mut value: &'a [u8]) -> Result<InvocationStatusV2Lazy<'a>> {
+    if value.len() < std::mem::size_of::<u8>() {
+        return Err(StorageError::Conversion(
+            restate_types::storage::StorageDecodeError::ReadingCodec(format!(
+                "remaining bytes in buf '{}' < version bytes '{}'",
+                value.len(),
+                std::mem::size_of::<u8>()
+            ))
+            .into(),
+        ));
+    }
+
+    // read version
+    let codec = restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value))
+        .map_err(|e| StorageError::Conversion(e.into()))?;
+
+    let restate_types::storage::StorageCodecKind::Protobuf = codec else {
+        return Err(StorageError::Conversion(
+            restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into(),
+        ));
+    };
+
+    let inv_status_v2_lazy =
+        restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value)
+            .map_err(|e| StorageError::Conversion(e.into()))?;
+
+    Ok(inv_status_v2_lazy)
+}
+
 const MIGRATION_BATCH_SIZE: usize = 1000;
 
 pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionStore) -> Result<()> {
@@ -184,28 +213,6 @@ impl ScanInvocationStatusTable for PartitionStore {
         .map_err(|_| StorageError::OperationalError)
     }
 
-    fn scan_invocation_statuses(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send> {
-        self.run_iterator(
-            "df-invocation-status",
-            Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
-            |(mut key, mut value)| {
-                let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
-                let state_value = InvocationStatus::decode(&mut value)?;
-
-                let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
-                Ok((
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    state_value,
-                ))
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
-    }
-
     fn for_each_invocation_status_lazy<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
@@ -225,26 +232,12 @@ impl ScanInvocationStatusTable for PartitionStore {
                 Priority::Low,
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
                 {
-                    move |(mut key, mut value)| {
+                    move |(mut key, value)| {
                         let state_key =
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
 
-                        if value.len() < std::mem::size_of::<u8>() {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::ReadingCodec(format!(
-                                "remaining bytes in buf '{}' < version bytes '{}'",
-                                value.len(),
-                                std::mem::size_of::<u8>()
-                            )).into())));
-                        }
-
-                        // read version
-                        let codec = break_on_err(restate_types::storage::StorageCodecKind::try_from(bytes::Buf::get_u8(&mut value)).map_err(|e|StorageError::Conversion(e.into())))?;
-
-                        let restate_types::storage::StorageCodecKind::Protobuf = codec else {
-                            return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into())));
-                        };
-
-                        let inv_status_v2_lazy = break_on_err(restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value).map_err(|e| StorageError::Conversion(e.into())))?;
+                        let inv_status_v2_lazy =
+                            break_on_err(read_invocation_status_v2_lazy(value))?;
 
                         let (partition_key, invocation_uuid) =
                             break_on_err(state_key.into_inner_ok_or())?;
@@ -257,6 +250,46 @@ impl ScanInvocationStatusTable for PartitionStore {
                         result.map_break(|result| {
                             result.map_err(|err| StorageError::Conversion(err.into()))
                         })
+                    }
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(new_status_keys)
+    }
+
+    fn filter_map_invocation_status_lazy<
+        O: Send + 'static,
+        E: Into<anyhow::Error>,
+        F: for<'a> FnMut(
+                (InvocationId, InvocationStatusV2Lazy<'a>),
+            ) -> std::result::Result<Option<O>, E>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        &self,
+        range: RangeInclusive<PartitionKey>,
+        mut f: F,
+    ) -> Result<impl Stream<Item = Result<O>> + Send> {
+        let new_status_keys = self
+            .iterator_filter_map(
+                "df-filter-map-invocation-status",
+                Priority::Low,
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                {
+                    move |(mut key, value)| {
+                        let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
+
+                        let inv_status_v2_lazy = read_invocation_status_v2_lazy(value)?;
+
+                        let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
+
+                        f((
+                            InvocationId::from_parts(partition_key, invocation_uuid),
+                            inv_status_v2_lazy,
+                        ))
+                        .map_err(|err| StorageError::Conversion(err.into()))
                     }
                 },
             )

@@ -417,7 +417,7 @@ impl PartitionStore {
     #[allow(clippy::type_complexity)]
     fn iterator_step_filter_map<O: Send + 'static>(
         tx: mpsc::Sender<Result<O>>,
-        f: impl Fn((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
+        mut f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
     ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static {
         move |item| {
             let res = match item {
@@ -530,7 +530,7 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
-        f: impl Fn((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
+        f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_filter_map(tx, f);
