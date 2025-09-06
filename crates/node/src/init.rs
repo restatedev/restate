@@ -287,8 +287,7 @@ impl<'a> NodeInit<'a> {
                         let my_node_id = plain_node_id.with_generation(1);
 
                         let metadata_server_state = if config.metadata_server.auto_join {
-                            // todo change to MetadataServerState::Provisioning with v1.5.0
-                            MetadataServerState::Member
+                            MetadataServerState::Provisioning
                         } else {
                             MetadataServerState::Standby
                         };

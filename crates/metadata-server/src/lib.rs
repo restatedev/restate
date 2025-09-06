@@ -609,7 +609,7 @@ fn nodes_configuration_for_metadata_cluster_seed(
             });
 
         let metadata_server_config = MetadataServerConfig {
-            metadata_server_state: MetadataServerState::Member,
+            metadata_server_state: MetadataServerState::Provisioning,
         };
 
         let node_config = NodeConfig::builder()
