@@ -33,7 +33,7 @@ aws-smithy-types = { version = "1", default-features = false, features = ["byte-
 axum = { version = "0.7", features = ["http2"] }
 axum-core = { version = "0.4", default-features = false, features = ["tracing"] }
 base64 = { version = "0.22" }
-bilrost = { version = "0.1013", features = ["bytestring"] }
+bilrost = { version = "0.1014", features = ["bytestring"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
@@ -159,7 +159,7 @@ aws-smithy-types = { version = "1", default-features = false, features = ["byte-
 axum = { version = "0.7", features = ["http2"] }
 axum-core = { version = "0.4", default-features = false, features = ["tracing"] }
 base64 = { version = "0.22" }
-bilrost = { version = "0.1013", features = ["bytestring"] }
+bilrost = { version = "0.1014", features = ["bytestring"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }

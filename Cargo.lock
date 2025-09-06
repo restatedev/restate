@@ -491,9 +491,9 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "autocfg"
-version = "1.4.0"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
+checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "autotools"
@@ -1053,10 +1053,11 @@ dependencies = [
 
 [[package]]
 name = "bilrost"
-version = "0.1013.0"
+version = "0.1014.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "640b021fedf44f44640771b2c3e5ec53ff0122d89b3fd1448e6880da0ace787b"
+checksum = "b1ec781b82aaa1ead5e8c6ab1cf7b3485f8909e76521f87eb3091a8db5bc00df"
 dependencies = [
+ "autocfg",
  "bilrost-derive",
  "bytes",
  "bytestring",
@@ -1065,9 +1066,9 @@ dependencies = [
 
 [[package]]
 name = "bilrost-derive"
-version = "0.1013.0"
+version = "0.1014.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9910598cd6a5c5ee053af712bbb3385e96b4eb4adc043b24a69b6c37004ba22"
+checksum = "7f96db92d1373235cede86875c0589f1e053eb36f8e26f2fc131690bf7d03de6"
 dependencies = [
  "eyre",
  "itertools 0.14.0",
@@ -4352,7 +4353,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
