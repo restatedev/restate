@@ -235,6 +235,20 @@ impl PolyBytes {
             }
         }
     }
+
+    #[tracing::instrument(skip_all)]
+    pub fn encode_to_bytes(&self, scratch: &mut BytesMut) -> Result<Bytes, StorageEncodeError> {
+        match self {
+            PolyBytes::Bytes(bytes) => Ok(bytes.clone()),
+            PolyBytes::Typed(typed) => {
+                // note: this currently doesn't do a good job of estimating the size but it's better than
+                // nothing.
+                scratch.reserve(self.estimated_encode_size());
+                StorageCodec::encode(&**typed, scratch)?;
+                Ok(scratch.split().freeze())
+            }
+        }
+    }
 }
 
 impl StorageEncode for PolyBytes {
