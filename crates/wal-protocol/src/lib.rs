@@ -43,22 +43,6 @@ impl Envelope {
     }
 }
 
-#[cfg(feature = "serde")]
-impl Envelope {
-    pub fn to_bytes(&self) -> Result<bytes::Bytes, restate_types::storage::StorageEncodeError> {
-        let mut buf = bytes::BytesMut::default();
-        restate_types::storage::StorageCodec::encode(self, &mut buf)?;
-        Ok(buf.freeze())
-    }
-
-    pub fn from_bytes(
-        bytes: impl AsRef<[u8]>,
-    ) -> Result<Self, restate_types::storage::StorageDecodeError> {
-        let mut bytes = bytes.as_ref();
-        restate_types::storage::StorageCodec::decode::<Self, _>(&mut bytes)
-    }
-}
-
 /// Header is set on every message
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -74,16 +58,27 @@ pub enum Source {
     /// Message is sent from another partition processor
     Processor {
         /// if possible, this is used to reroute responses in case of splits/merges
-        partition_id: PartitionId,
+        /// Marked as `Option` in v1.5. Note that v1.4 requires this to be set but as of v1.6
+        /// this can be safely set to `None`.
+        #[cfg_attr(feature = "serde", serde(default))]
+        partition_id: Option<PartitionId>,
+        #[cfg_attr(feature = "serde", serde(default))]
         partition_key: Option<PartitionKey>,
         /// The current epoch of the partition leader. Readers should observe this to decide which
         /// messages to accept. Readers should ignore messages coming from
         /// epochs lower than the max observed for a given partition id.
         leader_epoch: LeaderEpoch,
         /// Which node is this message from?
-        /// deprecated(v1.1): use generational_node_id instead.
-        node_id: PlainNodeId,
+        /// First deprecation in v1.1, but since v1.5 we switched to Option<PlainNodeId> and it's
+        /// still being set to Some(v) to maintain compatibility with v1.4.
+        ///
+        /// In v1.6 this field will be removed.
+        #[cfg_attr(feature = "serde", serde(default))]
+        node_id: Option<PlainNodeId>,
         /// From v1.1 this is always set, but maintained to support rollback to v1.0.
+        /// Deprecated(v1.5): It's set to Some(v) to maintain support for v1.4 but
+        /// will be removed in v1.6. Commands that need the node-id of the sender should
+        /// include the node-id in the command payload itself (e.g. in the [`AnnounceLeader`])
         #[cfg_attr(feature = "serde", serde(default))]
         generational_node_id: Option<GenerationalNodeId>,
     },
@@ -92,27 +87,23 @@ pub enum Source {
         /// The identity of the sender node. Generational for fencing. Ingress is
         /// stateless, so we shouldn't respond to requests from older generation
         /// if a new generation is alive.
-        node_id: GenerationalNodeId,
+        ///
+        /// Deprecated(v1.5): This field is set to Some(v) to maintain compatibility with v1.4.
+        /// but will be removed in v1.6.
+        #[cfg_attr(feature = "serde", serde(default))]
+        node_id: Option<GenerationalNodeId>,
         /// Last config version observed by sender. If this is a newer generation
         /// or an unknown ID, we might need to update our config.
-        nodes_config_version: Version,
+        ///
+        /// Deprecated(v1.5): This field is set to Some(v) to maintain compatibility with v1.4.
+        /// but will be removed in v1.6.
+        #[cfg_attr(feature = "serde", serde(default))]
+        nodes_config_version: Option<Version>,
     },
     /// Message is sent from some control plane component (controller, cli, etc.)
     ControlPlane {
         // Reserved for future use.
     },
-}
-
-impl Source {
-    pub fn is_processor_generational(&self) -> bool {
-        match self {
-            Source::Processor {
-                generational_node_id,
-                ..
-            } => generational_node_id.is_some(),
-            _ => false,
-        }
-    }
 }
 
 /// Identifies the intended destination of the message
@@ -210,12 +201,7 @@ impl HasRecordKeys for Envelope {
             Command::UpdatePartitionDurability(_) => Keys::Single(self.partition_key()),
             Command::VersionBarrier(barrier) => barrier.partition_key_range.clone(),
             Command::AnnounceLeader(announce) => {
-                if let Some(range) = &announce.partition_key_range {
-                    Keys::RangeInclusive(range.clone())
-                } else {
-                    // Fallback for old restate servers that didn't have partition_key_range.
-                    Keys::Single(self.partition_key())
-                }
+                Keys::RangeInclusive(announce.partition_key_range.clone())
             }
             Command::PatchState(mutation) => Keys::Single(mutation.service_id.partition_key()),
             Command::TerminateInvocation(terminate) => {
