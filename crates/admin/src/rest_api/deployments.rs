@@ -12,14 +12,13 @@ use super::error::*;
 use crate::state::AdminServiceState;
 use std::time::SystemTime;
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
-use axum::{Extension, Json};
 use http::uri::Scheme;
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
-use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
 use restate_service_client::Endpoint;
 use restate_service_protocol::discovery::DiscoverEndpoint;
@@ -48,7 +47,6 @@ use serde::Deserialize;
 )]
 pub async fn create_deployment<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
-    Extension(version): Extension<AdminApiVersion>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
     let (discover_endpoint, force, dry_run) = match payload {
@@ -145,12 +143,7 @@ pub async fn create_deployment<V, IC>(
             header::LOCATION,
             format!("deployments/{}", response_body.id),
         )],
-        Json(
-            restate_admin_rest_model::converters::convert_register_deployment_response(
-                version,
-                response_body,
-            ),
-        ),
+        Json(response_body),
     ))
 }
 
@@ -168,7 +161,6 @@ pub async fn create_deployment<V, IC>(
 )]
 pub async fn get_deployment<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
-    Extension(version): Extension<AdminApiVersion>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
     let (deployment, services) = state
@@ -176,13 +168,7 @@ pub async fn get_deployment<V, IC>(
         .get_deployment(deployment_id)
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
-    Ok(
-        restate_admin_rest_model::converters::convert_detailed_deployment_response(
-            version,
-            to_detailed_deployment_response(deployment, services),
-        )
-        .into(),
-    )
+    Ok(to_detailed_deployment_response(deployment, services).into())
 }
 
 /// List deployments
@@ -278,7 +264,6 @@ pub async fn delete_deployment<V, IC>(
 )]
 pub async fn update_deployment<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
-    Extension(version): Extension<AdminApiVersion>,
     Path(deployment_id): Path<DeploymentId>,
     #[request_body(required = true)] Json(payload): Json<UpdateDeploymentRequest>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
@@ -352,12 +337,7 @@ pub async fn update_deployment<V, IC>(
         .await
         .inspect_err(|e| warn_it!(e))?;
 
-    Ok(Json(
-        restate_admin_rest_model::converters::convert_detailed_deployment_response(
-            version,
-            to_detailed_deployment_response(deployment, services),
-        ),
-    ))
+    Ok(Json(to_detailed_deployment_response(deployment, services)))
 }
 
 fn to_deployment_response(

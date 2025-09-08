@@ -15,7 +15,7 @@ use bitflags::bitflags;
 use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
 
-use restate_encoding::{ArcedSlice, BilrostAs, BilrostNewType, NetSerde};
+use restate_encoding::{ArcedSlice, BilrostNewType, NetSerde};
 
 use super::{RpcResponse, ServiceTag};
 use crate::GenerationalNodeId;
@@ -520,16 +520,21 @@ pub struct Gap {
     Deserialize,
     NetSerde,
     Default,
-    BilrostAs,
+    bilrost::Oneof,
+    bilrost::Message,
 )]
-#[bilrost_as(dto::MaybeRecord)]
 pub enum MaybeRecord {
     #[default]
+    #[bilrost(empty)]
     Unknown,
+    #[bilrost(2)]
     TrimGap(Gap),
+    #[bilrost(3)]
     ArchivalGap(Gap),
     // Record(s) existed but got filtered out
+    #[bilrost(4)]
     FilteredGap(Gap),
+    #[bilrost(1)]
     Data(Record),
 }
 
@@ -860,58 +865,5 @@ impl Digest {
     pub fn with_status(mut self, status: Status) -> Self {
         self.header.status = status;
         self
-    }
-}
-
-mod dto {
-
-    use restate_encoding::NetSerde;
-
-    use super::Gap;
-    use crate::logs::Record;
-
-    #[derive(Debug, Clone, bilrost::Oneof, NetSerde)]
-    enum MaybeRecordInner {
-        Unknown,
-        #[bilrost(1)]
-        Data(Record),
-        #[bilrost(2)]
-        TrimGap(Gap),
-        #[bilrost(3)]
-        ArchivalGap(Gap),
-        #[bilrost(4)]
-        FilteredGap(Gap),
-    }
-
-    #[derive(Debug, Clone, bilrost::Message, NetSerde)]
-    pub struct MaybeRecord {
-        #[bilrost(oneof(1, 2, 3, 4))]
-        inner: MaybeRecordInner,
-    }
-
-    impl From<&super::MaybeRecord> for MaybeRecord {
-        fn from(value: &super::MaybeRecord) -> Self {
-            let inner = match value {
-                super::MaybeRecord::Unknown => MaybeRecordInner::Unknown,
-                super::MaybeRecord::TrimGap(gap) => MaybeRecordInner::TrimGap(*gap),
-                super::MaybeRecord::ArchivalGap(gap) => MaybeRecordInner::ArchivalGap(*gap),
-                super::MaybeRecord::FilteredGap(gap) => MaybeRecordInner::FilteredGap(*gap),
-                super::MaybeRecord::Data(record) => MaybeRecordInner::Data(record.clone()),
-            };
-
-            Self { inner }
-        }
-    }
-
-    impl From<MaybeRecord> for super::MaybeRecord {
-        fn from(value: MaybeRecord) -> Self {
-            match value.inner {
-                MaybeRecordInner::Unknown => Self::Unknown,
-                MaybeRecordInner::Data(record) => Self::Data(record),
-                MaybeRecordInner::TrimGap(gap) => Self::TrimGap(gap),
-                MaybeRecordInner::ArchivalGap(gap) => Self::ArchivalGap(gap),
-                MaybeRecordInner::FilteredGap(gap) => Self::FilteredGap(gap),
-            }
-        }
     }
 }
