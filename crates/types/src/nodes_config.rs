@@ -645,9 +645,9 @@ pub enum MetadataServerState {
     /// decommissioned.
     Standby,
     /// The server is an active member of the metadata store cluster.
-    #[default]
     Member,
     /// The server should try to automatically join a metadata store cluster.
+    #[default]
     Provisioning,
 }
 

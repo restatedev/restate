@@ -14,13 +14,11 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use anyhow::{Context, anyhow, bail};
-use arrow_convert::{ArrowDeserialize, ArrowField};
 use base64::alphabet::URL_SAFE;
 use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
-use restate_admin_rest_model::version::AdminApiVersion;
 use restate_cli_util::c_warn;
 use serde::Deserialize;
 use serde_json::Value;
@@ -35,7 +33,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};
 
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Deserialize, ArrowField, ArrowDeserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct StateEntriesQueryResult {
     key: Option<String>,
     #[serde_as(as = "Option<serde_with::hex::Hex>")]
@@ -73,35 +71,19 @@ pub(crate) async fn get_current_state(
     let sql = format!(
         "select key, value from state where service_name = '{service}' and service_key = '{key}' ;"
     );
-    match sql_client.admin_api_version() {
-        AdminApiVersion::V1 => {
-            let query_result_iter = sql_client
-                .run_arrow_query_and_map_results::<StateEntriesQueryResult>(sql)
-                .await?;
-            //
-            // 2. convert the state to a map from str keys -> byte values.
-            //
-            let mut user_state = HashMap::new();
-            for row in query_result_iter {
-                user_state.insert(row.key.expect("key"), row.value.expect("value").into());
-            }
-            Ok(user_state)
-        }
-        _ => {
-            let query_result_iter = sql_client
-                .run_json_query::<StateEntriesQueryResult>(sql)
-                .await?;
-            //
-            // 2. convert the state to a map from str keys -> byte values.
-            //
-            let mut user_state = HashMap::new();
-            for row in query_result_iter {
-                user_state.insert(row.key.expect("key"), row.value.expect("value").into());
-            }
 
-            Ok(user_state)
-        }
+    let query_result_iter = sql_client
+        .run_json_query::<StateEntriesQueryResult>(sql)
+        .await?;
+    //
+    // 2. convert the state to a map from str keys -> byte values.
+    //
+    let mut user_state = HashMap::new();
+    for row in query_result_iter {
+        user_state.insert(row.key.expect("key"), row.value.expect("value").into());
     }
+
+    Ok(user_state)
 }
 
 pub(crate) async fn update_state(

@@ -249,6 +249,7 @@ async fn complete_already_completed_invocation() {
             journal_retention_duration: Default::default(),
             journal_metadata: JournalMetadata::empty(),
             pinned_deployment: None,
+            random_seed: None,
         }),
     )
     .await

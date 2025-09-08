@@ -76,9 +76,9 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let mut post_filters: Vec<String> = vec![];
 
     let order_by = if opts.oldest_first {
-        "ORDER BY inv.created_at ASC"
+        "ORDER BY inv.created_at ASC, inv.id"
     } else {
-        "ORDER BY inv.created_at DESC"
+        "ORDER BY inv.created_at DESC, inv.id"
     };
 
     if !opts.service.is_empty() {
@@ -103,12 +103,12 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     }
 
     if opts.virtual_objects_only {
-        active_filters.push("svc.ty = 'virtual_object'".to_owned());
+        post_filters.push("service_type = 'virtual_object'".to_owned());
     }
 
     if opts.zombie {
         // zombies cannot be in pending, don't query inbox.
-        active_filters.push("dp.id IS NULL".to_owned());
+        post_filters.push("known_deployment_id IS NULL".to_owned());
     }
 
     // Only makes sense when querying active invocations;
@@ -119,15 +119,14 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         ));
     }
 
-    // This is a post-filter as we filter by calculated column
     if opts.all {
         // No filter
     } else if statuses.is_empty() {
         // Default hide completed invocations
-        post_filters.push("status != 'completed'".to_owned());
+        active_filters.push("status != 'completed'".to_owned());
     } else {
         // Apply status filters
-        post_filters.push(format!(
+        active_filters.push(format!(
             "status IN ({})",
             statuses.iter().map(|x| format!("'{x}'")).format(",")
         ));

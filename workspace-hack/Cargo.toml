@@ -115,7 +115,7 @@ serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 sqlparser = { version = "0.55", default-features = false, features = ["recursive-protection", "visitor"] }
 stable_deref_trait = { version = "1" }
-syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
+syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
@@ -243,8 +243,7 @@ serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 sqlparser = { version = "0.55", default-features = false, features = ["recursive-protection", "visitor"] }
 stable_deref_trait = { version = "1" }
-syn-dff4ba8e3ae991db = { package = "syn", version = "1", features = ["extra-traits", "visit"] }
-syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
+syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing"] }

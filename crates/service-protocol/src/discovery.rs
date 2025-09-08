@@ -39,7 +39,7 @@ use restate_types::service_discovery::{
     ServiceDiscoveryProtocolVersion,
 };
 use restate_types::service_protocol::{
-    MAX_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+    MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, MAX_SERVICE_PROTOCOL_VERSION_VALUE,
     MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, ServiceProtocolVersion,
 };
 
@@ -170,7 +170,7 @@ pub enum DiscoveryError {
     #[error(
         "unsupported service protocol versions: [{min_version}, {max_version}]. Supported versions by this runtime are [{}, {}]. Please upgrade the SDK and try registering again.",
         i32::from(MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION),
-        i32::from(MAX_SERVICE_PROTOCOL_VERSION)
+        i32::from(MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION)
     )]
     UnsupportedServiceProtocol { min_version: i32, max_version: i32 },
     #[error(
@@ -516,11 +516,12 @@ mod tests {
         DiscoveryError, SERVICE_DISCOVERY_PROTOCOL_V1_HEADER_VALUE, ServiceDiscovery,
         parse_service_discovery_protocol_version_from_content_type,
     };
+    use googletest::prelude::*;
     use http::{Uri, Version};
     use restate_service_client::Endpoint;
     use restate_types::endpoint_manifest;
     use restate_types::service_discovery::ServiceDiscoveryProtocolVersion;
-    use restate_types::service_protocol::MAX_SERVICE_PROTOCOL_VERSION;
+    use restate_types::service_protocol::MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION;
     use std::collections::HashMap;
     use std::num::NonZeroU64;
 
@@ -620,7 +621,7 @@ mod tests {
 
     #[test]
     fn fail_with_unsupported_protocol_version() {
-        let unsupported_version = MAX_SERVICE_PROTOCOL_VERSION.as_repr() + 1;
+        let unsupported_version = MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr() + 1;
         let response = endpoint_manifest::Endpoint {
             lambda_compression: None,
             min_protocol_version: NonZeroU64::new(unsupported_version as u64).unwrap(),
@@ -629,14 +630,18 @@ mod tests {
             protocol_mode: Some(ProtocolMode::BidiStream),
         };
 
-        assert!(
-            matches!(ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
-      Endpoint::Http(Uri::default(), None),
-                        HashMap::default(),
+        assert_that!(
+            ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
+                Endpoint::Http(Uri::default(), None),
+                HashMap::default(),
                 Version::HTTP_2,
                 response,
-                    None
-            ), Err(DiscoveryError::UnsupportedServiceProtocol { min_version, max_version }) if min_version == unsupported_version && max_version == unsupported_version )
+                None
+            ),
+            err(pat!(DiscoveryError::UnsupportedServiceProtocol {
+                min_version: eq(unsupported_version),
+                max_version: eq(unsupported_version)
+            }))
         );
     }
 

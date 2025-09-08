@@ -11,7 +11,7 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery, Record};
-use restate_types::storage::{PolyBytes, StorageEncode};
+use restate_types::storage::PolyBytes;
 use restate_types::time::NanosSinceEpoch;
 
 #[derive(Debug, derive_more::TryFrom, Eq, PartialEq, Ord, PartialOrd)]
@@ -89,41 +89,47 @@ impl DataRecordEncoder<'_> {
     ///    [2 bytes]       Flags (reserved for future use)
     ///    [8 bytes]       `created_at` timestamp
     ///    [remaining]     Serialized Payload
-    pub fn encode_to_disk_format(self, buf: &mut BytesMut) -> BytesMut {
+    #[tracing::instrument(skip_all)]
+    pub fn encode_to_disk_format(self, scratch: &mut BytesMut) -> bytes::buf::Chain<Bytes, Bytes> {
+        // header is 1 + 1 + 8 + 8 + 2 + 8 = 28 bytes at most
+        scratch.reserve(self.header_size());
         let (created_at, body, keys) = (self.0.created_at(), self.0.body(), self.0.keys());
 
         // Write the format version
-        buf.put_u8(RecordFormat::CustomV1 as u8);
+        scratch.put_u8(RecordFormat::CustomV1 as u8);
         // key style and keys
         match keys {
-            Keys::None => buf.put_u8(KeyStyle::None as u8),
+            Keys::None => scratch.put_u8(KeyStyle::None as u8),
             Keys::Single(key) => {
-                buf.put_u8(KeyStyle::Single as u8);
-                buf.put_u64_le(*key);
+                scratch.put_u8(KeyStyle::Single as u8);
+                scratch.put_u64_le(*key);
             }
             Keys::Pair(key1, key2) => {
-                buf.put_u8(KeyStyle::Pair as u8);
-                buf.put_u64_le(*key1);
-                buf.put_u64_le(*key2);
+                scratch.put_u8(KeyStyle::Pair as u8);
+                scratch.put_u64_le(*key1);
+                scratch.put_u64_le(*key2);
             }
             Keys::RangeInclusive(range) => {
-                buf.put_u8(KeyStyle::RangeInclusive as u8);
-                buf.put_u64_le(*range.start());
-                buf.put_u64_le(*range.end());
+                scratch.put_u8(KeyStyle::RangeInclusive as u8);
+                scratch.put_u64_le(*range.start());
+                scratch.put_u64_le(*range.end());
             }
         }
         // flags (unused)
-        buf.put_u16_le(0);
+        scratch.put_u16_le(0);
         // created_at
-        buf.put_u64_le(created_at.as_u64());
+        scratch.put_u64_le(created_at.as_u64());
+        let header_bytes = scratch.split().freeze();
         // body
-        body.encode(buf).expect("Encoding is infallible");
+        let body_bytes = body
+            .encode_to_bytes(scratch)
+            .expect("Encoding is infallible");
 
-        buf.split()
+        header_bytes.chain(body_bytes)
     }
 
-    pub fn estimated_encode_size(&self) -> usize {
-        let (body, keys) = (self.0.body(), self.0.keys());
+    pub const fn header_size(&self) -> usize {
+        let keys = self.0.keys();
 
         // key style and keys
         let keys_size = match keys {
@@ -140,7 +146,7 @@ impl DataRecordEncoder<'_> {
         // flags
         size_of::<u16>() +
         // created_at
-        size_of::<u64>() + body.estimated_encode_size()
+        size_of::<u64>()
     }
 }
 
