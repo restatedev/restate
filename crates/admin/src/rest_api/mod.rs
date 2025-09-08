@@ -31,6 +31,8 @@ use restate_wal_protocol::{Destination, Header, Source};
 
 use crate::state::AdminServiceState;
 
+pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
+
 pub fn create_router<V, IC>(state: AdminServiceState<V, IC>) -> axum::Router<()>
 where
     V: SubscriptionValidator + Send + Sync + Clone + 'static,

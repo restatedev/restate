@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::schema_registry::SchemaRegistry;
 use crate::{rest_api, state};
 use axum::error_handling::HandleErrorLayer;
@@ -171,11 +172,11 @@ where
         let router = router.merge(rest_api::create_router(rest_state));
 
         let router = axum::Router::new()
-            .merge(with_unknown_api_version_middleware(router.clone()))
-            .nest(
-                "/v1",
-                with_api_version_middleware(router.clone(), AdminApiVersion::V1),
-            )
+            .merge(with_api_version_middleware(
+                router.clone(),
+                AdminApiVersion::Unknown,
+            ))
+            .nest("/v1", unsupported_api_version(AdminApiVersion::V1))
             .nest(
                 "/v2",
                 with_api_version_middleware(router, AdminApiVersion::V2),
@@ -210,21 +211,14 @@ where
     }
 }
 
-fn with_unknown_api_version_middleware(router: axum::Router) -> axum::Router {
-    router.layer(axum::middleware::from_fn(
-        move |mut request: axum::extract::Request, next: axum::middleware::Next| {
-    let is_cli = matches!(request.headers().get(http::header::USER_AGENT), Some(value) if value.as_bytes().starts_with(b"restate-cli"));
-
-    if is_cli {
-        // If the CLI is using an unversioned API url, it must be be pre 1.2, so api version v1
-        request.extensions_mut().insert(AdminApiVersion::V1);
-    } else {
-        request.extensions_mut().insert(AdminApiVersion::Unknown);
-    }
-
-    next.run(request)
-
-    }))
+fn unsupported_api_version(version: AdminApiVersion) -> axum::Router {
+    axum::Router::new().fallback((
+        StatusCode::BAD_REQUEST,
+        format!(
+            "Unsupported Admin API version {:?}. This server supports versions between {:?} and {:?}.",
+            version, MIN_ADMIN_API_VERSION, MAX_ADMIN_API_VERSION,
+        ),
+    ))
 }
 
 fn with_api_version_middleware(router: axum::Router, version: AdminApiVersion) -> axum::Router {

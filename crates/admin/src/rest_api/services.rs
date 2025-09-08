@@ -13,7 +13,6 @@ use super::error::*;
 use crate::state::AdminServiceState;
 use std::sync::Arc;
 
-use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, State};
 use bytes::Bytes;
@@ -21,7 +20,6 @@ use http::StatusCode;
 use okapi_operation::*;
 use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
-use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::schema::service::ServiceMetadata;
@@ -39,17 +37,10 @@ use tracing::{debug, warn};
 )]
 pub async fn list_services<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
-    Extension(version): Extension<AdminApiVersion>,
 ) -> Result<Json<ListServicesResponse>, MetaApiError> {
     let services = state.schema_registry.list_services();
 
-    Ok(
-        restate_admin_rest_model::converters::convert_list_services_response(
-            version,
-            ListServicesResponse { services },
-        )
-        .into(),
-    )
+    Ok(ListServicesResponse { services }.into())
 }
 
 /// Get a service
@@ -66,13 +57,11 @@ pub async fn list_services<V, IC>(
 )]
 pub async fn get_service<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
-    Extension(version): Extension<AdminApiVersion>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError> {
     state
         .schema_registry
         .get_service(&service_name)
-        .map(|svc| restate_admin_rest_model::converters::convert_service_metadata(version, svc))
         .map(Into::into)
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
 }
@@ -125,7 +114,6 @@ pub async fn get_service_openapi<V, IC>(
 )]
 pub async fn modify_service<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
-    Extension(version): Extension<AdminApiVersion>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceRequest {
         public,
@@ -162,7 +150,7 @@ pub async fn modify_service<V, IC>(
 
     if modify_request.is_empty() {
         // No need to do anything
-        return get_service(State(state), Extension(version), Path(service_name)).await;
+        return get_service(State(state), Path(service_name)).await;
     }
 
     let response = state
@@ -171,7 +159,7 @@ pub async fn modify_service<V, IC>(
         .await
         .inspect_err(|e| warn_it!(e))?;
 
-    Ok(restate_admin_rest_model::converters::convert_service_metadata(version, response).into())
+    Ok(response.into())
 }
 
 /// Modify a service state
