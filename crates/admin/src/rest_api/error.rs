@@ -234,6 +234,42 @@ pub(crate) struct ResumeInvocationIncompatibleDeploymentIdError {
 }
 impl_meta_api_error!(ResumeInvocationIncompatibleDeploymentIdError: BAD_REQUEST "The selected deployment id to resume the invocation doesn't support the currently pinned service protocol version.");
 
+#[derive(Debug, thiserror::Error)]
+#[error("The given index is out of range of currently stored journal for invocation '{0}'.")]
+pub(crate) struct RestartAsNewInvocationJournalIndexOutOfRangeError(pub(crate) String);
+impl_meta_api_error!(RestartAsNewInvocationJournalIndexOutOfRangeError: BAD_REQUEST "The given journal index is out of range.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The prefix of the journal '{0}' up to 'from' (included) contains some Commands without respective Completions."
+)]
+pub(crate) struct RestartAsNewInvocationJournalCopyRangeInvalidError(pub(crate) String);
+impl_meta_api_error!(RestartAsNewInvocationJournalCopyRangeInvalidError: BAD_REQUEST "The given journal prefix contains some Commands without respective Completions.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The invocation '{0}' is still running or the deployment id is not pinned yet, deployment id cannot be changed."
+)]
+pub(crate) struct RestartAsNewInvocationCannotChangeDeploymentIdError(pub(crate) String);
+impl_meta_api_error!(RestartAsNewInvocationCannotChangeDeploymentIdError: CONFLICT "The invocation is still running or the deployment id is not pinned yet, deployment id cannot be changed. The deployment id can be changed only if the invocation is paused or suspended, and a deployment id is already pinned.");
+
+#[derive(Debug, thiserror::Error)]
+#[error("The given deployment was not found when trying to restart as new the invocation '{0}'.")]
+pub(crate) struct RestartAsNewInvocationDeploymentNotFoundError(pub(crate) String);
+impl_meta_api_error!(RestartAsNewInvocationDeploymentNotFoundError: BAD_REQUEST "The given deployment was not found.");
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "The invocation '{invocation_id}' is running on protocol version '{pinned_protocol_version}', while the chosen deployment '{deployment_id}' supports the range {supported_protocol_versions:?}."
+)]
+pub(crate) struct RestartAsNewInvocationIncompatibleDeploymentIdError {
+    pub(crate) invocation_id: String,
+    pub(crate) pinned_protocol_version: i32,
+    pub(crate) deployment_id: String,
+    pub(crate) supported_protocol_versions: RangeInclusive<i32>,
+}
+impl_meta_api_error!(RestartAsNewInvocationIncompatibleDeploymentIdError: BAD_REQUEST "The selected deployment id to restart as new the invocation doesn't support the currently pinned service protocol version.");
+
 // --- Old Meta API errors. Please don't use these anymore.
 
 /// This error is used by handlers to propagate API errors,
