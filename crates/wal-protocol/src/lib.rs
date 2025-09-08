@@ -113,6 +113,7 @@ pub enum Destination {
     /// Message is sent to partition processor
     Processor {
         partition_key: PartitionKey,
+        #[cfg_attr(feature = "serde", serde(default))]
         dedup: Option<DedupInformation>,
     },
 }
