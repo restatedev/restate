@@ -24,6 +24,7 @@ use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use super::schema::SysDeploymentBuilder;
 use crate::context::QueryContext;
 use crate::deployment::row::append_deployment_row;
+use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, TableStatisticsBuilder};
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
@@ -31,10 +32,15 @@ pub(crate) fn register_self(
     ctx: &QueryContext,
     resolver: Live<impl DeploymentResolver + Send + Sync + 'static>,
 ) -> datafusion::common::Result<()> {
+    let schema = SysDeploymentBuilder::schema();
+    let statistics = TableStatisticsBuilder::new(schema.clone())
+        .with_num_rows_estimate(DEPLOYMENT_ROW_ESTIMATE)
+        .with_primary_key("id");
     let deployment_table = GenericTableProvider::new(
         SysDeploymentBuilder::schema(),
         Arc::new(DeploymentMetadataScanner(resolver)),
-    );
+    )
+    .with_statistics(statistics.build());
     ctx.register_non_partitioned_table("sys_deployment", Arc::new(deployment_table))
 }
 

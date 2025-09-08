@@ -31,6 +31,7 @@ mod promise;
 mod scanner_task;
 mod service;
 mod state;
+mod statistics;
 #[cfg(feature = "table_docs")]
 pub mod table_docs;
 mod table_macro;
