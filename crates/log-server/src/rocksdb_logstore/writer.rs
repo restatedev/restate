@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::io::IoSlice;
 use std::sync::Arc;
 
 use bytes::BytesMut;
@@ -181,9 +182,14 @@ impl LogStoreWriter {
             let key_bytes =
                 DataRecordKey::new(store_message.header.loglet_id, offset).to_binary_array();
             let encoder = DataRecordEncoder::from(payload);
-            buffer.reserve(encoder.estimated_encode_size());
             let value_bytes = encoder.encode_to_disk_format(buffer);
-            write_batch.put_cf(data_cf, key_bytes, value_bytes);
+            // Shortcut: we know that the chain is 2 slices wide, todo is to introduce an
+            // IoBufQueue that can be used in ropes of owned byte slices like this case.
+            let dst = [
+                IoSlice::new(value_bytes.first_ref()),
+                IoSlice::new(value_bytes.last_ref()),
+            ];
+            write_batch.put_cf_vectored(data_cf, &[IoSlice::new(&key_bytes)], &dst);
             buffer.clear();
             // advance the offset for the next record
             offset = offset.next();
