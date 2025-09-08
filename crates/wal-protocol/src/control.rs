@@ -20,13 +20,13 @@ use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnnounceLeader {
-    // todo: Remove once we no longer need to support rolling back to 1.0
-    pub node_id: Option<GenerationalNodeId>,
+    /// Sender of the announce leader message.
+    ///
+    /// This became non-optional in v1.5. Noting that it has always been set in previous versions,
+    /// it's safe to assume that it's always set.
+    pub node_id: GenerationalNodeId,
     pub leader_epoch: LeaderEpoch,
-    // Option for backwards compatibility. All future announce leader messages will have this set.
-    // Fallback if this is not set to use Envelope's header's destination partition-key as a
-    // single key filter.
-    pub partition_key_range: Option<RangeInclusive<PartitionKey>>,
+    pub partition_key_range: RangeInclusive<PartitionKey>,
 }
 
 /// A version barrier to fence off state machine changes that require a certain minimum
@@ -61,68 +61,4 @@ pub struct PartitionDurability {
     pub durable_point: Lsn,
     /// Timestamp which the durability point was updated
     pub modification_time: MillisSinceEpoch,
-}
-
-#[cfg(all(test, feature = "serde"))]
-mod tests {
-    use crate::control::AnnounceLeader;
-    use bytes::BytesMut;
-    use restate_types::identifiers::LeaderEpoch;
-    use restate_types::storage::StorageCodec;
-    use restate_types::{GenerationalNodeId, flexbuffers_storage_encode_decode};
-
-    #[derive(Debug, PartialEq)]
-    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-    struct OldAnnounceLeader {
-        pub node_id: GenerationalNodeId,
-        pub leader_epoch: LeaderEpoch,
-    }
-
-    flexbuffers_storage_encode_decode!(AnnounceLeader);
-    flexbuffers_storage_encode_decode!(OldAnnounceLeader);
-
-    #[test]
-    fn ensure_compatibility() -> anyhow::Result<()> {
-        let node_id = GenerationalNodeId::new(1, 2);
-        let leader_epoch = LeaderEpoch::from(1337);
-
-        let expected_announce_leader = AnnounceLeader {
-            node_id: Some(node_id),
-            leader_epoch,
-            partition_key_range: Some(1..=100),
-        };
-
-        let old_announce_leader = OldAnnounceLeader {
-            node_id,
-            leader_epoch,
-        };
-
-        let mut buf = BytesMut::default();
-        StorageCodec::encode(&old_announce_leader, &mut buf)?;
-
-        let new_announce_leader = StorageCodec::decode::<AnnounceLeader, _>(&mut buf)?;
-
-        assert_eq!(
-            new_announce_leader.node_id,
-            expected_announce_leader.node_id
-        );
-        assert_eq!(new_announce_leader.partition_key_range, None);
-        assert_eq!(
-            new_announce_leader.leader_epoch,
-            expected_announce_leader.leader_epoch
-        );
-
-        buf.clear();
-        StorageCodec::encode(&new_announce_leader, &mut buf)?;
-
-        let announce_leader = StorageCodec::decode::<OldAnnounceLeader, _>(&mut buf)?;
-
-        assert_eq!(announce_leader.node_id, old_announce_leader.node_id);
-        assert_eq!(
-            announce_leader.leader_epoch,
-            old_announce_leader.leader_epoch
-        );
-
-        Ok(())
-    }
 }

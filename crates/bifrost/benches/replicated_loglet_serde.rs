@@ -134,10 +134,10 @@ where
 
     let header = restate_wal_protocol::Header {
         source: restate_wal_protocol::Source::Processor {
-            partition_id: source_partition_id,
+            partition_id: Some(source_partition_id),
             partition_key: Some(partition_key),
             leader_epoch,
-            node_id: node_id.as_plain(),
+            node_id: Some(node_id.as_plain()),
             generational_node_id: Some(node_id),
         },
         dest: Destination::Processor {

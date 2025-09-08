@@ -58,7 +58,7 @@ use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
+use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
@@ -524,13 +524,13 @@ where
                         } else {
                             follower_record_write_to_read_latency.record(record.created_at.elapsed());
                         }
-                        let leadership_change = self.apply_record(
+                        let maybe_announce_leader = self.apply_record(
                             record,
                             &mut transaction,
                             &mut action_collector,
                         ).await?;
 
-                        if let Some((header, announce_leader)) = leadership_change {
+                        if let Some(announce_leader) = maybe_announce_leader {
                             // commit all changes so far, this is important so that the actuators see all changes
                             // when becoming leader.
                             transaction.commit().await?;
@@ -540,16 +540,7 @@ where
                             action_collector.clear();
 
                             self.status.last_observed_leader_epoch = Some(announce_leader.leader_epoch);
-                            if header.source.is_processor_generational() {
-                                let Source::Processor { generational_node_id, .. } = header.source else {
-                                    unreachable!("processor source must have generational_node_id");
-                                };
-                                // all new AnnounceLeader messages should come from a PartitionProcessor
-                                self.status.last_observed_leader_node = generational_node_id;
-                            } else if announce_leader.node_id.is_some() {
-                                // older AnnounceLeader messages have the announce_leader.node_id set
-                                self.status.last_observed_leader_node = announce_leader.node_id;
-                            }
+                            self.status.last_observed_leader_node = Some(announce_leader.node_id);
                             self.replica_set_states.note_observed_leader(
                                 partition_id,
                                 restate_types::partitions::state::LeadershipState {
@@ -638,7 +629,7 @@ where
         record: LsnEnvelope,
         transaction: &mut PartitionStoreTransaction<'b>,
         action_collector: &mut ActionCollector,
-    ) -> Result<Option<(Header, Box<AnnounceLeader>)>, state_machine::Error> {
+    ) -> Result<Option<Box<AnnounceLeader>>, state_machine::Error> {
         transaction.put_applied_lsn(record.lsn).await?;
 
         // Update replay status
@@ -684,7 +675,7 @@ where
 
             if let Command::AnnounceLeader(announce_leader) = envelope.command {
                 // leadership change detected, let's finish our transaction here
-                return Ok(Some((envelope.header, announce_leader)));
+                return Ok(Some(announce_leader));
             } else if let Command::UpdatePartitionDurability(partition_durability) =
                 envelope.command
             {
