@@ -273,20 +273,6 @@ pub async fn find_active_invocations(
     order: &str,
     limit: usize,
 ) -> Result<(Vec<Invocation>, usize)> {
-    // Check if columns completion_result and completion_failure are available.
-    // Those were introduced in Restate 1.1
-    let has_restate_1_1_completion_columns = client
-        .check_columns_exists(
-            "sys_invocation",
-            &["completion_result", "completion_failure"],
-        )
-        .await?;
-    let select_completion_columns = if has_restate_1_1_completion_columns {
-        "inv.completion_result, inv.completion_failure"
-    } else {
-        "CAST(NULL as STRING) AS completion_result, CAST(NULL as STRING) AS completion_failure"
-    };
-
     let has_restate_1_2_columns = client
         .check_columns_exists("sys_invocation", &["idempotency_key"])
         .await?;
@@ -322,7 +308,8 @@ pub async fn find_active_invocations(
             inv.invoked_by_id,
             inv.invoked_by_target,
             inv.trace_id,
-            {select_completion_columns}
+            inv.completion_result,
+            inv.completion_failure
         FROM sys_invocation inv
         {filter}
         ),
