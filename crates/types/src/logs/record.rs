@@ -42,7 +42,7 @@ impl Record {
         self.created_at
     }
 
-    pub fn keys(&self) -> &Keys {
+    pub const fn keys(&self) -> &Keys {
         &self.keys
     }
 
