@@ -985,6 +985,27 @@ impl WithInvocationId for ResumeInvocationRequest {
     }
 }
 
+/// Message to restart an invocation.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RestartAsNewInvocationRequest {
+    pub invocation_id: InvocationId,
+    pub new_invocation_id: InvocationId,
+    /// Index up to copy the journal prefix.
+    /// The command will copy all commands and notifications in the prefix, plus completions
+    /// in the suffix for which there is a corresponding command in the prefix.
+    pub copy_prefix_up_to_index_included: EntryIndex,
+    /// Run the new request on the given deployment id
+    pub patch_deployment_id: Option<DeploymentId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_sink: Option<InvocationMutationResponseSink>,
+}
+
+impl WithInvocationId for RestartAsNewInvocationRequest {
+    fn invocation_id(&self) -> InvocationId {
+        self.invocation_id
+    }
+}
+
 // We use this struct instead of SpanContext as it is serialisable and allows us to use TraceStateDef
 #[serde_as]
 #[derive(Debug, PartialEq, Eq, Clone, serde::Serialize, serde::Deserialize)]

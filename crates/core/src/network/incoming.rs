@@ -712,6 +712,11 @@ pub mod test_util {
             );
             O::decode(buf, ProtocolVersion::V2)
         }
+
+        pub fn assert_not_received(mut self) {
+            let value = self.0.try_recv();
+            assert!(value.err().is_some(), "Nothing received");
+        }
     }
 
     impl<O: RpcResponse + WireEncode + WireDecode> Reciprocal<Oneshot<O>> {

@@ -13,6 +13,7 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::inbox_table::InboxTable;
 use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::JournalTable;
 use restate_storage_api::outbox_table::OutboxTable;
@@ -40,6 +41,7 @@ where
         + JournalTable
         + OutboxTable
         + journal_table::JournalTable
+        + JournalEventsTable
         + TimerTable
         + PromiseTable
         + VirtualObjectStatusTable,

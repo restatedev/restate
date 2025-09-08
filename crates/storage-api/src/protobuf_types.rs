@@ -172,7 +172,9 @@ pub mod v1 {
             outbox_message, promise, response_result, source, span_relation,
             submit_notification_sink, timer, virtual_object_status,
         };
-        use crate::invocation_status_table::{CompletionRangeEpochMap, JournalMetadata};
+        use crate::invocation_status_table::{
+            CompletionRangeEpochMap, JournalMetadata, PreFlightInput,
+        };
         use crate::protobuf_types::ConversionError;
 
         impl TryFrom<VirtualObjectStatus> for crate::service_status_table::VirtualObjectStatus {
@@ -460,6 +462,28 @@ pub mod v1 {
 
                 match status.try_into().unwrap_or_default() {
                     invocation_status_v2::Status::Scheduled => {
+                        // The discriminant for input/journal here is the argument presence/absence
+                        // (that's a proto optional field!)
+                        let input = if let Some(argument) = argument {
+                            PreFlightInput::Input {
+                                argument,
+                                headers,
+                                span_context: expect_or_fail!(span_context)?.try_into()?,
+                            }
+                        } else {
+                            PreFlightInput::Journal {
+                                journal_metadata: crate::invocation_status_table::JournalMetadata {
+                                    length: journal_length,
+                                    commands,
+                                    span_context: expect_or_fail!(span_context)?.try_into()?,
+                                },
+                                pinned_deployment: derive_pinned_deployment(
+                                    deployment_id,
+                                    service_protocol_version,
+                                )?,
+                            }
+                        };
+
                         Ok(crate::invocation_status_table::InvocationStatus::Scheduled(
                             crate::invocation_status_table::ScheduledInvocation {
                                 metadata:
@@ -468,10 +492,8 @@ pub mod v1 {
                                         timestamps,
                                         invocation_target,
                                         created_using_restate_version,
-                                        argument: expect_or_fail!(argument)?,
                                         source,
-                                        span_context: expect_or_fail!(span_context)?.try_into()?,
-                                        headers,
+                                        input,
                                         execution_time: execution_time.map(MillisSinceEpoch::new),
                                         completion_retention_duration:
                                             completion_retention_duration
@@ -487,6 +509,28 @@ pub mod v1 {
                         ))
                     }
                     invocation_status_v2::Status::Inboxed => {
+                        // The discriminant for input/journal here is the argument presence/absence
+                        // (that's a proto optional field!)
+                        let input = if let Some(argument) = argument {
+                            PreFlightInput::Input {
+                                argument,
+                                headers,
+                                span_context: expect_or_fail!(span_context)?.try_into()?,
+                            }
+                        } else {
+                            PreFlightInput::Journal {
+                                journal_metadata: crate::invocation_status_table::JournalMetadata {
+                                    length: journal_length,
+                                    commands,
+                                    span_context: expect_or_fail!(span_context)?.try_into()?,
+                                },
+                                pinned_deployment: derive_pinned_deployment(
+                                    deployment_id,
+                                    service_protocol_version,
+                                )?,
+                            }
+                        };
+
                         Ok(crate::invocation_status_table::InvocationStatus::Inboxed(
                             crate::invocation_status_table::InboxedInvocation {
                                 inbox_sequence_number: expect_or_fail!(inbox_sequence_number)?,
@@ -496,10 +540,8 @@ pub mod v1 {
                                         timestamps,
                                         invocation_target,
                                         created_using_restate_version,
-                                        argument: expect_or_fail!(argument)?,
                                         source,
-                                        span_context: expect_or_fail!(span_context)?.try_into()?,
-                                        headers,
+                                        input,
                                         execution_time: execution_time.map(MillisSinceEpoch::new),
                                         completion_retention_duration:
                                             completion_retention_duration
@@ -688,15 +730,18 @@ pub mod v1 {
                                     timestamps,
                                     invocation_target,
                                     created_using_restate_version,
-                                    argument,
                                     source,
-                                    span_context,
-                                    headers,
                                     execution_time,
                                     completion_retention_duration,
                                     journal_retention_duration,
                                     idempotency_key,
                                     random_seed,
+                                    input:
+                                        PreFlightInput::Input {
+                                            argument,
+                                            headers,
+                                            span_context,
+                                        },
                                 },
                         },
                     ) => InvocationStatusV2 {
@@ -743,6 +788,84 @@ pub mod v1 {
                         result: None,
                         random_seed,
                     },
+                    crate::invocation_status_table::InvocationStatus::Scheduled(
+                        crate::invocation_status_table::ScheduledInvocation {
+                            metadata:
+                                crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    response_sinks,
+                                    timestamps,
+                                    invocation_target,
+                                    created_using_restate_version,
+                                    source,
+                                    execution_time,
+                                    completion_retention_duration,
+                                    journal_retention_duration,
+                                    idempotency_key,
+                                    input:
+                                        PreFlightInput::Journal {
+                                            journal_metadata,
+                                            pinned_deployment,
+                                        },
+                                    random_seed,
+                                },
+                        },
+                    ) => {
+                        let (deployment_id, service_protocol_version) = match pinned_deployment {
+                            None => (None, None),
+                            Some(pinned_deployment) => (
+                                Some(pinned_deployment.deployment_id.to_string()),
+                                Some(pinned_deployment.service_protocol_version.as_repr()),
+                            ),
+                        };
+
+                        InvocationStatusV2 {
+                            status: invocation_status_v2::Status::Scheduled.into(),
+                            invocation_target: Some(invocation_target.into()),
+                            source: Some(source.into()),
+                            span_context: Some(journal_metadata.span_context.into()),
+                            creation_time: timestamps.creation_time().as_u64(),
+                            created_using_restate_version: created_using_restate_version
+                                .into_string(),
+                            modification_time: timestamps.modification_time().as_u64(),
+                            inboxed_transition_time: timestamps
+                                .inboxed_transition_time()
+                                .map(|t| t.as_u64()),
+                            scheduled_transition_time: timestamps
+                                .scheduled_transition_time()
+                                .map(|t| t.as_u64()),
+                            running_transition_time: timestamps
+                                .running_transition_time()
+                                .map(|t| t.as_u64()),
+                            completed_transition_time: timestamps
+                                .completed_transition_time()
+                                .map(|t| t.as_u64()),
+                            response_sinks: response_sinks
+                                .into_iter()
+                                .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                                .collect(),
+                            argument: None,
+                            headers: Default::default(),
+                            execution_time: execution_time.map(|t| t.as_u64()),
+                            completion_retention_duration: Some(
+                                completion_retention_duration.into(),
+                            ),
+                            journal_retention_duration: Some(journal_retention_duration.into()),
+                            idempotency_key: idempotency_key.map(|key| key.to_string()),
+                            inbox_sequence_number: None,
+                            journal_length: journal_metadata.length,
+                            commands: journal_metadata.commands,
+                            deployment_id,
+                            service_protocol_version,
+                            hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                            current_invocation_epoch: 0,
+                            trim_points: vec![],
+                            waiting_for_completions: vec![],
+                            waiting_for_signal_indexes: vec![],
+                            waiting_for_signal_names: vec![],
+                            result: None,
+                            random_seed,
+                        }
+                    }
                     crate::invocation_status_table::InvocationStatus::Inboxed(
                         crate::invocation_status_table::InboxedInvocation {
                             metadata:
@@ -751,15 +874,18 @@ pub mod v1 {
                                     timestamps,
                                     invocation_target,
                                     created_using_restate_version,
-                                    argument,
                                     source,
-                                    span_context,
-                                    headers,
                                     execution_time,
                                     completion_retention_duration,
                                     journal_retention_duration,
                                     idempotency_key,
                                     random_seed,
+                                    input:
+                                        PreFlightInput::Input {
+                                            argument,
+                                            headers,
+                                            span_context,
+                                        },
                                 },
                             inbox_sequence_number,
                         },
@@ -807,6 +933,84 @@ pub mod v1 {
                         result: None,
                         random_seed,
                     },
+                    crate::invocation_status_table::InvocationStatus::Inboxed(
+                        crate::invocation_status_table::InboxedInvocation {
+                            metadata:
+                                crate::invocation_status_table::PreFlightInvocationMetadata {
+                                    response_sinks,
+                                    timestamps,
+                                    invocation_target,
+                                    created_using_restate_version,
+                                    source,
+                                    execution_time,
+                                    completion_retention_duration,
+                                    journal_retention_duration,
+                                    idempotency_key,
+                                    input:
+                                        PreFlightInput::Journal {
+                                            journal_metadata,
+                                            pinned_deployment,
+                                        },
+                                    random_seed,
+                                },
+                            inbox_sequence_number,
+                        },
+                    ) => {
+                        let (deployment_id, service_protocol_version) = match pinned_deployment {
+                            None => (None, None),
+                            Some(pinned_deployment) => (
+                                Some(pinned_deployment.deployment_id.to_string()),
+                                Some(pinned_deployment.service_protocol_version.as_repr()),
+                            ),
+                        };
+                        InvocationStatusV2 {
+                            status: invocation_status_v2::Status::Inboxed.into(),
+                            invocation_target: Some(invocation_target.into()),
+                            source: Some(source.into()),
+                            span_context: Some(journal_metadata.span_context.into()),
+                            creation_time: timestamps.creation_time().as_u64(),
+                            created_using_restate_version: created_using_restate_version
+                                .into_string(),
+                            modification_time: timestamps.modification_time().as_u64(),
+                            inboxed_transition_time: timestamps
+                                .inboxed_transition_time()
+                                .map(|t| t.as_u64()),
+                            scheduled_transition_time: timestamps
+                                .scheduled_transition_time()
+                                .map(|t| t.as_u64()),
+                            running_transition_time: timestamps
+                                .running_transition_time()
+                                .map(|t| t.as_u64()),
+                            completed_transition_time: timestamps
+                                .completed_transition_time()
+                                .map(|t| t.as_u64()),
+                            response_sinks: response_sinks
+                                .into_iter()
+                                .map(|s| ServiceInvocationResponseSink::from(Some(s)))
+                                .collect(),
+                            argument: None,
+                            headers: Default::default(),
+                            execution_time: execution_time.map(|t| t.as_u64()),
+                            completion_retention_duration: Some(
+                                completion_retention_duration.into(),
+                            ),
+                            journal_retention_duration: Some(journal_retention_duration.into()),
+                            idempotency_key: idempotency_key.map(|key| key.to_string()),
+                            inbox_sequence_number: Some(inbox_sequence_number),
+                            journal_length: journal_metadata.length,
+                            commands: journal_metadata.commands,
+                            deployment_id,
+                            service_protocol_version,
+                            hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                            current_invocation_epoch: 0,
+                            trim_points: vec![],
+                            waiting_for_completions: vec![],
+                            waiting_for_signal_indexes: vec![],
+                            waiting_for_signal_names: vec![],
+                            result: None,
+                            random_seed,
+                        }
+                    }
                     crate::invocation_status_table::InvocationStatus::Invoked(
                         crate::invocation_status_table::InFlightInvocationMetadata {
                             invocation_target,
@@ -1634,15 +1838,17 @@ pub mod v1 {
                             None,
                         ),
                         source,
-                        span_context,
-                        headers,
-                        argument: value.argument,
                         execution_time,
                         idempotency_key,
                         completion_retention_duration: completion_retention_time,
                         invocation_target,
                         journal_retention_duration: Default::default(),
                         random_seed: None,
+                        input: PreFlightInput::Input {
+                            span_context,
+                            headers,
+                            argument: value.argument,
+                        },
                     },
                 })
             }
@@ -1657,10 +1863,8 @@ pub mod v1 {
                             timestamps,
                             invocation_target,
                             created_using_restate_version: _,
-                            argument,
+                            input,
                             source,
-                            span_context,
-                            headers,
                             execution_time,
                             completion_retention_duration: completion_retention_time,
                             journal_retention_duration: _,
@@ -1669,6 +1873,14 @@ pub mod v1 {
                         },
                     inbox_sequence_number,
                 } = value;
+                let PreFlightInput::Input {
+                    argument,
+                    headers,
+                    span_context,
+                } = input
+                else {
+                    panic!("This code is used only in tests!")
+                };
 
                 let headers = headers.into_iter().map(Into::into).collect();
 

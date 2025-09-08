@@ -13,7 +13,7 @@ use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, ReadOnlyInvocationStatusTable,
 };
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
-use restate_types::invocation::client::ResumeInvocationDeploymentId;
+use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, ResumeInvocationRequest,
 };
@@ -23,7 +23,7 @@ use restate_types::schema::deployment::DeploymentResolver;
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
     pub(super) invocation_id: InvocationId,
-    pub(super) update_deployment_id: ResumeInvocationDeploymentId,
+    pub(super) update_deployment_id: PatchDeploymentId,
 }
 
 impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
@@ -48,11 +48,8 @@ where
         // -- Figure out the invocation status
         match self.storage.get_invocation_status(&invocation_id).await {
             Ok(InvocationStatus::Invoked(metadata)) => {
-                if !matches!(
-                    update_deployment_id,
-                    ResumeInvocationDeploymentId::KeepPinned
-                ) {
-                    replier.send(ResumeInvocationRpcResponse::CannotChangeDeploymentId);
+                if !matches!(update_deployment_id, PatchDeploymentId::KeepPinned) {
+                    replier.send(ResumeInvocationRpcResponse::CannotPatchDeploymentId);
                     return Ok(());
                 }
 
@@ -78,27 +75,24 @@ where
             })) => {
                 // Let's look at the deployment id here, and see if we need to do some changes
                 let update_pinned_deployment_id = match (update_deployment_id, pinned_deployment) {
-                    (ResumeInvocationDeploymentId::KeepPinned, _)
-                    | (ResumeInvocationDeploymentId::PinToLatest, None) => {
+                    (PatchDeploymentId::KeepPinned, _) | (PatchDeploymentId::PinToLatest, None) => {
                         // If the request is to keep pinned, no change will be applied.
                         None
                     }
                     (_, None) => {
                         // No deployment is even pinned, return back the error
-                        replier.send(ResumeInvocationRpcResponse::CannotChangeDeploymentId);
+                        replier.send(ResumeInvocationRpcResponse::CannotPatchDeploymentId);
                         return Ok(());
                     }
                     (resume_invocation_deployment_id, Some(pinned_deployment)) => {
                         let Some(deployment) = (match resume_invocation_deployment_id {
-                            ResumeInvocationDeploymentId::PinToLatest => {
+                            PatchDeploymentId::PinToLatest => {
                                 self.schemas.resolve_latest_deployment_for_service(
                                     invocation_target.service_name(),
                                 )
                             }
-                            ResumeInvocationDeploymentId::PinTo { id } => {
-                                self.schemas.get_deployment(&id)
-                            }
-                            ResumeInvocationDeploymentId::KeepPinned => {
+                            PatchDeploymentId::PinTo { id } => self.schemas.get_deployment(&id),
+                            PatchDeploymentId::KeepPinned => {
                                 unreachable!()
                             }
                         }) else {
@@ -476,11 +470,11 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         let update_deployment_id = if pin_to_specific {
-            ResumeInvocationDeploymentId::PinTo {
+            PatchDeploymentId::PinTo {
                 id: expected_deployment_id,
             }
         } else {
-            ResumeInvocationDeploymentId::PinToLatest
+            PatchDeploymentId::PinToLatest
         };
         RpcHandler::handle(
             RpcContext::new(&mut proposer, &schemas, &mut storage),
@@ -564,11 +558,11 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         let update_deployment_id = if pin_to_specific {
-            ResumeInvocationDeploymentId::PinTo {
+            PatchDeploymentId::PinTo {
                 id: expected_deployment_id,
             }
         } else {
-            ResumeInvocationDeploymentId::PinToLatest
+            PatchDeploymentId::PinToLatest
         };
         RpcHandler::handle(
             RpcContext::new(&mut proposer, &schemas, &mut storage),
