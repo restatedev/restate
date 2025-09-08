@@ -54,6 +54,7 @@ restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
 restate-invoker-api = { path = "crates/invoker-api" }
 restate-invoker-impl = { path = "crates/invoker-impl" }
+restate-io-util = { path = "crates/io-util" }
 restate-local-cluster-runner = { path = "crates/local-cluster-runner" }
 restate-log-server = { path = "crates/log-server" }
 restate-log-server-grpc = { path = "crates/log-server-grpc" }
@@ -198,7 +199,7 @@ rlimit = { version = "0.10.1" }
 rocksdb = { version = "0.43.0", package = "rust-rocksdb", features = [
     "multi-threaded-cf",
     "jemalloc",
-], git = "https://github.com/restatedev/rust-rocksdb", rev = "8873ba40ae687862dbe177e645e7b03c5ce025e3" }
+], git = "https://github.com/restatedev/rust-rocksdb", rev = "de8911652d398e9bfbb6bbc42a7b4f7296f6d101" }
 rstest = "0.24.0"
 rustls = { version = "0.23.26", default-features = false, features = ["ring"] }
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
