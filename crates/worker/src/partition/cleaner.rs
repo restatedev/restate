@@ -70,10 +70,10 @@ where
 
         let my_node_id = Metadata::with_current(|m| m.my_node_id());
         let bifrost_envelope_source = Source::Processor {
-            partition_id,
+            partition_id: Some(partition_id),
             partition_key: None,
             leader_epoch,
-            node_id: my_node_id.as_plain(),
+            node_id: Some(my_node_id.as_plain()),
             generational_node_id: Some(my_node_id),
         };
 
