@@ -170,10 +170,6 @@ pub enum Error {
         "error when trying to apply invocation response with completion id {0}, because no command was found for given completion id"
     )]
     MissingCommandForInvocationResponse(CompletionId),
-    #[error(
-        "error when trying to apply invocation response with completion id {1}, the entry type {0} doesn't expect variant {2}"
-    )]
-    BadCompletionVariantForInvocationResponse(journal_v2::CommandType, CompletionId, &'static str),
 }
 
 #[macro_export]
@@ -490,10 +486,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.on_service_invocation(service_invocation).await
             }
             Command::InvocationResponse(InvocationResponse { target, result }) => {
-                let completion = Completion {
-                    entry_index: target.caller_completion_id,
-                    result: result.into(),
-                };
                 let status = self.get_invocation_status(&target.caller_id).await?;
 
                 if should_use_journal_table_v2(&status) {
@@ -501,13 +493,18 @@ impl<S> StateMachineApplyContext<'_, S> {
                         invocation_id: target.caller_id,
                         invocation_epoch: target.caller_invocation_epoch,
                         status,
-                        completion,
+                        caller_completion_id: target.caller_completion_id,
+                        result,
                     }
                     .apply(self)
                     .await?;
                     return Ok(());
                 }
 
+                let completion = Completion {
+                    entry_index: target.caller_completion_id,
+                    result: result.into(),
+                };
                 self.handle_completion(target.caller_id, status, completion)
                     .await
             }
