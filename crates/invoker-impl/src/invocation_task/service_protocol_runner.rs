@@ -8,20 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::Notification;
-use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
-use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
-    ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
-    invocation_id_to_header_value, service_protocol_version_to_header_value,
-};
+use std::collections::HashSet;
+use std::time::Duration;
+
 use bytes::Bytes;
-use futures::future::FusedFuture;
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::{debug, trace, warn};
+
 use restate_errors::warn_it;
 use restate_invoker_api::invocation_reader::{EagerState, JournalEntry};
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
@@ -42,12 +41,14 @@ use restate_types::schema::deployment::{
     Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
 };
 use restate_types::service_protocol::ServiceProtocolVersion;
-use std::collections::HashSet;
-use std::future::poll_fn;
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, trace, warn};
+
+use crate::Notification;
+use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
+use crate::invocation_task::{
+    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
+    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
+    invocation_id_to_header_value, service_protocol_version_to_header_value,
+};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
@@ -162,8 +163,7 @@ where
         );
 
         // Initialize the response stream state
-        let mut http_stream_rx =
-            ResponseStreamState::initialize(&self.invocation_task.client, request);
+        let mut http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
 
         // Execute the replay
         crate::shortcircuit!(
@@ -289,23 +289,32 @@ where
     async fn replay_loop<JournalStream>(
         &mut self,
         http_stream_tx: &mut InvokerRequestStreamSender,
-        http_stream_rx: &mut ResponseStreamState,
+        http_stream_rx: &mut ResponseStream,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
     where
         JournalStream: Stream<Item = JournalEntry> + Unpin,
     {
         let mut journal_stream = journal_stream.fuse();
-        let got_headers_future = poll_fn(|cx| http_stream_rx.poll_only_headers(cx)).fuse();
-        tokio::pin!(got_headers_future);
-
+        let mut got_headers = false;
         loop {
             tokio::select! {
-                got_headers_res = got_headers_future.as_mut(), if !got_headers_future.is_terminated() => {
+                got_headers_res = http_stream_rx.next(), if !got_headers => {
+                    got_headers = true;
                     // The reason we want to poll headers in this function is
                     // to exit early in case an error is returned during replays.
-                    let headers = crate::shortcircuit!(got_headers_res);
-                    crate::shortcircuit!(self.handle_response_headers(headers));
+                    match crate::shortcircuit!(got_headers_res.transpose()) {
+                        None => {
+                            return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
+                        }
+                        Some(ResponseChunk::Parts(headers)) => {
+                            crate::shortcircuit!(self.handle_response_headers(headers));
+                        }
+                        Some(ResponseChunk::Data(_)) => {
+                            panic!("Unexpected poll after the headers have been resolved already")
+                        }
+                    };
+
                 },
                 opt_je = journal_stream.next() => {
                     match opt_je {
@@ -343,7 +352,7 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: InvokerRequestStreamSender,
-        http_stream_rx: &mut ResponseStreamState,
+        http_stream_rx: &mut ResponseStream,
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
@@ -368,14 +377,13 @@ where
                         },
                     }
                 },
-                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
-                    match crate::shortcircuit!(chunk) {
-                        ResponseChunk::Parts(parts) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
-                        ResponseChunk::End => {
-                            // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()))
+                chunk = http_stream_rx.next() => {
+                    match crate::shortcircuit!(chunk.transpose()) {
+                        None => {
+                            return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
+                        Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
+                        Some(ResponseChunk::Data(buf)) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
@@ -391,18 +399,17 @@ where
     async fn response_stream_loop(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        http_stream_rx: &mut ResponseStreamState,
+        http_stream_rx: &mut ResponseStream,
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
-                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
-                    match crate::shortcircuit!(chunk) {
-                        ResponseChunk::Parts(parts) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
-                        ResponseChunk::End => {
-                            // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()) )
+                chunk = http_stream_rx.next() => {
+                    match crate::shortcircuit!(chunk.transpose()) {
+                        None => {
+                            return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
+                        Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
+                        Some(ResponseChunk::Data(buf)) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
