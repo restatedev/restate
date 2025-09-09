@@ -252,71 +252,6 @@ macro_rules! default_wire_codec {
 ///
 /// Example:
 /// ```ignore
-///   bilrost_wire_codec_with_v1_fallback!(IngressMessage);
-/// ```
-/// This codec will fallback automatically to flexbuffer
-/// if remote beer is on V1.
-#[allow(unused_macros)]
-macro_rules! bilrost_wire_codec_with_v1_fallback {
-    (
-        $message:ty
-    ) => {
-        impl $crate::net::codec::WireEncode for $message {
-            fn encode_to_bytes(
-                &self,
-                protocol_version: $crate::net::ProtocolVersion,
-            ) -> Result<::bytes::Bytes, $crate::net::codec::EncodeError> {
-                match protocol_version {
-                    $crate::net::ProtocolVersion::Unknown => {
-                        unreachable!("unknown protocol version should never be set")
-                    }
-                    $crate::net::ProtocolVersion::V1 => Ok(::bytes::Bytes::from(
-                        $crate::net::codec::encode_as_flexbuffers(self),
-                    )),
-                    _ => {
-                        if protocol_version < $crate::net::ProtocolVersion::V2 {
-                            Err($crate::net::codec::EncodeError::IncompatibleVersion {
-                                type_tag: stringify!($message),
-                                min_required: $crate::net::ProtocolVersion::V2,
-                                actual: protocol_version,
-                            })
-                        } else {
-                            Ok($crate::net::codec::encode_as_bilrost(self))
-                        }
-                    }
-                }
-            }
-        }
-
-        impl $crate::net::codec::WireDecode for $message {
-            type Error = anyhow::Error;
-
-            fn try_decode(
-                buf: impl bytes::Buf,
-                protocol_version: $crate::net::ProtocolVersion,
-            ) -> Result<Self, anyhow::Error>
-            where
-                Self: Sized,
-            {
-                match protocol_version {
-                    $crate::net::ProtocolVersion::Unknown => {
-                        ::anyhow::bail!("Unknown protocol version")
-                    }
-                    $crate::net::ProtocolVersion::V1 => {
-                        $crate::net::codec::decode_as_flexbuffers(buf, protocol_version)
-                    }
-                    _ => $crate::net::codec::decode_as_bilrost(buf, protocol_version),
-                }
-            }
-        }
-    };
-}
-
-/// Implements bilrost wire codec for a type
-/// - Message type
-///
-/// Example:
-/// ```ignore
 ///   bilrost_wire_codec!(IngressMessage);
 /// ```
 #[allow(unused_macros)]
@@ -434,10 +369,7 @@ macro_rules! define_rpc {
 }
 
 #[allow(unused_imports)]
-use {
-    bilrost_wire_codec, bilrost_wire_codec_with_v1_fallback, default_wire_codec, define_rpc,
-    define_service, define_unary_message,
-};
+use {bilrost_wire_codec, default_wire_codec, define_rpc, define_service, define_unary_message};
 
 #[cfg(test)]
 mod tests {

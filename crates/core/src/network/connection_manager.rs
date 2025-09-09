@@ -26,7 +26,7 @@ use super::Swimlane;
 use super::connection::Connection;
 use super::io::{ConnectionReactor, EgressMessage, EgressStream};
 use super::protobuf::network::ConnectionDirection;
-use super::protobuf::network::{Header, Message, Welcome};
+use super::protobuf::network::{Message, Welcome};
 use super::tracking::ConnectionTracking;
 use super::transport_connector::{TransportConnect, find_node};
 use super::{

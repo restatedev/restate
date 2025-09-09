@@ -26,8 +26,8 @@ use tracing::{Instrument, Span, debug, info, trace, warn};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
+use restate_types::net::ServiceTag;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::net::{ProtocolVersion, ServiceTag};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
@@ -456,16 +456,6 @@ impl ConnectionReactor {
                 // watch message
                 // TODO: handle pong messages
                 Decision::Continue
-            }
-
-            // No more compatibility for V1 protocol
-            Body::Encoded(_msg) => {
-                if self.connection.protocol_version() >= ProtocolVersion::V2 {
-                    warn!(
-                        "Peer sent a legacy encoded message on V2 protocol. This is a protocol violation, the connection will be dropped"
-                    );
-                }
-                return Decision::Drop;
             }
         }
     }

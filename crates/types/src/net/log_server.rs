@@ -62,8 +62,8 @@ macro_rules! define_logserver_rpc {
             @response = $response,
             @service = $service,
         }
-        crate::net::bilrost_wire_codec_with_v1_fallback!($request $(as $as_request)?);
-        crate::net::bilrost_wire_codec_with_v1_fallback!($response $(as $as_response)?);
+        crate::net::bilrost_wire_codec!($request $(as $as_request)?);
+        crate::net::bilrost_wire_codec!($response $(as $as_response)?);
 
         impl LogServerMessage for $request {
             fn header(&self) -> &LogServerRequestHeader {
@@ -92,7 +92,7 @@ macro_rules! define_logserver_unary {
             @message = $message,
             @service = $service,
         }
-        crate::net::bilrost_wire_codec_with_v1_fallback!($message $(as $as_message)?);
+        crate::net::bilrost_wire_codec!($message $(as $as_message)?);
 
         impl LogServerMessage for $message {
             fn header(&self) -> &LogServerRequestHeader {

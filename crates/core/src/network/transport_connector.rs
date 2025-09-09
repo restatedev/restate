@@ -79,7 +79,7 @@ pub mod test_util {
     use crate::network::MessageRouterBuilder;
     use crate::network::handshake::negotiate_protocol_version;
     use crate::network::io::{ConnectionReactor, EgressMessage, EgressStream};
-    use crate::network::protobuf::network::{Header, Message, Welcome};
+    use crate::network::protobuf::network::{Message, Welcome};
     use crate::network::tracking::NoopTracker;
     use crate::network::{
         Connection, ConnectionManager, HandshakeError, MessageRouter, MockPeerConnection,
@@ -185,11 +185,7 @@ pub mod test_util {
             let welcome = Welcome::new(peer_node_id, selected_protocol_version, hello.direction());
 
             shared
-                .unbounded_send(EgressMessage::Message(
-                    Header::default(),
-                    welcome.into(),
-                    None,
-                ))
+                .unbounded_send(EgressMessage::Message(welcome.into(), None))
                 .unwrap();
 
             let connection =

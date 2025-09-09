@@ -109,7 +109,7 @@ impl SendPermit<'_> {
         self,
         message: M,
         sort_code: Option<u64>,
-        header: Header,
+        header: super::protobuf::network::Header,
     ) -> Result<ReplyRx<M::Response>, EncodeError> {
         let (msg, reply_token) = EgressMessage::make_rpc_message_with_header(
             message,

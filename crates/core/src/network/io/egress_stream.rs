@@ -392,8 +392,7 @@ impl EgressStream {
                 let mut header = Header::default();
                 self.fill_header(&mut header, None);
                 #[cfg(feature = "test-util")]
-                let mut header = custom_header.unwrap_or(header);
-                let msg_id = self.next_msg_id();
+                let header = custom_header.unwrap_or(header);
                 let body = Datagram {
                     datagram: Some(
                         network::Unary {
@@ -419,7 +418,7 @@ impl EgressStream {
                 sort_code,
                 reply_sender,
                 span,
-                version,
+                version: _,
                 #[cfg(feature = "test-util")]
                     header: custom_header,
             })) => {
