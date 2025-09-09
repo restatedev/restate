@@ -101,13 +101,13 @@ pub fn decode_as_flexbuffers<T: DeserializeOwned>(
     protocol_version: ProtocolVersion,
 ) -> Result<T, anyhow::Error> {
     assert!(
-        protocol_version >= ProtocolVersion::V1,
+        protocol_version >= ProtocolVersion::V2,
         "unknown protocol version should never be set"
     );
 
     flexbuffers::from_slice(buf.chunk()).with_context(|| {
         format!(
-            "failed decoding V1 (flexbuffers) network message {}",
+            "failed decoding (flexbuffers) network message {}",
             type_name::<T>()
         )
     })
@@ -127,5 +127,5 @@ pub fn decode_as_bilrost<T: OwnedMessage>(
         "bilrost encoding is supported from protocol version v2"
     );
 
-    T::decode(buf).context("failed decoding V2 (bilrost) network message")
+    T::decode(buf).context("failed decoding (bilrost) network message")
 }

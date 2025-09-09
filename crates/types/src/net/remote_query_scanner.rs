@@ -16,7 +16,7 @@ use restate_encoding::RestateEncoding;
 use super::ServiceTag;
 use crate::GenerationalNodeId;
 use crate::identifiers::{PartitionId, PartitionKey};
-use crate::net::{bilrost_wire_codec_with_v1_fallback, define_rpc, define_service};
+use crate::net::{bilrost_wire_codec, define_rpc, define_service};
 
 pub struct RemoteDataFusionService;
 define_service! {
@@ -146,24 +146,24 @@ define_rpc! {
     @service = RemoteDataFusionService,
 }
 
-bilrost_wire_codec_with_v1_fallback!(RemoteQueryScannerOpen);
-bilrost_wire_codec_with_v1_fallback!(RemoteQueryScannerOpened);
+bilrost_wire_codec!(RemoteQueryScannerOpen);
+bilrost_wire_codec!(RemoteQueryScannerOpened);
 
 define_rpc! {
     @request = RemoteQueryScannerNext,
     @response = RemoteQueryScannerNextResult,
     @service = RemoteDataFusionService,
 }
-bilrost_wire_codec_with_v1_fallback!(RemoteQueryScannerNext);
-bilrost_wire_codec_with_v1_fallback!(RemoteQueryScannerNextResult);
+bilrost_wire_codec!(RemoteQueryScannerNext);
+bilrost_wire_codec!(RemoteQueryScannerNextResult);
 
 define_rpc! {
     @request = RemoteQueryScannerClose,
     @response = RemoteQueryScannerClosed,
     @service = RemoteDataFusionService,
 }
-bilrost_wire_codec_with_v1_fallback!(RemoteQueryScannerClose);
-bilrost_wire_codec_with_v1_fallback!(RemoteQueryScannerClosed);
+bilrost_wire_codec!(RemoteQueryScannerClose);
+bilrost_wire_codec!(RemoteQueryScannerClosed);
 
 #[cfg(test)]
 mod test {
