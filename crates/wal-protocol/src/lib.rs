@@ -275,8 +275,8 @@ mod envelope {
         }
 
         fn default_codec(&self) -> StorageCodecKind {
-            // Switched to `Custom` in v1.5 to allow for more flexibility in the future.
-            StorageCodecKind::Custom
+            // todo: Could be changed in v1.6
+            StorageCodecKind::FlexbuffersSerde
         }
     }
 
