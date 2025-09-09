@@ -359,11 +359,7 @@ impl ConnectionManager {
         // Enqueue the welcome message
         let welcome = Welcome::new(my_node_id, selected_protocol_version, hello.direction());
         shared
-            .unbounded_send(EgressMessage::Message(
-                Header::default(),
-                welcome.into(),
-                None,
-            ))
+            .unbounded_send(EgressMessage::Message(welcome.into(), None))
             .map_err(|_| HandshakeError::PeerDropped)?;
         let connection = Connection::new(
             peer_node_id,

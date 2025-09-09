@@ -34,8 +34,6 @@ use super::egress_sender::{Sent, UnboundedEgressSender};
 use super::rpc_tracker::ReplyTracker;
 use super::{EgressSender, SendToken};
 use crate::Metadata;
-use crate::network::compat::V1Compat;
-use crate::network::protobuf::network::message::BinaryMessage;
 use crate::network::protobuf::network::{self, Datagram};
 use crate::network::protobuf::network::{
     Header, Message, SpanContext, message, message::Body, message::ConnectionControl,
@@ -105,8 +103,7 @@ pub enum EgressMessage {
         header: Option<Header>,
     },
     /// An egress body to send to peer, header is populated by egress stream
-    /// todo: remove Header once msg-id/in-response-to are removed (est. v1.4)
-    Message(Header, Body, Option<Span>),
+    Message(Body, Option<Span>),
     /// A signal to close the bounded stream. The inner stream cannot receive further messages but
     /// we'll continue to drain all buffered messages before dropping.
     Close(DrainReason),
@@ -364,8 +361,8 @@ impl EgressStream {
         match entry {
             #[cfg(feature = "test-util")]
             Poll::Ready(Some(EgressMessage::RawMessage(msg))) => Decision::Ready(msg),
-            // todo: remove header after V1 is beyond min supported
-            Poll::Ready(Some(EgressMessage::Message(mut header, body, span))) => {
+            Poll::Ready(Some(EgressMessage::Message(body, span))) => {
+                let mut header = Header::default();
                 self.fill_header(&mut header, span);
                 let msg = Message {
                     header: Some(header),
@@ -387,7 +384,7 @@ impl EgressStream {
                 msg_type,
                 sort_code,
                 service_tag,
-                version,
+                version: _,
                 notifier,
                 #[cfg(feature = "test-util")]
                     header: custom_header,
@@ -397,45 +394,23 @@ impl EgressStream {
                 #[cfg(feature = "test-util")]
                 let mut header = custom_header.unwrap_or(header);
                 let msg_id = self.next_msg_id();
-                if let ProtocolVersion::V1 = version {
-                    // compatibility mode for v1.
-                    let Some(v1_target) =
-                        V1Compat::translate_v2_tag_to_v1_target(service_tag, msg_type)
-                    else {
-                        // You are trying to send a V2 only message to V1 node.
-                        // dropping the message.
-                        return Decision::Continue;
-                    };
-                    header.msg_id = msg_id;
-                    let body = BinaryMessage {
-                        payload,
-                        target: v1_target.into(),
-                    };
-                    let msg = Message {
-                        header: Some(header),
-                        body: Some(body.into()),
-                    };
-                    notifier.notify();
-                    Decision::Ready(msg)
-                } else {
-                    let body = Datagram {
-                        datagram: Some(
-                            network::Unary {
-                                payload,
-                                service: service_tag as i32,
-                                msg_type: msg_type.to_owned(),
-                                sort_code,
-                            }
-                            .into(),
-                        ),
-                    };
-                    let msg = Message {
-                        header: Some(header),
-                        body: Some(body.into()),
-                    };
-                    notifier.notify();
-                    Decision::Ready(msg)
-                }
+                let body = Datagram {
+                    datagram: Some(
+                        network::Unary {
+                            payload,
+                            service: service_tag as i32,
+                            msg_type: msg_type.to_owned(),
+                            sort_code,
+                        }
+                        .into(),
+                    ),
+                };
+                let msg = Message {
+                    header: Some(header),
+                    body: Some(body.into()),
+                };
+                notifier.notify();
+                Decision::Ready(msg)
             }
             Poll::Ready(Some(EgressMessage::RpcCall {
                 payload,
@@ -458,54 +433,32 @@ impl EgressStream {
                 let mut header = Header::default();
                 self.fill_header(&mut header, span);
                 #[cfg(feature = "test-util")]
-                let mut header = custom_header.unwrap_or(header);
+                let header = custom_header.unwrap_or(header);
 
                 let msg_id = self.next_msg_id();
-                if let ProtocolVersion::V1 = version {
-                    // compatibility mode for v1.
-                    let Some(v1_target) =
-                        V1Compat::translate_v2_tag_to_v1_target(service_tag, msg_type)
-                    else {
-                        // You are trying to send a V2 only message to V1 node.
-                        // dropping the message.
-                        return Decision::Continue;
-                    };
-                    header.msg_id = msg_id;
-                    self.reply_tracker.register_rpc(msg_id, reply_sender);
-                    let body = BinaryMessage {
-                        payload,
-                        target: v1_target.into(),
-                    };
-                    let msg = Message {
-                        header: Some(header),
-                        body: Some(body.into()),
-                    };
-                    Decision::Ready(msg)
-                } else {
-                    trace!(
-                        rpc_id = %msg_id,
-                        "Sending RPC call: {service_tag}::{msg_type}",
-                    );
-                    // V2+
-                    self.reply_tracker.register_rpc(msg_id, reply_sender);
-                    let body = Datagram {
-                        datagram: Some(
-                            network::RpcCall {
-                                payload,
-                                id: msg_id,
-                                service: service_tag as i32,
-                                msg_type: msg_type.to_owned(),
-                                sort_code,
-                            }
-                            .into(),
-                        ),
-                    };
-                    let msg = Message {
-                        header: Some(header),
-                        body: Some(body.into()),
-                    };
-                    Decision::Ready(msg)
-                }
+                trace!(
+                    rpc_id = %msg_id,
+                    "Sending RPC call: {service_tag}::{msg_type}",
+                );
+                // V2+
+                self.reply_tracker.register_rpc(msg_id, reply_sender);
+                let body = Datagram {
+                    datagram: Some(
+                        network::RpcCall {
+                            payload,
+                            id: msg_id,
+                            service: service_tag as i32,
+                            msg_type: msg_type.to_owned(),
+                            sort_code,
+                        }
+                        .into(),
+                    ),
+                };
+                let msg = Message {
+                    header: Some(header),
+                    body: Some(body.into()),
+                };
+                Decision::Ready(msg)
             }
             Poll::Ready(Some(EgressMessage::Close(reason)))
                 if matches!(self.state, State::Open) =>

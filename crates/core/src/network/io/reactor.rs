@@ -12,7 +12,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bytes::Bytes;
 use enum_map::{EnumMap, enum_map};
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
@@ -34,17 +33,16 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
 use restate_types::{Version, Versioned};
 
-use crate::network::compat::V1Compat;
 use crate::network::incoming::{RawRpc, RawUnary, RpcReplyPort};
 use crate::network::io::EgressMessage;
 use crate::network::metric_definitions::NETWORK_MESSAGE_RECEIVED_BYTES;
-use crate::network::protobuf::network::message::{BinaryMessage, Body, Signal};
+use crate::network::protobuf::network::message::{Body, Signal};
 use crate::network::protobuf::network::{Datagram, RpcReply, datagram, rpc_reply};
 use crate::network::protobuf::network::{Header, Message};
 use crate::network::tracking::ConnectionTracking;
 use crate::network::{
     Connection, Incoming, MessageRouter, PeerMetadataVersion, ReplyEnvelope, RouterError,
-    RpcReplyError, compat,
+    RpcReplyError,
 };
 use crate::{Metadata, ShutdownError, TaskCenter, TaskContext, TaskId, TaskKind};
 
@@ -448,11 +446,7 @@ impl ConnectionReactor {
                     let datagram = Body::Datagram(Datagram {
                         datagram: Some(msg.flip().into()),
                     });
-                    let _ = tx.unbounded_send(EgressMessage::Message(
-                        Header::default(),
-                        datagram,
-                        None,
-                    ));
+                    let _ = tx.unbounded_send(EgressMessage::Message(datagram, None));
                 }
                 Decision::Continue
             }
@@ -464,191 +458,16 @@ impl ConnectionReactor {
                 Decision::Continue
             }
 
-            // Compatibility layer for V1 protocol
-            Body::Encoded(msg) => {
+            // No more compatibility for V1 protocol
+            Body::Encoded(_msg) => {
                 if self.connection.protocol_version() >= ProtocolVersion::V2 {
                     warn!(
                         "Peer sent a legacy encoded message on V2 protocol. This is a protocol violation, the connection will be dropped"
                     );
-                    return Decision::Drop;
                 }
-                let encoded_len = msg.payload.len();
-                let old_target = msg.target();
-
-                // Our strategy is to tradeoff performance for compatibility with V1 protocol. We
-                // assume that nodes that negotiate V1 protocol are on their way of being upgraded
-                // to a newer version. Therefore, we accept the performance hit until they are
-                // upgraded.
-                //
-                // The performance hit stems from the fact that we'll decode the message using the
-                // old protocol and then re-encode using the new envelopes before passing them down
-                // to the router. We'll not hide the fact that this is V1 protocol, so when
-                // services send RPC replies, we'll be still be able to perform the conversion of
-                // those responses back to V1 protocol before shipping them out.
-                //
-                // This means that service handlers can use the new APIs regardless of the
-                // negotiated protocol.
-
-                // A heuristic to determine if this is a RPC reply
-                if header.in_response_to > 0 {
-                    // This is a RPC reply
-                    if let Some(reply_sender) = self
-                        .shared
-                        .reply_tracker
-                        .pop_rpc_sender(&header.in_response_to)
-                    {
-                        // V1 doesn't support RPC statuses.
-                        // todo: handle routing errors
-                        trace!("Received LEGACY RPC response with payload!");
-                        let _ = reply_sender.send(crate::network::RawRpcReply::Success((
-                            self.connection.protocol_version,
-                            msg.payload,
-                        )));
-                    }
-                    // if we didn't find the original RPC, it's okay, we'll simply ignore this
-                    // response. This matches the behaviour of V2.
-                    return Decision::Continue;
-                }
-
-                // How do we determine if this is an RPC call or unary?
-                //
-                // We use a hard-coded mapping from the old target names.
-                match V1Compat::new(old_target, &msg.payload) {
-                    compat::V1Compat::Rpc {
-                        v2_service,
-                        v1_response,
-                        sort_code,
-                        msg_type,
-                    } => {
-                        // Rpc call
-                        let Some(tx) = self.shared.tx.as_ref() else {
-                            // egress for responses has been drained
-                            return Decision::Continue;
-                        };
-                        counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => v2_service.as_str_name())
-                            .increment(encoded_len as u64);
-                        self.handle_v1_rpc(
-                            old_target,
-                            v2_service,
-                            v1_response,
-                            header,
-                            msg.payload,
-                            sort_code,
-                            msg_type,
-                            tx.clone(),
-                        )
-                        .await
-                    }
-                    compat::V1Compat::Unary {
-                        v2_service,
-                        sort_code,
-                        msg_type,
-                    } => {
-                        // unary
-                        counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => v2_service.as_str_name())
-                            .increment(encoded_len as u64);
-                        self.handle_v1_unary(
-                            old_target,
-                            v2_service,
-                            header,
-                            msg.payload,
-                            sort_code,
-                            msg_type,
-                        )
-                        .await
-                    }
-                    compat::V1Compat::Invalid => {
-                        // wat?
-                        warn!("Peer sent a bad protocol message from V1");
-                        Decision::Drop
-                    }
-                }
+                return Decision::Drop;
             }
         }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn handle_v1_rpc(
-        &self,
-        v1_target: ServiceTag,
-        v2_service: ServiceTag,
-        v1_response_target: ServiceTag,
-        header: Header,
-        payload: Bytes,
-        sort_code: Option<u64>,
-        msg_type: String,
-        tx: super::UnboundedEgressSender,
-    ) -> Decision {
-        let id = header.msg_id;
-        // What do we need to figure out from the original message?
-        // - The message type (in V2)
-        // - The sort-code
-        let parent_context = header
-            .span_context
-            .as_ref()
-            .map(|span_ctx| self.context_propagator.extract(span_ctx));
-
-        let (reply_port, reply_rx) = RpcReplyPort::new();
-        let raw_rpc = RawRpc {
-            reply_port,
-            payload,
-            sort_code,
-            msg_type,
-        };
-        let incoming = Incoming::new(
-            self.connection.protocol_version,
-            raw_rpc,
-            self.connection.peer,
-            PeerMetadataVersion::from(header),
-            parent_context,
-        );
-        trace!("Received V1 RPC call: {v1_target}::{}", incoming.msg_type());
-        match tokio::task::unconstrained(self.router.call_rpc(v2_service, incoming)).await {
-            Ok(()) => { /* spawn reply task */ }
-            Err(err) => {
-                // we can't send rpc errors in v1, so we ignore and drop the message instead.
-                // this will result in a small leak of receiver tasks on V2's side.
-                send_rpc_error(&tx, err, id);
-            }
-        }
-
-        spawn_v1_rpc_responder(tx, id, reply_rx, v2_service, v1_response_target);
-
-        Decision::Continue
-    }
-
-    async fn handle_v1_unary(
-        &self,
-        v1_target: ServiceTag,
-        v2_service: ServiceTag,
-        header: Header,
-        payload: Bytes,
-        sort_code: Option<u64>,
-        msg_type: String,
-    ) -> Decision {
-        let parent_context = header
-            .span_context
-            .as_ref()
-            .map(|span_ctx| self.context_propagator.extract(span_ctx));
-        let metadata_versions = PeerMetadataVersion::from(header);
-        let incoming = Incoming::new(
-            self.connection.protocol_version,
-            RawUnary {
-                payload,
-                sort_code,
-                msg_type,
-            },
-            self.connection.peer(),
-            metadata_versions,
-            parent_context,
-        );
-        trace!(
-            "Received V1 Unary ({}) call: {v1_target}",
-            incoming.msg_type()
-        );
-
-        let _ = tokio::task::unconstrained(self.router.call_unary(v2_service, incoming)).await;
-        Decision::Continue
     }
 }
 
@@ -661,13 +480,8 @@ fn send_rpc_error(tx: &super::UnboundedEgressSender, err: RouterError, id: u64) 
     let datagram = Body::Datagram(Datagram {
         datagram: Some(body.into()),
     });
-    let header = Header {
-        // for compatibility with V1 protocol
-        in_response_to: id,
-        ..Default::default()
-    };
 
-    let _ = tx.unbounded_send(EgressMessage::Message(header, datagram, None));
+    let _ = tx.unbounded_send(EgressMessage::Message(datagram, None));
 }
 
 /// A task to ship the reply or an error back to the caller
@@ -687,7 +501,6 @@ fn spawn_rpc_responder(
                         let body = RpcReply { id, body: Some(envelope.body) };
                         let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
                         let _ = tx.unbounded_send(EgressMessage::Message(
-                            Header::default(),
                             datagram,
                             Some(envelope.span),
                         ));
@@ -700,7 +513,6 @@ fn spawn_rpc_responder(
                         let body = RpcReply { id, body: Some(rpc_reply::Body::Status(rpc_reply::Status::Dropped.into())), };
                         let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
                         let _ = tx.unbounded_send(EgressMessage::Message(
-                            Header::default(),
                             datagram,
                             None,
                         ));
@@ -710,52 +522,6 @@ fn spawn_rpc_responder(
             () = tx.closed() => {
                 // connection was dropped. Nothing to be done here.
                 trace!(rpc_id = %id, "Connection was dropped, dropping RPC responder task");
-            }
-        }
-    });
-}
-
-/// A task to ship the reply or an error back to the caller
-fn spawn_v1_rpc_responder(
-    tx: super::UnboundedEgressSender,
-    id: u64,
-    reply_rx: oneshot::Receiver<ReplyEnvelope>,
-    _v2_service: ServiceTag,
-    v1_response_target: ServiceTag,
-) {
-    // this is rpc-call, spawning a responder task
-    tokio::spawn(async move {
-        tokio::select! {
-            reply = reply_rx => {
-                if let Ok(envelope) = reply {
-                    // the assumption here is that the payload is already encoded in the
-                    // right v1 envelope.
-                    let payload = match envelope.body {
-                            // what do we do with status?
-                            // Options:
-                            // 1. ignore v2-only errors [chosen]
-                            // 2. convert it to v1 message in known cases (PP rpc responses)
-                            rpc_reply::Body::Status(_status) => return,
-                            rpc_reply::Body::Payload(bytes) => bytes,
-                    };
-                    let datagram = Body::Encoded(BinaryMessage {payload, target: v1_response_target.into() });
-                    let header = Header {
-                        // for compatibility with V1 protocol
-                        in_response_to: id,
-                        ..Default::default()
-                    };
-
-                    let _ = tx.unbounded_send(EgressMessage::Message(
-                        header,
-                        datagram,
-                        Some(envelope.span),
-                    ));
-                    // todo(asoli): here is a good place to measure total rpc
-                    // processing time.
-                }
-            }
-            () = tx.closed() => {
-                // connection was dropped. Nothing to be done here.
             }
         }
     });

@@ -13,8 +13,9 @@ package restate.common;
 
 enum ProtocolVersion {
   ProtocolVersion_UNKNOWN = 0;
-  // Released in v1.2
-  V1 = 1;
+  reserved 1;
+  // Released in v1.2. Support dropped in v1.5.0
+  // V1 = 1;
   // [Native RPC] Released in >= v1.3.3
   V2 = 2;
 }
