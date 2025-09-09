@@ -12,12 +12,12 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use crate::identifiers::{
-    DeploymentId, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
-    WithPartitionKey,
+    DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionKey,
+    PartitionProcessorRpcRequestId, WithPartitionKey,
 };
 use crate::invocation::client::{
-    CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PurgeInvocationResponse,
-    RestartAsNewInvocationResponse, ResumeInvocationDeploymentId, ResumeInvocationResponse,
+    CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PatchDeploymentId,
+    PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationResponse,
     SubmittedInvocationNotification,
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
@@ -87,10 +87,12 @@ pub enum PartitionProcessorRpcRequestInner {
     },
     RestartAsNewInvocation {
         invocation_id: InvocationId,
+        copy_prefix_up_to_index_included: EntryIndex,
+        patch_deployment_id: PatchDeploymentId,
     },
     ResumeInvocation {
         invocation_id: InvocationId,
-        deployment_id: ResumeInvocationDeploymentId,
+        deployment_id: PatchDeploymentId,
     },
 }
 
@@ -113,7 +115,7 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
             PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
                 invocation_id.partition_key()
             }
-            PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id } => {
+            PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id, .. } => {
                 invocation_id.partition_key()
             }
             PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id, .. } => {
@@ -258,12 +260,23 @@ impl From<PurgeInvocationRpcResponse> for PartitionProcessorRpcResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RestartAsNewInvocationRpcResponse {
-    Ok { new_invocation_id: InvocationId },
+    Ok {
+        new_invocation_id: InvocationId,
+    },
     NotFound,
     StillRunning,
     Unsupported,
+    JournalIndexOutOfRange,
+    JournalCopyRangeInvalid,
     MissingInput,
     NotStarted,
+    CannotPatchDeploymentId,
+    DeploymentNotFound,
+    IncompatibleDeploymentId {
+        pinned_protocol_version: i32,
+        deployment_id: DeploymentId,
+        supported_protocol_versions: RangeInclusive<i32>,
+    },
 }
 
 impl From<RestartAsNewInvocationRpcResponse> for RestartAsNewInvocationResponse {
@@ -285,6 +298,27 @@ impl From<RestartAsNewInvocationRpcResponse> for RestartAsNewInvocationResponse 
             RestartAsNewInvocationRpcResponse::NotStarted => {
                 RestartAsNewInvocationResponse::NotStarted
             }
+            RestartAsNewInvocationRpcResponse::JournalIndexOutOfRange => {
+                RestartAsNewInvocationResponse::JournalIndexOutOfRange
+            }
+            RestartAsNewInvocationRpcResponse::JournalCopyRangeInvalid => {
+                RestartAsNewInvocationResponse::JournalCopyRangeInvalid
+            }
+            RestartAsNewInvocationRpcResponse::CannotPatchDeploymentId => {
+                RestartAsNewInvocationResponse::CannotPatchDeploymentId
+            }
+            RestartAsNewInvocationRpcResponse::DeploymentNotFound => {
+                RestartAsNewInvocationResponse::DeploymentNotFound
+            }
+            RestartAsNewInvocationRpcResponse::IncompatibleDeploymentId {
+                deployment_id,
+                supported_protocol_versions,
+                pinned_protocol_version,
+            } => RestartAsNewInvocationResponse::IncompatibleDeploymentId {
+                pinned_protocol_version,
+                deployment_id,
+                supported_protocol_versions,
+            },
         }
     }
 }
@@ -308,6 +342,27 @@ impl From<RestartAsNewInvocationResponse> for RestartAsNewInvocationRpcResponse 
             RestartAsNewInvocationResponse::NotStarted => {
                 RestartAsNewInvocationRpcResponse::NotStarted
             }
+            RestartAsNewInvocationResponse::JournalIndexOutOfRange => {
+                RestartAsNewInvocationRpcResponse::JournalIndexOutOfRange
+            }
+            RestartAsNewInvocationResponse::JournalCopyRangeInvalid => {
+                RestartAsNewInvocationRpcResponse::JournalCopyRangeInvalid
+            }
+            RestartAsNewInvocationResponse::CannotPatchDeploymentId => {
+                RestartAsNewInvocationRpcResponse::CannotPatchDeploymentId
+            }
+            RestartAsNewInvocationResponse::DeploymentNotFound => {
+                RestartAsNewInvocationRpcResponse::DeploymentNotFound
+            }
+            RestartAsNewInvocationResponse::IncompatibleDeploymentId {
+                deployment_id,
+                supported_protocol_versions,
+                pinned_protocol_version,
+            } => RestartAsNewInvocationRpcResponse::IncompatibleDeploymentId {
+                pinned_protocol_version,
+                deployment_id,
+                supported_protocol_versions,
+            },
         }
     }
 }
@@ -324,7 +379,7 @@ pub enum ResumeInvocationRpcResponse {
     NotFound,
     NotStarted,
     Completed,
-    CannotChangeDeploymentId,
+    CannotPatchDeploymentId,
     DeploymentNotFound,
     IncompatibleDeploymentId {
         pinned_protocol_version: i32,
@@ -340,7 +395,7 @@ impl From<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
             ResumeInvocationRpcResponse::NotFound => ResumeInvocationResponse::NotFound,
             ResumeInvocationRpcResponse::NotStarted => ResumeInvocationResponse::NotStarted,
             ResumeInvocationRpcResponse::Completed => ResumeInvocationResponse::Completed,
-            ResumeInvocationRpcResponse::CannotChangeDeploymentId => {
+            ResumeInvocationRpcResponse::CannotPatchDeploymentId => {
                 ResumeInvocationResponse::CannotChangeDeploymentId
             }
             ResumeInvocationRpcResponse::DeploymentNotFound => {
@@ -367,7 +422,7 @@ impl From<ResumeInvocationResponse> for ResumeInvocationRpcResponse {
             ResumeInvocationResponse::NotStarted => ResumeInvocationRpcResponse::NotStarted,
             ResumeInvocationResponse::Completed => ResumeInvocationRpcResponse::Completed,
             ResumeInvocationResponse::CannotChangeDeploymentId => {
-                ResumeInvocationRpcResponse::CannotChangeDeploymentId
+                ResumeInvocationRpcResponse::CannotPatchDeploymentId
             }
             ResumeInvocationResponse::DeploymentNotFound => {
                 ResumeInvocationRpcResponse::DeploymentNotFound

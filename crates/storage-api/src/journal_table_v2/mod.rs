@@ -43,6 +43,12 @@ pub trait ReadOnlyJournalTable {
         invocation_id: InvocationId,
         notification_id: CompletionId,
     ) -> impl Future<Output = Result<Option<(StoredRawEntryHeader, RawCommand)>>> + Send;
+
+    fn has_completion(
+        &mut self,
+        invocation_id: InvocationId,
+        completion_id: CompletionId,
+    ) -> impl Future<Output = Result<bool>> + Send;
 }
 
 pub trait ScanJournalTable {

@@ -25,6 +25,7 @@ use restate_types::invocation::client::{
     PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
+use restate_types::journal_v2::EntryIndex;
 use restate_wal_protocol::{Command, Envelope};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -312,6 +313,37 @@ where
     Ok(())
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub enum PatchDeploymentId {
+    #[default]
+    #[serde(alias = "keep")]
+    Keep,
+    #[serde(alias = "latest")]
+    Latest,
+    #[serde(untagged)]
+    Id(String),
+}
+
+impl PatchDeploymentId {
+    pub fn into_client(self) -> Result<client::PatchDeploymentId, InvalidFieldError> {
+        Ok(match self {
+            PatchDeploymentId::Keep => client::PatchDeploymentId::KeepPinned,
+            PatchDeploymentId::Latest => client::PatchDeploymentId::PinToLatest,
+            PatchDeploymentId::Id(dp_id) => client::PatchDeploymentId::PinTo {
+                id: dp_id
+                    .parse::<DeploymentId>()
+                    .map_err(|e| InvalidFieldError("deployment_id", e.to_string()))?,
+            },
+        })
+    }
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct RestartAsNewInvocationQueryParams {
+    pub from: Option<EntryIndex>,
+    pub deployment: Option<PatchDeploymentId>,
+}
+
 generate_meta_api_error!(RestartInvocationError: [
     InvocationNotFoundError,
     InvocationClientError,
@@ -319,24 +351,58 @@ generate_meta_api_error!(RestartInvocationError: [
     RestartAsNewInvocationStillRunningError,
     RestartAsNewInvocationUnsupportedError,
     RestartAsNewInvocationMissingInputError,
-    RestartAsNewInvocationNotStartedError
+    RestartAsNewInvocationNotStartedError,
+    RestartAsNewInvocationJournalIndexOutOfRangeError,
+    RestartAsNewInvocationJournalCopyRangeInvalidError,
+    RestartAsNewInvocationCannotChangeDeploymentIdError,
+    RestartAsNewInvocationDeploymentNotFoundError,
+    RestartAsNewInvocationIncompatibleDeploymentIdError
 ]);
 
 /// Restart an invocation
 #[openapi(
     summary = "Restart as new invocation",
-    description = "Restart the given invocation as new. This will restart the invocation, given its input is available, as a new invocation with a different invocation id.",
+    description = "Restart the given invocation as new. \
+    This will restart the invocation as a new invocation with a different invocation id. \
+    By using the 'from' query parameter, some of the partial progress can be copied over to the new invocation.",
     operation_id = "restart_as_new_invocation",
     tags = "invocation",
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    ))
+    parameters(
+        path(
+            name = "invocation_id",
+            description = "Invocation identifier.",
+            schema = "std::string::String"
+        ),
+        query(
+            name = "from",
+            description = "From which entry index the invocation should restart from. \
+            By default the invocation restarts from the beginning (equivalent to 'from = 0'), retaining only the input of the original invocation. \
+            When greater than 0, the new invocation will copy the old journal prefix up to 'from' included, plus eventual completions for commands in the given prefix. \
+            If the journal prefix contains commands that have not been completed, this operation will fail.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = "u32",
+        ),
+        query(
+            name = "deployment",
+            description = "When restarting from journal prefix, provide a deployment id to use to replace the currently pinned deployment id. \
+            If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id. \
+            When not provided, the invocation will resume on latest. \
+            Note: this parameter can be used only in combination with 'from'.",
+            required = false,
+            style = "simple",
+            allow_empty_value = false,
+            schema = "PatchDeploymentId",
+        ),
+    )
 )]
 pub async fn restart_as_new_invocation<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
     Path(invocation_id): Path<String>,
+    Query(RestartAsNewInvocationQueryParams { from, deployment }): Query<
+        RestartAsNewInvocationQueryParams,
+    >,
 ) -> Result<Json<RestartAsNewInvocationResponse>, RestartInvocationError>
 where
     IC: InvocationClient,
@@ -347,7 +413,14 @@ where
 
     match state
         .invocation_client
-        .restart_as_new_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .restart_as_new_invocation(
+            PartitionProcessorRpcRequestId::new(),
+            invocation_id,
+            from.unwrap_or_default(),
+            deployment
+                .unwrap_or(PatchDeploymentId::Latest)
+                .into_client()?,
+        )
         .await
         .map_err(InvocationClientError)?
     {
@@ -369,22 +442,34 @@ where
         client::RestartAsNewInvocationResponse::NotStarted => Err(
             RestartAsNewInvocationNotStartedError(invocation_id.to_string()),
         )?,
+        client::RestartAsNewInvocationResponse::JournalIndexOutOfRange => Err(
+            RestartAsNewInvocationJournalIndexOutOfRangeError(invocation_id.to_string()),
+        )?,
+        client::RestartAsNewInvocationResponse::JournalCopyRangeInvalid => Err(
+            RestartAsNewInvocationJournalCopyRangeInvalidError(invocation_id.to_string()),
+        )?,
+        client::RestartAsNewInvocationResponse::CannotPatchDeploymentId => Err(
+            RestartAsNewInvocationCannotChangeDeploymentIdError(invocation_id.to_string()),
+        )?,
+        client::RestartAsNewInvocationResponse::DeploymentNotFound => Err(
+            RestartAsNewInvocationDeploymentNotFoundError(invocation_id.to_string()),
+        )?,
+        client::RestartAsNewInvocationResponse::IncompatibleDeploymentId {
+            pinned_protocol_version,
+            deployment_id,
+            supported_protocol_versions,
+        } => Err(RestartAsNewInvocationIncompatibleDeploymentIdError {
+            invocation_id: invocation_id.to_string(),
+            pinned_protocol_version,
+            deployment_id: deployment_id.to_string(),
+            supported_protocol_versions,
+        })?,
     }
 }
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
-pub enum ResumeInvocationDeploymentId {
-    #[default]
-    #[serde(alias = "keep")]
-    Keep,
-    #[serde(alias = "latest")]
-    Latest,
-    #[serde(untagged)]
-    Id(String),
-}
-#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ResumeInvocationQueryParams {
-    pub deployment: Option<ResumeInvocationDeploymentId>,
+    pub deployment: Option<PatchDeploymentId>,
 }
 
 generate_meta_api_error!(ResumeInvocationError: [
@@ -413,13 +498,13 @@ generate_meta_api_error!(ResumeInvocationError: [
         query(
             name = "deployment",
             description = "When resuming from paused/suspended, provide a deployment id to use to replace the currently pinned deployment id. \
-            If latest, use the latest deployment id. \
+            If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id. \
             When not provided, the invocation will resume on the pinned deployment id.\
             When provided and the invocation is either running, or no deployment is pinned, this operation will fail.",
             required = false,
             style = "simple",
             allow_empty_value = false,
-            schema = "ResumeInvocationDeploymentId",
+            schema = "PatchDeploymentId",
         )
     )
 )]
@@ -435,22 +520,12 @@ where
         .parse::<InvocationId>()
         .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
 
-    let deployment_id = match deployment.unwrap_or_default() {
-        ResumeInvocationDeploymentId::Keep => client::ResumeInvocationDeploymentId::KeepPinned,
-        ResumeInvocationDeploymentId::Latest => client::ResumeInvocationDeploymentId::PinToLatest,
-        ResumeInvocationDeploymentId::Id(dp_id) => client::ResumeInvocationDeploymentId::PinTo {
-            id: dp_id
-                .parse::<DeploymentId>()
-                .map_err(|e| InvalidFieldError("deployment_id", e.to_string()))?,
-        },
-    };
-
     match state
         .invocation_client
         .resume_invocation(
             PartitionProcessorRpcRequestId::new(),
             invocation_id,
-            deployment_id,
+            deployment.unwrap_or_default().into_client()?,
         )
         .await
         .map_err(InvocationClientError)?
@@ -477,7 +552,6 @@ where
             supported_protocol_versions,
         } => Err(ResumeInvocationIncompatibleDeploymentIdError {
             invocation_id: invocation_id.to_string(),
-
             pinned_protocol_version,
             deployment_id: deployment_id.to_string(),
             supported_protocol_versions,

@@ -275,6 +275,21 @@ fn get_command_by_completion_id<S: StorageAccess>(
     Ok(Some((entry.header, command)))
 }
 
+fn has_completion<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: InvocationId,
+    completion_id: CompletionId,
+) -> Result<bool> {
+    let _x = RocksDbPerfGuard::new("has-completion");
+
+    // Access the index
+    let key = JournalNotificationIdToNotificationIndexKey::default()
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid())
+        .notification_id(NotificationId::CompletionId(completion_id));
+    Ok(storage.get_value::<_, JournalEntryIndex>(key)?.is_some())
+}
+
 impl ReadOnlyJournalTable for PartitionStore {
     async fn get_journal_entry(
         &mut self,
@@ -312,6 +327,14 @@ impl ReadOnlyJournalTable for PartitionStore {
         notification_id: CompletionId,
     ) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
         get_command_by_completion_id(self, invocation_id, notification_id)
+    }
+
+    async fn has_completion(
+        &mut self,
+        invocation_id: InvocationId,
+        completion_id: CompletionId,
+    ) -> Result<bool> {
+        has_completion(self, invocation_id, completion_id)
     }
 }
 
@@ -391,6 +414,14 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
         notification_id: CompletionId,
     ) -> Result<Option<(StoredRawEntryHeader, RawCommand)>> {
         get_command_by_completion_id(self, invocation_id, notification_id)
+    }
+
+    async fn has_completion(
+        &mut self,
+        invocation_id: InvocationId,
+        completion_id: CompletionId,
+    ) -> Result<bool> {
+        has_completion(self, invocation_id, completion_id)
     }
 }
 

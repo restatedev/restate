@@ -16,12 +16,12 @@ use crate::partitions::PartitionRouting;
 use assert2::let_assert;
 use restate_types::NodeId;
 use restate_types::identifiers::{
-    InvocationId, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
+    EntryIndex, InvocationId, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationDeploymentId,
+    PatchDeploymentId, PurgeInvocationResponse, RestartAsNewInvocationResponse,
     ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
@@ -498,11 +498,17 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
+        copy_prefix_up_to_index_included: EntryIndex,
+        patch_deployment_id: PatchDeploymentId,
     ) -> Result<RestartAsNewInvocationResponse, InvocationClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
-                PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id },
+                PartitionProcessorRpcRequestInner::RestartAsNewInvocation {
+                    invocation_id,
+                    copy_prefix_up_to_index_included,
+                    patch_deployment_id,
+                },
             )
             .await?;
 
@@ -520,7 +526,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
-        deployment_id: ResumeInvocationDeploymentId,
+        deployment_id: PatchDeploymentId,
     ) -> Result<ResumeInvocationResponse, InvocationClientError> {
         let response = self
             .resolve_partition_id_and_send(

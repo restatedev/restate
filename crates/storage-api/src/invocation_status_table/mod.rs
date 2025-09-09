@@ -138,7 +138,7 @@ impl StatusTimestamps {
 }
 
 /// Status of an invocation.
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, strum::EnumTryAs)]
 pub enum InvocationStatus {
     Scheduled(ScheduledInvocation),
     Inboxed(InboxedInvocation),
@@ -423,6 +423,43 @@ impl JournalMetadata {
     }
 }
 
+/// Depending on the source, the pre-flight invocation metadata might either have a journal already initialized,
+/// or the request arguments stored directly in invocation status.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreFlightInvocationArgument {
+    /// The preflight status contains directly argument and headers, not yet a journal
+    Input(PreFlightInvocationInput),
+    /// A journal has already been initialized for this preflight request
+    Journal(PreFlightInvocationJournal),
+}
+
+impl PreFlightInvocationArgument {
+    pub fn span_context(&self) -> &ServiceInvocationSpanContext {
+        match self {
+            PreFlightInvocationArgument::Input(PreFlightInvocationInput {
+                span_context, ..
+            }) => span_context,
+            PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                journal_metadata,
+                ..
+            }) => &journal_metadata.span_context,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreFlightInvocationInput {
+    pub argument: Bytes,
+    pub headers: Vec<Header>,
+    pub span_context: ServiceInvocationSpanContext,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreFlightInvocationJournal {
+    pub journal_metadata: JournalMetadata,
+    pub pinned_deployment: Option<PinnedDeployment>,
+}
+
 /// This is similar to [ServiceInvocation].
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreFlightInvocationMetadata {
@@ -438,11 +475,9 @@ pub struct PreFlightInvocationMetadata {
     /// might be on a newer version than the replicas, or the subsequent leader in the next leader epoch.
     pub created_using_restate_version: RestateVersion,
 
-    // Could be split out of ServiceInvocation, e.g. InvocationContent or similar.
-    pub argument: Bytes,
+    pub input: PreFlightInvocationArgument,
+
     pub source: Source,
-    pub span_context: ServiceInvocationSpanContext,
-    pub headers: Vec<Header>,
     /// Time when the request should be executed
     pub execution_time: Option<MillisSinceEpoch>,
 
@@ -489,17 +524,23 @@ impl PreFlightInvocationMetadata {
             response_sinks: service_invocation.response_sink.into_iter().collect(),
             timestamps: StatusTimestamps::init(created_at),
             invocation_target: service_invocation.invocation_target,
-            argument: service_invocation.argument,
             source: service_invocation.source,
-            span_context: service_invocation.span_context,
-            headers: service_invocation.headers,
             execution_time: service_invocation.execution_time,
             completion_retention_duration: service_invocation.completion_retention_duration,
             journal_retention_duration: service_invocation.journal_retention_duration,
             idempotency_key: service_invocation.idempotency_key,
             created_using_restate_version: service_invocation.restate_version,
             random_seed: None,
+            input: PreFlightInvocationArgument::Input(PreFlightInvocationInput {
+                argument: service_invocation.argument,
+                headers: service_invocation.headers,
+                span_context: service_invocation.span_context,
+            }),
         }
+    }
+
+    pub fn span_context(&self) -> &ServiceInvocationSpanContext {
+        self.input.span_context()
     }
 }
 
@@ -646,45 +687,72 @@ impl InFlightInvocationMetadata {
     pub fn from_pre_flight_invocation_metadata(
         mut pre_flight_invocation_metadata: PreFlightInvocationMetadata,
         timestamp: MillisSinceEpoch,
-    ) -> (Self, InvocationInput) {
+    ) -> (Self, Option<InvocationInput>) {
         pre_flight_invocation_metadata
             .timestamps
             .record_running_transition_time(timestamp);
 
-        (
-            Self {
-                invocation_target: pre_flight_invocation_metadata.invocation_target,
-                created_using_restate_version: pre_flight_invocation_metadata
-                    .created_using_restate_version,
-                journal_metadata: JournalMetadata::initialize(
-                    pre_flight_invocation_metadata.span_context,
-                ),
-                pinned_deployment: None,
-                response_sinks: pre_flight_invocation_metadata.response_sinks,
-                timestamps: pre_flight_invocation_metadata.timestamps,
-                source: pre_flight_invocation_metadata.source,
-                execution_time: pre_flight_invocation_metadata.execution_time,
-                completion_retention_duration: pre_flight_invocation_metadata
-                    .completion_retention_duration,
-                journal_retention_duration: pre_flight_invocation_metadata
-                    .journal_retention_duration,
-                idempotency_key: pre_flight_invocation_metadata.idempotency_key,
-                hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                current_invocation_epoch: 0,
-                completion_range_epoch_map: Default::default(),
-                random_seed: pre_flight_invocation_metadata.random_seed,
-            },
-            InvocationInput {
-                argument: pre_flight_invocation_metadata.argument,
-                headers: pre_flight_invocation_metadata.headers,
-            },
-        )
+        match pre_flight_invocation_metadata.input {
+            PreFlightInvocationArgument::Input(PreFlightInvocationInput {
+                argument,
+                headers,
+                span_context,
+            }) => (
+                Self {
+                    invocation_target: pre_flight_invocation_metadata.invocation_target,
+                    created_using_restate_version: pre_flight_invocation_metadata
+                        .created_using_restate_version,
+                    journal_metadata: JournalMetadata::initialize(span_context),
+                    pinned_deployment: None,
+                    response_sinks: pre_flight_invocation_metadata.response_sinks,
+                    timestamps: pre_flight_invocation_metadata.timestamps,
+                    source: pre_flight_invocation_metadata.source,
+                    execution_time: pre_flight_invocation_metadata.execution_time,
+                    completion_retention_duration: pre_flight_invocation_metadata
+                        .completion_retention_duration,
+                    journal_retention_duration: pre_flight_invocation_metadata
+                        .journal_retention_duration,
+                    idempotency_key: pre_flight_invocation_metadata.idempotency_key,
+                    hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                    current_invocation_epoch: 0,
+                    completion_range_epoch_map: Default::default(),
+                    random_seed: pre_flight_invocation_metadata.random_seed,
+                },
+                Some(InvocationInput { argument, headers }),
+            ),
+            PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                journal_metadata,
+                pinned_deployment,
+            }) => (
+                Self {
+                    invocation_target: pre_flight_invocation_metadata.invocation_target,
+                    created_using_restate_version: pre_flight_invocation_metadata
+                        .created_using_restate_version,
+                    journal_metadata,
+                    pinned_deployment,
+                    response_sinks: pre_flight_invocation_metadata.response_sinks,
+                    timestamps: pre_flight_invocation_metadata.timestamps,
+                    source: pre_flight_invocation_metadata.source,
+                    execution_time: pre_flight_invocation_metadata.execution_time,
+                    completion_retention_duration: pre_flight_invocation_metadata
+                        .completion_retention_duration,
+                    journal_retention_duration: pre_flight_invocation_metadata
+                        .journal_retention_duration,
+                    idempotency_key: pre_flight_invocation_metadata.idempotency_key,
+                    hotfix_apply_cancellation_after_deployment_is_pinned: false,
+                    current_invocation_epoch: 0,
+                    completion_range_epoch_map: Default::default(),
+                    random_seed: pre_flight_invocation_metadata.random_seed,
+                },
+                None,
+            ),
+        }
     }
 
     pub fn from_inboxed_invocation(
         inboxed_invocation: InboxedInvocation,
         timestamp: MillisSinceEpoch,
-    ) -> (Self, InvocationInput) {
+    ) -> (Self, Option<InvocationInput>) {
         Self::from_pre_flight_invocation_metadata(inboxed_invocation.metadata, timestamp)
     }
 
@@ -859,13 +927,15 @@ mod test_util {
                 response_sinks: HashSet::new(),
                 timestamps: StatusTimestamps::mock(),
                 source: Source::Ingress(PartitionProcessorRpcRequestId::default()),
-                span_context: Default::default(),
-                headers: vec![],
                 execution_time: None,
                 completion_retention_duration: Duration::ZERO,
                 journal_retention_duration: Duration::ZERO,
                 idempotency_key: None,
-                argument: Default::default(),
+                input: PreFlightInvocationArgument::Input(PreFlightInvocationInput {
+                    argument: Default::default(),
+                    headers: vec![],
+                    span_context: Default::default(),
+                }),
                 random_seed: None,
             }
         }
