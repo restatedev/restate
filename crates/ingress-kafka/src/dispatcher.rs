@@ -211,8 +211,8 @@ fn wrap_service_invocation_in_envelope(
 ) -> Envelope {
     let header = Header {
         source: Source::Ingress {
-            node_id: from_node_id,
-            nodes_config_version: Metadata::with_current(|m| m.nodes_config_version()),
+            node_id: Some(from_node_id),
+            nodes_config_version: Some(Metadata::with_current(|m| m.nodes_config_version())),
         },
         dest: Destination::Processor {
             partition_key,

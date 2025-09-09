@@ -124,11 +124,10 @@ impl SelfProposer {
                 dedup: Some(DedupInformation::self_proposal(esn)),
             },
             source: Source::Processor {
-                partition_id: self.partition_id,
+                partition_id: Some(self.partition_id),
                 partition_key: Some(partition_key),
                 leader_epoch: self.epoch_sequence_number.leader_epoch,
-                // Kept for backward compatibility.
-                node_id: my_node_id.as_plain(),
+                node_id: Some(my_node_id.as_plain()),
                 generational_node_id: Some(my_node_id),
             },
         }
