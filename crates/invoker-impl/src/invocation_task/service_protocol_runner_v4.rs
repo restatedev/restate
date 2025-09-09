@@ -9,14 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
-use std::future::poll_fn;
 use std::ops::Deref;
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::future::FusedFuture;
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{Stream, StreamExt};
+use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
@@ -60,7 +61,7 @@ use crate::error::{
 };
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
-    ResponseChunk, ResponseStreamState, TerminalLoopState, X_RESTATE_SERVER,
+    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
     invocation_id_to_header_value, service_protocol_version_to_header_value,
 };
 
@@ -81,7 +82,6 @@ pub struct ServiceProtocolRunner<'a, IR, EE, Schemas> {
 
     // Encoder/Decoder
     encoder: Encoder,
-    decoder: Decoder,
 
     // task state
     command_index: CommandIndex,
@@ -96,17 +96,11 @@ where
         service_protocol_version: ServiceProtocolVersion,
     ) -> Self {
         let encoder = Encoder::new(service_protocol_version);
-        let decoder = Decoder::new(
-            service_protocol_version,
-            invocation_task.message_size_warning,
-            invocation_task.message_size_limit,
-        );
 
         Self {
             invocation_task,
             service_protocol_version,
             encoder,
-            decoder,
             command_index: 0,
         }
     }
@@ -178,12 +172,21 @@ where
         );
 
         // Initialize the response stream state
-        let mut http_stream_rx =
-            ResponseStreamState::initialize(&self.invocation_task.client, request);
+        let http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
+
+        let mut decoder_stream = std::pin::pin!(
+            DecoderStream::new(
+                http_stream_rx,
+                self.service_protocol_version,
+                self.invocation_task.message_size_warning,
+                self.invocation_task.message_size_limit,
+            )
+            .throttle(self.invocation_task.action_token_bucket.take())
+        );
 
         // Execute the replay
         crate::shortcircuit!(
-            self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
+            self.replay_loop(&mut http_stream_tx, &mut decoder_stream, journal_stream)
                 .await
         );
 
@@ -195,7 +198,7 @@ where
                 self.bidi_stream_loop(
                     &service_invocation_span_context,
                     http_stream_tx,
-                    &mut http_stream_rx,
+                    &mut decoder_stream
                 )
                 .await
             );
@@ -209,11 +212,11 @@ where
         // We don't have the invoker_rx, so we simply consume the response
         trace!("Sender side of the request has been dropped, now processing the response");
         let result = self
-            .response_stream_loop(&service_invocation_span_context, &mut http_stream_rx)
+            .response_stream_loop(&service_invocation_span_context, &mut decoder_stream)
             .await;
 
         // Sanity check of the stream decoder
-        if self.decoder.has_remaining() {
+        if decoder_stream.inner().has_remaining() {
             warn_it!(
                 InvokerError::WriteAfterEndOfStream,
                 "The read buffer is non empty after the stream has been closed."
@@ -299,26 +302,36 @@ where
     // --- Loops
 
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
-    async fn replay_loop<JournalStream>(
+    async fn replay_loop<JournalStream, S>(
         &mut self,
         http_stream_tx: &mut InvokerRequestStreamSender,
-        http_stream_rx: &mut ResponseStreamState,
+        http_stream_rx: &mut S,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
     where
         JournalStream: Stream<Item = JournalEntry> + Unpin,
+        S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
     {
         let mut journal_stream = journal_stream.fuse();
-        let got_headers_future = poll_fn(|cx| http_stream_rx.poll_only_headers(cx)).fuse();
-        tokio::pin!(got_headers_future);
+        let mut got_headers = false;
 
         loop {
             tokio::select! {
-                got_headers_res = got_headers_future.as_mut(), if !got_headers_future.is_terminated() => {
+                got_headers_res = http_stream_rx.next(), if !got_headers => {
                     // The reason we want to poll headers in this function is
                     // to exit early in case an error is returned during replays.
-                    let headers = crate::shortcircuit!(got_headers_res);
-                    crate::shortcircuit!(self.handle_response_headers(headers));
+                    got_headers = true;
+                    match crate::shortcircuit!(got_headers_res.transpose()) {
+                        None => {
+                            return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()))
+                        },
+                        Some(DecoderStreamItem::Parts(headers)) => {
+                            crate::shortcircuit!(self.handle_response_headers(headers));
+                        }
+                        Some(DecoderStreamItem::Message(_, _)) => {
+                            panic!("Unexpected poll after the headers have been resolved already")
+                        }
+                    }
                 },
                 opt_je = journal_stream.next() => {
                     match opt_je {
@@ -352,12 +365,15 @@ where
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
-    async fn bidi_stream_loop(
+    async fn bidi_stream_loop<S>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: InvokerRequestStreamSender,
-        http_stream_rx: &mut ResponseStreamState,
-    ) -> TerminalLoopState<()> {
+        http_stream_rx: &mut S,
+    ) -> TerminalLoopState<()>
+    where
+        S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
+    {
         loop {
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
@@ -381,13 +397,14 @@ where
                         },
                     }
                 },
-                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
-                    match crate::shortcircuit!(chunk) {
-                        ResponseChunk::Parts(parts) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
-                        ResponseChunk::End => {
-                            // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()))
+                chunk = http_stream_rx.next() => {
+                    match crate::shortcircuit!(chunk.transpose()) {
+                        None => {
+                            return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
+                        }
+                        Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
+                        Some(DecoderStreamItem::Message(message_header, message)) => {
+                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message));
                         }
                     }
                 },
@@ -401,21 +418,26 @@ where
         }
     }
 
-    async fn response_stream_loop(
+    async fn response_stream_loop<S>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        http_stream_rx: &mut ResponseStreamState,
-    ) -> TerminalLoopState<()> {
+        http_stream_rx: &mut S,
+    ) -> TerminalLoopState<()>
+    where
+        S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
+    {
         loop {
             tokio::select! {
-                chunk = poll_fn(|cx| http_stream_rx.poll_next_chunk(cx)) => {
-                    match crate::shortcircuit!(chunk) {
-                        ResponseChunk::Parts(parts) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        ResponseChunk::Data(buf) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
-                        ResponseChunk::End => {
-                            // Response stream was closed without SuspensionMessage, EndMessage or ErrorMessage
-                            return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()))
+                chunk = http_stream_rx.next() => {
+                    // don't read again until all buffered messages has been consumed
+                    // to force a back pressure on the read stream
+
+                    match crate::shortcircuit!(chunk.transpose()) {
+                        None => {
+                            return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
+                        Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
+                        Some(DecoderStreamItem::Message(message_header, message)) => crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message)),
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
@@ -575,20 +597,6 @@ where
         }
 
         Ok(())
-    }
-
-    fn handle_read(
-        &mut self,
-        parent_span_context: &ServiceInvocationSpanContext,
-        buf: Bytes,
-    ) -> TerminalLoopState<()> {
-        self.decoder.push(buf);
-
-        while let Some((frame_header, frame)) = crate::shortcircuit!(self.decoder.consume_next()) {
-            crate::shortcircuit!(self.handle_message(parent_span_context, frame_header, frame));
-        }
-
-        TerminalLoopState::Continue(())
     }
 
     fn handle_new_command(&mut self, mh: MessageHeader, command: RawCommand) {
@@ -1120,4 +1128,70 @@ fn can_write_state(
         ));
     }
     Ok(())
+}
+
+enum DecoderStreamItem {
+    Message(MessageHeader, Message),
+    Parts(http::response::Parts),
+}
+
+pin_project_lite::pin_project! {
+    struct DecoderStream<S> {
+        #[pin]
+        inner: S,
+        decoder: Decoder,
+    }
+}
+
+impl<S> DecoderStream<S> {
+    fn new(
+        inner: S,
+        service_protocol_version: ServiceProtocolVersion,
+        message_size_warning: usize,
+        message_size_limit: Option<usize>,
+    ) -> Self {
+        Self {
+            inner,
+            decoder: Decoder::new(
+                service_protocol_version,
+                message_size_warning,
+                message_size_limit,
+            ),
+        }
+    }
+
+    fn has_remaining(&self) -> bool {
+        self.decoder.has_remaining()
+    }
+}
+
+impl<S> Stream for DecoderStream<S>
+where
+    S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+{
+    type Item = Result<DecoderStreamItem, InvokerError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            match this.decoder.consume_next() {
+                Ok(Some((frame_header, frame))) => {
+                    return Poll::Ready(Some(Ok(DecoderStreamItem::Message(frame_header, frame))));
+                }
+                Ok(None) => match ready!(this.inner.as_mut().poll_next(cx)) {
+                    Some(Ok(chunk)) => match chunk {
+                        ResponseChunk::Parts(parts) => {
+                            return Poll::Ready(Some(Ok(DecoderStreamItem::Parts(parts))));
+                        }
+                        ResponseChunk::Data(buf) => {
+                            this.decoder.push(buf);
+                        }
+                    },
+                    Some(Err(e)) => return Poll::Ready(Some(Err(e))),
+                    None => return Poll::Ready(None),
+                },
+                Err(e) => return Poll::Ready(Some(Err(e.into()))),
+            }
+        }
+    }
 }

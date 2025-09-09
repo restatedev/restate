@@ -30,14 +30,17 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 futures = { workspace = true }
+gardal = { workspace = true , features = ["async"]}
 humantime = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
+pin-project-lite = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

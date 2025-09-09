@@ -13,15 +13,24 @@ mod service_protocol_runner_v4;
 
 use super::Notification;
 
-use crate::error::InvokerError;
-use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
-use crate::metric_definitions::INVOKER_TASK_DURATION;
+use std::collections::HashSet;
+use std::convert::Infallible;
+use std::iter::Empty;
+use std::pin::Pin;
+use std::task::{Context, Poll, ready};
+use std::time::{Duration, Instant};
+
 use bytes::Bytes;
-use futures::{FutureExt, future, stream};
+use futures::{FutureExt, Stream, future, stream};
 use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::histogram;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::task::AbortOnDropHandle;
+use tracing::instrument;
+
 use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction,
 };
@@ -39,17 +48,11 @@ use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use std::collections::HashSet;
-use std::convert::Infallible;
-use std::future::Future;
-use std::iter::Empty;
-use std::pin::Pin;
-use std::task::{Context, Poll, ready};
-use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::instrument;
+
+use crate::TokenBucket;
+use crate::error::InvokerError;
+use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
+use crate::metric_definitions::INVOKER_TASK_DURATION;
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -155,6 +158,9 @@ pub(super) struct InvocationTask<IR, EE, DMR> {
     schemas: Live<DMR>,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
+
+    // throttling
+    action_token_bucket: Option<TokenBucket>,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
@@ -214,6 +220,7 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         allow_protocol_v6: bool,
+        action_token_bucket: Option<TokenBucket>,
     ) -> Self {
         Self {
             client,
@@ -233,6 +240,7 @@ where
             message_size_warning,
             retry_count_since_last_stored_entry,
             allow_protocol_v6,
+            action_token_bucket,
         }
     }
 
@@ -457,15 +465,23 @@ fn invocation_id_to_header_value(invocation_id: &InvocationId) -> HeaderValue {
 enum ResponseChunk {
     Parts(ResponseParts),
     Data(Bytes),
-    End,
 }
 
-enum ResponseStreamState {
-    WaitingHeaders(AbortOnDrop<Result<Response<ResponseBody>, ServiceClientError>>),
-    ReadingBody(Option<ResponseParts>, ResponseBody),
+pin_project_lite::pin_project! {
+    #[project = ResponseStreamProj]
+    enum ResponseStream {
+        WaitingHeaders {
+            join_handle: AbortOnDropHandle<Result<Response<ResponseBody>, ServiceClientError>>,
+        },
+        ReadingBody {
+            #[pin]
+            body: ResponseBody,
+        },
+        Terminated,
+    }
 }
 
-impl ResponseStreamState {
+impl ResponseStream {
     fn initialize(client: &ServiceClient, req: Request<InvokerBodyStream>) -> Self {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
@@ -473,23 +489,28 @@ impl ResponseStreamState {
         // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
-        Self::WaitingHeaders(AbortOnDrop(tokio::task::spawn(client.call(req))))
+        Self::WaitingHeaders {
+            join_handle: AbortOnDropHandle::new(tokio::task::spawn(client.call(req))),
+        }
     }
+}
 
-    // Could be replaced by a Future implementation
-    fn poll_only_headers(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<ResponseParts, InvokerError>> {
-        match self {
-            ResponseStreamState::WaitingHeaders(join_handle) => {
+impl Stream for ResponseStream {
+    type Item = Result<ResponseChunk, InvokerError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.as_mut().project();
+        match this {
+            ResponseStreamProj::WaitingHeaders { join_handle } => {
                 let http_response = match ready!(join_handle.poll_unpin(cx)) {
                     Ok(Ok(res)) => res,
                     Ok(Err(hyper_err)) => {
-                        return Poll::Ready(Err(InvokerError::Client(Box::new(hyper_err))));
+                        *self = ResponseStream::Terminated;
+                        return Poll::Ready(Some(Err(InvokerError::Client(Box::new(hyper_err)))));
                     }
                     Err(join_err) => {
-                        return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));
+                        *self = ResponseStream::Terminated;
+                        return Poll::Ready(Some(Err(InvokerError::UnexpectedJoinError(join_err))));
                     }
                 };
 
@@ -497,79 +518,26 @@ impl ResponseStreamState {
                 let (http_response_header, body) = http_response.into_parts();
 
                 // Transition to reading body
-                *self = ResponseStreamState::ReadingBody(None, body);
-
-                Poll::Ready(Ok(http_response_header))
+                *self = ResponseStream::ReadingBody { body };
+                Poll::Ready(Some(Ok(ResponseChunk::Parts(http_response_header))))
             }
-            ResponseStreamState::ReadingBody { .. } => {
-                panic!("Unexpected poll after the headers have been resolved already")
-            }
-        }
-    }
-
-    // Could be replaced by a Stream implementation
-    fn poll_next_chunk(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<ResponseChunk, InvokerError>> {
-        // Could be replaced by a Stream implementation
-        loop {
-            match self {
-                ResponseStreamState::WaitingHeaders(join_handle) => {
-                    let http_response = match ready!(join_handle.poll_unpin(cx)) {
-                        Ok(Ok(res)) => res,
-                        Ok(Err(hyper_err)) => {
-                            return Poll::Ready(Err(InvokerError::Client(Box::new(hyper_err))));
-                        }
-                        Err(join_err) => {
-                            return Poll::Ready(Err(InvokerError::UnexpectedJoinError(join_err)));
-                        }
-                    };
-
-                    // Convert to response parts
-                    let (http_response_header, body) = http_response.into_parts();
-
-                    // Transition to reading body
-                    *self = ResponseStreamState::ReadingBody(Some(http_response_header), body);
-                }
-                ResponseStreamState::ReadingBody(headers, b) => {
-                    // If headers are present, take them
-                    if let Some(parts) = headers.take() {
-                        return Poll::Ready(Ok(ResponseChunk::Parts(parts)));
-                    };
-
-                    let mut pinned_body = std::pin::pin!(b);
-                    let next_element = ready!(pinned_body.as_mut().poll_frame(cx));
-                    return Poll::Ready(match next_element.transpose() {
-                        Ok(Some(frame)) if frame.is_data() => {
-                            Ok(ResponseChunk::Data(frame.into_data().unwrap()))
-                        }
-                        Ok(_) => Ok(ResponseChunk::End),
-                        Err(err) => Err(InvokerError::ClientBody(err)),
-                    });
+            ResponseStreamProj::ReadingBody { body } => {
+                let next_element = ready!(body.poll_frame(cx));
+                match next_element.transpose() {
+                    Ok(Some(frame)) if frame.is_data() => {
+                        Poll::Ready(Some(Ok(ResponseChunk::Data(frame.into_data().unwrap()))))
+                    }
+                    Ok(_) => {
+                        *self = ResponseStream::Terminated;
+                        Poll::Ready(None)
+                    }
+                    Err(err) => {
+                        *self = ResponseStream::Terminated;
+                        Poll::Ready(Some(Err(InvokerError::ClientBody(err))))
+                    }
                 }
             }
+            ResponseStreamProj::Terminated => Poll::Ready(None),
         }
-    }
-}
-
-/// This wrapper makes sure we abort the task when the JoinHandle is dropped,
-/// but it doesn't wait for the task to complete, because we simply don't have async drops!
-/// For more: https://github.com/tokio-rs/tokio/issues/2596
-/// Inspired by: https://github.com/cyb0124/abort-on-drop
-#[derive(Debug)]
-struct AbortOnDrop<T>(JoinHandle<T>);
-
-impl<T> Future for AbortOnDrop<T> {
-    type Output = <JoinHandle<T> as Future>::Output;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0).poll(cx)
-    }
-}
-
-impl<T> Drop for AbortOnDrop<T> {
-    fn drop(&mut self) {
-        self.0.abort()
     }
 }
