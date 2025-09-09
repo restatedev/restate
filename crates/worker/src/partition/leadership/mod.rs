@@ -215,11 +215,9 @@ where
 
     async fn announce_leadership(&mut self, leader_epoch: LeaderEpoch) -> Result<(), Error> {
         let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeader {
-            // todo: Still need to write generational id for supporting rolling back, can be removed
-            //  with the next release.
-            node_id: Some(my_node_id()),
+            node_id: my_node_id(),
             leader_epoch,
-            partition_key_range: Some(self.partition.key_range.clone()),
+            partition_key_range: self.partition.key_range.clone(),
         }));
 
         let mut self_proposer = SelfProposer::new(
@@ -731,9 +729,9 @@ mod tests {
         assert_eq!(
             *announce_leader,
             AnnounceLeader {
-                node_id: Some(NODE_ID),
+                node_id: NODE_ID,
                 leader_epoch,
-                partition_key_range: Some(PARTITION_KEY_RANGE),
+                partition_key_range: PARTITION_KEY_RANGE,
             }
         );
 
