@@ -14,6 +14,7 @@ use anyhow::bail;
 use http::StatusCode;
 use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
 use restate_cli_util::{CliContext, c_warn};
+use restate_types::SemanticRestateVersion;
 use serde::{Serialize, de::DeserializeOwned};
 use std::time::Duration;
 use thiserror::Error;
@@ -112,7 +113,7 @@ pub struct AdminClient {
     pub(crate) bearer_token: Option<String>,
     pub(crate) request_timeout: Duration,
     pub(crate) admin_api_version: AdminApiVersion,
-    pub(crate) restate_server_version: Option<String>,
+    pub(crate) restate_server_version: SemanticRestateVersion,
     pub(crate) advertised_ingress_address: Option<String>,
 }
 
@@ -139,7 +140,7 @@ impl AdminClient {
             bearer_token,
             request_timeout: CliContext::get().request_timeout(),
             admin_api_version: AdminApiVersion::Unknown,
-            restate_server_version: None,
+            restate_server_version: SemanticRestateVersion::unknown(),
             advertised_ingress_address: None,
         };
 
@@ -201,7 +202,17 @@ impl AdminClient {
             MIN_ADMIN_API_VERSION..=MAX_ADMIN_API_VERSION,
             version_information.min_admin_api_version..=version_information.max_admin_api_version,
         ) {
-            client.restate_server_version = Some(version_information.version);
+            client.restate_server_version =
+                match SemanticRestateVersion::parse(&version_information.version) {
+                    Ok(version) => version,
+                    Err(err) => {
+                        debug!(
+                            "Failed to parse Restate server version {}: {err}",
+                            version_information.version
+                        );
+                        SemanticRestateVersion::unknown()
+                    }
+                };
             client.admin_api_version = admin_api_version;
             client.advertised_ingress_address =
                 version_information.ingress_endpoint.map(|u| u.to_string());
