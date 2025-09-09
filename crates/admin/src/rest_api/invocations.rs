@@ -313,7 +313,7 @@ where
     Ok(())
 }
 
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize)]
 pub enum PatchDeploymentId {
     #[default]
     #[serde(alias = "keep")]
@@ -338,7 +338,7 @@ impl PatchDeploymentId {
     }
 }
 
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize)]
 pub struct RestartAsNewInvocationQueryParams {
     pub from: Option<EntryIndex>,
     pub deployment: Option<PatchDeploymentId>,
@@ -393,7 +393,8 @@ generate_meta_api_error!(RestartInvocationError: [
             required = false,
             style = "simple",
             allow_empty_value = false,
-            schema = "PatchDeploymentId",
+            // TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766
+            schema = "String",
         ),
     )
 )]
@@ -467,7 +468,7 @@ where
     }
 }
 
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ResumeInvocationQueryParams {
     pub deployment: Option<PatchDeploymentId>,
 }
@@ -499,12 +500,13 @@ generate_meta_api_error!(ResumeInvocationError: [
             name = "deployment",
             description = "When resuming from paused/suspended, provide a deployment id to use to replace the currently pinned deployment id. \
             If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id. \
-            When not provided, the invocation will resume on the pinned deployment id.\
+            When not provided, the invocation will resume on the pinned deployment id. \
             When provided and the invocation is either running, or no deployment is pinned, this operation will fail.",
             required = false,
             style = "simple",
             allow_empty_value = false,
-            schema = "PatchDeploymentId",
+            // TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766
+            schema = "String",
         )
     )
 )]
