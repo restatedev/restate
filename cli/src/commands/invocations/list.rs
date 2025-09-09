@@ -22,7 +22,7 @@ use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::{InvocationState, find_active_invocations};
+use crate::clients::datafusion_helpers::{InvocationState, find_and_count_active_invocations};
 use crate::ui::invocations::render_invocation_compact;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -149,8 +149,9 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
     progress.set_message("Finding invocations...");
 
-    let (mut results, total) =
-        find_active_invocations(&sql_client, &active_filter_str, order_by, opts.limit).await?;
+    let (mut results, count_estimate) =
+        find_and_count_active_invocations(&sql_client, &active_filter_str, order_by, opts.limit)
+            .await?;
 
     // Render Output UI
     progress.finish_and_clear();
@@ -167,7 +168,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     c_eprintln!(
         "Showing {}/{} invocations. Query took {:?}",
         results.len(),
-        total,
+        count_estimate,
         Styled(Style::Notice, start_time.elapsed())
     );
 

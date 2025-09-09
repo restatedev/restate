@@ -11,6 +11,7 @@
 use crate::errors::InvocationError;
 use crate::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse, InvocationTarget};
+use crate::journal::EntryIndex;
 use crate::journal_v2::Signal;
 use crate::time::MillisSinceEpoch;
 use bytes::Bytes;
@@ -125,10 +126,24 @@ pub enum RestartAsNewInvocationResponse {
     MissingInput,
     /// The initial invocation wasn't started yet (it's enqueued or scheduled)
     NotStarted,
+    /// Journal index is out of range
+    JournalIndexOutOfRange,
+    /// The journal prefix cannot be copied over, because it contains a command without a completion
+    JournalCopyRangeInvalid,
+    /// Cannot patch the deployment id when restarting from index 0
+    CannotPatchDeploymentId,
+    /// The given deployment was not found
+    DeploymentNotFound,
+    /// The given deployment is incompatible with the existing journal
+    IncompatibleDeploymentId {
+        pinned_protocol_version: i32,
+        deployment_id: DeploymentId,
+        supported_protocol_versions: RangeInclusive<i32>,
+    },
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ResumeInvocationDeploymentId {
+pub enum PatchDeploymentId {
     #[default]
     KeepPinned,
     PinToLatest,
@@ -236,6 +251,8 @@ pub trait InvocationClient {
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
+        copy_prefix_up_to_index_included: EntryIndex,
+        patch_deployment_id: PatchDeploymentId,
     ) -> impl Future<Output = Result<RestartAsNewInvocationResponse, InvocationClientError>> + Send;
 
     /// Resume the given invocation.
@@ -243,6 +260,6 @@ pub trait InvocationClient {
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
-        resume_invocation_deployment_id: ResumeInvocationDeploymentId,
+        resume_invocation_deployment_id: PatchDeploymentId,
     ) -> impl Future<Output = Result<ResumeInvocationResponse, InvocationClientError>> + Send;
 }

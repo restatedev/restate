@@ -32,19 +32,10 @@ enum Swimlane {
 // -------------------------------------
 //
 message Header {
-  // **DEPRECATED** fabric v2 uses in-message id instead.
-  // A unique monotonically increasing identifier of this message/request per
-  // producer. The uniqueness domain is the generational node id. This is
-  // always set for all messages (whether it's a request or a response)
-  uint64 msg_id = 1;
-
-  // **DEPRECATED** fabric v2 uses in-message id instead.
-  // The msg_id at which we are responding to. Unset(0) if this not to be
-  // considered a response. Note: If this is non-zero, it's the responsibility of
-  // the message producer to ensure that the response is sent to the original
-  // producer (generational node id).
-  // Using raw value to be as compact as possible.
-  uint64 in_response_to = 2;
+  reserved 1, 2;
+  // -- Removed in v1.5.0
+  // uint64 msg_id = 1;
+  // uint64 in_response_to = 2;
 
   uint32 my_nodes_config_version = 3;
   uint32 my_logs_version = 4;
@@ -136,6 +127,8 @@ message Message {
   }
 
   Header header = 1;
+
+  reserved 1000;
   oneof body {
     ConnectionControl connection_control = 2;
     // Sent as first message
@@ -144,9 +137,9 @@ message Message {
     Welcome welcome = 4;
     // Available from protocol V2
     Datagram datagram = 5;
-    // **DEPRECATED** Used for compatibility with protocol V1.
-    // keep this as last, always
-    BinaryMessage encoded = 1000;
+
+    //-- Removed in v1.5.0
+    // BinaryMessage encoded = 1000;
   }
 }
 

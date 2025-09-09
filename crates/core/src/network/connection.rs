@@ -48,7 +48,6 @@ use super::io::ConnectionReactor;
 use super::io::EgressStream;
 use super::io::SendToken;
 use super::io::{DrainReason, EgressMessage, EgressSender};
-use super::protobuf::network::Header;
 use super::protobuf::network::Hello;
 use super::tracking::ConnectionTracking;
 
@@ -110,7 +109,7 @@ impl SendPermit<'_> {
         self,
         message: M,
         sort_code: Option<u64>,
-        header: Header,
+        header: super::protobuf::network::Header,
     ) -> Result<ReplyRx<M::Response>, EncodeError> {
         let (msg, reply_token) = EgressMessage::make_rpc_message_with_header(
             message,
@@ -297,7 +296,6 @@ impl Connection {
         // perform handshake.
         shared
             .unbounded_send(EgressMessage::Message(
-                Header::default(),
                 Hello::new(
                     my_node_id,
                     cluster_name,

@@ -27,6 +27,9 @@ use crate::invocation_status::schema::{
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::statistics::{
+    DEPLOYMENT_ROW_ESTIMATE, RowEstimate, SERVICE_ROW_ESTIMATE, TableStatisticsBuilder,
+};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 const NAME: &str = "sys_invocation_status";
@@ -43,15 +46,25 @@ pub(crate) fn register_self(
             StatusScanner,
         )) as Arc<dyn ScanPartition>
     });
+
+    let schema = SysInvocationStatusBuilder::schema();
+    let statistics = TableStatisticsBuilder::new(schema.clone())
+        .with_num_rows_estimate(RowEstimate::Large)
+        .with_partition_key()
+        .with_primary_key("id")
+        .with_foreign_key("pinned_deployment_id", DEPLOYMENT_ROW_ESTIMATE)
+        .with_foreign_key("target_service_name", SERVICE_ROW_ESTIMATE);
+
     let status_table = PartitionedTableProvider::new(
         partition_selector,
-        SysInvocationStatusBuilder::schema(),
+        schema,
         sys_invocation_status_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_service_key("target_service_key")
             .with_invocation_id("id"),
-    );
+    )
+    .with_statistics(statistics.build());
     ctx.register_partitioned_table(NAME, Arc::new(status_table))
 }
 

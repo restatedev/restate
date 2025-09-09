@@ -446,4 +446,25 @@ pub mod test_util {
                 .collect()
         }
     }
+
+    impl DeploymentResolver for () {
+        fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
+            None
+        }
+
+        fn get_deployment(&self, _: &DeploymentId) -> Option<Deployment> {
+            None
+        }
+
+        fn get_deployment_and_services(
+            &self,
+            _: &DeploymentId,
+        ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+            None
+        }
+
+        fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
+            vec![]
+        }
+    }
 }

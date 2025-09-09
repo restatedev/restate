@@ -40,7 +40,8 @@ use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempoten
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatusTable,
-    JournalRetentionPolicy, PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
+    JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationJournal,
+    PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::JournalEventsTable;
@@ -562,6 +563,19 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 Ok(())
             }
+            Command::RestartAsNewInvocation(restart_as_new_invocation_request) => {
+                lifecycle::OnRestartAsNewInvocationCommand {
+                    invocation_id: restart_as_new_invocation_request.invocation_id,
+                    new_invocation_id: restart_as_new_invocation_request.new_invocation_id,
+                    copy_prefix_up_to_index_included: restart_as_new_invocation_request
+                        .copy_prefix_up_to_index_included,
+                    response_sink: restart_as_new_invocation_request.response_sink,
+                    patch_deployment_id: restart_as_new_invocation_request.patch_deployment_id,
+                }
+                .apply(self)
+                .await?;
+                Ok(())
+            }
             Command::PatchState(mutation) => self.handle_external_state_mutation(mutation).await,
             Command::AnnounceLeader(_) => {
                 // no-op :-)
@@ -640,7 +654,34 @@ impl<S> StateMachineApplyContext<'_, S> {
             *service_invocation,
         );
 
-        // 2. Check if we need to schedule it
+        self.on_pre_flight_invocation(
+            invocation_id,
+            pre_flight_invocation_metadata,
+            submit_notification_sink,
+        )
+        .await
+    }
+
+    async fn on_pre_flight_invocation(
+        &mut self,
+        invocation_id: InvocationId,
+        pre_flight_invocation_metadata: PreFlightInvocationMetadata,
+        submit_notification_sink: Option<SubmitNotificationSink>,
+    ) -> Result<(), Error>
+    where
+        S: IdempotencyTable
+            + InvocationStatusTable
+            + OutboxTable
+            + FsmTable
+            + VirtualObjectStatusTable
+            + TimerTable
+            + InboxTable
+            + FsmTable
+            + JournalTable,
+    {
+        // A pre-flight invocation has been already deduplicated
+
+        // 1. Check if we need to schedule it
         let execution_time = pre_flight_invocation_metadata.execution_time;
         let Some(pre_flight_invocation_metadata) = self
             .handle_service_invocation_execution_time(invocation_id, pre_flight_invocation_metadata)
@@ -656,7 +697,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             return Ok(());
         };
 
-        // 3. Check if we need to inbox it (only for exclusive methods of virtual objects)
+        // 2. Check if we need to inbox it (only for exclusive methods of virtual objects)
         let Some(pre_flight_invocation_metadata) = self
             .handle_service_invocation_exclusive_handler(
                 invocation_id,
@@ -675,7 +716,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             return Ok(());
         };
 
-        // 4. Execute it
+        // 3. Execute it
         self.send_submit_notification_if_needed(
             invocation_id,
             pre_flight_invocation_metadata.execution_time,
@@ -850,7 +891,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: TimerTable + InvocationStatusTable,
     {
         if let Some(execution_time) = metadata.execution_time {
-            let span_context = metadata.span_context.clone();
+            let span_context = metadata.span_context().clone();
             debug_if_leader!(self.is_leader, "Store scheduled invocation");
 
             self.register_timer(
@@ -949,18 +990,21 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         invocation_id: InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
-        invocation_input: InvocationInput,
+        invocation_input: Option<InvocationInput>,
     ) -> Result<(), Error>
     where
         S: JournalTable + InvocationStatusTable,
     {
-        let invoke_input_journal = self
-            .init_journal(
+        let invoke_input_journal = if let Some(invocation_input) = invocation_input {
+            self.init_journal(
                 invocation_id,
                 &mut in_flight_invocation_metadata,
                 invocation_input,
             )
-            .await?;
+            .await?
+        } else {
+            InvokeInputJournal::NoCachedJournal
+        };
 
         self.invoke(
             invocation_id,
@@ -1208,6 +1252,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + JournalTable
             + OutboxTable
             + journal_table_v2::JournalTable
+            + JournalEventsTable
             + PromiseTable
             + TimerTable,
     {
@@ -1353,7 +1398,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         inboxed_invocation: InboxedInvocation,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable + InboxTable + OutboxTable + FsmTable,
+        S: InvocationStatusTable
+            + InboxTable
+            + OutboxTable
+            + FsmTable
+            + JournalTable
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1365,8 +1416,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             metadata:
                 PreFlightInvocationMetadata {
                     response_sinks,
-                    span_context,
                     invocation_target,
+                    input,
                     ..
                 },
         } = inboxed_invocation;
@@ -1391,10 +1442,28 @@ impl<S> StateMachineApplyContext<'_, S> {
         .await?;
         self.do_free_invocation(invocation_id).await?;
 
+        // If there's a journal, delete journal
+        if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+            journal_metadata,
+            pinned_deployment,
+        }) = &input
+        {
+            let should_remove_journal_table_v2 =
+                pinned_deployment.as_ref().is_some_and(|pinned_deployment| {
+                    pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
+                });
+            self.do_drop_journal(
+                invocation_id,
+                journal_metadata.length,
+                should_remove_journal_table_v2,
+            )
+            .await?;
+        }
+
         self.notify_invocation_result(
             invocation_id,
             invocation_target,
-            span_context,
+            input.span_context(),
             MillisSinceEpoch::now(),
             Err((error.code(), error.to_string())),
         );
@@ -1409,7 +1478,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         scheduled_invocation: ScheduledInvocation,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable + TimerTable + OutboxTable + FsmTable,
+        S: InvocationStatusTable
+            + TimerTable
+            + OutboxTable
+            + FsmTable
+            + JournalTable
+            + journal_table_v2::JournalTable
+            + JournalEventsTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1420,7 +1495,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             metadata:
                 PreFlightInvocationMetadata {
                     response_sinks,
-                    span_context,
+                    input,
                     invocation_target,
                     execution_time,
                     ..
@@ -1447,12 +1522,32 @@ impl<S> StateMachineApplyContext<'_, S> {
         } else {
             warn!("Scheduled invocations must always have an execution time.");
         }
+
+        // Free invocation
         self.do_free_invocation(invocation_id).await?;
+
+        // If there's a journal, delete journal
+        if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+            journal_metadata,
+            pinned_deployment,
+        }) = &input
+        {
+            let should_remove_journal_table_v2 =
+                pinned_deployment.as_ref().is_some_and(|pinned_deployment| {
+                    pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
+                });
+            self.do_drop_journal(
+                invocation_id,
+                journal_metadata.length,
+                should_remove_journal_table_v2,
+            )
+            .await?;
+        }
 
         self.notify_invocation_result(
             invocation_id,
             invocation_target,
-            span_context,
+            input.span_context(),
             MillisSinceEpoch::now(),
             Err((error.code(), error.to_string())),
         );
@@ -2112,7 +2207,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.notify_invocation_result(
                 invocation_id,
                 invocation_metadata.invocation_target.clone(),
-                invocation_metadata.journal_metadata.span_context.clone(),
+                &invocation_metadata.journal_metadata.span_context,
                 invocation_metadata.timestamps.creation_time(),
                 match &response_result {
                     ResponseResult::Success(_) => Ok(()),
@@ -2140,7 +2235,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.notify_invocation_result(
                 invocation_id,
                 invocation_target.clone(),
-                invocation_metadata.journal_metadata.span_context.clone(),
+                &invocation_metadata.journal_metadata.span_context,
                 invocation_metadata.timestamps.creation_time(),
                 Ok(()),
             );
@@ -3309,7 +3404,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        span_context: ServiceInvocationSpanContext,
+        span_context: &ServiceInvocationSpanContext,
         creation_time: MillisSinceEpoch,
         result: Result<(), (InvocationErrorCode, String)>,
     ) {

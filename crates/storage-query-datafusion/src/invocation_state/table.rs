@@ -28,6 +28,7 @@ use crate::invocation_state::row::append_invocation_state_row;
 use crate::invocation_state::schema::{SysInvocationStateBuilder, sys_invocation_state_sort_order};
 use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::table_util::Builder;
 
@@ -56,13 +57,21 @@ pub(crate) fn register_self(
             return Err(DataFusionError::External(err.into()));
         }
     };
+
+    let schema = SysInvocationStateBuilder::schema();
+    let statistics = TableStatisticsBuilder::new(schema.clone())
+        .with_num_rows_estimate(RowEstimate::Small)
+        .with_partition_key()
+        .with_primary_key("id");
+
     let status_table = PartitionedTableProvider::new(
         partition_selector,
-        SysInvocationStateBuilder::schema(),
+        schema,
         sys_invocation_state_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_partition_scanner),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
-    );
+    )
+    .with_statistics(statistics.build());
     ctx.register_partitioned_table(NAME, Arc::new(status_table))
 }
 

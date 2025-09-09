@@ -17,27 +17,6 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
-use input_command::{InputCommand, InvokeCommand};
-use invocation_state_machine::InvocationStateMachine;
-use invocation_task::InvocationTask;
-use invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
-use metrics::counter;
-use restate_core::cancellation_watcher;
-use restate_errors::warn_it;
-use restate_invoker_api::{
-    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
-    InvokeInputJournal,
-};
-use restate_queue::SegmentQueue;
-use restate_timer_queue::TimerQueue;
-use restate_types::config::{InvokerOptions, ServiceClientOptions};
-use restate_types::identifiers::PartitionLeaderEpoch;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
-use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::{Completion, EntryIndex};
-use restate_types::live::{Live, LiveLoad};
-use restate_types::schema::deployment::DeploymentResolver;
-use status_store::InvocationStatusStore;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::ops::RangeInclusive;
@@ -45,30 +24,56 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::SystemTime;
 use std::{cmp, panic};
+
+use metrics::counter;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace};
 use tracing::{error, instrument};
 
-use crate::error::SdkInvocationErrorV2;
-use crate::invocation_state_machine::OnTaskError;
-use crate::metric_definitions::{
-    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
-    TASK_OP_SUSPENDED,
-};
-use error::InvokerError;
-pub use input_command::ChannelStatusReader;
-pub use input_command::InvokerHandle;
+use restate_core::cancellation_watcher;
+use restate_errors::warn_it;
 use restate_invoker_api::invocation_reader::InvocationReader;
+use restate_invoker_api::{
+    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
+    InvokeInputJournal,
+};
+use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_timer_queue::TimerQueue;
+use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
+use restate_types::identifiers::PartitionLeaderEpoch;
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
+use restate_types::journal::enriched::EnrichedRawEntry;
+use restate_types::journal::{Completion, EntryIndex};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
 use restate_types::journal_v2;
 use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
 use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
+use restate_types::live::{Live, LiveLoad};
+use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
+
+use crate::error::InvokerError;
+use crate::error::SdkInvocationErrorV2;
+use crate::input_command::{InputCommand, InvokeCommand};
+use crate::invocation_state_machine::InvocationStateMachine;
+use crate::invocation_state_machine::OnTaskError;
+use crate::invocation_task::InvocationTask;
+use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
+use crate::metric_definitions::{
+    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
+    TASK_OP_SUSPENDED,
+};
+use crate::status_store::InvocationStatusStore;
+
+pub use input_command::ChannelStatusReader;
+pub use input_command::InvokerHandle;
+
+pub type TokenBucket<C = gardal::TokioClock> = gardal::TokenBucket<gardal::AtomicSharedStorage, C>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -101,6 +106,7 @@ struct DefaultInvocationTaskRunner<EE, Schemas> {
     client: ServiceClient,
     entry_enricher: EE,
     schemas: Live<Schemas>,
+    action_token_bucket: Option<TokenBucket>,
 }
 
 impl<IR, EE, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<EE, Schemas>
@@ -145,6 +151,7 @@ where
                     invoker_tx,
                     invoker_rx,
                     opts.experimental_features_allow_protocol_v6(),
+                    self.action_token_bucket.clone(),
                 )
                 .run(input_journal),
             )
@@ -177,6 +184,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
         schemas: Live<Schemas>,
         client: ServiceClient,
         entry_enricher: TEntryEnricher,
+        action_token_bucket: Option<TokenBucket>,
     ) -> Service<StorageReader, TEntryEnricher, Schemas>
     where
         StorageReader: InvocationReader + Clone + Send + Sync + 'static,
@@ -200,6 +208,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                     client,
                     entry_enricher,
                     schemas: Live::clone(&schemas),
+                    action_token_bucket,
                 },
                 schemas,
                 invocation_tasks: Default::default(),
@@ -216,6 +225,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
         invoker_options: &InvokerOptions,
         entry_enricher: TEntryEnricher,
         schemas: Live<Schemas>,
+        action_token_bucket: Option<TokenBucket>,
     ) -> Result<Service<StorageReader, TEntryEnricher, Schemas>, BuildError>
     where
         StorageReader: InvocationReader + Clone + Send + Sync + 'static,
@@ -231,6 +241,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
             schemas,
             client,
             entry_enricher,
+            action_token_bucket,
         ))
     }
 }
@@ -379,11 +390,9 @@ where
                     }
                 }
             },
-
             Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_epoch, invoke_input_command.invocation_target, invoke_input_command.journal);
             },
-
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
                 let InvocationTaskOutput {
                     invocation_id,
@@ -1751,6 +1760,7 @@ mod tests {
             )
             .unwrap(),
             entry_enricher::test_util::MockEntryEnricher,
+            None,
         );
 
         let mut handle = service.handle();

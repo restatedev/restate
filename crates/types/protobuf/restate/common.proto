@@ -13,8 +13,9 @@ package restate.common;
 
 enum ProtocolVersion {
   ProtocolVersion_UNKNOWN = 0;
-  // Released in v1.2
-  V1 = 1;
+  reserved 1;
+  // Released in v1.2. Support dropped in v1.5.0
+  // V1 = 1;
   // [Native RPC] Released in >= v1.3.3
   V2 = 2;
 }
@@ -40,68 +41,27 @@ message Version { uint32 value = 1; }
 
 // The handle name or type tag of the message. For every service there must be
 // exactly one message handler implementation.
-// 
-// Historically, this was called `TargetName`, there might be some references in
-// the codebase or in code comments that still call it this way (or `target`).
 enum ServiceTag {
-  reserved 2, 3, 4, 5, 6, 7, 8, 13;
+  reserved 1 to 25, 40 to 43, 50 to 53, 60, 61, 80 to 85  ;
   ServiceTag_UNKNOWN = 0;
-  METADATA_MANAGER = 1;
-  CONTROL_PROCESSORS = 9;
   // LogServer
-  LOG_SERVER_STORE = 10;
-  LOG_SERVER_STORED = 11;
-  LOG_SERVER_RELEASE = 12;
-  LOG_SERVER_SEAL = 14;
-  LOG_SERVER_SEALED = 15;
-  LOG_SERVER_GET_LOGLET_INFO = 16;
-  LOG_SERVER_LOGLET_INFO = 17;
-  LOG_SERVER_GET_RECORDS = 18;
-  LOG_SERVER_RECORDS = 19;
-  LOG_SERVER_TRIM = 20;
-  LOG_SERVER_TRIMMED = 21;
-  LOG_SERVER_WAIT_FOR_TAIL = 22;
-  LOG_SERVER_TAIL_UPDATED = 23;
-  LOG_SERVER_GET_DIGEST = 24;
-  LOG_SERVER_DIGEST = 25;
-  // replaces all log-server targets
   LOG_SERVER_DATA_SERVICE = 26;
   LOG_SERVER_META_SERVICE = 27;
-  // Reserving space for more log-server messages
+
   // ReplicatedLoglet
-  REPLICATED_LOGLET_APPEND = 40;
-  REPLICATED_LOGLET_APPENDED = 41;
-  REPLICATED_LOGLET_GET_SEQUENCER_STATE = 42;
-  REPLICATED_LOGLET_SEQUENCER_STATE = 43;
-  // replaces all replicated loglet targets above
   SEQUENCER_DATA_SERVICE = 44;
   SEQUENCER_META_SERVICE = 45;
   // Partition Processor
-  PARTITION_CREATE_SNAPSHOT_REQUEST = 50;
-  PARTITION_CREATE_SNAPSHOT_RESPONSE = 51;
-  PARTITION_PROCESSOR_RPC = 52;
-  PARTITION_PROCESSOR_RPC_RESPONSE = 53;
-  // replaces all partition-processor-manager targets
   PARTITION_MANAGER_SERVICE = 54;
-  // replaces all leader-specific partition-processor targets
   PARTITION_LEADER_SERVICE = 55;
-  // Node
-  NODE_GET_NODE_STATE_REQUEST = 60;
-  NODE_GET_NODE_STATE_RESPONSE = 61;
 
-  // replaces node state requests
+  // Failure detector
   GOSSIP_SERVICE = 62;
-  // Remote Scanner
-  REMOTE_QUERY_SCANNER_OPEN = 80;
-  REMOTE_QUERY_SCANNER_OPENED = 81;
-  REMOTE_QUERY_SCANNER_NEXT = 82;
-  REMOTE_QUERY_SCANNER_NEXT_RESULT = 83;
-  REMOTE_QUERY_SCANNER_CLOSE = 84;
-  REMOTE_QUERY_SCANNER_CLOSED = 85;
 
-  // replaces remote query scanner targets
+  // Data fusion
   REMOTE_DATA_FUSION_SERVICE = 86;
 
+  // Metadata management
   METADATA_MANAGER_SERVICE = 100;
 }
 

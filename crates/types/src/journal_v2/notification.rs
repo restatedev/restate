@@ -77,6 +77,12 @@ impl From<CompletionType> for NotificationType {
     }
 }
 
+impl From<CompletionType> for EntryType {
+    fn from(value: CompletionType) -> Self {
+        EntryType::Notification(value.into())
+    }
+}
+
 #[enum_dispatch]
 pub trait NotificationMetadata {
     fn id(&self) -> NotificationId;

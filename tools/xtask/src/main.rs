@@ -29,13 +29,13 @@ use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, S
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationDeploymentId,
+    PatchDeploymentId, PurgeInvocationResponse, RestartAsNewInvocationResponse,
     ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{
     InvocationQuery, InvocationRequest, InvocationResponse, InvocationTermination,
 };
-use restate_types::journal_v2::Signal;
+use restate_types::journal_v2::{EntryIndex, Signal};
 use restate_types::live::Constant;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::Subscription;
@@ -192,6 +192,8 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
+        _: EntryIndex,
+        _: PatchDeploymentId,
     ) -> impl Future<Output = Result<RestartAsNewInvocationResponse, InvocationClientError>> + Send
     {
         pending()
@@ -201,7 +203,7 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
-        _: ResumeInvocationDeploymentId,
+        _: PatchDeploymentId,
     ) -> impl Future<Output = Result<ResumeInvocationResponse, InvocationClientError>> + Send {
         pending()
     }

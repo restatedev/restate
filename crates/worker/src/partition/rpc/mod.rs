@@ -288,11 +288,17 @@ where
                 )
                 .await
             }
-            PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id } => {
+            PartitionProcessorRpcRequestInner::RestartAsNewInvocation {
+                invocation_id,
+                copy_prefix_up_to_index_included,
+                patch_deployment_id,
+            } => {
                 self.handle(
                     restart_as_new_invocation::Request {
                         request_id,
                         invocation_id,
+                        copy_prefix_up_to_index_included,
+                        patch_deployment_id,
                     },
                     replier.map(),
                 )
