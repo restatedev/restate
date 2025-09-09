@@ -2970,7 +2970,11 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 match entry.result {
                                     EntryResult::Success(s) => SignalResult::Success(s),
                                     EntryResult::Failure(code, message) => {
-                                        SignalResult::Failure(journal_v2::Failure { code, message })
+                                        SignalResult::Failure(journal_v2::Failure {
+                                            code,
+                                            message,
+                                            metadata: vec![],
+                                        })
                                     }
                                 },
                             ),

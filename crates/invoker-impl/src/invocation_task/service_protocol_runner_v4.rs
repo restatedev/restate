@@ -998,7 +998,7 @@ where
                     .is_some_and(|entry_idx| entry_idx < self.command_index),
             }),
             next_retry_interval_override: error.next_retry_delay.map(Duration::from_millis),
-            error: InvocationError::from(error),
+            error: InvocationError::from(error).into(),
         }))
     }
 }

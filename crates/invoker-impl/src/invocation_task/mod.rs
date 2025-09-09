@@ -96,7 +96,7 @@ pub(super) enum InvocationTaskOutputInner {
     ServerHeaderReceived(String),
     NewEntry {
         entry_index: EntryIndex,
-        entry: EnrichedRawEntry,
+        entry: Box<EnrichedRawEntry>,
         /// If true, the SDK requested to be notified when the entry is correctly stored.
         ///
         /// When reading the entry from the storage this flag will always be false, as we never need to send acks for entries sent during a journal replay.
