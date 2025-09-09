@@ -16,7 +16,7 @@ use std::ops::{Deref, DerefMut};
 use super::ServiceTag;
 use crate::logs::metadata::SegmentIndex;
 use crate::logs::{LogId, LogletId, LogletOffset, SequenceNumber, TailState};
-use crate::net::{bilrost_wire_codec_with_v1_fallback, define_rpc, define_service};
+use crate::net::{bilrost_wire_codec, define_rpc, define_service};
 
 pub struct SequencerDataService;
 define_service! {
@@ -36,16 +36,16 @@ define_rpc! {
     @response = Appended,
     @service = SequencerDataService,
 }
-bilrost_wire_codec_with_v1_fallback!(Append);
-bilrost_wire_codec_with_v1_fallback!(Appended);
+bilrost_wire_codec!(Append);
+bilrost_wire_codec!(Appended);
 
 define_rpc! {
     @request = GetSequencerState,
     @response = SequencerState,
     @service = SequencerMetaService,
 }
-bilrost_wire_codec_with_v1_fallback!(GetSequencerState);
-bilrost_wire_codec_with_v1_fallback!(SequencerState);
+bilrost_wire_codec!(GetSequencerState);
+bilrost_wire_codec!(SequencerState);
 
 /// Non-success status of sequencer response.
 #[derive(Debug, Clone, derive_more::IsVariant, Default, bilrost::Oneof, bilrost::Message)]

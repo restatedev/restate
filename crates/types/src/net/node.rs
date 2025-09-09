@@ -18,10 +18,7 @@ use restate_encoding::{BilrostNewType, NetSerde};
 
 use super::ServiceTag;
 use crate::GenerationalNodeId;
-use crate::net::{
-    bilrost_wire_codec, bilrost_wire_codec_with_v1_fallback, define_rpc, define_service,
-    define_unary_message,
-};
+use crate::net::{bilrost_wire_codec, define_rpc, define_service, define_unary_message};
 use crate::partitions::state::{LeadershipState, ReplicaSetState};
 use crate::time::MillisSinceEpoch;
 use crate::{cluster::cluster_state::PartitionProcessorStatus, identifiers::PartitionId};
@@ -39,8 +36,8 @@ define_rpc! {
     @service = GossipService,
 }
 
-bilrost_wire_codec_with_v1_fallback!(GetNodeState);
-bilrost_wire_codec_with_v1_fallback!(NodeStateResponse);
+bilrost_wire_codec!(GetNodeState);
+bilrost_wire_codec!(NodeStateResponse);
 
 define_unary_message! {
     @message = Gossip,
