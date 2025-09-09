@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, Statistics};
 use datafusion::datasource::{TableProvider, TableType};
 use datafusion::execution::context::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
@@ -52,6 +52,7 @@ pub(crate) struct PartitionedTableProvider<T, S> {
     ordering: Vec<String>,
     partition_scanner: T,
     partition_key_extractor: FirstMatchingPartitionKeyExtractor,
+    statistics: Statistics,
 }
 
 impl<T, S> PartitionedTableProvider<T, S> {
@@ -62,13 +63,19 @@ impl<T, S> PartitionedTableProvider<T, S> {
         partition_scanner: T,
         partition_key_extractor: FirstMatchingPartitionKeyExtractor,
     ) -> Self {
+        let statistics = Statistics::new_unknown(&schema);
         Self {
             partition_selector,
             schema,
             ordering,
             partition_scanner,
             partition_key_extractor,
+            statistics,
         }
+    }
+
+    pub(crate) fn with_statistics(self, statistics: Statistics) -> Self {
+        Self { statistics, ..self }
     }
 }
 
@@ -218,6 +225,7 @@ where
             limit,
             scanner: self.partition_scanner.clone(),
             plan,
+            statistics: self.statistics.clone().project(projection),
         }))
     }
 
@@ -241,6 +249,7 @@ struct PartitionedExecutionPlan<T> {
     limit: Option<usize>,
     scanner: T,
     plan: PlanProperties,
+    statistics: Statistics,
 }
 
 impl<T> ExecutionPlan for PartitionedExecutionPlan<T>
@@ -278,6 +287,17 @@ where
         }
 
         Ok(self)
+    }
+
+    fn statistics(&self) -> datafusion::common::Result<Statistics> {
+        Ok(self.statistics.clone())
+    }
+
+    fn partition_statistics(
+        &self,
+        _partition: Option<usize>,
+    ) -> datafusion::common::Result<Statistics> {
+        Ok(self.statistics.clone())
     }
 
     fn execute(
@@ -353,11 +373,21 @@ pub(crate) type ScannerRef = Arc<dyn Scan>;
 pub(crate) struct GenericTableProvider {
     schema: SchemaRef,
     scanner: ScannerRef,
+    statistics: Statistics,
 }
 
 impl GenericTableProvider {
     pub(crate) fn new(schema: SchemaRef, scanner: ScannerRef) -> Self {
-        Self { schema, scanner }
+        let statistics = Statistics::new_unknown(&schema);
+        Self {
+            schema,
+            scanner,
+            statistics,
+        }
+    }
+
+    pub(crate) fn with_statistics(self, statistics: Statistics) -> Self {
+        Self { statistics, ..self }
     }
 }
 
@@ -392,6 +422,7 @@ impl TableProvider for GenericTableProvider {
             filters,
             limit,
             Arc::clone(&self.scanner),
+            self.statistics.clone().project(projection),
         )))
     }
 
@@ -415,6 +446,7 @@ struct GenericExecutionPlan {
     limit: Option<usize>,
     filters: Vec<Expr>,
     plan_properties: PlanProperties,
+    statistics: Statistics,
 }
 
 impl GenericExecutionPlan {
@@ -423,6 +455,7 @@ impl GenericExecutionPlan {
         filters: &[Expr],
         limit: Option<usize>,
         scanner: ScannerRef,
+        statistics: Statistics,
     ) -> Self {
         let eq_properties = EquivalenceProperties::new(projected_schema.clone());
 
@@ -439,6 +472,7 @@ impl GenericExecutionPlan {
             limit,
             filters: filters.to_vec(),
             plan_properties,
+            statistics,
         }
     }
 }
@@ -489,6 +523,14 @@ impl ExecutionPlan for GenericExecutionPlan {
             self.limit,
         );
         Ok(stream)
+    }
+
+    fn statistics(&self) -> datafusion::error::Result<Statistics> {
+        Ok(self.statistics.clone())
+    }
+
+    fn partition_statistics(&self, _: Option<usize>) -> datafusion::error::Result<Statistics> {
+        Ok(self.statistics.clone())
     }
 }
 

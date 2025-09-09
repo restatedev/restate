@@ -23,6 +23,7 @@ use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use super::schema::SysServiceBuilder;
 use crate::context::QueryContext;
 use crate::service::row::append_service_row;
+use crate::statistics::{SERVICE_ROW_ESTIMATE, TableStatisticsBuilder};
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
@@ -30,10 +31,15 @@ pub(crate) fn register_self(
     ctx: &QueryContext,
     resolver: Live<impl ServiceMetadataResolver + Send + Sync + 'static>,
 ) -> datafusion::common::Result<()> {
+    let schema = SysServiceBuilder::schema();
+    let statistics = TableStatisticsBuilder::new(schema.clone())
+        .with_num_rows_estimate(SERVICE_ROW_ESTIMATE)
+        .with_primary_key("name");
     let service_table = GenericTableProvider::new(
         SysServiceBuilder::schema(),
         Arc::new(ServiceMetadataScanner(resolver)),
-    );
+    )
+    .with_statistics(statistics.build());
 
     ctx.register_non_partitioned_table("sys_service", Arc::new(service_table))
 }
