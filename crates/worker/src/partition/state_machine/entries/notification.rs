@@ -199,7 +199,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use bytes::Bytes;
+    use bytestring::ByteString;
     use googletest::prelude::*;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_storage_api::invocation_status_table::{
@@ -209,22 +213,29 @@ mod tests {
     use restate_types::invocation::{
         InvocationTermination, NotifySignalRequest, TerminationFlavor,
     };
+    use restate_types::journal_v2::EntryMetadata;
     use restate_types::journal_v2::{
-        BuiltInSignal, Signal, SignalId, SignalResult, SleepCommand, SleepCompletion,
+        BuiltInSignal, Entry, EntryType, Failure, FailureMetadata, Signal, SignalId, SignalResult,
+        SleepCommand, SleepCompletion,
     };
     use restate_types::time::MillisSinceEpoch;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
+    use rstest::rstest;
     use std::time::Duration;
 
+    #[rstest]
+    #[case(SignalResult::Void)]
+    #[case(SignalResult::Success(Bytes::from_static(b"123")))]
+    #[case(SignalResult::Failure(Failure { code: 512u16.into(), message: ByteString::from_static("my-error"), metadata: vec![FailureMetadata { key: ByteString::from_static("my-type"), value: ByteString::from_static("my-value") }] }))]
     #[restate_core::test]
-    async fn notify_signal() {
+    async fn notify_signal(#[case] signal_result: SignalResult) {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
         fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 
         // Send signal notification
-        let signal = Signal::new(SignalId::for_index(17), SignalResult::Void);
+        let signal = Signal::new(SignalId::for_index(17), signal_result);
         let actions = test_env
             .apply(Command::NotifySignal(NotifySignalRequest {
                 invocation_id,
@@ -237,6 +248,15 @@ mod tests {
                 invocation_id,
                 signal.clone()
             ))
+        );
+
+        // Check journal
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 2).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(signal),
+            ]
         );
 
         test_env.shutdown().await;
