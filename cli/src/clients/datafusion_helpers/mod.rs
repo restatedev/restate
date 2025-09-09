@@ -95,7 +95,6 @@ pub struct Invocation {
 
     // If it **requires** this deployment.
     pub pinned_deployment_id: Option<String>,
-    #[serde(skip)]
     pub pinned_deployment_exists: bool,
     // Last attempted deployment
     pub last_attempt_deployment_id: Option<String>,
