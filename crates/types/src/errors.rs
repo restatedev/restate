@@ -180,11 +180,18 @@ pub mod codes {
 
 /// This struct represents errors arisen when processing a service invocation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct InvocationError {
-    code: InvocationErrorCode,
-    message: Cow<'static, str>,
+    pub code: InvocationErrorCode,
+    pub message: Cow<'static, str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stacktrace: Option<Cow<'static, str>>,
+    pub stacktrace: Option<Cow<'static, str>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "serde_with::As::<serde_with::Map<serde_with::Same, serde_with::Same>>"
+    )]
+    pub metadata: Vec<(String, String)>,
 }
 
 pub const UNKNOWN_INVOCATION_ERROR: InvocationError =
@@ -202,6 +209,12 @@ impl fmt::Display for InvocationError {
         if self.stacktrace.is_some() {
             write!(f, "\n{}", self.stacktrace().unwrap())?;
         }
+        if !self.metadata.is_empty() {
+            write!(f, "\nmetadata:")?;
+            for (name, value) in &self.metadata {
+                write!(f, "\n  {}: {}", name, value)?;
+            }
+        }
         Ok(())
     }
 }
@@ -214,6 +227,7 @@ impl InvocationError {
             code,
             message: Cow::Borrowed(message),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -222,6 +236,7 @@ impl InvocationError {
             code: code.into(),
             message: Cow::Owned(message.into()),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -230,6 +245,7 @@ impl InvocationError {
             code: codes::INTERNAL,
             message: Cow::Owned(message.into()),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -240,6 +256,7 @@ impl InvocationError {
                 "Service '{service}' not found. Check whether the deployment containing the service is registered."
             )),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -253,6 +270,7 @@ impl InvocationError {
                 "Service handler '{service}/{handler}' not found. Check whether you've registered the correct version of your service."
             )),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -263,6 +281,20 @@ impl InvocationError {
 
     pub fn with_message(mut self, message: impl Into<String>) -> InvocationError {
         self.message = Cow::Owned(message.into());
+        self
+    }
+
+    pub fn with_metadata(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> InvocationError {
+        self.metadata.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn with_metadata_vec(mut self, metadata: Vec<(String, String)>) -> InvocationError {
+        self.metadata = metadata;
         self
     }
 
@@ -281,6 +313,10 @@ impl InvocationError {
 
     pub fn stacktrace(&self) -> Option<&str> {
         self.stacktrace.as_deref()
+    }
+
+    pub fn metadata(&self) -> &[(String, String)] {
+        self.metadata.as_ref()
     }
 
     pub fn into_stacktrace(self) -> Option<Cow<'static, str>> {
