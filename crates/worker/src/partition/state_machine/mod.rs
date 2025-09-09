@@ -40,8 +40,8 @@ use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempoten
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatusTable,
-    JournalRetentionPolicy, PreFlightInput, PreFlightInvocationMetadata,
-    ReadOnlyInvocationStatusTable,
+    JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationJournal,
+    PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::JournalEventsTable;
@@ -1443,10 +1443,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.do_free_invocation(invocation_id).await?;
 
         // If there's a journal, delete journal
-        if let PreFlightInput::Journal {
+        if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
             journal_metadata,
             pinned_deployment,
-        } = &input
+        }) = &input
         {
             let should_remove_journal_table_v2 =
                 pinned_deployment.as_ref().is_some_and(|pinned_deployment| {
@@ -1527,10 +1527,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.do_free_invocation(invocation_id).await?;
 
         // If there's a journal, delete journal
-        if let PreFlightInput::Journal {
+        if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
             journal_metadata,
             pinned_deployment,
-        } = &input
+        }) = &input
         {
             let should_remove_journal_table_v2 =
                 pinned_deployment.as_ref().is_some_and(|pinned_deployment| {

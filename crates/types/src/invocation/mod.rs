@@ -995,6 +995,7 @@ pub struct RestartAsNewInvocationRequest {
     /// in the suffix for which there is a corresponding command in the prefix.
     pub copy_prefix_up_to_index_included: EntryIndex,
     /// Run the new request on the given deployment id
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch_deployment_id: Option<DeploymentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_sink: Option<InvocationMutationResponseSink>,

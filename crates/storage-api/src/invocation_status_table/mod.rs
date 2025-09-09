@@ -423,31 +423,41 @@ impl JournalMetadata {
     }
 }
 
-/// Some commands might initialize a pre-flight invocation with a journal already
+/// Depending on the source, the pre-flight invocation metadata might either have a journal already initialized,
+/// or the request arguments stored directly in invocation status.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PreFlightInput {
+pub enum PreFlightInvocationArgument {
     /// The preflight status contains directly argument and headers, not yet a journal
-    Input {
-        argument: Bytes,
-        headers: Vec<Header>,
-        span_context: ServiceInvocationSpanContext,
-    },
+    Input(PreFlightInvocationInput),
     /// A journal has already been initialized for this preflight request
-    Journal {
-        journal_metadata: JournalMetadata,
-        pinned_deployment: Option<PinnedDeployment>,
-    },
+    Journal(PreFlightInvocationJournal),
 }
 
-impl PreFlightInput {
+impl PreFlightInvocationArgument {
     pub fn span_context(&self) -> &ServiceInvocationSpanContext {
         match self {
-            PreFlightInput::Input { span_context, .. } => span_context,
-            PreFlightInput::Journal {
-                journal_metadata, ..
-            } => &journal_metadata.span_context,
+            PreFlightInvocationArgument::Input(PreFlightInvocationInput {
+                span_context, ..
+            }) => span_context,
+            PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                journal_metadata,
+                ..
+            }) => &journal_metadata.span_context,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreFlightInvocationInput {
+    pub argument: Bytes,
+    pub headers: Vec<Header>,
+    pub span_context: ServiceInvocationSpanContext,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreFlightInvocationJournal {
+    pub journal_metadata: JournalMetadata,
+    pub pinned_deployment: Option<PinnedDeployment>,
 }
 
 /// This is similar to [ServiceInvocation].
@@ -465,7 +475,7 @@ pub struct PreFlightInvocationMetadata {
     /// might be on a newer version than the replicas, or the subsequent leader in the next leader epoch.
     pub created_using_restate_version: RestateVersion,
 
-    pub input: PreFlightInput,
+    pub input: PreFlightInvocationArgument,
 
     pub source: Source,
     /// Time when the request should be executed
@@ -521,11 +531,11 @@ impl PreFlightInvocationMetadata {
             idempotency_key: service_invocation.idempotency_key,
             created_using_restate_version: service_invocation.restate_version,
             random_seed: None,
-            input: PreFlightInput::Input {
+            input: PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                 argument: service_invocation.argument,
                 headers: service_invocation.headers,
                 span_context: service_invocation.span_context,
-            },
+            }),
         }
     }
 
@@ -683,11 +693,11 @@ impl InFlightInvocationMetadata {
             .record_running_transition_time(timestamp);
 
         match pre_flight_invocation_metadata.input {
-            PreFlightInput::Input {
+            PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                 argument,
                 headers,
                 span_context,
-            } => (
+            }) => (
                 Self {
                     invocation_target: pre_flight_invocation_metadata.invocation_target,
                     created_using_restate_version: pre_flight_invocation_metadata
@@ -710,10 +720,10 @@ impl InFlightInvocationMetadata {
                 },
                 Some(InvocationInput { argument, headers }),
             ),
-            PreFlightInput::Journal {
+            PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
                 journal_metadata,
                 pinned_deployment,
-            } => (
+            }) => (
                 Self {
                     invocation_target: pre_flight_invocation_metadata.invocation_target,
                     created_using_restate_version: pre_flight_invocation_metadata
@@ -921,11 +931,11 @@ mod test_util {
                 completion_retention_duration: Duration::ZERO,
                 journal_retention_duration: Duration::ZERO,
                 idempotency_key: None,
-                input: PreFlightInput::Input {
+                input: PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                     argument: Default::default(),
                     headers: vec![],
                     span_context: Default::default(),
-                },
+                }),
                 random_seed: None,
             }
         }

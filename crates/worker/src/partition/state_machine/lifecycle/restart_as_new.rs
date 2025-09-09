@@ -17,8 +17,8 @@ use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::inbox_table::InboxTable;
 use restate_storage_api::invocation_status_table::{
-    InvocationStatus, InvocationStatusTable, JournalMetadata, PreFlightInput,
-    PreFlightInvocationMetadata, StatusTimestamps,
+    InvocationStatus, InvocationStatusTable, JournalMetadata, PreFlightInvocationArgument,
+    PreFlightInvocationJournal, PreFlightInvocationMetadata, StatusTimestamps,
 };
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
@@ -241,7 +241,7 @@ where
             timestamps: StatusTimestamps::init(ctx.record_created_at),
             invocation_target: completed_invocation.invocation_target,
             created_using_restate_version: completed_invocation.created_using_restate_version,
-            input: PreFlightInput::Journal {
+            input: PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
                 journal_metadata: JournalMetadata::new(
                     new_journal_index,
                     new_journal_commands,
@@ -251,7 +251,7 @@ where
                     ),
                 ),
                 pinned_deployment,
-            },
+            }),
             source: Source::RestartAsNew(invocation_id),
             completion_retention_duration: completed_invocation.completion_retention_duration,
             journal_retention_duration: completed_invocation.journal_retention_duration,

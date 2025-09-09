@@ -173,7 +173,8 @@ pub mod v1 {
             submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
-            CompletionRangeEpochMap, JournalMetadata, PreFlightInput,
+            CompletionRangeEpochMap, JournalMetadata, PreFlightInvocationArgument,
+            PreFlightInvocationInput, PreFlightInvocationJournal,
         };
         use crate::protobuf_types::ConversionError;
 
@@ -465,13 +466,13 @@ pub mod v1 {
                         // The discriminant for input/journal here is the argument presence/absence
                         // (that's a proto optional field!)
                         let input = if let Some(argument) = argument {
-                            PreFlightInput::Input {
+                            PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                                 argument,
                                 headers,
                                 span_context: expect_or_fail!(span_context)?.try_into()?,
-                            }
+                            })
                         } else {
-                            PreFlightInput::Journal {
+                            PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
                                 journal_metadata: crate::invocation_status_table::JournalMetadata {
                                     length: journal_length,
                                     commands,
@@ -481,7 +482,7 @@ pub mod v1 {
                                     deployment_id,
                                     service_protocol_version,
                                 )?,
-                            }
+                            })
                         };
 
                         Ok(crate::invocation_status_table::InvocationStatus::Scheduled(
@@ -512,13 +513,13 @@ pub mod v1 {
                         // The discriminant for input/journal here is the argument presence/absence
                         // (that's a proto optional field!)
                         let input = if let Some(argument) = argument {
-                            PreFlightInput::Input {
+                            PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                                 argument,
                                 headers,
                                 span_context: expect_or_fail!(span_context)?.try_into()?,
-                            }
+                            })
                         } else {
-                            PreFlightInput::Journal {
+                            PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
                                 journal_metadata: crate::invocation_status_table::JournalMetadata {
                                     length: journal_length,
                                     commands,
@@ -528,7 +529,7 @@ pub mod v1 {
                                     deployment_id,
                                     service_protocol_version,
                                 )?,
-                            }
+                            })
                         };
 
                         Ok(crate::invocation_status_table::InvocationStatus::Inboxed(
@@ -737,11 +738,11 @@ pub mod v1 {
                                     idempotency_key,
                                     random_seed,
                                     input:
-                                        PreFlightInput::Input {
+                                        PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                                             argument,
                                             headers,
                                             span_context,
-                                        },
+                                        }),
                                 },
                         },
                     ) => InvocationStatusV2 {
@@ -802,10 +803,12 @@ pub mod v1 {
                                     journal_retention_duration,
                                     idempotency_key,
                                     input:
-                                        PreFlightInput::Journal {
-                                            journal_metadata,
-                                            pinned_deployment,
-                                        },
+                                        PreFlightInvocationArgument::Journal(
+                                            PreFlightInvocationJournal {
+                                                journal_metadata,
+                                                pinned_deployment,
+                                            },
+                                        ),
                                     random_seed,
                                 },
                         },
@@ -881,11 +884,11 @@ pub mod v1 {
                                     idempotency_key,
                                     random_seed,
                                     input:
-                                        PreFlightInput::Input {
+                                        PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                                             argument,
                                             headers,
                                             span_context,
-                                        },
+                                        }),
                                 },
                             inbox_sequence_number,
                         },
@@ -947,10 +950,12 @@ pub mod v1 {
                                     journal_retention_duration,
                                     idempotency_key,
                                     input:
-                                        PreFlightInput::Journal {
-                                            journal_metadata,
-                                            pinned_deployment,
-                                        },
+                                        PreFlightInvocationArgument::Journal(
+                                            PreFlightInvocationJournal {
+                                                journal_metadata,
+                                                pinned_deployment,
+                                            },
+                                        ),
                                     random_seed,
                                 },
                             inbox_sequence_number,
@@ -1844,11 +1849,11 @@ pub mod v1 {
                         invocation_target,
                         journal_retention_duration: Default::default(),
                         random_seed: None,
-                        input: PreFlightInput::Input {
+                        input: PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                             span_context,
                             headers,
                             argument: value.argument,
-                        },
+                        }),
                     },
                 })
             }
@@ -1873,11 +1878,11 @@ pub mod v1 {
                         },
                     inbox_sequence_number,
                 } = value;
-                let PreFlightInput::Input {
+                let PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                     argument,
                     headers,
                     span_context,
-                } = input
+                }) = input
                 else {
                     panic!("This code is used only in tests!")
                 };

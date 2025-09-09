@@ -116,7 +116,7 @@ where
         if copy_prefix_up_to_index_included == 0 {
             // If it's 0, it means we only need to copy over the input entry.
             // We just implement this with the usual service invocation command
-            // TODO(slinkydeveloper) from 1.6 we could just use the RestartAsNewInvocationCommand.
+            // TODO(slinkydeveloper) from v1.6 we could just use the RestartAsNewInvocationCommand.
 
             // Patching the deployment id doesn't work with this method!
             if matches!(
@@ -202,7 +202,7 @@ where
                 InvocationRequest::new(invocation_request_header, input_command.payload);
             let service_invocation = ServiceInvocation::from_request(
                 invocation_request,
-                // TODO (slinkydeveloper) in Restate 1.6 replace this with
+                // TODO (slinkydeveloper) in Restate v1.6 replace this with
                 // invocation::Source::RestartAsNew(invocation_id)
                 invocation::Source::ingress(request_id),
             );
