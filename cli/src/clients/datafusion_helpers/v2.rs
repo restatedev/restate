@@ -258,7 +258,6 @@ pub async fn get_locked_keys_status(
 #[derive(Deserialize)]
 struct InvocationQueryResult {
     last_start_at: Option<DateTime<Local>>,
-    known_deployment_id: Option<String>,
     completion_result: Option<String>,
     completion_failure: Option<String>,
     #[serde(flatten)]
@@ -269,7 +268,6 @@ struct InvocationQueryResult {
 pub async fn find_active_invocations(
     client: &DataFusionHttpClient,
     filter: &str,
-    post_filter: &str,
     order: &str,
     limit: usize,
 ) -> Result<(Vec<Invocation>, usize)> {
@@ -285,8 +283,7 @@ pub async fn find_active_invocations(
     let mut full_count = 0;
     let mut active = vec![];
     let query = format!(
-        "WITH invocations AS
-        (SELECT
+        "WITH invocations as (SELECT
             inv.id,
             inv.target,
             inv.target_service_ty,
@@ -309,32 +306,19 @@ pub async fn find_active_invocations(
             inv.invoked_by_target,
             inv.trace_id,
             inv.completion_result,
-            inv.completion_failure
+            inv.completion_failure,
+            COUNT(1) OVER() AS full_count
         FROM sys_invocation inv
         {filter}
-        ),
-
-        invocations_with_latest_deployment_id AS
-        (SELECT
-            inv.*,
-            svc.deployment_id as comp_latest_deployment,
-            svc.ty as service_type
-        FROM sys_service svc
-        RIGHT JOIN invocations inv ON svc.name = inv.target_service_name
-        ),
-
-        invocations_with_known_deployment_id as
-        (SELECT
-            inv.*,
-            dp.id as known_deployment_id
-        FROM sys_deployment dp
-        RIGHT JOIN invocations_with_latest_deployment_id inv ON dp.id = inv.pinned_deployment_id
-        )
-
-        SELECT *, COUNT(1) OVER() AS full_count from invocations_with_known_deployment_id inv
-        {post_filter}
         {order}
-        LIMIT {limit}"
+        LIMIT {limit})
+
+        SELECT
+            inv.*,
+            dp.id IS NOT NULL as pinned_deployment_exists
+        FROM sys_deployment dp
+        RIGHT JOIN invocations inv ON dp.id = inv.pinned_deployment_id
+        {order}"
     );
     let rows = client
         .run_json_query::<InvocationQueryResult>(query)
@@ -357,7 +341,6 @@ pub async fn find_active_invocations(
         active.push(Invocation {
             current_attempt_duration,
             last_attempt_started_at,
-            pinned_deployment_exists: row.known_deployment_id.is_some(),
             completion: InvocationCompletion::from_sql(
                 row.completion_result,
                 row.completion_failure,
@@ -379,7 +362,6 @@ pub async fn get_service_invocations(
     Ok(find_active_invocations(
         client,
         &format!("WHERE inv.target_service_name = '{service}'"),
-        "",
         "ORDER BY inv.created_at DESC, inv.id",
         limit_active,
     )
@@ -391,16 +373,12 @@ pub async fn get_invocation(
     client: &DataFusionHttpClient,
     invocation_id: &str,
 ) -> Result<Option<Invocation>> {
-    Ok(find_active_invocations(
-        client,
-        &format!("WHERE inv.id = '{invocation_id}'"),
-        "",
-        "",
-        1,
+    Ok(
+        find_active_invocations(client, &format!("WHERE inv.id = '{invocation_id}'"), "", 1)
+            .await?
+            .0
+            .pop(),
     )
-    .await?
-    .0
-    .pop())
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

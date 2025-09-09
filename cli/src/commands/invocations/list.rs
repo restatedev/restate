@@ -73,7 +73,6 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let statuses: HashSet<InvocationState> = HashSet::from_iter(opts.status.clone());
     // Prepare filters
     let mut active_filters: Vec<String> = vec![]; // "WHERE 1 = 1\n".to_string();
-    let mut post_filters: Vec<String> = vec![];
 
     let order_by = if opts.oldest_first {
         "ORDER BY inv.created_at ASC, inv.id"
@@ -103,12 +102,16 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     }
 
     if opts.virtual_objects_only {
-        post_filters.push("service_type = 'virtual_object'".to_owned());
+        active_filters.push(
+            "inv.target_service_name IN (select name from sys_service where ty = 'virtual_object')"
+                .to_owned(),
+        );
     }
 
     if opts.zombie {
-        // zombies cannot be in pending, don't query inbox.
-        post_filters.push("known_deployment_id IS NULL".to_owned());
+        // a zombie invocation has a pinned deployment id, but the id isn't found in the list of deployments
+        active_filters
+            .push("(inv.pinned_deployment_id IS NOT NULL AND inv.pinned_deployment_id NOT IN (select id from sys_deployment))".to_owned());
     }
 
     // Only makes sense when querying active invocations;
@@ -138,12 +141,6 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         String::new()
     };
 
-    let post_filter_str = if !post_filters.is_empty() {
-        format!("WHERE {}", post_filters.join(" AND "))
-    } else {
-        String::new()
-    };
-
     // Perform queries
     let start_time = Instant::now();
     let progress = ProgressBar::new_spinner();
@@ -152,14 +149,8 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     progress.enable_steady_tick(std::time::Duration::from_millis(120));
     progress.set_message("Finding invocations...");
 
-    let (mut results, total) = find_active_invocations(
-        &sql_client,
-        &active_filter_str,
-        &post_filter_str,
-        order_by,
-        opts.limit,
-    )
-    .await?;
+    let (mut results, total) =
+        find_active_invocations(&sql_client, &active_filter_str, order_by, opts.limit).await?;
 
     // Render Output UI
     progress.finish_and_clear();
