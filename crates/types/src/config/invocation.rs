@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -69,7 +70,7 @@ pub struct InvocationOptions {
     ///
     /// `None` means no limit, that is infinite retries is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_retry_policy_max_attempts: Option<usize>,
+    pub max_retry_policy_max_attempts: Option<NonZeroUsize>,
 }
 
 impl Default for InvocationOptions {
@@ -113,9 +114,9 @@ pub struct InvocationRetryPolicyOptions {
 
     /// # Max attempts
     ///
-    /// Number of maximum attempts before giving up. Infinite retries if unset. No retries if set to 0.
+    /// Number of maximum attempts (including the initial) before giving up. Infinite retries if unset. No retries if set to 1.
     #[serde(default = "default_max_attempts")]
-    pub(crate) max_attempts: Option<usize>,
+    pub(crate) max_attempts: Option<NonZeroUsize>,
 
     /// # On max attempts
     ///
@@ -153,8 +154,8 @@ fn default_initial_interval() -> Duration {
     Duration::from_millis(500)
 }
 
-fn default_max_attempts() -> Option<usize> {
-    Some(20)
+fn default_max_attempts() -> Option<NonZeroUsize> {
+    Some(NonZeroUsize::new(20).unwrap())
 }
 
 fn default_exponentiation_factor() -> f32 {
