@@ -297,6 +297,17 @@ impl InvocationError {
         self
     }
 
+    pub fn with_metadata_iter<I, K, V>(mut self, metadata: I) -> InvocationError
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.metadata
+            .extend(metadata.into_iter().map(|(k, v)| (k.into(), v.into())));
+        self
+    }
+
     pub fn with_stacktrace(mut self, stacktrace: impl Into<String>) -> InvocationError {
         self.stacktrace = Some(Cow::Owned(stacktrace.into()));
         self
