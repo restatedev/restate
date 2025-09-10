@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
 use futures::stream::{FuturesUnordered, StreamExt};
+use gardal::Limit;
 use itertools::{Either, Itertools};
 use metrics::gauge;
 use rand::Rng;
@@ -266,11 +267,10 @@ impl PartitionProcessorManager {
             .action_throttling
             .as_ref()
             .map(|opts| {
-                let bucket = TokenBucket::from_parts(
-                    gardal::Limit::per_second_and_burst(opts.rate, opts.capacity),
-                    gardal::TokioClock::default(),
-                );
-                bucket.add_tokens(opts.capacity.get());
+                let limit = Limit::from(opts.clone());
+                let capacity = limit.burst();
+                let bucket = TokenBucket::from_parts(limit, gardal::TokioClock::default());
+                bucket.add_tokens(capacity.get());
                 bucket
             });
 

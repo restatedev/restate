@@ -21,6 +21,7 @@ use super::{
     print_warning_deprecated_config_option,
 };
 use crate::identifiers::PartitionId;
+use crate::rate::Rate;
 use crate::retries::RetryPolicy;
 use restate_serde_util::NonZeroByteCount;
 
@@ -623,30 +624,98 @@ impl SnapshotsOptions {
 /// # Throttling options
 ///
 /// Throttling options per invoker.
-#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "schemars", schemars(rename = "ThrottlingOptions", default))]
-#[builder(default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct ThrottlingOptions {
+    /// # Refill rate
+    ///
+    /// The rate at which the tokens are replenished.
+    ///
+    /// Syntax: `<rate>/<unit>` where `<unit>` is `s|sec|second`, `m|min|minute`, or `h|hr|hour`.
+    /// unit defaults to per second if not specified.
+    pub rate: Rate,
+
     /// # Burst capacity
     ///
     /// The maximum number of tokens the bucket can hold.
-    pub capacity: NonZeroU32,
-
-    /// # Refill rate
-    ///
-    /// The rate in seconds at which the tokens are replenished.
-    pub rate: NonZeroU32,
+    /// Default to the rate value if not specified.
+    pub capacity: Option<NonZeroU32>,
 }
 
-impl Default for ThrottlingOptions {
-    fn default() -> Self {
-        // using some sane values just to have Default implementation for
-        // schema generation
-        Self {
-            capacity: NonZeroU32::new(1000000).unwrap(),
-            rate: NonZeroU32::new(100000).unwrap(),
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for ThrottlingOptions {
+    fn schema_name() -> std::string::String {
+        "ThrottlingOptions".to_owned()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        concat!(module_path!(), "::ThrottlingOptions").into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::*;
+
+        let schema_object = SchemaObject {
+            metadata: Some(Box::new(Metadata {
+                title: Some("ThrottlingOptions".to_string()),
+                description: Some("Throttling options per invoker".to_string()),
+                ..Default::default()
+            })),
+            instance_type: Some(InstanceType::Object.into()),
+            object: Some(Box::new(ObjectValidation {
+                properties: {
+                    let mut properties = schemars::Map::new();
+
+                    // Rate field - represented as a string with pattern
+                    let mut rate_schema: SchemaObject =
+                        generator.subschema_for::<String>().into_object();
+                    let rate_validation = rate_schema.string();
+                    rate_validation.pattern =
+                        Some(r"^\d+(\/(sec|min|hr|s|m|h|second|minute|hour))?$".to_string());
+                    let rate_metadata = rate_schema.metadata();
+                    rate_metadata.description = Some("The rate at which the tokens are replenished. Syntax: `<rate>/<unit>` where `<unit>` is `s|sec|second`, `m|min|minute`, or `h|hr|hour`. Unit defaults to per second if not specified.".to_string());
+                    properties.insert("rate".to_string(), Schema::Object(rate_schema));
+
+                    // Capacity field - optional non-zero u32
+                    let mut capacity_schema: SchemaObject =
+                        generator.subschema_for::<u32>().into_object();
+                    let capacity_validation = capacity_schema.number();
+                    capacity_validation.minimum = Some(1.0);
+                    let capacity_metadata = capacity_schema.metadata();
+                    capacity_metadata.description = Some("The maximum number of tokens the bucket can hold. Defaults to the rate value if not specified.".to_string());
+                    properties.insert("capacity".to_string(), Schema::Object(capacity_schema));
+
+                    properties
+                },
+                required: {
+                    let mut required = schemars::Set::new();
+                    required.insert("rate".to_string());
+                    required
+                },
+                additional_properties: Some(Box::new(Schema::Bool(false))),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        Schema::Object(schema_object)
+    }
+}
+
+impl From<ThrottlingOptions> for gardal::Limit {
+    fn from(options: ThrottlingOptions) -> Self {
+        use gardal::Limit;
+
+        let mut limit = match options.rate {
+            Rate::PerSecond(rate) => Limit::per_second(rate),
+            Rate::PerMinute(rate) => Limit::per_minute(rate),
+            Rate::PerHour(rate) => Limit::per_hour(rate),
+        };
+
+        if let Some(capacity) = options.capacity {
+            limit = limit.with_burst(capacity);
         }
+
+        limit
     }
 }
