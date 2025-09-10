@@ -1521,14 +1521,13 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
-    use crate::error::{InvokerError, SdkInvocationErrorV2};
-    use crate::quota::InvokerConcurrencyQuota;
     use restate_core::{TaskCenter, TaskKind};
     use restate_invoker_api::InvokerHandle;
     use restate_invoker_api::entry_enricher;
     use restate_invoker_api::test_util::EmptyStorageReader;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_test_util::{check, let_assert};
+    use restate_time_util::FriendlyDuration;
     use restate_types::config::InvokerOptionsBuilder;
     use restate_types::errors::{InvocationError, codes};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
@@ -1547,6 +1546,9 @@ mod tests {
     };
     use restate_types::schema::service::ServiceMetadata;
     use restate_types::service_protocol::ServiceProtocolVersion;
+
+    use crate::error::{InvokerError, SdkInvocationErrorV2};
+    use crate::quota::InvokerConcurrencyQuota;
 
     // -- Mocks
 
@@ -1764,8 +1766,8 @@ mod tests {
     #[test(restate_core::test)]
     async fn input_order_is_maintained() {
         let invoker_options = InvokerOptionsBuilder::default()
-            .inactivity_timeout(Duration::ZERO.into())
-            .abort_timeout(Duration::ZERO.into())
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
             .message_size_warning(NonZeroUsize::new(1024).unwrap())
             .message_size_limit(None)
@@ -1838,8 +1840,8 @@ mod tests {
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure
             .retry_policy(Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))))
-            .inactivity_timeout(Duration::ZERO.into())
-            .abort_timeout(Duration::ZERO.into())
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
             .message_size_warning(NonZeroUsize::new(1024).unwrap())
             .message_size_limit(None)
@@ -1953,8 +1955,8 @@ mod tests {
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure
             .retry_policy(Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))))
-            .inactivity_timeout(Duration::ZERO.into())
-            .abort_timeout(Duration::ZERO.into())
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
             .message_size_warning(NonZeroUsize::new(1024).unwrap())
             .message_size_limit(None)
@@ -2223,8 +2225,8 @@ mod tests {
     async fn notification_triggers_retry() {
         let invoker_options = InvokerOptionsBuilder::default()
             .retry_policy(Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))))
-            .inactivity_timeout(Duration::ZERO.into())
-            .abort_timeout(Duration::ZERO.into())
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
             .message_size_warning(NonZeroUsize::new(1024).unwrap())
             .message_size_limit(None)
@@ -2395,8 +2397,8 @@ mod tests {
                 Duration::from_millis(1),
                 Some(3),
             )))
-            .inactivity_timeout(Duration::ZERO.into())
-            .abort_timeout(Duration::ZERO.into())
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
             .experimental_features_propose_events(true)
             .build()
@@ -2515,8 +2517,8 @@ mod tests {
     async fn pause_effect_emitted_when_pause_on_max_attempts_and_max_attempts_one() {
         // Configure invoker to propose events to flush transient error event (not strictly needed for pause)
         let invoker_options = InvokerOptionsBuilder::default()
-            .inactivity_timeout(Duration::ZERO.into())
-            .abort_timeout(Duration::ZERO.into())
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
             .build()
             .unwrap();
 
@@ -2633,8 +2635,8 @@ mod tests {
         }
 
         let invoker_options = InvokerOptionsBuilder::default()
-            .inactivity_timeout(Duration::ZERO.into())
-            .abort_timeout(Duration::ZERO.into())
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
             .build()
             .unwrap();
 

@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
+use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+
 use super::QueryEngineOptions;
 
 /// # Admin server options
@@ -49,23 +51,19 @@ pub struct AdminOptions {
     /// # Controller heartbeats
     ///
     /// Controls the interval at which cluster controller polls nodes of the cluster.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub heartbeat_interval: humantime::Duration,
+    pub heartbeat_interval: NonZeroFriendlyDuration,
 
     /// # Log trim check interval
     ///
     /// Controls the interval at which cluster controller tries to trim the logs. Log trimming
-    /// can be disabled by setting it to "0s".
+    /// can be disabled by setting it to "0".
     ///
     /// Note that this is only the interval at which logs are checked, and does not guarantee that
     /// trim will be performed. The conditions for safely trim the log vary depending on the
     /// deployment. For single nodes, the log records must be durably persisted to disk. In
     /// distributed deployments, automatic trimming requires an external snapshot destination - see
     /// `worker.snapshots` for more.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    log_trim_check_interval: humantime::Duration,
+    log_trim_check_interval: FriendlyDuration,
 
     /// Disable serving the Restate Web UI on the admin port. Default is `false`.
     pub disable_web_ui: bool,
@@ -74,10 +72,9 @@ pub struct AdminOptions {
     pub disable_cluster_controller: bool,
 
     /// Enable state storage accounting. Default is `None`.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    pub storage_accounting_update_interval: Option<humantime::Duration>,
+    pub storage_accounting_update_interval: Option<NonZeroFriendlyDuration>,
 }
 
 impl AdminOptions {
@@ -102,11 +99,7 @@ impl AdminOptions {
     }
 
     pub fn log_trim_check_interval(&self) -> Option<Duration> {
-        if self.log_trim_check_interval.is_zero() {
-            None
-        } else {
-            Some(*self.log_trim_check_interval)
-        }
+        self.log_trim_check_interval.to_non_zero_std()
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
@@ -139,9 +132,9 @@ impl Default for AdminOptions {
             // max is limited by Tower's LoadShedLayer.
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
-            heartbeat_interval: Duration::from_millis(1500).into(),
+            heartbeat_interval: NonZeroFriendlyDuration::from_millis_unchecked(1500),
             // check whether we can trim logs every hour
-            log_trim_check_interval: Duration::from_secs(60 * 60).into(),
+            log_trim_check_interval: FriendlyDuration::from_secs(60 * 60),
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             disable_web_ui: false,

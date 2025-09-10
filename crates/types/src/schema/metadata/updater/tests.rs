@@ -1161,6 +1161,7 @@ mod endpoint_manifest_options_propagation {
     use crate::schema::invocation_target::{InvocationAttemptOptions, InvocationTargetMetadata};
     use crate::schema::service::{HandlerMetadata, ServiceMetadata};
     use googletest::prelude::*;
+    use restate_time_util::FriendlyDuration;
     use std::time::Duration;
     use test_log::test;
 
@@ -1453,7 +1454,7 @@ mod endpoint_manifest_options_propagation {
     #[test]
     fn journal_retention_default_is_respected() {
         let mut config = Configuration::default();
-        config.invocation.default_journal_retention = Some(Duration::from_secs(300));
+        config.invocation.default_journal_retention = FriendlyDuration::from_secs(300);
         crate::config::set_current_config(config);
 
         let target = init_discover_and_resolve_target(
@@ -1473,7 +1474,7 @@ mod endpoint_manifest_options_propagation {
     #[test]
     fn journal_retention_default_is_overridden_by_discovery() {
         let mut config = Configuration::default();
-        config.invocation.default_journal_retention = Some(Duration::from_secs(300));
+        config.invocation.default_journal_retention = FriendlyDuration::from_secs(300);
         crate::config::set_current_config(config);
 
         let target = init_discover_and_resolve_target(
@@ -1595,7 +1596,7 @@ mod endpoint_manifest_options_propagation {
 
         // 4. Operator updates RESTATE_DEFAULT_JOURNAL_RETENTION with value C, journal retention is still A
         let mut config = Configuration::default();
-        config.invocation.default_journal_retention = Some(Duration::from_secs(180)); // C = 180 seconds
+        config.invocation.default_journal_retention = FriendlyDuration::from_secs(180); // C = 180 seconds
         crate::config::set_current_config(config);
 
         assert_that!(
@@ -1616,8 +1617,8 @@ mod endpoint_manifest_options_propagation {
 
         // 5. Operator updates RESTATE_MAX_JOURNAL_RETENTION with value D, journal retention will be min(A, D)
         let mut config = Configuration::default();
-        config.invocation.default_journal_retention = Some(Duration::from_secs(20)); // E = 20 seconds -> this should be ignored
-        config.invocation.max_journal_retention = Some(Duration::from_secs(30)); // D = 30 seconds
+        config.invocation.default_journal_retention = FriendlyDuration::from_secs(20); // E = 20 seconds -> this should be ignored
+        config.invocation.max_journal_retention = Some(FriendlyDuration::from_secs(30)); // D = 30 seconds
         crate::config::set_current_config(config);
 
         assert_that!(
@@ -1674,7 +1675,7 @@ mod endpoint_manifest_options_propagation {
     fn max_journal_retention_clamps_value_for_service() {
         // Set max_journal_retention to 60 seconds
         let mut config = Configuration::default();
-        config.invocation.max_journal_retention = Some(Duration::from_secs(60));
+        config.invocation.max_journal_retention = Some(FriendlyDuration::from_secs(60));
         crate::config::set_current_config(config);
 
         // Create a service with journal_retention of 120 seconds (higher than max)
@@ -1701,7 +1702,7 @@ mod endpoint_manifest_options_propagation {
     fn max_journal_retention_higher_than_set_value() {
         // Set max_journal_retention to 60 seconds
         let mut config = Configuration::default();
-        config.invocation.max_journal_retention = Some(Duration::from_secs(60));
+        config.invocation.max_journal_retention = Some(FriendlyDuration::from_secs(60));
         crate::config::set_current_config(config);
 
         // Create a service with journal_retention of 30 seconds (lower than max)
@@ -1728,7 +1729,7 @@ mod endpoint_manifest_options_propagation {
     fn max_journal_retention_clamps_value_for_handler() {
         // Set max_journal_retention to 60 seconds
         let mut config = Configuration::default();
-        config.invocation.max_journal_retention = Some(Duration::from_secs(60));
+        config.invocation.max_journal_retention = Some(FriendlyDuration::from_secs(60));
         crate::config::set_current_config(config);
 
         // Create a handler with journal_retention of 300 seconds (higher than max)
@@ -1806,7 +1807,7 @@ mod endpoint_manifest_options_propagation {
     fn max_journal_retention_unset_means_no_limit() {
         // Set default_journal_retention but leave max_journal_retention unset
         let mut config = Configuration::default();
-        config.invocation.default_journal_retention = Some(Duration::from_secs(60));
+        config.invocation.default_journal_retention = FriendlyDuration::from_secs(60);
         config.invocation.max_journal_retention = None; // Explicitly unset
         crate::config::set_current_config(config);
 
@@ -1834,7 +1835,7 @@ mod endpoint_manifest_options_propagation {
     fn max_journal_retention_zero_disables_journal_retention() {
         // Set max_journal_retention to 0 (always disabled)
         let mut config = Configuration::default();
-        config.invocation.max_journal_retention = Some(Duration::from_secs(0));
+        config.invocation.max_journal_retention = Some(FriendlyDuration::from_secs(0));
         crate::config::set_current_config(config);
 
         // Create a service with journal_retention set
@@ -1861,8 +1862,8 @@ mod endpoint_manifest_options_propagation {
     fn max_journal_retention_zero_wins_over_default_and_set_values() {
         // Create a service with default journal_retention
         let mut config = Configuration::default();
-        config.invocation.default_journal_retention = Some(Duration::from_secs(300));
-        config.invocation.max_journal_retention = Some(Duration::from_secs(0));
+        config.invocation.default_journal_retention = FriendlyDuration::from_secs(300);
+        config.invocation.max_journal_retention = Some(FriendlyDuration::from_secs(0));
         crate::config::set_current_config(config);
 
         let target = init_discover_and_resolve_target(
@@ -1964,6 +1965,7 @@ mod modify_service {
     use crate::schema::invocation_target::{InvocationAttemptOptions, InvocationTargetMetadata};
     use crate::schema::service::ServiceMetadata;
     use googletest::prelude::*;
+    use restate_time_util::FriendlyDuration;
     use test_log::test;
 
     #[test]
@@ -2031,7 +2033,8 @@ mod modify_service {
         const DEFAULT_JOURNAL_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 
         let mut config = Configuration::default();
-        config.invocation.default_journal_retention = Some(DEFAULT_JOURNAL_RETENTION);
+        config.invocation.default_journal_retention =
+            FriendlyDuration::new(DEFAULT_JOURNAL_RETENTION);
         crate::config::set_current_config(config);
 
         // Register a plain service first
@@ -2125,7 +2128,8 @@ mod modify_service {
         const DEFAULT_JOURNAL_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 
         let mut config = Configuration::default();
-        config.invocation.default_journal_retention = Some(DEFAULT_JOURNAL_RETENTION);
+        config.invocation.default_journal_retention =
+            FriendlyDuration::new(DEFAULT_JOURNAL_RETENTION);
         crate::config::set_current_config(config);
 
         // Register a plain service first

@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-schemars = ["dep:schemars", "restate-serde-util/schema"]
+schemars = ["dep:schemars", "restate-serde-util/schema", "restate-time-util/schema"]
 unsafe-mutable-config = []
 test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util"]
 
@@ -17,10 +17,11 @@ test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util"]
 restate-workspace-hack = { workspace = true }
 
 restate-base64-util = { workspace = true }
+restate-encoding = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
-restate-encoding = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
+restate-time-util = { workspace = true, features = ["serde", "serde_with"] }
 restate-utoipa = { workspace = true }
 
 ahash = {workspace = true }

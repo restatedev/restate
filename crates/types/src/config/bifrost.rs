@@ -14,9 +14,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use tracing::warn;
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
-use tracing::warn;
+use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use crate::logs::metadata::{NodeSetSize, ProviderKind};
 use crate::retries::RetryPolicy;
@@ -50,31 +51,23 @@ pub struct BifrostOptions {
     /// # Seal retry interval
     ///
     /// Interval to wait between retries of loglet seal failures
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub seal_retry_interval: humantime::Duration,
+    pub seal_retry_interval: NonZeroFriendlyDuration,
 
     /// # Auto recovery threshold
     ///
     /// Time interval after which bifrost's auto-recovery mechanism will kick in. This
     /// is triggered in scenarios where the control plane took too long to complete loglet
     /// reconfigurations.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub auto_recovery_interval: humantime::Duration,
+    pub auto_recovery_interval: NonZeroFriendlyDuration,
 
     /// # Append retry minimum interval
     ///
     /// Minimum retry duration used by the exponential backoff mechanism for bifrost appends.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    append_retry_min_interval: humantime::Duration,
+    append_retry_min_interval: NonZeroFriendlyDuration,
     /// # Append retry maximum interval
     ///
     /// Maximum retry duration used by the exponential backoff mechanism for bifrost appends.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    append_retry_max_interval: humantime::Duration,
+    append_retry_max_interval: NonZeroFriendlyDuration,
 
     /// # In-memory RecordCache memory limit
     ///
@@ -129,10 +122,10 @@ impl Default for BifrostOptions {
                 Some(50),
                 Some(Duration::from_secs(1)),
             ),
-            append_retry_min_interval: Duration::from_millis(10).into(),
-            append_retry_max_interval: Duration::from_secs(1).into(),
-            auto_recovery_interval: Duration::from_secs(15).into(),
-            seal_retry_interval: Duration::from_secs(2).into(),
+            append_retry_min_interval: NonZeroFriendlyDuration::from_millis_unchecked(10),
+            append_retry_max_interval: NonZeroFriendlyDuration::from_secs_unchecked(1),
+            auto_recovery_interval: NonZeroFriendlyDuration::from_secs_unchecked(15),
+            seal_retry_interval: NonZeroFriendlyDuration::from_secs_unchecked(2),
             record_cache_memory_size: ByteCount::from(250u64 * 1024 * 1024), // 250 MiB
             disable_auto_improvement: false,
             experimental_chain_sealing: false,
@@ -178,9 +171,8 @@ pub struct LocalLogletOptions {
     pub writer_batch_commit_count: usize,
 
     /// Trigger a commit when the time since the last commit exceeds this threshold.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub writer_batch_commit_duration: humantime::Duration,
+    /// Batching is disabled if this is set to zero.
+    pub writer_batch_commit_duration: FriendlyDuration,
 }
 
 impl LocalLogletOptions {
@@ -231,7 +223,7 @@ impl Default for LocalLogletOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
             writer_batch_commit_count: 5000,
-            writer_batch_commit_duration: Duration::ZERO.into(),
+            writer_batch_commit_duration: FriendlyDuration::ZERO,
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,
         }
@@ -264,16 +256,12 @@ pub struct ReplicatedLogletOptions {
     /// It may use this to sends pre-emptive release/seal check requests to log-servers.
     ///
     /// The sequencer is also allowed to use this value as interval to send seal/release checks even if it's not quiescent.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub sequencer_inactivity_timeout: humantime::Duration,
+    pub sequencer_inactivity_timeout: NonZeroFriendlyDuration,
 
     /// Log Server RPC timeout
     ///
     /// Timeout waiting on log server response
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub log_server_rpc_timeout: humantime::Duration,
+    pub log_server_rpc_timeout: NonZeroFriendlyDuration,
 
     /// Log Server RPC retry policy
     ///
@@ -347,11 +335,12 @@ impl Default for ReplicatedLogletOptions {
                 None,
                 Some(Duration::from_millis(5000)),
             ),
-            sequencer_inactivity_timeout: Duration::from_secs(15).into(),
+            sequencer_inactivity_timeout: NonZeroFriendlyDuration::from_secs_unchecked(15),
             read_batch_size: NonZeroByteCount::new(
                 NonZeroUsize::new(32 * 1024).expect("Non zero number"),
             ),
-            log_server_rpc_timeout: Duration::from_millis(2000).into(),
+            log_server_rpc_timeout: NonZeroFriendlyDuration::from_millis_unchecked(2000),
+
             log_server_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,

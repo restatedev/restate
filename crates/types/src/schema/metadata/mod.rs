@@ -2,6 +2,20 @@ mod openapi;
 mod serde_hacks;
 pub mod updater;
 
+use std::cmp;
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+use std::time::Duration;
+
+use arc_swap::ArcSwapOption;
+use serde_json::Value;
+use serde_with::serde_as;
+
+use restate_serde_util::MapAsVecItem;
+use restate_time_util::FriendlyDuration;
+
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
 use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
@@ -23,16 +37,6 @@ use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, Subscri
 use crate::schema::{deployment, service};
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
-use arc_swap::ArcSwapOption;
-use restate_serde_util::MapAsVecItem;
-use serde_json::Value;
-use serde_with::serde_as;
-use std::cmp;
-use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-use std::time::Duration;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
@@ -159,7 +163,7 @@ struct ServiceRevision {
 
     /// The retention duration of idempotent requests for this service.
     #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -167,7 +171,7 @@ struct ServiceRevision {
 
     /// The retention duration of workflows. Only available on workflow services.
     #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -178,7 +182,7 @@ struct ServiceRevision {
     /// In case the invocation has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
     /// In case the invocation targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
     #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -193,7 +197,7 @@ struct ServiceRevision {
     ///
     /// This overrides the default inactivity timeout set in invoker options.
     #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -209,7 +213,7 @@ struct ServiceRevision {
     ///
     /// This overrides the default abort timeout set in invoker options.
     #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -223,7 +227,7 @@ struct ServiceRevision {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+        with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     retry_policy_initial_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,7 +237,7 @@ struct ServiceRevision {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+        with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     retry_policy_max_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -293,8 +297,10 @@ impl ServiceRevision {
                 None
             },
             journal_retention: configuration.clamp_journal_retention(
-                self.journal_retention
-                    .or(configuration.invocation.default_journal_retention),
+                self.journal_retention.or(configuration
+                    .invocation
+                    .default_journal_retention
+                    .to_non_zero_std()),
             ),
             inactivity_timeout: self
                 .inactivity_timeout
@@ -368,7 +374,7 @@ struct Handler {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+        with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     retry_policy_initial_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -378,7 +384,7 @@ struct Handler {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+        with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     retry_policy_max_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -514,7 +520,12 @@ impl InvocationTargetResolver for Schema {
                 handler
                     .journal_retention
                     .or(service_revision.journal_retention)
-                    .or_else(|| configuration.invocation.default_journal_retention),
+                    .or_else(|| {
+                        configuration
+                            .invocation
+                            .default_journal_retention
+                            .to_non_zero_std()
+                    }),
             )
             .unwrap_or(Duration::ZERO);
 
@@ -656,7 +667,10 @@ impl SubscriptionResolver for Schema {
 
 impl Configuration {
     fn clamp_journal_retention(&self, requested: Option<Duration>) -> Option<Duration> {
-        clamp_max(requested, self.invocation.max_journal_retention)
+        clamp_max(
+            requested,
+            self.invocation.max_journal_retention.map(Duration::from),
+        )
     }
 
     fn clamp_max_attempts(&self, requested: Option<NonZeroUsize>) -> Option<NonZeroUsize> {
@@ -742,10 +756,10 @@ impl Configuration {
         }) = &self.invocation.default_retry_policy
         {
             return ComputedRetryPolicy {
-                initial_interval: *initial_interval,
+                initial_interval: **initial_interval,
                 exponentiation_factor: *exponentiation_factor,
                 max_attempts: *max_attempts,
-                max_interval: *max_interval,
+                max_interval: max_interval.map(Into::into),
                 on_max_attempts: match on_max_attempts {
                     crate::config::OnMaxAttempts::Pause => OnMaxAttempts::Pause,
                     crate::config::OnMaxAttempts::Kill => OnMaxAttempts::Kill,

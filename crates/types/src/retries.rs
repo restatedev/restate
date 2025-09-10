@@ -16,7 +16,7 @@ use std::future::Future;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use restate_serde_util::DurationString;
+use restate_time_util::FriendlyDuration;
 
 use rand::Rng;
 
@@ -81,8 +81,8 @@ pub enum RetryPolicy {
         /// Interval between retries.
         ///
         /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
-        #[serde(with = "serde_with::As::<DurationString>")]
-        #[cfg_attr(feature = "schemars", schemars(with = "DurationString"))]
+        #[serde(with = "serde_with::As::<FriendlyDuration>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "FriendlyDuration"))]
         interval: Duration,
         /// # Max attempts
         ///
@@ -98,8 +98,8 @@ pub enum RetryPolicy {
         /// Initial interval for the first retry attempt.
         ///
         /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
-        #[serde(with = "serde_with::As::<DurationString>")]
-        #[cfg_attr(feature = "schemars", schemars(with = "DurationString"))]
+        #[serde(with = "serde_with::As::<FriendlyDuration>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "FriendlyDuration"))]
         initial_interval: Duration,
 
         /// # Factor
@@ -117,8 +117,8 @@ pub enum RetryPolicy {
         /// Maximum interval between retries.
         ///
         /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
-        #[serde(with = "serde_with::As::<Option<DurationString>>")]
-        #[cfg_attr(feature = "schemars", schemars(with = "Option<DurationString>"))]
+        #[serde(with = "serde_with::As::<Option<FriendlyDuration>>")]
+        #[cfg_attr(feature = "schemars", schemars(with = "Option<FriendlyDuration>"))]
         max_interval: Option<Duration>,
     },
 }

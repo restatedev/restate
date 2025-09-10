@@ -22,6 +22,7 @@ restate-queue = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message", "codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }
+restate-time-util = { workspace = true }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
 
@@ -50,6 +51,7 @@ tracing = { workspace = true }
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
 restate-invoker-api = { workspace = true, features = ["test-util"] }
+restate-serde-util = { workspace = true }
 restate-service-protocol = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true }

@@ -18,7 +18,7 @@ restate-workspace-hack = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
-restate-time-util = { workspace = true }
+restate-time-util = { workspace = true, features = ["serde_with"] }
 restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
 

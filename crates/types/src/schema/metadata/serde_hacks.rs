@@ -13,7 +13,7 @@ use super::*;
 use crate::identifiers::DeploymentId;
 use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
 use crate::schema::deployment::DeploymentMetadata;
-use restate_serde_util::DurationString;
+use restate_time_util::FriendlyDuration;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use std::collections::HashMap;
@@ -44,35 +44,35 @@ mod v1_data_model {
         ///
         /// The retention duration of idempotent requests for this service.
         #[serde(
-            with = "serde_with::As::<Option<DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
         pub idempotency_retention: Option<Duration>,
 
         #[serde(
-            with = "serde_with::As::<Option<DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
         pub workflow_completion_retention: Option<Duration>,
 
         #[serde(
-            with = "serde_with::As::<Option<DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
         pub journal_retention: Option<Duration>,
 
         #[serde(
-            with = "serde_with::As::<Option<DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
         pub inactivity_timeout: Option<Duration>,
 
         #[serde(
-            with = "serde_with::As::<Option<DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
@@ -128,35 +128,35 @@ mod v1_data_model {
         pub metadata: HashMap<String, String>,
 
         #[serde(
-            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
         pub idempotency_retention: Option<Duration>,
 
         #[serde(
-            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
         pub workflow_completion_retention: Option<Duration>,
 
         #[serde(
-            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
         pub journal_retention: Option<Duration>,
 
         #[serde(
-            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
         pub inactivity_timeout: Option<Duration>,
 
         #[serde(
-            with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+            with = "serde_with::As::<Option<FriendlyDuration>>",
             skip_serializing_if = "Option::is_none",
             default
         )]
@@ -819,7 +819,7 @@ mod conversions {
         #[test]
         fn v2_to_v1_to_schema() {
             let mut conf = Configuration::default();
-            conf.invocation.default_journal_retention = None;
+            conf.invocation.default_journal_retention = FriendlyDuration::ZERO;
             conf.invocation.max_journal_retention = None;
             crate::config::set_current_config(conf);
 
@@ -1091,7 +1091,7 @@ mod conversions {
         #[test]
         fn old_to_new() {
             let mut conf = Configuration::default();
-            conf.invocation.default_journal_retention = None;
+            conf.invocation.default_journal_retention = FriendlyDuration::ZERO;
             conf.invocation.max_journal_retention = None;
             crate::config::set_current_config(conf);
 
