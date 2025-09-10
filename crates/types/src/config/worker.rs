@@ -450,22 +450,6 @@ pub struct StorageOptions {
     /// partitions. The divisor is defined in `num-partitions-to-share-memory-budget`
     rocksdb_memory_ratio: f32,
 
-    /// # Persist LSN interval (deprecated)
-    ///
-    /// This configuration option is deprecated and ignored in Restate >= 1.3.3.
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    #[deprecated(since = "1.4.0", note = "no longer used, will be removed with >1.4.0")]
-    #[serde(skip_serializing)]
-    persist_lsn_interval: Option<humantime::Duration>,
-
-    /// # Persist LSN threshold (deprecated)
-    ///
-    /// This configuration option is deprecated and ignored in Restate >= 1.3.3.
-    #[deprecated(since = "1.4.0", note = "no longer used, will be removed with >1.4.0")]
-    #[serde(skip_serializing)]
-    pub persist_lsn_threshold: Option<u64>,
-
     /// Whether to perform commits in background IO thread pools eagerly or not
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -498,16 +482,6 @@ impl StorageOptions {
                 )
                 .unwrap(),
             );
-        }
-    }
-
-    #[allow(deprecated)]
-    pub fn print_deprecation_warnings(&self) {
-        if self.persist_lsn_interval.is_some() {
-            print_warning_deprecated_config_option("storage.persist-lsn-interval", None);
-        }
-        if self.persist_lsn_threshold.is_some() {
-            print_warning_deprecated_config_option("storage.persist-lsn-threshold", None);
         }
     }
 
@@ -554,10 +528,6 @@ impl Default for StorageOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
             always_commit_in_background: false,
-
-            // todo: remove deprecated persist-lsn-* attributes in 1.4+
-            persist_lsn_interval: None,
-            persist_lsn_threshold: None,
         }
     }
 }
