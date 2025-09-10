@@ -45,6 +45,7 @@ pub struct SpawnPartitionProcessorTask {
     replica_set_states: PartitionReplicaSetStates,
     partition_store_manager: PartitionStoreManager,
     fast_forward_lsn: Option<Lsn>,
+    invocation_token_bucket: Option<TokenBucket>,
     action_token_bucket: Option<TokenBucket>,
 }
 
@@ -58,6 +59,7 @@ impl SpawnPartitionProcessorTask {
         replica_set_states: PartitionReplicaSetStates,
         partition_store_manager: PartitionStoreManager,
         fast_forward_lsn: Option<Lsn>,
+        invocation_token_bucket: Option<TokenBucket>,
         action_token_bucket: Option<TokenBucket>,
     ) -> Self {
         Self {
@@ -68,6 +70,7 @@ impl SpawnPartitionProcessorTask {
             replica_set_states,
             partition_store_manager,
             fast_forward_lsn,
+            invocation_token_bucket,
             action_token_bucket,
         }
     }
@@ -95,6 +98,7 @@ impl SpawnPartitionProcessorTask {
             replica_set_states,
             partition_store_manager,
             fast_forward_lsn,
+            invocation_token_bucket,
             action_token_bucket,
         } = self;
 
@@ -109,6 +113,7 @@ impl SpawnPartitionProcessorTask {
             &config.worker.invoker,
             EntryEnricher::new(schema.clone()),
             schema,
+            invocation_token_bucket,
             action_token_bucket,
         )?;
 

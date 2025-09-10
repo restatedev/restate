@@ -138,6 +138,7 @@ pub struct PartitionProcessorManager {
     wait_for_partition_table_update: bool,
 
     // throttling
+    invocation_token_bucket: Option<TokenBucket>,
     action_token_bucket: Option<TokenBucket>,
 }
 
@@ -261,6 +262,20 @@ impl PartitionProcessorManager {
 
         let config = updateable_config.pinned();
 
+        let invocation_token_bucket =
+            config
+                .worker
+                .invoker
+                .invocation_throttling
+                .as_ref()
+                .map(|opts| {
+                    let limit = Limit::from(opts.clone());
+                    let capacity = limit.burst();
+                    let bucket = TokenBucket::from_parts(limit, gardal::TokioClock::default());
+                    bucket.add_tokens(capacity.get());
+                    bucket
+                });
+
         let action_token_bucket = config
             .worker
             .invoker
@@ -299,6 +314,7 @@ impl PartitionProcessorManager {
             fast_forward_on_startup: HashMap::default(),
             partition_table: Metadata::with_current(|m| m.updateable_partition_table()),
             wait_for_partition_table_update: false,
+            invocation_token_bucket,
             action_token_bucket,
         }
     }
@@ -1293,6 +1309,7 @@ impl PartitionProcessorManager {
             self.replica_set_states.clone(),
             self.partition_store_manager.clone(),
             self.fast_forward_on_startup.remove(&partition_id),
+            self.invocation_token_bucket.clone(),
             self.action_token_bucket.clone(),
         );
 

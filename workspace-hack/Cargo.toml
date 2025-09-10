@@ -51,15 +51,13 @@ either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
 enumset = { version = "1", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
-futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }
 futures-executor = { version = "0.3" }
-futures-io = { version = "0.3", default-features = false, features = ["std"] }
 futures-sink = { version = "0.3" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
-gardal = { version = "0.0.1-alpha.6", features = ["async"] }
+gardal = { version = "0.0.1-alpha.7", features = ["async"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
@@ -180,15 +178,13 @@ enum-map = { version = "2", default-features = false, features = ["serde"] }
 enumset = { version = "1", default-features = false, features = ["serde"] }
 enumset_derive = { version = "0.11", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
-futures = { version = "0.3" }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }
 futures-executor = { version = "0.3" }
-futures-io = { version = "0.3", default-features = false, features = ["std"] }
 futures-sink = { version = "0.3" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
-gardal = { version = "0.0.1-alpha.6", features = ["async"] }
+gardal = { version = "0.0.1-alpha.7", features = ["async"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
