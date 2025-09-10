@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -228,9 +229,9 @@ pub struct ServiceRetryPolicyMetadata {
 
     /// # Max attempts
     ///
-    /// Number of maximum attempts before giving up. Infinite retries if unset.
+    /// Number of maximum attempts (including the initial) before giving up. Infinite retries if unset. No retries if set to 1.
     #[serde(default)]
-    pub max_attempts: Option<usize>,
+    pub max_attempts: Option<NonZeroUsize>,
 
     /// # Max interval
     ///
@@ -471,9 +472,9 @@ pub struct HandlerRetryPolicyMetadata {
 
     /// # Max attempts
     ///
-    /// Number of maximum attempts before giving up. Infinite retries if unset.
+    /// Number of maximum attempts (including the initial) before giving up. Infinite retries if unset. No retries if set to 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_attempts: Option<usize>,
+    pub max_attempts: Option<NonZeroUsize>,
 
     /// # Max interval
     ///

@@ -229,7 +229,7 @@ struct ServiceRevision {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_exponentiation_factor: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    retry_policy_max_attempts: Option<usize>,
+    retry_policy_max_attempts: Option<NonZeroUsize>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -374,7 +374,7 @@ struct Handler {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_exponentiation_factor: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    retry_policy_max_attempts: Option<usize>,
+    retry_policy_max_attempts: Option<NonZeroUsize>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -659,7 +659,7 @@ impl Configuration {
         clamp_max(requested, self.invocation.max_journal_retention)
     }
 
-    fn clamp_max_attempts(&self, requested: Option<usize>) -> Option<usize> {
+    fn clamp_max_attempts(&self, requested: Option<NonZeroUsize>) -> Option<NonZeroUsize> {
         clamp_max(requested, self.invocation.max_retry_policy_max_attempts)
     }
 }
@@ -715,14 +715,16 @@ impl ComputedRetryPolicy {
     }
 
     pub(super) fn as_retry_policy(&self) -> RetryPolicy {
-        if self.max_attempts == Some(0) {
+        if self.max_attempts == Some(NonZeroUsize::MIN) {
             // No retries!
             return RetryPolicy::None;
         }
         RetryPolicy::Exponential {
             initial_interval: self.initial_interval,
             factor: self.exponentiation_factor,
-            max_attempts: self.max_attempts.map(|u| NonZeroUsize::new(u).unwrap()),
+            max_attempts: self
+                .max_attempts
+                .map(|n| NonZeroUsize::new(n.get() - 1).expect("max_attempts > 1")),
             max_interval: self.max_interval,
         }
     }
@@ -762,7 +764,7 @@ impl Configuration {
             RetryPolicy::None => ComputedRetryPolicy {
                 initial_interval: Default::default(),
                 exponentiation_factor: 1.0,
-                max_attempts: Some(0),
+                max_attempts: Some(NonZeroUsize::MIN),
                 max_interval: None,
                 on_max_attempts: OnMaxAttempts::Kill,
             },
@@ -772,7 +774,7 @@ impl Configuration {
             } => ComputedRetryPolicy {
                 initial_interval: *interval,
                 exponentiation_factor: 1.0,
-                max_attempts: max_attempts.map(|u| u.get()),
+                max_attempts: *max_attempts,
                 max_interval: Some(*interval),
                 on_max_attempts: OnMaxAttempts::Kill,
             },
@@ -784,7 +786,7 @@ impl Configuration {
             } => ComputedRetryPolicy {
                 initial_interval: *initial_interval,
                 exponentiation_factor: *factor,
-                max_attempts: max_attempts.map(|u| u.get()),
+                max_attempts: *max_attempts,
                 max_interval: *max_interval,
                 on_max_attempts: OnMaxAttempts::Kill,
             },
@@ -850,5 +852,170 @@ mod test_util {
                 .cloned()
                 .unwrap()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::config::{
+        ConfigurationBuilder, InvocationOptionsBuilder, InvocationRetryPolicyOptionsBuilder,
+        InvokerOptionsBuilder, WorkerOptionsBuilder,
+    };
+    use googletest::prelude::*;
+
+    #[test]
+    fn retry_policy_correctly_inferred_for_none() {
+        let configuration = ConfigurationBuilder::default()
+            .worker(
+                WorkerOptionsBuilder::default()
+                    .invoker(
+                        InvokerOptionsBuilder::default()
+                            .retry_policy(Some(RetryPolicy::None))
+                            .build()
+                            .unwrap(),
+                    )
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+
+        // If no retry policy, number of attempts = 1 -> no retry
+        let retry_policy = configuration
+            .resolve_default_retry_policy()
+            .as_retry_policy();
+        assert_that!(retry_policy.iter().collect::<Vec<_>>(), len(eq(0)));
+    }
+
+    #[test]
+    fn retry_policy_correctly_inferred_for_old_retry_policy_exponential_max_attempts_eq_to_1() {
+        let configuration = ConfigurationBuilder::default()
+            .worker(
+                WorkerOptionsBuilder::default()
+                    .invoker(
+                        InvokerOptionsBuilder::default()
+                            .retry_policy(Some(RetryPolicy::exponential(
+                                Duration::from_millis(10),
+                                2.0,
+                                Some(1),
+                                None,
+                            )))
+                            .build()
+                            .unwrap(),
+                    )
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+
+        // If no retry policy, number of attempts = 1 -> no retry
+        let retry_policy = configuration
+            .resolve_default_retry_policy()
+            .as_retry_policy();
+        assert_that!(retry_policy.iter().collect::<Vec<_>>(), len(eq(0)));
+    }
+
+    #[test]
+    fn retry_policy_correctly_inferred_for_old_retry_policy_exponential_max_attempts_eq_to_2() {
+        let configuration = ConfigurationBuilder::default()
+            .worker(
+                WorkerOptionsBuilder::default()
+                    .invoker(
+                        InvokerOptionsBuilder::default()
+                            .retry_policy(Some(RetryPolicy::exponential(
+                                Duration::from_millis(10),
+                                2.0,
+                                Some(2),
+                                None,
+                            )))
+                            .build()
+                            .unwrap(),
+                    )
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+
+        // If no retry policy, number of attempts = 2 -> 1 retry
+        let retry_policy = configuration
+            .resolve_default_retry_policy()
+            .as_retry_policy();
+        assert_that!(retry_policy.iter().collect::<Vec<_>>(), len(eq(1)));
+    }
+
+    #[test]
+    fn retry_policy_correctly_inferred_for_max_attempts_eq_to_1() {
+        let configuration = ConfigurationBuilder::default()
+            .invocation(
+                InvocationOptionsBuilder::default()
+                    .default_retry_policy(Some(
+                        InvocationRetryPolicyOptionsBuilder::default()
+                            .max_attempts(Some(NonZeroUsize::new(1).unwrap()))
+                            .build()
+                            .unwrap(),
+                    ))
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+
+        // If no retry policy, number of attempts = 1 -> no retry
+        let retry_policy = configuration
+            .resolve_default_retry_policy()
+            .as_retry_policy();
+        assert_that!(retry_policy.iter().collect::<Vec<_>>(), len(eq(0)));
+    }
+
+    #[test]
+    fn retry_policy_correctly_inferred_for_max_attempts_eq_to_2() {
+        let configuration = ConfigurationBuilder::default()
+            .invocation(
+                InvocationOptionsBuilder::default()
+                    .default_retry_policy(Some(
+                        InvocationRetryPolicyOptionsBuilder::default()
+                            .max_attempts(Some(NonZeroUsize::new(2).unwrap()))
+                            .build()
+                            .unwrap(),
+                    ))
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+
+        // If no retry policy, number of attempts = 2 -> 1 retry
+        let retry_policy = configuration
+            .resolve_default_retry_policy()
+            .as_retry_policy();
+        assert_that!(retry_policy.iter().collect::<Vec<_>>(), len(eq(1)));
+    }
+
+    #[test]
+    fn retry_policy_correctly_inferred_for_max_attempts_eq_to_3() {
+        let configuration = ConfigurationBuilder::default()
+            .invocation(
+                InvocationOptionsBuilder::default()
+                    .default_retry_policy(Some(
+                        InvocationRetryPolicyOptionsBuilder::default()
+                            .max_attempts(Some(NonZeroUsize::new(3).unwrap()))
+                            .build()
+                            .unwrap(),
+                    ))
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+
+        // If no retry policy, number of attempts = 3 -> 2 retry
+        let retry_policy = configuration
+            .resolve_default_retry_policy()
+            .as_retry_policy();
+        assert_that!(retry_policy.iter().collect::<Vec<_>>(), len(eq(2)));
     }
 }

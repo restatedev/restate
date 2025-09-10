@@ -33,6 +33,7 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::error::Error;
+use std::num::NonZeroUsize;
 use std::ops::{Not, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
@@ -728,7 +729,9 @@ impl SchemaUpdater {
             retry_policy_exponentiation_factor
         );
         let retry_policy_max_attempts = resolve_optional_config_option!(
-            service.retry_policy_max_attempts.map(|n| n as usize),
+            service
+                .retry_policy_max_attempts
+                .map(|n| NonZeroUsize::new(n as usize).unwrap_or(NonZeroUsize::MIN)),
             retry_policy_max_attempts
         );
         let retry_policy_on_max_attempts = resolve_optional_config_option!(
@@ -1079,7 +1082,9 @@ impl Handler {
         let retry_policy_max_interval = handler.retry_policy_max_interval();
         let retry_policy_exponentiation_factor =
             handler.retry_policy_exponentiation_factor.map(|f| f as f32);
-        let retry_policy_max_attempts = handler.retry_policy_max_attempts.map(|n| n as usize);
+        let retry_policy_max_attempts = handler
+            .retry_policy_max_attempts
+            .map(|n| NonZeroUsize::new(n as usize).unwrap_or(NonZeroUsize::MIN));
         let retry_policy_on_max_attempts = handler.retry_policy_on_max_attempts.map(|f| match f {
             endpoint_manifest::RetryPolicyOnMaxAttempts::Pause => OnMaxAttempts::Pause,
             endpoint_manifest::RetryPolicyOnMaxAttempts::Kill => OnMaxAttempts::Kill,
