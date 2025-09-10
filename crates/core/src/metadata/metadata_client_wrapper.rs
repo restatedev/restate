@@ -15,6 +15,7 @@ use bytestring::ByteString;
 use tracing::debug;
 
 use restate_metadata_store::{ReadError, ReadModifyWriteError, ReadWriteError, WriteError};
+use restate_time_util::DurationExt;
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::errors::MaybeRetryableError;
@@ -194,7 +195,7 @@ impl<'a> MetadataClientWrapper<'a> {
                             debug!(
                                 %retry_count,
                                 "Hit a retryable error: {err}; retrying in '{}'",
-                                humantime::format_duration(delay)
+                                delay.friendly()
                             );
                             tokio::time::sleep(delay).await;
                         } else {

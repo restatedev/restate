@@ -18,6 +18,7 @@ use metrics::{counter, histogram};
 use tokio::time::Instant;
 use tracing::debug;
 
+use restate_time_util::DurationExt;
 use restate_types::errors::{
     BoxedMaybeRetryableError, GenericError, IntoMaybeRetryable, MaybeRetryableError,
 };
@@ -425,7 +426,7 @@ impl MetadataStoreClient {
                         if let Some(backoff) = backoff_policy.as_mut().and_then(|p| p.next()) {
                             debug!(
                                 "Concurrent value update: {msg}; retrying in '{}'",
-                                humantime::format_duration(backoff)
+                                backoff.friendly()
                             );
                             tokio::time::sleep(backoff).await;
                         } else {
@@ -473,7 +474,7 @@ impl MetadataStoreClient {
                         if let Some(backoff) = backoff_policy.as_mut().and_then(|p| p.next()) {
                             debug!(
                                 "Concurrent value update: {msg}; retrying in '{}'",
-                                humantime::format_duration(backoff)
+                                backoff.friendly()
                             );
                             tokio::time::sleep(backoff).await;
                         } else {
