@@ -2,6 +2,19 @@ mod openapi;
 mod serde_hacks;
 pub mod updater;
 
+use std::cmp;
+use std::collections::HashMap;
+use std::num::NonZeroUsize;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+use std::time::Duration;
+
+use arc_swap::ArcSwapOption;
+use serde_json::Value;
+use serde_with::serde_as;
+
+use restate_serde_util::{DurationString, MapAsVecItem};
+
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
 use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
@@ -23,16 +36,6 @@ use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, Subscri
 use crate::schema::{deployment, service};
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
-use arc_swap::ArcSwapOption;
-use restate_serde_util::MapAsVecItem;
-use serde_json::Value;
-use serde_with::serde_as;
-use std::cmp;
-use std::collections::HashMap;
-use std::num::NonZeroUsize;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
-use std::time::Duration;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
@@ -663,7 +666,10 @@ impl SubscriptionResolver for Schema {
 
 impl Configuration {
     fn clamp_journal_retention(&self, requested: Option<Duration>) -> Option<Duration> {
-        clamp_max(requested, self.invocation.max_journal_retention)
+        clamp_max(
+            requested,
+            self.invocation.max_journal_retention.map(Duration::from),
+        )
     }
 
     fn clamp_max_attempts(&self, requested: Option<usize>) -> Option<usize> {
@@ -747,10 +753,10 @@ impl Configuration {
         }) = &self.invocation.default_retry_policy
         {
             return ComputedRetryPolicy {
-                initial_interval: *initial_interval,
+                initial_interval: **initial_interval,
                 exponentiation_factor: *exponentiation_factor,
                 max_attempts: *max_attempts,
-                max_interval: *max_interval,
+                max_interval: max_interval.map(DurationString::into_inner),
                 on_max_attempts: match on_max_attempts {
                     crate::config::OnMaxAttempts::Pause => OnMaxAttempts::Pause,
                     crate::config::OnMaxAttempts::Kill => OnMaxAttempts::Kill,
