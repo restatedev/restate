@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use http::Uri;
 use http::uri::{InvalidUri, Parts, Scheme};
+use restate_serde_util::{DurationString, NonZeroDurationString};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -53,9 +54,7 @@ pub struct HttpOptions {
     ///
     /// How long to wait for a TCP connection to be established before considering
     /// it a failed attempt.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub connect_timeout: humantime::Duration,
+    pub connect_timeout: NonZeroDurationString,
 
     /// # Initial Max Send Streams
     ///
@@ -77,16 +76,9 @@ impl Default for HttpOptions {
             http_keep_alive_options: Http2KeepAliveOptions::default(),
             http_proxy: None,
             no_proxy: Vec::new(),
-            connect_timeout: HttpOptions::default_connect_timeout(),
+            connect_timeout: DurationString::new_unchecked(Duration::from_secs(10)),
             initial_max_send_streams: None,
         }
-    }
-}
-
-impl HttpOptions {
-    #[inline]
-    fn default_connect_timeout() -> humantime::Duration {
-        (Duration::from_secs(10)).into()
     }
 }
 
@@ -108,9 +100,7 @@ pub struct Http2KeepAliveOptions {
     /// connection alive.
     ///
     /// You should set this timeout with a value lower than the `abort_timeout`.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub interval: humantime::Duration,
+    pub interval: NonZeroDurationString,
 
     /// # Timeout
     ///
@@ -118,29 +108,15 @@ pub struct Http2KeepAliveOptions {
     ///
     /// If the ping is not acknowledged within the timeout, the connection will
     /// be closed.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub timeout: humantime::Duration,
+    pub timeout: NonZeroDurationString,
 }
 
 impl Default for Http2KeepAliveOptions {
     fn default() -> Self {
         Self {
-            interval: Http2KeepAliveOptions::default_interval(),
-            timeout: Http2KeepAliveOptions::default_timeout(),
+            interval: DurationString::new_unchecked(Duration::from_secs(40)),
+            timeout: DurationString::new_unchecked(Duration::from_secs(20)),
         }
-    }
-}
-
-impl Http2KeepAliveOptions {
-    #[inline]
-    fn default_interval() -> humantime::Duration {
-        (Duration::from_secs(40)).into()
-    }
-
-    #[inline]
-    fn default_timeout() -> humantime::Duration {
-        (Duration::from_secs(20)).into()
     }
 }
 

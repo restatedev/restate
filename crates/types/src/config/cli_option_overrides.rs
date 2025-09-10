@@ -11,9 +11,10 @@
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
-use humantime::Duration;
 use serde::Serialize;
 use serde_with::{serde_as, skip_serializing_none};
+
+use restate_serde_util::DurationString;
 
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;
@@ -126,9 +127,8 @@ pub struct CommonOptionCliOverride {
     pub default_num_partitions: Option<NonZeroU64>,
 
     /// This timeout is used when shutting down the various Restate components to drain all the internal queues.
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[clap(long, global = true)]
-    pub shutdown_timeout: Option<Duration>,
+    pub shutdown_timeout: Option<DurationString>,
 
     /// Tracing Endpoint
     ///

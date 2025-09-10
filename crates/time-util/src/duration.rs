@@ -193,11 +193,11 @@ impl FriendlyDuration {
         TimeSpan::<Iso8601>::new(Span::try_from(self.0).unwrap())
     }
 
-    pub fn as_std(&self) -> &Duration {
+    pub const fn as_std(&self) -> &Duration {
         &self.0
     }
 
-    pub fn to_std(self) -> Duration {
+    pub const fn to_std(self) -> Duration {
         self.0
     }
 }

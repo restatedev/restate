@@ -18,7 +18,9 @@ use enumset::EnumSet;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
+use restate_serde_util::{
+    DurationString, NonZeroByteCount, NonZeroDurationString, SerdeableHeaderHashMap,
+};
 
 use super::{
     AwsLambdaOptions, GossipOptions, HttpOptions, InvalidConfigurationError, ObjectStoreOptions,
@@ -156,11 +158,7 @@ pub struct CommonOptions {
     /// # Shutdown grace timeout
     ///
     /// This timeout is used when shutting down the various Restate components to drain all the internal queues.
-    ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub shutdown_timeout: humantime::Duration,
+    pub shutdown_timeout: NonZeroDurationString,
 
     /// # Default async runtime thread pool
     ///
@@ -249,9 +247,7 @@ pub struct CommonOptions {
     /// every write that meets this threshold, the system will increment the
     /// `restate.rocksdb_stall_flare` gauge, if the write is unstalled, the guage will be updated
     /// accordingly.
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub rocksdb_write_stall_threshold: humantime::Duration,
+    pub rocksdb_write_stall_threshold: NonZeroDurationString,
 
     /// # Allow rocksdb writes to stall if memory limit is reached
     ///
@@ -277,9 +273,7 @@ pub struct CommonOptions {
     /// This helps the node detect if it has been operating with stale metadata for extended period
     /// of time, primarily because it didn't interact with other peers in the cluster during that
     /// period.
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub metadata_update_interval: humantime::Duration,
+    pub metadata_update_interval: NonZeroDurationString,
 
     /// # Timeout for metadata peer-to-peer fetching
     ///
@@ -287,9 +281,7 @@ pub struct CommonOptions {
     /// its peers. After this timeout duration has passed, the node will attempt to fetch the
     /// metadata from metadata store as well. This is to ensure that the nodes converge quickly
     /// while reducing the load on the metadata store.
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub metadata_fetch_from_peer_timeout: humantime::Duration,
+    pub metadata_fetch_from_peer_timeout: NonZeroDurationString,
 
     /// # Network error retry policy
     ///
@@ -299,9 +291,7 @@ pub struct CommonOptions {
     /// # Initialization timeout
     ///
     /// The timeout until the node gives up joining a cluster and initializing itself.
-    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub initialization_timeout: humantime::Duration,
+    pub initialization_timeout: NonZeroDurationString,
 
     /// # Disable telemetry
     ///
@@ -457,7 +447,7 @@ impl Default for CommonOptions {
             default_replication: ReplicationProperty::new_unchecked(1),
             disable_prometheus: false,
             service_client: Default::default(),
-            shutdown_timeout: Duration::from_secs(60).into(),
+            shutdown_timeout: DurationString::new_unchecked(Duration::from_secs(60)),
             tracing: TracingOptions::default(),
             log_filter: "warn,restate=info".to_string(),
             log_format: Default::default(),
@@ -470,19 +460,19 @@ impl Default for CommonOptions {
             rocksdb_total_memory_size: NonZeroUsize::new(6 * 1024 * 1024 * 1024).unwrap(), // 6GiB
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
-            rocksdb_write_stall_threshold: Duration::from_secs(3).into(),
+            rocksdb_write_stall_threshold: DurationString::new_unchecked(Duration::from_secs(3)),
             rocksdb_enable_stall_on_memory_limit: false,
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
-            metadata_update_interval: Duration::from_secs(10).into(),
-            metadata_fetch_from_peer_timeout: Duration::from_secs(3).into(),
+            metadata_update_interval: DurationString::new_unchecked(Duration::from_secs(10)),
+            metadata_fetch_from_peer_timeout: DurationString::new_unchecked(Duration::from_secs(3)),
             network_error_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(10),
                 2.0,
                 Some(15),
                 Some(Duration::from_secs(5)),
             ),
-            initialization_timeout: Duration::from_secs(5 * 60).into(),
+            initialization_timeout: DurationString::new_unchecked(Duration::from_secs(5 * 60)),
             disable_telemetry: false,
             gossip: GossipOptions::default(),
         }
@@ -566,19 +556,13 @@ pub struct MetadataClientOptions {
     /// # Connect timeout
     ///
     /// TCP connection timeout for connecting to the metadata store.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub connect_timeout: humantime::Duration,
+    pub connect_timeout: NonZeroDurationString,
 
     /// # Metadata Store Keep Alive Interval
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub keep_alive_interval: humantime::Duration,
+    pub keep_alive_interval: NonZeroDurationString,
 
     /// # Metadata Store Keep Alive Timeout
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub keep_alive_timeout: humantime::Duration,
+    pub keep_alive_timeout: NonZeroDurationString,
 
     /// # Backoff policy used by the metadata client
     ///
@@ -596,9 +580,9 @@ impl Default for MetadataClientOptions {
                         .expect("valid metadata store address"),
                 ],
             },
-            connect_timeout: Duration::from_secs(3).into(),
-            keep_alive_interval: Duration::from_secs(5).into(),
-            keep_alive_timeout: Duration::from_secs(5).into(),
+            connect_timeout: DurationString::new_unchecked(Duration::from_secs(3)),
+            keep_alive_interval: DurationString::new_unchecked(Duration::from_secs(5)),
+            keep_alive_timeout: DurationString::new_unchecked(Duration::from_secs(5)),
             // default total time is ~5.3s
             backoff_policy: RetryPolicy::exponential(
                 Duration::from_millis(100),

@@ -293,8 +293,10 @@ impl ServiceRevision {
                 None
             },
             journal_retention: configuration.clamp_journal_retention(
-                self.journal_retention
-                    .or(configuration.invocation.default_journal_retention),
+                self.journal_retention.or(configuration
+                    .invocation
+                    .default_journal_retention
+                    .to_non_zero()),
             ),
             inactivity_timeout: self
                 .inactivity_timeout
@@ -514,7 +516,12 @@ impl InvocationTargetResolver for Schema {
                 handler
                     .journal_retention
                     .or(service_revision.journal_retention)
-                    .or_else(|| configuration.invocation.default_journal_retention),
+                    .or_else(|| {
+                        configuration
+                            .invocation
+                            .default_journal_retention
+                            .to_non_zero()
+                    }),
             )
             .unwrap_or(Duration::ZERO);
 
