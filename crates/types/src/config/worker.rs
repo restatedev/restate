@@ -323,6 +323,19 @@ pub struct InvokerOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     experimental_features_allow_protocol_v6: bool,
 
+    /// # Invocation throttling
+    ///
+    /// Configures throttling for service invocations at the node level.
+    /// This throttling mechanism uses a token bucket algorithm to control the rate
+    /// at which invocations can be processed, helping to prevent resource exhaustion
+    /// and maintain system stability under high load.
+    ///
+    /// The throttling limit is shared across all partitions running on this node,
+    /// providing a global rate limit for the entire node rather than per-partition limits.
+    /// When `unset`, no throttling is applied and invocations are processed
+    /// without throttling.
+    pub invocation_throttling: Option<ThrottlingOptions>,
+
     /// # Action throttling
     ///
     /// Configures rate limiting for service actions at the node level.
@@ -333,7 +346,7 @@ pub struct InvokerOptions {
     /// The throttling limit is shared across all partitions running on this node,
     /// providing a global rate limit for the entire node rather than per-partition limits.
     /// When `unset`, no throttling is applied and actions are processed
-    /// without rate limiting.
+    /// without throttling.
     pub action_throttling: Option<ThrottlingOptions>,
 }
 
@@ -396,6 +409,7 @@ impl Default for InvokerOptions {
             disable_eager_state: false,
             experimental_features_propose_events: false,
             experimental_features_allow_protocol_v6: false,
+            invocation_throttling: None,
             action_throttling: None,
         }
     }

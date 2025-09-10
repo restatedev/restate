@@ -9,12 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use crate::io;
+use futures::{FutureExt, Stream};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::mem;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::{Context, Poll, Waker, ready};
 use tokio::task::JoinHandle;
 
 use crate::segmented_queue::Segment::{
@@ -48,6 +51,7 @@ pub struct SegmentQueue<T> {
     next_segment_id: u64,
     spillable_base_path: PathBuf,
     len: usize,
+    waker: Option<Waker>,
 }
 
 impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
@@ -75,6 +79,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
             next_segment_id: 0,
             spillable_base_path: spillable_base_path.as_ref().into(),
             len: 0,
+            waker: None,
         }
     }
 
@@ -83,6 +88,10 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// threshold provided, this operation might take some time to complete, as it has to flush the queue to disk.
     pub async fn enqueue(&mut self, element: T) {
         self.len += 1;
+
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
 
         if self.enqueue_internal(element) < self.in_memory_element_threshold {
             return;
@@ -112,6 +121,7 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
         }
     }
 
+    #[deprecated(note = "use next() instead")]
     pub async fn dequeue(&mut self) -> Option<T> {
         match self.segments.front_mut() {
             Some(segment) => {
@@ -175,6 +185,51 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> SegmentQueue<T> {
     /// Number of records in queue
     pub fn len(&self) -> usize {
         self.segments.iter().fold(0, |len, seg| len + seg.len())
+    }
+}
+
+impl<T> Stream for SegmentQueue<T>
+where
+    T: Serialize + DeserializeOwned + Send + Unpin + 'static,
+{
+    type Item = T;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+
+        let coop = ready!(tokio::task::coop::poll_proceed(cx));
+        let Some(segment) = this.segments.front_mut() else {
+            this.waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        };
+
+        let is_mutable_segment = segment.is_mutable();
+        if segment.is_on_disk() {
+            ready!(segment.poll_load_from_disk(cx, &this.spillable_base_path));
+        }
+        let head = segment.dequeue();
+        let len = segment.len();
+        if this.should_preload(len) {
+            this.try_preload_next_segment();
+        }
+        // Make sure we don't remove the only segment if it is mutable, because we can reuse it.
+        debug_assert!(
+            !is_mutable_segment || this.segments.len() == 1,
+            "Expecting at most one mutable segment in the queue which is at the end."
+        );
+        if len == 0 && !is_mutable_segment {
+            this.segments.pop_front();
+        }
+
+        head.is_some().then(|| this.len -= 1);
+        coop.made_progress();
+        if head.is_some() {
+            this.waker = None;
+            Poll::Ready(head)
+        } else {
+            this.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
     }
 }
 
@@ -318,6 +373,32 @@ impl<T: Serialize + DeserializeOwned + Send + 'static> Segment<T> {
                 len: *len,
                 handle: load_handle,
             };
+        }
+    }
+
+    fn poll_load_from_disk(&mut self, cx: &mut Context<'_>, path: &Path) -> Poll<()> {
+        loop {
+            match self {
+                Mutable { .. } => return Poll::Ready(()),
+                LoadedFromDisk { .. } => return Poll::Ready(()),
+                StoringToDisk { id, len, handle } => match ready!(handle.poll_unpin(cx)) {
+                    Ok(_) => {
+                        *self = OnDisk { id: *id, len: *len };
+                    }
+                    Err(e) => panic!("Unable to store to disk: {}", e),
+                },
+                OnDisk { id, len } => {
+                    let handle = tokio::spawn(io::consume_segment_infallible(path.into(), *id));
+
+                    *self = LoadingFromDisk { len: *len, handle };
+                }
+                LoadingFromDisk { handle, .. } => match ready!(handle.poll_unpin(cx)) {
+                    Ok(buffer) => {
+                        *self = LoadedFromDisk { buffer };
+                    }
+                    Err(e) => panic!("Unable to load segment from disk: {}", e),
+                },
+            }
         }
     }
 }

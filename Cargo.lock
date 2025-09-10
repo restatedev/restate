@@ -3252,9 +3252,9 @@ dependencies = [
 
 [[package]]
 name = "gardal"
-version = "0.0.1-alpha.6"
+version = "0.0.1-alpha.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08b8247c95fe11f2dd5fdab7b096829e4662a0c2d8002f54dd392f9e49bf8791"
+checksum = "e29896fff51cce710a632bea22ca5b174ec76634c4459687949a26046d09d3e7"
 dependencies = [
  "futures",
  "likely_stable",
@@ -7312,6 +7312,8 @@ version = "1.5.0-dev"
 dependencies = [
  "bincode",
  "criterion",
+ "futures",
+ "pin-project",
  "restate-fs-util",
  "restate-types",
  "restate-workspace-hack",
@@ -7905,11 +7907,9 @@ dependencies = [
  "enumset",
  "enumset_derive",
  "flate2",
- "futures",
  "futures-channel",
  "futures-core",
  "futures-executor",
- "futures-io",
  "futures-sink",
  "futures-task",
  "futures-util",

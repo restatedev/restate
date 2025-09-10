@@ -25,6 +25,9 @@ use std::pin::Pin;
 use std::time::SystemTime;
 use std::{cmp, panic};
 
+use futures::StreamExt;
+use gardal::futures::ThrottledStream;
+use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
 use metrics::counter;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -73,7 +76,8 @@ use crate::status_store::InvocationStatusStore;
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
 
-pub type TokenBucket<C = gardal::TokioClock> = gardal::TokenBucket<gardal::AtomicSharedStorage, C>;
+pub type TokenBucket<C = gardal::TokioClock> =
+    gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -175,6 +179,7 @@ pub struct Service<StorageReader, EntryEnricher, Schemas> {
     // which is a rather internal thing we have only for mocking.
     inner:
         ServiceInner<DefaultInvocationTaskRunner<EntryEnricher, Schemas>, Schemas, StorageReader>,
+    invocation_token_bucket: Option<TokenBucket>,
 }
 
 impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnricher, Schemas> {
@@ -184,6 +189,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
         schemas: Live<Schemas>,
         client: ServiceClient,
         entry_enricher: TEntryEnricher,
+        invocation_token_bucket: Option<TokenBucket>,
         action_token_bucket: Option<TokenBucket>,
     ) -> Service<StorageReader, TEntryEnricher, Schemas>
     where
@@ -217,6 +223,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             },
+            invocation_token_bucket,
         }
     }
 
@@ -225,6 +232,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
         invoker_options: &InvokerOptions,
         entry_enricher: TEntryEnricher,
         schemas: Live<Schemas>,
+        invocation_token_bucket: Option<TokenBucket>,
         action_token_bucket: Option<TokenBucket>,
     ) -> Result<Service<StorageReader, TEntryEnricher, Schemas>, BuildError>
     where
@@ -241,6 +249,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
             schemas,
             client,
             entry_enricher,
+            invocation_token_bucket,
             action_token_bucket,
         ))
     }
@@ -273,6 +282,7 @@ where
         let Service {
             tmp_dir,
             inner: mut service,
+            invocation_token_bucket,
             ..
         } = self;
 
@@ -282,15 +292,23 @@ where
         let in_memory_limit = updateable_options
             .live_load()
             .in_memory_queue_length_limit();
+
+        invocation_token_bucket.as_ref().inspect(|bucket| {
+            debug!("Invocation throttling limit: {:?}", bucket.limit());
+        });
+
         // Prepare the segmented queue
-        let mut segmented_input_queue = SegmentQueue::init(tmp_dir, in_memory_limit)
-            .await
-            .expect("Cannot initialize input spillable queue");
+        let mut segmented_input_queue = std::pin::pin!(
+            SegmentQueue::init(tmp_dir, in_memory_limit)
+                .await
+                .expect("Cannot initialize input spillable queue")
+                .throttle(invocation_token_bucket)
+        );
 
         loop {
             let options = updateable_options.live_load();
             if !service
-                .step(options, &mut segmented_input_queue, shutdown.as_mut())
+                .step(options, segmented_input_queue.as_mut(), shutdown.as_mut())
                 .await
             {
                 break;
@@ -339,7 +357,13 @@ where
     async fn step<F>(
         &mut self,
         options: &InvokerOptions,
-        segmented_input_queue: &mut SegmentQueue<Box<InvokeCommand>>,
+        mut segmented_input_queue: Pin<
+            &mut ThrottledStream<
+                SegmentQueue<Box<InvokeCommand>>,
+                PaddedAtomicSharedStorage,
+                TokioClock,
+            >,
+        >,
         mut shutdown: Pin<&mut F>,
     ) -> bool
     where
@@ -363,7 +387,7 @@ where
                     // --- Spillable queue loading/offloading
                     InputCommand::Invoke(invoke_command) => {
                         counter!(INVOKER_ENQUEUE).increment(1);
-                        segmented_input_queue.enqueue(invoke_command).await;
+                        segmented_input_queue.inner_pin_mut().enqueue(invoke_command).await;
                     },
                     // --- Other commands (they don't go through the segment queue)
                     InputCommand::RegisterPartition { partition, partition_key_range, storage_reader, sender, } => {
@@ -390,7 +414,7 @@ where
                     }
                 }
             },
-            Some(invoke_input_command) = segmented_input_queue.dequeue(), if !segmented_input_queue.is_empty() && self.quota.is_slot_available() => {
+            Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() => {
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_epoch, invoke_input_command.invocation_target, invoke_input_command.journal);
             },
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
@@ -1490,6 +1514,7 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
+    use gardal::StreamExt as GardalStreamExt;
     use googletest::prelude::*;
     use tempfile::tempdir;
     use test_log::test;
@@ -1761,6 +1786,7 @@ mod tests {
             .unwrap(),
             entry_enricher::test_util::MockEntryEnricher,
             None,
+            None,
         );
 
         let mut handle = service.handle();
@@ -1820,7 +1846,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut segment_queue = SegmentQueue::new(tempdir().unwrap().keep(), 1024);
+        let mut segment_queue =
+            std::pin::pin!(SegmentQueue::new(tempdir().unwrap().keep(), 1024).throttle(None));
+
         let cancel_token = CancellationToken::new();
         let shutdown = cancel_token.cancelled();
         tokio::pin!(shutdown);
@@ -1837,6 +1865,8 @@ mod tests {
 
         // Enqueue sid_1 and sid_2
         segment_queue
+            .as_mut()
+            .inner_pin_mut()
             .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_1,
@@ -1846,6 +1876,8 @@ mod tests {
             }))
             .await;
         segment_queue
+            .as_mut()
+            .inner_pin_mut()
             .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_2,
@@ -1858,7 +1890,7 @@ mod tests {
         // Now step the state machine to start the invocation
         assert!(
             service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
+                .step(&invoker_options, segment_queue.as_mut(), shutdown.as_mut())
                 .await
         );
 
@@ -1875,7 +1907,7 @@ mod tests {
         // Step again to remove sid_1 from task queue. This should not invoke sid_2!
         assert!(
             service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
+                .step(&invoker_options, segment_queue.as_mut(), shutdown.as_mut())
                 .await
         );
         assert!(
@@ -1897,7 +1929,7 @@ mod tests {
         // Step now should invoke sid_2
         assert!(
             service_inner
-                .step(&invoker_options, &mut segment_queue, shutdown.as_mut())
+                .step(&invoker_options, segment_queue.as_mut(), shutdown.as_mut(),)
                 .await
         );
         assert!(

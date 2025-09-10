@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use futures::StreamExt;
 use restate_queue::SegmentQueue;
 use std::path;
 use std::time::Duration;
@@ -27,7 +28,10 @@ async fn writing_to_queue_reading_from_queue(base_path: &path::Path) {
     let mut counter = 0;
 
     for _ in 0..number_values {
-        let value = queue.dequeue().await;
+        if queue.is_empty() {
+            break;
+        }
+        let value = queue.next().await;
 
         if let Some(value) = value {
             counter += value;
