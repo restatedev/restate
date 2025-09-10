@@ -32,7 +32,6 @@ bytestring = { workspace = true }
 codederror = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true , features = ["async"]}
-humantime = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }

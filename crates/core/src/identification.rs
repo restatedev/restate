@@ -8,17 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::task_center::TaskCenterMonitoring;
-use crate::{Metadata, TaskCenter};
+use std::time::Duration;
+
 use enumset::EnumSet;
+use serde_with::serde_as;
+
+use restate_time_util::FriendlyDuration;
 use restate_types::config::Configuration;
 use restate_types::health::{
     AdminStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
 };
 use restate_types::nodes_config::Role;
 use restate_types::{NodeId, Version};
-use serde_with::serde_as;
-use std::time::Duration;
+
+use crate::task_center::TaskCenterMonitoring;
+use crate::{Metadata, TaskCenter};
 
 #[serde_as]
 #[derive(serde::Serialize, prost_dto::IntoProst)]
@@ -32,8 +36,7 @@ pub struct Identification {
     pub roles: EnumSet<Role>,
     #[prost(name=age_s)]
     #[into_prost(map=Duration::as_secs, map_by_ref)]
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    pub age: humantime::Duration,
+    pub age: FriendlyDuration,
     pub admin_status: AdminStatus,
     pub worker_status: WorkerStatus,
     pub log_server_status: LogServerStatus,
