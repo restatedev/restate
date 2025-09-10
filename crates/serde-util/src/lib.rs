@@ -21,7 +21,7 @@ mod map_as_vec;
 mod version;
 
 pub use byte_count::*;
-pub use duration::DurationString;
+pub use duration::{DurationString, NonZeroDurationString};
 pub use header_map::SerdeableHeaderHashMap;
 pub use header_value::HeaderValueSerde;
 pub use map_as_vec::{MapAsVec, MapAsVecItem};

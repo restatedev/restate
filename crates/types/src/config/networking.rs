@@ -11,7 +11,7 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::{DurationString, NonZeroByteCount, NonZeroDurationString};
 
 use crate::retries::RetryPolicy;
 use serde::{Deserialize, Serialize};
@@ -31,9 +31,7 @@ pub struct NetworkingOptions {
     /// # Connect timeout
     ///
     /// TCP connection timeout for Restate cluster node-to-node network connections.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub connect_timeout: humantime::Duration,
+    pub connect_timeout: NonZeroDurationString,
 
     /// # Connect retry policy
     ///
@@ -43,19 +41,13 @@ pub struct NetworkingOptions {
     /// # Handshake timeout
     ///
     /// Timeout for receiving a handshake response from Restate cluster peers.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub handshake_timeout: humantime::Duration,
+    pub handshake_timeout: NonZeroDurationString,
 
     /// # HTTP/2 Keep Alive Interval
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub http2_keep_alive_interval: humantime::Duration,
+    pub http2_keep_alive_interval: NonZeroDurationString,
 
     /// # HTTP/2 Keep Alive Timeout
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub http2_keep_alive_timeout: humantime::Duration,
+    pub http2_keep_alive_timeout: NonZeroDurationString,
 
     /// # HTTP/2 Adaptive Window
     pub http2_adaptive_window: bool,
@@ -97,16 +89,16 @@ impl NetworkingOptions {
 impl Default for NetworkingOptions {
     fn default() -> Self {
         Self {
-            connect_timeout: Duration::from_secs(3).into(),
+            connect_timeout: DurationString::new_unchecked(Duration::from_secs(3)),
             connect_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,
                 Some(10),
                 Some(Duration::from_millis(3000)),
             ),
-            handshake_timeout: Duration::from_secs(3).into(),
-            http2_keep_alive_interval: Duration::from_secs(1).into(),
-            http2_keep_alive_timeout: Duration::from_secs(3).into(),
+            handshake_timeout: DurationString::new_unchecked(Duration::from_secs(3)),
+            http2_keep_alive_interval: DurationString::new_unchecked(Duration::from_secs(1)),
+            http2_keep_alive_timeout: DurationString::new_unchecked(Duration::from_secs(3)),
             http2_adaptive_window: true,
             disable_compression: false,
             // 2MiB

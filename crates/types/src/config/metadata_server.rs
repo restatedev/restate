@@ -14,7 +14,7 @@ use std::num::NonZeroUsize;
 use std::time::Duration;
 use tracing::warn;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::{DurationString, NonZeroByteCount, NonZeroDurationString};
 
 use super::{
     CommonOptions, Configuration, RocksDbOptions, RocksDbOptionsBuilder, StructWithDefaults,
@@ -149,16 +149,12 @@ pub struct RaftOptions {
     /// node react more quickly to changes. Note, that every tick comes with an overhead. Moreover,
     /// the tick interval directly affects the election timeout. If the election timeout becomes too
     /// small, then this can cause cluster instabilities due to frequent leader changes.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub raft_tick_interval: humantime::Duration,
+    pub raft_tick_interval: NonZeroDurationString,
     /// The status update interval
     ///
     /// The interval at which the raft node will update its status. Decrease this value in order to
     /// see more recent status updates.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub status_update_interval: humantime::Duration,
+    pub status_update_interval: NonZeroDurationString,
 
     /// # The raft log trim threshold
     ///
@@ -172,8 +168,8 @@ impl Default for RaftOptions {
         RaftOptions {
             raft_election_tick: NonZeroUsize::new(10).expect("be non zero"),
             raft_heartbeat_tick: NonZeroUsize::new(2).expect("be non zero"),
-            raft_tick_interval: Duration::from_millis(100).into(),
-            status_update_interval: Duration::from_secs(5).into(),
+            raft_tick_interval: DurationString::new_unchecked(Duration::from_millis(100)),
+            status_update_interval: DurationString::new_unchecked(Duration::from_secs(5)),
             log_trim_threshold: Some(1000),
         }
     }
