@@ -14,6 +14,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use restate_serde_util::{DurationString, NonZeroDurationString};
+
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -26,9 +28,7 @@ pub struct GossipOptions {
     ///
     /// The interval at which the failure detector will tick. Decrease this value for faster reaction
     /// to node failures. Note, that every tick comes with an overhead.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub gossip_tick_interval: humantime::Duration,
+    pub gossip_tick_interval: NonZeroDurationString,
 
     /// # Gossip failure threshold
     ///
@@ -59,9 +59,7 @@ pub struct GossipOptions {
     /// A node becomes a suspect if it has been previously marked as dead for a given generation
     /// number. If the node incremented its generation number, it will not be impacted by this
     /// threshold.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub gossip_suspect_interval: humantime::Duration,
+    pub gossip_suspect_interval: DurationString,
 
     /// # Gossip loneliness threshold
     ///
@@ -90,9 +88,7 @@ pub struct GossipOptions {
     /// The time skew is the maximum acceptable time difference between the local node and the time
     /// reported by peers via gossip messages. The time skew is also used to ignore gossip messages
     /// that are too old.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub gossip_time_skew_threshold: humantime::Duration,
+    pub gossip_time_skew_threshold: NonZeroDurationString,
 }
 
 // everything * 5
@@ -101,12 +97,12 @@ impl Default for GossipOptions {
         Self {
             gossip_failure_threshold: NonZeroU32::new(10).expect("be non zero"),
             gossip_fd_stability_threshold: NonZeroU32::new(3).expect("be non zero"),
-            gossip_tick_interval: Duration::from_millis(100).into(),
+            gossip_tick_interval: DurationString::new_unchecked(Duration::from_millis(100)),
             gossip_num_peers: NonZeroU32::new(2).expect("be non zero"),
-            gossip_suspect_interval: Duration::from_secs(5).into(),
+            gossip_suspect_interval: DurationString::new(Duration::from_secs(5)),
             gossip_loneliness_threshold: NonZeroU32::new(30).expect("be non zero"),
             gossip_extras_exchange_frequency: NonZeroU32::new(10).expect("be non zero"),
-            gossip_time_skew_threshold: Duration::from_millis(1000).into(),
+            gossip_time_skew_threshold: DurationString::new_unchecked(Duration::from_millis(1000)),
         }
     }
 }

@@ -12,6 +12,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use restate_serde_util::{DurationString, NonZeroDurationString};
+
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "InvocationOptions", default))]
@@ -21,37 +23,21 @@ use serde::{Deserialize, Serialize};
 pub struct InvocationOptions {
     /// # Default journal retention
     ///
-    /// Default journal retention for all invocations. A value of `0` or `None` means no retention by default.
+    /// Default journal retention for all invocations. A value of `0` means no retention by default.
     ///
     /// In production setups, it is advisable to disable default journal retention,
     /// and configure journal retention per service using the respective SDK APIs.
-    #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    #[cfg_attr(
-        feature = "schemars",
-        schemars(with = "Option<restate_serde_util::DurationString>")
-    )]
-    pub default_journal_retention: Option<Duration>,
+    #[serde(skip_serializing_if = "DurationString::is_zero", default)]
+    pub default_journal_retention: DurationString,
 
     /// # Maximum journal retention duration
     ///
     /// Maximum journal retention duration that can be configured.
     /// When discovering a service deployment, or when modifying the journal retention using the Admin API, the given value will be clamped.
     ///
-    /// `None` means no limit.
-    #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    #[cfg_attr(
-        feature = "schemars",
-        schemars(with = "Option<restate_serde_util::DurationString>")
-    )]
-    pub max_journal_retention: Option<Duration>,
+    /// Unset means no limit.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_journal_retention: Option<DurationString>,
 
     // TODO(slinkydeveloper) on 1.6 this option becomes mandatory, and serde should default to the values set below
     /// # Default retry policy
@@ -75,7 +61,7 @@ pub struct InvocationOptions {
 impl Default for InvocationOptions {
     fn default() -> Self {
         Self {
-            default_journal_retention: Some(Duration::from_secs(60 * 60 * 24)),
+            default_journal_retention: DurationString::new(Duration::from_secs(60 * 60 * 24)),
             max_journal_retention: None,
             default_retry_policy: None,
             max_retry_policy_max_attempts: None,
@@ -95,15 +81,8 @@ pub struct InvocationRetryPolicyOptions {
     /// # Initial Interval
     ///
     /// Initial interval for the first retry attempt.
-    #[serde(
-        with = "serde_with::As::<restate_serde_util::DurationString>",
-        default = "default_initial_interval"
-    )]
-    #[cfg_attr(
-        feature = "schemars",
-        schemars(with = "restate_serde_util::DurationString")
-    )]
-    pub(crate) initial_interval: Duration,
+    #[serde(default = "default_initial_interval")]
+    pub(crate) initial_interval: NonZeroDurationString,
 
     /// # Factor
     ///
@@ -126,15 +105,8 @@ pub struct InvocationRetryPolicyOptions {
     /// # Max interval
     ///
     /// Maximum interval between retries.
-    #[serde(
-        default,
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
-    )]
-    #[cfg_attr(
-        feature = "schemars",
-        schemars(with = "Option<restate_serde_util::DurationString>")
-    )]
-    pub(crate) max_interval: Option<Duration>,
+    #[serde(default)]
+    pub(crate) max_interval: Option<NonZeroDurationString>,
 }
 
 impl Default for InvocationRetryPolicyOptions {
@@ -149,8 +121,8 @@ impl Default for InvocationRetryPolicyOptions {
     }
 }
 
-fn default_initial_interval() -> Duration {
-    Duration::from_millis(500)
+fn default_initial_interval() -> NonZeroDurationString {
+    DurationString::new_unchecked(Duration::from_millis(500))
 }
 
 fn default_max_attempts() -> Option<usize> {

@@ -16,13 +16,14 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
 
+use restate_serde_util::{DurationString, NonZeroByteCount, NonZeroDurationString};
+
 use super::{
     CommonOptions, ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder,
     print_warning_deprecated_config_option,
 };
 use crate::identifiers::PartitionId;
 use crate::retries::RetryPolicy;
-use restate_serde_util::NonZeroByteCount;
 
 /// # Worker options
 #[serde_as]
@@ -45,11 +46,7 @@ pub struct WorkerOptions {
     /// In order to clean up completed invocations, that is invocations invoked with an idempotency id, or workflows,
     /// Restate periodically scans among the completed invocations to check whether they need to be removed or not.
     /// This interval sets the scan interval of the cleanup procedure. Default: 1 hour.
-    ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    cleanup_interval: humantime::Duration,
+    cleanup_interval: NonZeroDurationString,
 
     pub storage: StorageOptions,
 
@@ -101,10 +98,9 @@ pub struct WorkerOptions {
     ///
     /// This setting is only effective if `worker.experimental-partition-driven-log-trimming` is
     /// set to `true`.
-    #[serde_as(as = "Option<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    trim_delay_interval: Option<humantime::Duration>,
+    #[serde(default, skip_serializing_if = "DurationString::is_zero")]
+    trim_delay_interval: DurationString,
 
     // todo: remove and auto-enable in v1.6
     //
@@ -133,7 +129,7 @@ impl WorkerOptions {
     }
 
     pub fn trim_delay_interval(&self) -> Duration {
-        self.trim_delay_interval.unwrap_or_default().into()
+        self.trim_delay_interval.into()
     }
 }
 
@@ -142,12 +138,12 @@ impl Default for WorkerOptions {
         Self {
             internal_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
             num_timers_in_memory_limit: None,
-            cleanup_interval: Duration::from_secs(60 * 60).into(),
+            cleanup_interval: DurationString::new_unchecked(Duration::from_secs(60 * 60)),
             storage: StorageOptions::default(),
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
             snapshots: SnapshotsOptions::default(),
-            trim_delay_interval: None,
+            trim_delay_interval: DurationString::ZERO,
             durability_mode: None,
             experimental_partition_driven_log_trimming: false,
         }
@@ -256,11 +252,7 @@ pub struct InvokerOptions {
     ///
     /// The 'abort timeout' is used to abort the invocation, in case it doesn't react to
     /// the request to suspend.
-    ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub inactivity_timeout: humantime::Duration,
+    pub inactivity_timeout: NonZeroDurationString,
 
     /// # Abort timeout
     ///
@@ -271,11 +263,7 @@ pub struct InvokerOptions {
     ///
     /// This timer potentially **interrupts** user code. If the user code needs longer to
     /// gracefully terminate, then this value needs to be set accordingly.
-    ///
-    /// Can be configured using the [`humantime`](https://docs.rs/humantime/latest/humantime/fn.parse_duration.html) format.
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub abort_timeout: humantime::Duration,
+    pub abort_timeout: NonZeroDurationString,
 
     /// # Message size warning
     ///
@@ -386,8 +374,8 @@ impl Default for InvokerOptions {
                 Some(Duration::from_secs(10)),
             )),
             in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
-            inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT.into(),
-            abort_timeout: DEFAULT_ABORT_TIMEOUT.into(),
+            inactivity_timeout: DurationString::new_unchecked(DEFAULT_INACTIVITY_TIMEOUT),
+            abort_timeout: DurationString::new_unchecked(DEFAULT_ABORT_TIMEOUT),
             message_size_warning: NonZeroUsize::new(10 * 1024 * 1024).unwrap(), // 10MiB
             message_size_limit: None,
             tmp_dir: None,
