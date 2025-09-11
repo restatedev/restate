@@ -309,6 +309,7 @@ pub enum InvalidConfigurationError {
     RequiredNodeName(String),
 }
 
+#[allow(dead_code)]
 fn print_warning_deprecated_config_option(deprecated: &str, replacement: Option<&str>) {
     // we can't use tracing since config loading happens before tracing is initialized
     if let Some(replacement) = replacement {

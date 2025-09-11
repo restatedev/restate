@@ -19,10 +19,7 @@ use tracing::warn;
 use restate_serde_util::NonZeroByteCount;
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
-use super::{
-    CommonOptions, ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder,
-    print_warning_deprecated_config_option,
-};
+use super::{CommonOptions, ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder};
 use crate::identifiers::PartitionId;
 use crate::rate::Rate;
 use crate::retries::RetryPolicy;
@@ -241,7 +238,7 @@ pub struct InvokerOptions {
     ///
     /// This is **deprecated** and will be removed in the next Restate releases.
     ///
-    /// Please refer to [`InvocationOptions.retry_policy`] for the new configuration options.
+    /// Please refer to `default-retry-policy` for the new configuration options.
     #[deprecated]
     #[serde(default)]
     pub retry_policy: Option<RetryPolicy>,
@@ -369,9 +366,10 @@ impl InvokerOptions {
     #[allow(deprecated)]
     pub fn print_deprecation_warnings(&self) {
         if self.retry_policy.is_some() {
-            print_warning_deprecated_config_option(
-                "invoker.retry-policy",
-                Some("default-retry-policy"),
+            eprintln!(
+                "Using the deprecated config option 'invoker.retry-policy' instead of 'default-retry-policy'. \
+                Please update the config to use 'default-retry-policy' instead. \
+                Note that using the new feature requires v1.5.x and after enabling, you won't be able to rollback to v1.4.x."
             );
         }
     }
@@ -381,13 +379,7 @@ impl Default for InvokerOptions {
     fn default() -> Self {
         Self {
             #[allow(deprecated)]
-            retry_policy: Some(RetryPolicy::exponential(
-                Duration::from_millis(50),
-                2.0,
-                // see https://github.com/toml-rs/toml/issues/705
-                None,
-                Some(Duration::from_secs(10)),
-            )),
+            retry_policy: None,
             in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
             inactivity_timeout: FriendlyDuration::new(DEFAULT_INACTIVITY_TIMEOUT),
             abort_timeout: FriendlyDuration::new(DEFAULT_ABORT_TIMEOUT),

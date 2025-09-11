@@ -758,7 +758,7 @@ impl Configuration {
             return ComputedRetryPolicy {
                 initial_interval: **initial_interval,
                 exponentiation_factor: *exponentiation_factor,
-                max_attempts: *max_attempts,
+                max_attempts: max_attempts.clone().into(),
                 max_interval: max_interval.map(Into::into),
                 on_max_attempts: match on_max_attempts {
                     crate::config::OnMaxAttempts::Pause => OnMaxAttempts::Pause,
@@ -768,40 +768,41 @@ impl Configuration {
         }
 
         #[allow(deprecated)]
-        match self
-            .worker
-            .invoker
-            .retry_policy
-            .as_ref()
-            .unwrap_or(&RetryPolicy::None)
-        {
-            RetryPolicy::None => ComputedRetryPolicy {
+        match self.worker.invoker.retry_policy.as_ref() {
+            Some(RetryPolicy::None) => ComputedRetryPolicy {
                 initial_interval: Default::default(),
                 exponentiation_factor: 1.0,
                 max_attempts: Some(NonZeroUsize::MIN),
                 max_interval: None,
                 on_max_attempts: OnMaxAttempts::Kill,
             },
-            RetryPolicy::FixedDelay {
+            Some(RetryPolicy::FixedDelay {
                 max_attempts,
                 interval,
-            } => ComputedRetryPolicy {
+            }) => ComputedRetryPolicy {
                 initial_interval: *interval,
                 exponentiation_factor: 1.0,
                 max_attempts: *max_attempts,
                 max_interval: Some(*interval),
                 on_max_attempts: OnMaxAttempts::Kill,
             },
-            RetryPolicy::Exponential {
+            Some(RetryPolicy::Exponential {
                 max_attempts,
                 initial_interval,
                 factor,
                 max_interval,
-            } => ComputedRetryPolicy {
+            }) => ComputedRetryPolicy {
                 initial_interval: *initial_interval,
                 exponentiation_factor: *factor,
                 max_attempts: *max_attempts,
                 max_interval: *max_interval,
+                on_max_attempts: OnMaxAttempts::Kill,
+            },
+            None => ComputedRetryPolicy {
+                initial_interval: Duration::from_millis(50),
+                exponentiation_factor: 2.0,
+                max_attempts: None,
+                max_interval: Some(Duration::from_secs(10)),
                 on_max_attempts: OnMaxAttempts::Kill,
             },
         }
@@ -875,7 +876,7 @@ mod tests {
 
     use crate::config::{
         ConfigurationBuilder, InvocationOptionsBuilder, InvocationRetryPolicyOptionsBuilder,
-        InvokerOptionsBuilder, WorkerOptionsBuilder,
+        InvokerOptionsBuilder, MaxAttempts, WorkerOptionsBuilder,
     };
     use googletest::prelude::*;
 
@@ -968,7 +969,7 @@ mod tests {
                 InvocationOptionsBuilder::default()
                     .default_retry_policy(Some(
                         InvocationRetryPolicyOptionsBuilder::default()
-                            .max_attempts(Some(NonZeroUsize::new(1).unwrap()))
+                            .max_attempts(MaxAttempts::Bounded(NonZeroUsize::new(1).unwrap()))
                             .build()
                             .unwrap(),
                     ))
@@ -992,7 +993,7 @@ mod tests {
                 InvocationOptionsBuilder::default()
                     .default_retry_policy(Some(
                         InvocationRetryPolicyOptionsBuilder::default()
-                            .max_attempts(Some(NonZeroUsize::new(2).unwrap()))
+                            .max_attempts(MaxAttempts::Bounded(NonZeroUsize::new(2).unwrap()))
                             .build()
                             .unwrap(),
                     ))
@@ -1016,7 +1017,7 @@ mod tests {
                 InvocationOptionsBuilder::default()
                     .default_retry_policy(Some(
                         InvocationRetryPolicyOptionsBuilder::default()
-                            .max_attempts(Some(NonZeroUsize::new(3).unwrap()))
+                            .max_attempts(MaxAttempts::Bounded(NonZeroUsize::new(3).unwrap()))
                             .build()
                             .unwrap(),
                     ))
