@@ -30,7 +30,7 @@ restate-storage-query-datafusion = { workspace = true }
 restate-time-util = { workspace = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
-restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", optional = true, version = "0.1.6", tag = "v0.1.6" }
+restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", optional = true, version = "0.1.7", tag = "v0.1.7" }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
