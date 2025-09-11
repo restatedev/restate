@@ -214,7 +214,7 @@ impl MessageSender {
     fn update_consumer_stats(&self, stats: Statistics) {
         for topic in stats.topics {
             for partition in topic.1.partitions {
-                let lag = partition.1.consumer_lag as f64;
+                let lag = partition.1.consumer_lag as u64;
                 gauge!(
                     KAFKA_INGRESS_CONSUMER_LAG,
                      "subscription" => self.subscription.id().to_string(),
