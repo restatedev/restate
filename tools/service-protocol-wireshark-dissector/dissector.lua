@@ -22,13 +22,17 @@ local f_requires_ack = ProtoField.bool("restate_service_protocol.requires_ack", 
 })
 local f_len = ProtoField.uint16("restate_service_protocol.length", "Length", base.DEC)
 local f_message = ProtoField.string("restate_service_protocol.message", "Message", base.UNICODE)
+local f_start_message_retry_count_since_last_stored_entry = ProtoField.uint32("restate_service_protocol.start_message.retry_count_since_last_stored_entry", "Retry count since last stored entry", base.DEC)
+local f_start_message_duration_since_last_stored_entry = ProtoField.string("restate_service_protocol.start_message.duration_since_last_stored_entry", "Duration since last stored entry", base.UNICODE)
 
 p_service_protocol.fields = {
     f_ty,
     f_completed,
     f_requires_ack,
     f_len,
-    f_message
+    f_message,
+    f_start_message_retry_count_since_last_stored_entry,
+    f_start_message_duration_since_last_stored_entry
 }
 
 -- create a function to dissect it
@@ -50,7 +54,17 @@ function p_service_protocol.dissector(buf, pkt, tree)
         if msg.requires_ack ~= nil then
             subtree:add(f_requires_ack, msg.requires_ack)
         end
+
+        -- Message debug view
         subtree:add(f_message, buf(8), msg.message, msg.message)
+
+        -- Specific messages fields
+        if msg.start_message_retry_count_since_last_stored_entry ~= nil then
+            subtree:add(f_start_message_retry_count_since_last_stored_entry, msg.start_message_retry_count_since_last_stored_entry)
+        end
+        if msg.start_message_duration_since_last_stored_entry ~= nil then
+            subtree:add(f_start_message_duration_since_last_stored_entry, msg.start_message_duration_since_last_stored_entry)
+        end
     end
 end
 
@@ -69,3 +83,5 @@ media_types:add("application/vnd.restate.invocation.v4", p_service_protocol)
 streaming_media_types:add("application/vnd.restate.invocation.v4", p_service_protocol)
 media_types:add("application/vnd.restate.invocation.v5", p_service_protocol)
 streaming_media_types:add("application/vnd.restate.invocation.v5", p_service_protocol)
+media_types:add("application/vnd.restate.invocation.v6", p_service_protocol)
+streaming_media_types:add("application/vnd.restate.invocation.v6", p_service_protocol)
