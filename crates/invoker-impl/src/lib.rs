@@ -2512,6 +2512,48 @@ mod tests {
     }
 
     #[test(restate_core::test)]
+    async fn abort_error_counts_towards_retry_policy() {
+        // Enable proposing events and keep timers short for the test
+        let invocation_id = InvocationId::mock_random();
+
+        // Mock service and register partition
+        let (_, _status_tx, mut service_inner) =
+            ServiceInner::mock((), MockSchemas::default(), None);
+        let _rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        // Start invocation epoch 0
+        service_inner.handle_invoke(
+            &InvokerOptions::default(),
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+            InvocationTarget::mock_virtual_object(),
+            InvokeInputJournal::NoCachedJournal,
+        );
+
+        // Abort error
+        service_inner
+            .handle_invocation_task_failed(
+                &InvokerOptions::default(),
+                MOCK_PARTITION,
+                invocation_id,
+                0,
+                InvokerError::AbortTimeoutFired(Duration::from_secs(10).into()),
+            )
+            .await;
+
+        let (_, ism) = service_inner
+            .invocation_state_machine_manager
+            .resolve_invocation(MOCK_PARTITION, &invocation_id)
+            .unwrap();
+        assert!(ism.is_waiting_retry());
+        assert_that!(
+            ism.start_message_retry_count_since_last_stored_command,
+            eq(1)
+        );
+    }
+
+    #[test(restate_core::test)]
     async fn pause_effect_emitted_when_pause_on_max_attempts_and_max_attempts_one() {
         // Configure invoker to propose events to flush transient error event (not strictly needed for pause)
         let invoker_options = InvokerOptionsBuilder::default()

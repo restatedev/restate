@@ -510,6 +510,12 @@ mod tests {
     use restate_types::journal_v2::{CompletionType, NotificationType};
     use restate_types::retries::RetryPolicy;
 
+    impl InvocationStateMachine {
+        pub(crate) fn is_waiting_retry(&self) -> bool {
+            matches!(self.invocation_state, InvocationState::WaitingRetry { .. })
+        }
+    }
+
     #[test]
     fn handle_error_when_waiting_for_retry() {
         let mut invocation_state_machine = InvocationStateMachine::create(
