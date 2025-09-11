@@ -223,8 +223,8 @@ impl InvokerError {
 
     pub(crate) fn into_invocation_error(self) -> InvocationError {
         match self {
-            InvokerError::Sdk(sdk_error) => sdk_error.error,
-            InvokerError::SdkV2(sdk_error) => sdk_error.error,
+            InvokerError::Sdk(sdk_error) => *sdk_error.error,
+            InvokerError::SdkV2(sdk_error) => *sdk_error.error,
             InvokerError::EntryEnrichment(entry_index, entry_type, e) => {
                 let msg = format!(
                     "Error when processing entry {} of type {}: {}",
@@ -299,7 +299,7 @@ pub(crate) enum CommandPreconditionError {
 pub(crate) struct SdkInvocationError {
     pub(crate) related_entry: Option<InvocationErrorRelatedEntry>,
     pub(crate) next_retry_interval_override: Option<Duration>,
-    pub(crate) error: InvocationError,
+    pub(crate) error: Box<InvocationError>,
 }
 
 impl SdkInvocationError {
@@ -392,7 +392,7 @@ impl fmt::Display for InvocationErrorRelatedEntry {
 pub(crate) struct SdkInvocationErrorV2 {
     pub(crate) related_command: Option<InvocationErrorRelatedCommandV2>,
     pub(crate) next_retry_interval_override: Option<Duration>,
-    pub(crate) error: InvocationError,
+    pub(crate) error: Box<InvocationError>,
 }
 
 impl SdkInvocationErrorV2 {

@@ -38,7 +38,7 @@ pub(crate) fn append_promise_row(
                         row.completion_success_value_utf8(str);
                     }
                 }
-                PromiseResult::Failure(c, m) => {
+                PromiseResult::Failure(c, m, _) => {
                     if row.is_completion_failure_defined() {
                         row.fmt_completion_failure(InvocationError::new(c, m))
                     }

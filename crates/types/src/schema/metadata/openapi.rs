@@ -727,6 +727,13 @@ fn restate_error_json_schema() -> Value {
             "stacktrace": {
                 "type": "string",
                 "title": "Stacktrace of the error"
+            },
+            "metadata": {
+                "type": "object",
+                "title": "Additional metadata map",
+                "additionalProperties": {
+                    "type": "string"
+                }
             }
         },
         "required": ["message"],

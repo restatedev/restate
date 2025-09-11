@@ -35,6 +35,7 @@ enum ServiceProtocolVersion {
   V5 = 5;
   // Added:
   // * StartMessage.random_seed
+  // * Failure.metadata
   V6 = 6;
 }
 
@@ -634,6 +635,14 @@ message Failure {
   uint32 code = 1;
   // Contains a concise error message, e.g. Throwable#getMessage() in Java.
   string message = 2;
+
+  // Error metadata
+  repeated FailureMetadata metadata = 3;
+}
+
+message FailureMetadata {
+  string key = 1;
+  string value = 2;
 }
 
 message Header {

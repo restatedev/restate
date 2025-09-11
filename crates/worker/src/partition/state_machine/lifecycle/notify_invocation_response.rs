@@ -21,12 +21,11 @@ use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::errors::NOT_READY_INVOCATION_ERROR;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::InvocationEpoch;
-use restate_types::journal::{Completion, CompletionResult};
+use restate_types::invocation::{InvocationEpoch, ResponseResult};
 use restate_types::journal_v2;
 use restate_types::journal_v2::{
     AttachInvocationCompletion, AttachInvocationResult, CallCompletion, CallResult, CommandType,
-    GetInvocationOutputCompletion, GetInvocationOutputResult, GetPromiseCompletion,
+    CompletionId, GetInvocationOutputCompletion, GetInvocationOutputResult, GetPromiseCompletion,
     GetPromiseResult, SleepCompletion,
 };
 use tracing::error;
@@ -35,7 +34,8 @@ pub struct OnNotifyInvocationResponse {
     pub invocation_id: InvocationId,
     pub invocation_epoch: InvocationEpoch,
     pub status: InvocationStatus,
-    pub completion: Completion,
+    pub caller_completion_id: CompletionId,
+    pub result: ResponseResult,
 }
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
@@ -55,19 +55,20 @@ where
             invocation_id,
             invocation_epoch: this_completion_invocation_epoch,
             status,
-            completion,
+            caller_completion_id,
+            result,
         } = self;
         let invocation_status = ctx.get_invocation_status(&invocation_id).await?;
 
         // Verify that we need to ingest this
         if !invocation_status
-            .should_accept_completion(this_completion_invocation_epoch, completion.entry_index)
+            .should_accept_completion(this_completion_invocation_epoch, caller_completion_id)
         {
             debug_if_leader!(
                 ctx.is_leader,
                 "Ignoring InvocationResponse epoch {} completion id {}",
                 this_completion_invocation_epoch,
-                completion.entry_index
+                caller_completion_id
             );
             return Ok(());
         }
@@ -82,86 +83,52 @@ where
 
         let command = ctx
             .storage
-            .get_command_by_completion_id(invocation_id, completion.entry_index)
+            .get_command_by_completion_id(invocation_id, caller_completion_id)
             .await?
             .map(|(_, cmd)| cmd);
 
         if let Some(cmd) = command {
             let entry: journal_v2::Entry = match cmd.command_type() {
                 CommandType::GetPromise => GetPromiseCompletion {
-                    completion_id: completion.entry_index,
-                    result: match completion.result {
-                        CompletionResult::Success(s) => GetPromiseResult::Success(s),
-                        CompletionResult::Failure(code, message) => {
-                            GetPromiseResult::Failure(journal_v2::Failure { code, message })
-                        }
-                        CompletionResult::Empty => {
-                            return Err(Error::BadCompletionVariantForInvocationResponse(
-                                CommandType::GetPromise,
-                                completion.entry_index,
-                                "Empty",
-                            ));
-                        }
+                    completion_id: caller_completion_id,
+                    result: match result {
+                        ResponseResult::Success(s) => GetPromiseResult::Success(s),
+                        ResponseResult::Failure(err) => GetPromiseResult::Failure(err.into()),
                     },
                 }
                 .into(),
                 CommandType::Sleep => SleepCompletion {
-                    completion_id: completion.entry_index,
+                    completion_id: caller_completion_id,
                 }
                 .into(),
                 CommandType::Call => CallCompletion {
-                    completion_id: completion.entry_index,
-                    result: match completion.result {
-                        CompletionResult::Success(s) => CallResult::Success(s),
-                        CompletionResult::Failure(code, message) => {
-                            CallResult::Failure(journal_v2::Failure { code, message })
-                        }
-                        CompletionResult::Empty => {
-                            return Err(Error::BadCompletionVariantForInvocationResponse(
-                                CommandType::Call,
-                                completion.entry_index,
-                                "Empty",
-                            ));
-                        }
+                    completion_id: caller_completion_id,
+                    result: match result {
+                        ResponseResult::Success(s) => CallResult::Success(s),
+                        ResponseResult::Failure(err) => CallResult::Failure(err.into()),
                     },
                 }
                 .into(),
                 CommandType::AttachInvocation => AttachInvocationCompletion {
-                    completion_id: completion.entry_index,
-                    result: match completion.result {
-                        CompletionResult::Success(s) => AttachInvocationResult::Success(s),
-                        CompletionResult::Failure(code, message) => {
-                            AttachInvocationResult::Failure(journal_v2::Failure { code, message })
-                        }
-                        CompletionResult::Empty => {
-                            return Err(Error::BadCompletionVariantForInvocationResponse(
-                                CommandType::AttachInvocation,
-                                completion.entry_index,
-                                "Empty",
-                            ));
-                        }
+                    completion_id: caller_completion_id,
+                    result: match result {
+                        ResponseResult::Success(s) => AttachInvocationResult::Success(s),
+                        ResponseResult::Failure(err) => AttachInvocationResult::Failure(err.into()),
                     },
                 }
                 .into(),
                 CommandType::GetInvocationOutput => {
                     GetInvocationOutputCompletion {
-                        completion_id: completion.entry_index,
-                        result: match completion.result {
-                            CompletionResult::Success(s) => GetInvocationOutputResult::Success(s),
-                            failure @ CompletionResult::Failure(_, _)
-                                if failure
-                                    == CompletionResult::from(&NOT_READY_INVOCATION_ERROR) =>
-                            {
+                        completion_id: caller_completion_id,
+                        result: match result {
+                            ResponseResult::Success(s) => GetInvocationOutputResult::Success(s),
+                            ResponseResult::Failure(err) if err == NOT_READY_INVOCATION_ERROR => {
                                 // Corner case with old journal/state machine
                                 GetInvocationOutputResult::Void
                             }
-                            CompletionResult::Failure(code, message) => {
-                                GetInvocationOutputResult::Failure(journal_v2::Failure {
-                                    code,
-                                    message,
-                                })
+                            ResponseResult::Failure(err) => {
+                                GetInvocationOutputResult::Failure(err.into())
                             }
-                            CompletionResult::Empty => GetInvocationOutputResult::Void,
                         },
                     }
                     .into()
@@ -169,11 +136,11 @@ where
                 cmd_ty => {
                     error!(
                         "Got an invocation response, the command type {cmd_ty} is unexpected for completion index {}. This indicates storage corruption.",
-                        completion.entry_index
+                        caller_completion_id
                     );
                     return Err(Error::BadCommandTypeForInvocationResponse(
                         cmd_ty,
-                        completion.entry_index,
+                        caller_completion_id,
                     ));
                 }
             };
@@ -184,13 +151,102 @@ where
         } else {
             error!(
                 "Got an invocation response, but there is no corresponding command in the journal for completion index {}. This indicates storage corruption.",
-                completion.entry_index
+                caller_completion_id
             );
             return Err(Error::MissingCommandForInvocationResponse(
-                completion.entry_index,
+                caller_completion_id,
             ));
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use googletest::prelude::*;
+    use restate_types::errors::InvocationError;
+    use restate_types::identifiers::ServiceId;
+    use restate_types::invocation::{
+        InvocationResponse, InvocationTarget, JournalCompletionTarget,
+    };
+    use restate_types::journal_v2::EntryMetadata;
+    use restate_types::journal_v2::{
+        CallCommand, CallInvocationIdCompletion, CallRequest, Entry, EntryType,
+    };
+    use restate_wal_protocol::Command;
+
+    #[restate_core::test]
+    async fn reply_to_call_with_failure_and_metadata() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+        let invocation_id_completion_id = 1;
+        let result_completion_id = 2;
+        let callee_service_id = ServiceId::mock_random();
+        let callee_invocation_target =
+            InvocationTarget::mock_from_service_id(callee_service_id.clone());
+        let callee_invocation_id = InvocationId::mock_generate(&callee_invocation_target);
+        let expected_failure =
+            InvocationError::new(512u16, "my custom error").with_metadata("mytype", "sometype");
+
+        let call_command = CallCommand {
+            request: CallRequest::mock(callee_invocation_id, callee_invocation_target.clone()),
+            invocation_id_completion_id,
+            result_completion_id,
+            name: Default::default(),
+        };
+        let actions = test_env
+            .apply_multiple([
+                fixtures::invoker_entry_effect(invocation_id, call_command.clone()),
+                Command::InvocationResponse(InvocationResponse {
+                    target: JournalCompletionTarget::from_parts(
+                        invocation_id,
+                        result_completion_id,
+                        0,
+                    ),
+                    result: ResponseResult::Failure(expected_failure.clone()),
+                }),
+            ])
+            .await;
+
+        let call_invocation_id_completion = CallInvocationIdCompletion {
+            completion_id: invocation_id_completion_id,
+            invocation_id: callee_invocation_id,
+        };
+        let call_completion = CallCompletion {
+            completion_id: result_completion_id,
+            result: CallResult::Failure(expected_failure.into()),
+        };
+        assert_that!(
+            actions,
+            all![
+                contains(matchers::actions::forward_notification(
+                    invocation_id,
+                    call_invocation_id_completion.clone()
+                )),
+                contains(matchers::actions::forward_notification(
+                    invocation_id,
+                    call_completion.clone()
+                ))
+            ]
+        );
+
+        // Check journal
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 4).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(call_command),
+                matchers::entry_eq(call_invocation_id_completion),
+                matchers::entry_eq(call_completion),
+            ]
+        );
+
+        test_env.shutdown().await;
     }
 }

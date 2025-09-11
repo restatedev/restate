@@ -12,7 +12,6 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
-use std::fmt::{Debug, Display, Formatter};
 use tonic;
 use tracing::Level;
 
@@ -47,7 +46,7 @@ pub trait IntoMaybeRetryable: Sized {
 }
 
 impl<T> IntoMaybeRetryable for T where
-    T: std::fmt::Debug + std::fmt::Display + Send + Sync + std::error::Error + 'static
+    T: fmt::Debug + fmt::Display + Send + Sync + std::error::Error + 'static
 {
 }
 
@@ -77,20 +76,20 @@ where
     }
 }
 
-impl<T> std::fmt::Display for RetryableError<T>
+impl<T> fmt::Display for RetryableError<T>
 where
-    T: std::fmt::Debug + std::fmt::Display + std::error::Error,
+    T: fmt::Debug + fmt::Display + std::error::Error,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[retryable] {}", self.0)
     }
 }
 
-impl<T> std::fmt::Display for TerminalError<T>
+impl<T> fmt::Display for TerminalError<T>
 where
-    T: std::fmt::Debug + std::fmt::Display + std::error::Error + 'static,
+    T: fmt::Debug + fmt::Display + std::error::Error + 'static,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[terminal] {}", self.0)
     }
 }
@@ -133,7 +132,7 @@ impl From<InvocationErrorCode> for u32 {
 }
 
 impl fmt::Display for InvocationErrorCode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(display_str) = self.display_str() {
             write!(f, "{} {}", self.0, display_str)
         } else {
@@ -143,7 +142,7 @@ impl fmt::Display for InvocationErrorCode {
 }
 
 impl fmt::Debug for InvocationErrorCode {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
@@ -180,11 +179,18 @@ pub mod codes {
 
 /// This struct represents errors arisen when processing a service invocation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct InvocationError {
-    code: InvocationErrorCode,
-    message: Cow<'static, str>,
+    pub code: InvocationErrorCode,
+    pub message: Cow<'static, str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stacktrace: Option<Cow<'static, str>>,
+    pub stacktrace: Option<Cow<'static, str>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "serde_with::As::<serde_with::Map<serde_with::Same, serde_with::Same>>"
+    )]
+    pub metadata: Vec<(String, String)>,
 }
 
 pub const UNKNOWN_INVOCATION_ERROR: InvocationError =
@@ -202,6 +208,12 @@ impl fmt::Display for InvocationError {
         if self.stacktrace.is_some() {
             write!(f, "\n{}", self.stacktrace().unwrap())?;
         }
+        if !self.metadata.is_empty() {
+            write!(f, "\nmetadata:")?;
+            for (name, value) in &self.metadata {
+                write!(f, "\n  {}: {}", name, value)?;
+            }
+        }
         Ok(())
     }
 }
@@ -214,6 +226,7 @@ impl InvocationError {
             code,
             message: Cow::Borrowed(message),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -222,6 +235,7 @@ impl InvocationError {
             code: code.into(),
             message: Cow::Owned(message.into()),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -230,6 +244,7 @@ impl InvocationError {
             code: codes::INTERNAL,
             message: Cow::Owned(message.into()),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -240,6 +255,7 @@ impl InvocationError {
                 "Service '{service}' not found. Check whether the deployment containing the service is registered."
             )),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -253,6 +269,7 @@ impl InvocationError {
                 "Service handler '{service}/{handler}' not found. Check whether you've registered the correct version of your service."
             )),
             stacktrace: None,
+            metadata: Vec::new(),
         }
     }
 
@@ -263,6 +280,31 @@ impl InvocationError {
 
     pub fn with_message(mut self, message: impl Into<String>) -> InvocationError {
         self.message = Cow::Owned(message.into());
+        self
+    }
+
+    pub fn with_metadata(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> InvocationError {
+        self.metadata.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn with_metadata_vec(mut self, metadata: Vec<(String, String)>) -> InvocationError {
+        self.metadata = metadata;
+        self
+    }
+
+    pub fn with_metadata_iter<I, K, V>(mut self, metadata: I) -> InvocationError
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.metadata
+            .extend(metadata.into_iter().map(|(k, v)| (k.into(), v.into())));
         self
     }
 
@@ -281,6 +323,10 @@ impl InvocationError {
 
     pub fn stacktrace(&self) -> Option<&str> {
         self.stacktrace.as_deref()
+    }
+
+    pub fn metadata(&self) -> &[(String, String)] {
+        self.metadata.as_ref()
     }
 
     pub fn into_stacktrace(self) -> Option<Cow<'static, str>> {
@@ -398,11 +444,11 @@ impl SimpleStatus {
     }
 }
 
-impl Display for SimpleStatus {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl fmt::Display for SimpleStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if tracing::enabled!(Level::DEBUG) {
             // display all details of status if DEBUG log level or higher is enabled
-            Display::fmt(&self.0, f)
+            fmt::Display::fmt(&self.0, f)
         } else {
             write!(f, "{}: {}", self.0.code(), self.0.message())
         }

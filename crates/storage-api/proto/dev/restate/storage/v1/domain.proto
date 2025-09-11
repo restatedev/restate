@@ -79,10 +79,16 @@ message JournalCompletionTarget {
   uint32 caller_invocation_epoch = 4;
 }
 
+message FailureMetadata {
+  string key = 1;
+  string value = 2;
+}
+
 message EntryResult {
   message Failure {
     uint32 error_code = 1;
     bytes message = 2;
+    repeated FailureMetadata metadata = 3;
   }
 
   oneof result {
@@ -605,6 +611,7 @@ message ResponseResult {
   message ResponseFailure {
     uint32 failure_code = 1;
     bytes failure_message = 2;
+    repeated FailureMetadata failure_metadata = 3;
   }
 
   oneof response_result {
@@ -653,6 +660,7 @@ message OutboxMessage {
     message Failure {
       uint32 error_code = 1;
       string message = 2;
+      repeated FailureMetadata metadata = 3;
     }
 
     InvocationId invocation_id = 1;
