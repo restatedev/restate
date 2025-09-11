@@ -28,7 +28,7 @@ const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
 /// This information needs to be updated whenever we release a version that changes the
 /// compatible versions boundaries.
 static COMPATIBILITY_INFORMATION: CompatibilityInformation =
-    CompatibilityInformation::new(Version::new(1, 3, 0), Version::new(1, 0, 0));
+    CompatibilityInformation::new(Version::new(1, 4, 0), Version::new(1, 0, 0));
 
 /// Compatibility information defining the minimum Restate version that can read data written by
 /// this version. Additionally, it specifies the minimum with which this version is backwards
