@@ -238,7 +238,7 @@ pub struct InvokerOptions {
     ///
     /// This is **deprecated** and will be removed in the next Restate releases.
     ///
-    /// Please refer to [`InvocationOptions.default_retry_policy`] for the new configuration options.
+    /// Please refer to `default-retry-policy` for the new configuration options.
     #[deprecated]
     #[serde(default)]
     pub retry_policy: Option<RetryPolicy>,
