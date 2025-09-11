@@ -39,7 +39,7 @@ pub struct InvocationOptions {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_journal_retention: Option<FriendlyDuration>,
 
-    // TODO(slinkydeveloper) on 1.6 this option becomes mandatory, and serde should default to the values set below
+    // TODO(slinkydeveloper) on v1.6 this option becomes mandatory, and serde should default to the values set below
     /// # Default retry policy
     ///
     /// The default retry policy to use for invocations.
