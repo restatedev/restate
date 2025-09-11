@@ -11,11 +11,17 @@
 use metrics::{Unit, describe_counter};
 
 pub const KAFKA_INGRESS_REQUESTS: &str = "restate.kafka_ingress.requests.total";
+pub const KAFKA_INGRESS_CONSUMER_LAG: &str = "restate.kafka_ingress.consumer.lag";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
         KAFKA_INGRESS_REQUESTS,
         Unit::Count,
         "Number of Kafka ingress requests"
+    );
+    describe_counter!(
+        KAFKA_INGRESS_CONSUMER_LAG,
+        Unit::Count,
+        "Kafka Consumer Lag per partition"
     );
 }
