@@ -221,7 +221,7 @@ impl MessageSender {
                      "topic" => topic.0.to_string(),
                      "partition" =>  partition.0.to_string()
                 )
-                .record(lag);
+                .set(lag);
             }
         }
     }
