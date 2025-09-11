@@ -758,7 +758,7 @@ impl Configuration {
             return ComputedRetryPolicy {
                 initial_interval: **initial_interval,
                 exponentiation_factor: *exponentiation_factor,
-                max_attempts: *max_attempts,
+                max_attempts: max_attempts.clone().into(),
                 max_interval: max_interval.map(Into::into),
                 on_max_attempts: match on_max_attempts {
                     crate::config::OnMaxAttempts::Pause => OnMaxAttempts::Pause,
@@ -876,7 +876,7 @@ mod tests {
 
     use crate::config::{
         ConfigurationBuilder, InvocationOptionsBuilder, InvocationRetryPolicyOptionsBuilder,
-        InvokerOptionsBuilder, WorkerOptionsBuilder,
+        InvokerOptionsBuilder, MaxAttempts, WorkerOptionsBuilder,
     };
     use googletest::prelude::*;
 
@@ -969,7 +969,7 @@ mod tests {
                 InvocationOptionsBuilder::default()
                     .default_retry_policy(Some(
                         InvocationRetryPolicyOptionsBuilder::default()
-                            .max_attempts(Some(NonZeroUsize::new(1).unwrap()))
+                            .max_attempts(MaxAttempts::Bounded(NonZeroUsize::new(1).unwrap()))
                             .build()
                             .unwrap(),
                     ))
@@ -993,7 +993,7 @@ mod tests {
                 InvocationOptionsBuilder::default()
                     .default_retry_policy(Some(
                         InvocationRetryPolicyOptionsBuilder::default()
-                            .max_attempts(Some(NonZeroUsize::new(2).unwrap()))
+                            .max_attempts(MaxAttempts::Bounded(NonZeroUsize::new(2).unwrap()))
                             .build()
                             .unwrap(),
                     ))
@@ -1017,7 +1017,7 @@ mod tests {
                 InvocationOptionsBuilder::default()
                     .default_retry_policy(Some(
                         InvocationRetryPolicyOptionsBuilder::default()
-                            .max_attempts(Some(NonZeroUsize::new(3).unwrap()))
+                            .max_attempts(MaxAttempts::Bounded(NonZeroUsize::new(3).unwrap()))
                             .build()
                             .unwrap(),
                     ))
