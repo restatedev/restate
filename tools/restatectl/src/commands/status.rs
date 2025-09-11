@@ -22,6 +22,7 @@ use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_core::protobuf::cluster_ctrl_svc::{ClusterStateRequest, new_cluster_ctrl_client};
 use restate_metadata_server_grpc::grpc::new_metadata_server_client;
+use restate_time_util::DurationExt;
 use restate_types::health::MetadataServerStatus;
 use restate_types::logs::metadata::Logs;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
@@ -330,8 +331,7 @@ impl NodeRow {
         if uptime.as_secs() == 0 {
             self.uptime = Some(Cell::new("n/a"));
         } else {
-            let uptime = humantime::Duration::from(uptime);
-            self.uptime = Some(Cell::new(format!("{uptime}")));
+            self.uptime = Some(Cell::new(uptime.friendly()));
         }
         self
     }

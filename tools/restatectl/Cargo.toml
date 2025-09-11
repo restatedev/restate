@@ -36,6 +36,7 @@ restate-futures-util = { workspace = true }
 restate-log-server-grpc = { workspace = true, features = ["grpc-client"] }
 restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
 restate-metadata-store = { workspace = true, features = ["grpc-client"] }
+restate-time-util = { workspace = true, features = ["serde"] }
 restate-types = { workspace = true, features = ["clap"] }
 # only used for dump-log which is gated out by default
 restate-bifrost = { workspace = true, optional = true, features = ["local-loglet", "replicated-loglet"] }

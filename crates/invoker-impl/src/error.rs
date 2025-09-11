@@ -12,6 +12,7 @@ use http::{HeaderName, HeaderValue};
 use restate_invoker_api::InvocationErrorReport;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
+use restate_time_util::FriendlyDuration;
 use restate_types::errors::{InvocationError, InvocationErrorCode, codes};
 use restate_types::identifiers::DeploymentId;
 use restate_types::invocation::InvocationEpoch;
@@ -134,7 +135,7 @@ pub(crate) enum InvokerError {
 
     #[error("the invocation stream was closed after the 'abort timeout' ({0}) fired.")]
     #[code(restate_errors::RT0001)]
-    AbortTimeoutFired(humantime::Duration),
+    AbortTimeoutFired(FriendlyDuration),
 
     #[error("cannot process entry {1} (index {0}) because of a failed precondition: {2}")]
     #[code(restate_errors::RT0017)]

@@ -29,6 +29,7 @@ use futures::StreamExt;
 use gardal::futures::ThrottledStream;
 use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
 use metrics::counter;
+use restate_time_util::DurationExt;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace};
@@ -1251,14 +1252,14 @@ where
                         restate.invocation.target = %ism.invocation_target,
                         restate.invocation.error.stacktrace = %error_stacktrace,
                         "Invocation error, retrying in {}.",
-                        humantime::format_duration(next_retry_timer_duration));
+                        next_retry_timer_duration.friendly());
                 } else {
                     warn_it!(
                         error,
                         restate.invocation.id = %invocation_id,
                         restate.invocation.target = %ism.invocation_target,
                         "Invocation error, retrying in {}.",
-                        humantime::format_duration(next_retry_timer_duration));
+                        next_retry_timer_duration.friendly());
                 }
                 trace!("Invocation state: {:?}.", ism.invocation_state_debug());
                 let next_retry_at = SystemTime::now() + next_retry_timer_duration;

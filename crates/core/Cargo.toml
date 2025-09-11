@@ -21,8 +21,9 @@ restate-workspace-hack = { workspace = true }
 
 restate-core-derive = { workspace = true, optional = true }
 restate-futures-util = { workspace = true }
-restate-types = { workspace = true }
 restate-metadata-store = { workspace = true }
+restate-time-util = { workspace = true }
+restate-types = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
@@ -40,7 +41,6 @@ enumset = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
-humantime = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["server-graceful", "server"] }
 itertools = { workspace = true }

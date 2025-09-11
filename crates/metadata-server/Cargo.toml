@@ -18,6 +18,7 @@ restate-metadata-providers = { workspace = true, features = ["replicated"] }
 restate-metadata-server-grpc = { workspace = true, features = ["grpc-client", "grpc-server"] }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
+restate-time-util = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
@@ -30,7 +31,6 @@ chrono = { workspace = true }
 derive_more = { workspace = true }
 flexbuffers = { workspace = true }
 futures = { workspace = true }
-humantime = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
 prost = { workspace = true }

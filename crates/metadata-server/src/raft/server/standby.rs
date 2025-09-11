@@ -22,6 +22,7 @@ use tracing::{Span, debug, instrument, trace};
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_providers::replicated::KnownLeader;
+use restate_time_util::DurationExt;
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::net::metadata::MetadataKind;
@@ -219,7 +220,8 @@ impl Standby {
                 }
                 err => {
                     let delay = join_retry_policy.next().expect("infinite retry policy");
-                    trace!(%err, "Failed joining metadata cluster. Retrying in {}", humantime::Duration::from(delay));
+                    trace!(%err, "Failed joining metadata cluster. Retrying in {}",
+                        delay.friendly());
                     tokio::time::sleep(delay).await
                 }
             }
