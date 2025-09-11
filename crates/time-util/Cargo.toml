@@ -8,10 +8,16 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["serde", "schema", "serde_with"]
+schema = ["dep:schemars", "dep:serde_json"]
+serde = ["dep:serde"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
 jiff = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+serde_with = { workspace = true, optional = true }
 thiserror = { workspace = true }

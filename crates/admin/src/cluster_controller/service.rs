@@ -994,11 +994,9 @@ mod tests {
 
     use googletest::assert_that;
     use googletest::matchers::eq;
-    use restate_types::partitions::state::PartitionReplicaSetStates;
     use test_log::test;
     use tracing::info;
 
-    use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
     use restate_bifrost::loglet::FindTailOptions;
     use restate_bifrost::providers::memory_loglet;
     use restate_bifrost::{Bifrost, BifrostService, ErrorRecoveryStrategy};
@@ -1008,6 +1006,7 @@ mod tests {
     };
     use restate_core::test_env::NoOpMessageHandler;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+    use restate_time_util::FriendlyDuration;
     use restate_types::cluster::cluster_state::{NodeState, PartitionProcessorStatus};
     use restate_types::config::{AdminOptionsBuilder, BifrostOptions, Configuration};
     use restate_types::health::HealthStatus;
@@ -1019,7 +1018,10 @@ mod tests {
     use restate_types::net::node::{GetNodeState, GossipService, NodeStateResponse};
     use restate_types::net::partition_processor_manager::PartitionManagerService;
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+    use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::{GenerationalNodeId, PlainNodeId};
+
+    use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
 
     #[test(restate_core::test)]
     async fn manual_log_trim() -> anyhow::Result<()> {
@@ -1116,7 +1118,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_check_interval(interval_duration.into())
+            .log_trim_check_interval(FriendlyDuration::new(interval_duration))
             .build()?;
         let config = Configuration {
             admin: admin_options,
@@ -1212,7 +1214,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_check_interval(interval_duration.into())
+            .log_trim_check_interval(FriendlyDuration::new(interval_duration))
             .build()?;
         let config = Configuration {
             admin: admin_options,
@@ -1273,7 +1275,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_check_interval(interval_duration.into())
+            .log_trim_check_interval(FriendlyDuration::new(interval_duration))
             .build()?;
         let mut config: Configuration = Configuration {
             admin: admin_options,
@@ -1351,7 +1353,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_check_interval(interval_duration.into())
+            .log_trim_check_interval(FriendlyDuration::new(interval_duration))
             .build()?;
 
         let mut bifrost_options = BifrostOptions::default();
@@ -1433,7 +1435,7 @@ mod tests {
 
         let interval_duration = Duration::from_secs(10);
         let admin_options = AdminOptionsBuilder::default()
-            .log_trim_check_interval(interval_duration.into())
+            .log_trim_check_interval(FriendlyDuration::new(interval_duration))
             .build()?;
 
         let mut bifrost_options = BifrostOptions::default();

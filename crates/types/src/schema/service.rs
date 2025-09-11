@@ -21,7 +21,7 @@ use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use crate::schema::invocation_target::{DEFAULT_IDEMPOTENCY_RETENTION, OnMaxAttempts};
-use restate_serde_util::DurationString;
+use restate_time_util::FriendlyDuration;
 
 /// This API returns service metadata, as shown in the Admin API.
 ///
@@ -95,7 +95,7 @@ pub struct ServiceMetadata {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(
-        with = "serde_with::As::<DurationString>",
+        with = "serde_with::As::<FriendlyDuration>",
         default = "default_idempotency_retention"
     )]
     #[cfg_attr(feature = "schemars", schemars(with = "String" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
@@ -107,7 +107,7 @@ pub struct ServiceMetadata {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(
-        with = "serde_with::As::<Option<DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -123,7 +123,7 @@ pub struct ServiceMetadata {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(
-        with = "serde_with::As::<Option<DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -143,7 +143,7 @@ pub struct ServiceMetadata {
     ///
     /// If unset, this returns the default inactivity timeout configured in invoker options.
     #[serde(
-        with = "serde_with::As::<DurationString>",
+        with = "serde_with::As::<FriendlyDuration>",
         default = "default_inactivity_timeout"
     )]
     #[cfg_attr(feature = "schemars", schemars(with = "String" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
@@ -163,7 +163,7 @@ pub struct ServiceMetadata {
     ///
     /// If unset, this returns the default abort timeout configured in invoker options.
     #[serde(
-        with = "serde_with::As::<DurationString>",
+        with = "serde_with::As::<FriendlyDuration>",
         default = "default_abort_timeout"
     )]
     #[cfg_attr(feature = "schemars", schemars(with = "String" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
@@ -216,7 +216,7 @@ pub struct ServiceRetryPolicyMetadata {
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(
         default = "default_initial_interval",
-        with = "serde_with::As::<restate_serde_util::DurationString>"
+        with = "serde_with::As::<FriendlyDuration>"
     )]
     #[cfg_attr(feature = "schemars", schemars(with = "String" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub initial_interval: Duration,
@@ -238,10 +238,7 @@ pub struct ServiceRetryPolicyMetadata {
     /// Maximum interval between retries.
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
-    #[serde(
-        default,
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
-    )]
+    #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub max_interval: Option<Duration>,
 
@@ -328,7 +325,7 @@ pub struct HandlerMetadata {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -346,7 +343,7 @@ pub struct HandlerMetadata {
     ///
     /// If set, it overrides the value set in the service.
     #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -366,7 +363,7 @@ pub struct HandlerMetadata {
     ///
     /// If set, it overrides the value set in the service.
     #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -387,7 +384,7 @@ pub struct HandlerMetadata {
     ///
     /// If set, it overrides the value set in the service.
     #[serde(
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>",
+        with = "serde_with::As::<Option<FriendlyDuration>>",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -459,7 +456,7 @@ pub struct HandlerRetryPolicyMetadata {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+        with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub initial_interval: Option<Duration>,
@@ -484,7 +481,7 @@ pub struct HandlerRetryPolicyMetadata {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
+        with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub max_interval: Option<Duration>,

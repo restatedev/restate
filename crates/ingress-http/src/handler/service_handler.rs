@@ -324,7 +324,7 @@ fn parse_headers(parts: http::request::Parts) -> Result<Vec<Header>, HandlerErro
 #[serde_as]
 #[derive(Deserialize)]
 #[serde(transparent)]
-struct DurationQueryParam(#[serde_as(as = "restate_serde_util::DurationString")] Duration);
+struct DurationQueryParam(#[serde_as(as = "restate_time_util::FriendlyDuration")] Duration);
 
 fn parse_delay(query: Option<&str>) -> Result<Option<Duration>, HandlerError> {
     if query.is_none() {

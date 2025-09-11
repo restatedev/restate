@@ -15,13 +15,11 @@ mod proto;
 
 pub mod authority;
 pub mod default;
-mod duration;
 pub mod header_value;
 mod map_as_vec;
 mod version;
 
 pub use byte_count::*;
-pub use duration::DurationString;
 pub use header_map::SerdeableHeaderHashMap;
 pub use header_value::HeaderValueSerde;
 pub use map_as_vec::{MapAsVec, MapAsVecItem};

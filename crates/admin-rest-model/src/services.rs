@@ -14,6 +14,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+use restate_time_util::FriendlyDuration;
 use restate_types::schema::service::ServiceMetadata;
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -37,10 +38,7 @@ pub struct ModifyServiceRequest {
     /// Modify the retention of idempotent requests for this service.
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
-    #[serde(
-        default,
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
-    )]
+    #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub idempotency_retention: Option<Duration>,
 
@@ -49,10 +47,7 @@ pub struct ModifyServiceRequest {
     /// Modify the retention of the workflow completion. This can be modified only for workflow services!
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
-    #[serde(
-        default,
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
-    )]
+    #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub workflow_completion_retention: Option<Duration>,
 
@@ -64,10 +59,7 @@ pub struct ModifyServiceRequest {
     /// In case the invocation targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time.
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
-    #[serde(
-        default,
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
-    )]
+    #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub journal_retention: Option<Duration>,
 
@@ -83,10 +75,7 @@ pub struct ModifyServiceRequest {
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     ///
     /// This overrides the default inactivity timeout set in invoker options.
-    #[serde(
-        default,
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
-    )]
+    #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub inactivity_timeout: Option<Duration>,
 
@@ -103,10 +92,7 @@ pub struct ModifyServiceRequest {
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     ///
     /// This overrides the default abort timeout set in invoker options.
-    #[serde(
-        default,
-        with = "serde_with::As::<Option<restate_serde_util::DurationString>>"
-    )]
+    #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
     #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub abort_timeout: Option<Duration>,
 }
