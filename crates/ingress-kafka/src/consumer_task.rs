@@ -16,7 +16,7 @@ use crate::dispatcher::{DispatchKafkaEvent, KafkaIngressDispatcher, KafkaIngress
 use crate::metric_definitions::{KAFKA_INGRESS_CONSUMER_LAG, KAFKA_INGRESS_REQUESTS};
 use base64::Engine;
 use bytes::Bytes;
-use metrics::{counter, histogram};
+use metrics::{counter, gauge};
 use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{
     BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer,
@@ -214,8 +214,8 @@ impl MessageSender {
     fn update_consumer_stats(&self, stats: Statistics) {
         for topic in stats.topics {
             for partition in topic.1.partitions {
-                let lag = partition.1.consumer_lag as i32;
-                histogram!(
+                let lag = partition.1.consumer_lag;
+                gauge!(
                     KAFKA_INGRESS_CONSUMER_LAG,
                      "subscription" => self.subscription.id().to_string(),
                      "topic" => topic.0.to_string(),
