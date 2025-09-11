@@ -8512,6 +8512,7 @@ dependencies = [
  "bytes",
  "mlua",
  "restate-service-protocol-v4",
+ "restate-time-util",
  "restate-types",
  "thiserror 2.0.12",
 ]
