@@ -55,6 +55,7 @@ pub struct Failure {
     #[bilrost(2)]
     pub message: ByteString,
     #[bilrost(3)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metadata: Vec<FailureMetadata>,
 }
 
