@@ -19,7 +19,7 @@ use restate_types::identifiers::{PartitionKey, ServiceId};
 use restate_types::invocation::JournalCompletionTarget;
 use restate_types::journal::{CompletionResult, EntryResult};
 use restate_types::journal_v2::{
-    CompletePromiseValue, Failure, GetPromiseResult, PeekPromiseResult,
+    CompletePromiseValue, Failure, FailureMetadata, GetPromiseResult, PeekPromiseResult,
 };
 
 use super::Result;
@@ -28,16 +28,18 @@ use crate::protobuf_types::PartitionStoreProtobufValue;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromiseResult {
     Success(Bytes),
-    Failure(InvocationErrorCode, ByteString),
+    Failure(InvocationErrorCode, ByteString, Vec<FailureMetadata>),
 }
 
 impl From<PromiseResult> for GetPromiseResult {
     fn from(value: PromiseResult) -> Self {
         match value {
             PromiseResult::Success(s) => GetPromiseResult::Success(s),
-            PromiseResult::Failure(code, message) => {
-                GetPromiseResult::Failure(Failure { code, message })
-            }
+            PromiseResult::Failure(code, message, metadata) => GetPromiseResult::Failure(Failure {
+                code,
+                message,
+                metadata,
+            }),
         }
     }
 }
@@ -46,8 +48,12 @@ impl From<PromiseResult> for PeekPromiseResult {
     fn from(value: PromiseResult) -> Self {
         match value {
             PromiseResult::Success(s) => PeekPromiseResult::Success(s),
-            PromiseResult::Failure(code, message) => {
-                PeekPromiseResult::Failure(Failure { code, message })
+            PromiseResult::Failure(code, message, metadata) => {
+                PeekPromiseResult::Failure(Failure {
+                    code,
+                    message,
+                    metadata,
+                })
             }
         }
     }
@@ -57,7 +63,7 @@ impl From<CompletePromiseValue> for PromiseResult {
     fn from(value: CompletePromiseValue) -> Self {
         match value {
             CompletePromiseValue::Success(b) => Self::Success(b),
-            CompletePromiseValue::Failure(f) => Self::Failure(f.code, f.message),
+            CompletePromiseValue::Failure(f) => Self::Failure(f.code, f.message, f.metadata),
         }
     }
 }
@@ -66,7 +72,8 @@ impl From<PromiseResult> for CompletionResult {
     fn from(value: PromiseResult) -> Self {
         match value {
             PromiseResult::Success(s) => CompletionResult::Success(s),
-            PromiseResult::Failure(code, message) => CompletionResult::Failure(code, message),
+            // Journal v1 doesn't support metadata
+            PromiseResult::Failure(code, message, _) => CompletionResult::Failure(code, message),
         }
     }
 }
@@ -75,7 +82,8 @@ impl From<EntryResult> for PromiseResult {
     fn from(value: EntryResult) -> Self {
         match value {
             EntryResult::Success(b) => Self::Success(b),
-            EntryResult::Failure(code, message) => Self::Failure(code, message),
+            // Journal v1 doesn't support metadata
+            EntryResult::Failure(code, message) => Self::Failure(code, message, vec![]),
         }
     }
 }

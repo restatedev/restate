@@ -584,7 +584,7 @@ where
                             .is_some_and(|entry_idx| entry_idx < self.next_journal_index),
                     }),
                     next_retry_interval_override: e.next_retry_delay.map(Duration::from_millis),
-                    error: InvocationError::from(e),
+                    error: InvocationError::from(e).into(),
                 }))
             }
             ProtocolMessage::End(_) => TerminalLoopState::Closed,
@@ -607,7 +607,7 @@ where
                 self.invocation_task
                     .send_invoker_tx(InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
-                        entry: enriched_entry,
+                        entry: enriched_entry.into(),
                         requires_ack: mh
                             .requires_ack()
                             .expect("All entry messages support requires_ack"),

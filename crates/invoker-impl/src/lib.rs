@@ -448,7 +448,7 @@ where
                             invocation_id,
                             invocation_epoch,
                             entry_index,
-                            entry,
+                            *entry,
                             requires_ack
                         ).await
                     },
@@ -1976,7 +1976,8 @@ mod tests {
                     invocation_epoch: 0,
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: 1,
-                        entry: RawEntry::new(EnrichedEntryHeader::SetState {}, Bytes::default()),
+                        entry: RawEntry::new(EnrichedEntryHeader::SetState {}, Bytes::default())
+                            .into(),
                         requires_ack: false,
                     },
                 });
@@ -2432,7 +2433,7 @@ mod tests {
         let error_a = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: Some(Duration::from_millis(1)),
-            error: InvocationError::new(codes::INTERNAL, "boom"),
+            error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
             .handle_invocation_task_failed(
@@ -2463,7 +2464,7 @@ mod tests {
         let error_a_same = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: Some(Duration::from_millis(1)),
-            error: InvocationError::new(codes::INTERNAL, "boom"),
+            error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
             .handle_invocation_task_failed(
@@ -2486,7 +2487,7 @@ mod tests {
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: None,
             next_retry_interval_override: Some(Duration::from_millis(1)),
-            error: InvocationError::new(codes::INTERNAL, "boom-2"),
+            error: InvocationError::new(codes::INTERNAL, "boom-2").into(),
         });
         service_inner
             .handle_invocation_task_failed(

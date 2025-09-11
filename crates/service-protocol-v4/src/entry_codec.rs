@@ -1353,6 +1353,14 @@ impl From<Failure> for proto::Failure {
         Self {
             code: value.code.into(),
             message: value.message.into(),
+            metadata: value
+                .metadata
+                .into_iter()
+                .map(|FailureMetadata { key, value }| proto::FailureMetadata {
+                    key: key.into(),
+                    value: value.into(),
+                })
+                .collect(),
         }
     }
 }
@@ -1362,6 +1370,14 @@ impl From<proto::Failure> for Failure {
         Self {
             code: value.code.into(),
             message: value.message.into(),
+            metadata: value
+                .metadata
+                .into_iter()
+                .map(|proto::FailureMetadata { key, value }| FailureMetadata {
+                    key: key.into(),
+                    value: value.into(),
+                })
+                .collect(),
         }
     }
 }

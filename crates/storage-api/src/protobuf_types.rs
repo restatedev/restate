@@ -160,17 +160,17 @@ pub mod v1 {
         use super::service_invocation_response_sink::{Ingress, PartitionProcessor, ResponseSink};
         use super::{
             BackgroundCallResolutionResult, DedupSequenceNumber, Duration, EnrichedEntryHeader,
-            Entry, EntryResult, EpochSequenceNumber, Header, IdempotencyId, IdempotencyMetadata,
-            InboxEntry, InvocationId, InvocationResolutionResult, InvocationStatus,
-            InvocationStatusV2, InvocationTarget, InvocationV2Lite, JournalCompletionTarget,
-            JournalEntry, JournalEntryIndex, JournalMeta, KvPair, OutboxMessage,
-            PartitionDurability, Promise, ResponseResult, RestateVersion, SequenceNumber,
-            ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source, SpanContext,
-            SpanRelation, StateMutation, SubmitNotificationSink, Timer, VirtualObjectStatus,
-            enriched_entry_header, entry, entry_result, inbox_entry, invocation_resolution_result,
-            invocation_status, invocation_status_v2, invocation_target, journal_entry,
-            outbox_message, promise, response_result, source, span_relation,
-            submit_notification_sink, timer, virtual_object_status,
+            Entry, EntryResult, EpochSequenceNumber, FailureMetadata, Header, IdempotencyId,
+            IdempotencyMetadata, InboxEntry, InvocationId, InvocationResolutionResult,
+            InvocationStatus, InvocationStatusV2, InvocationTarget, InvocationV2Lite,
+            JournalCompletionTarget, JournalEntry, JournalEntryIndex, JournalMeta, KvPair,
+            OutboxMessage, PartitionDurability, Promise, ResponseResult, RestateVersion,
+            SequenceNumber, ServiceId, ServiceInvocation, ServiceInvocationResponseSink, Source,
+            SpanContext, SpanRelation, StateMutation, SubmitNotificationSink, Timer,
+            VirtualObjectStatus, enriched_entry_header, entry, entry_result, inbox_entry,
+            invocation_resolution_result, invocation_status, invocation_status_v2,
+            invocation_target, journal_entry, outbox_message, promise, response_result, source,
+            span_relation, submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
             CompletionRangeEpochMap, JournalMetadata, PreFlightInvocationArgument,
@@ -318,6 +318,7 @@ pub mod v1 {
                         result: Some(entry_result::Result::Failure(entry_result::Failure {
                             error_code: code.into(),
                             message: message.into_bytes(),
+                            metadata: vec![],
                         })),
                     },
                 }
@@ -339,6 +340,7 @@ pub mod v1 {
                         entry_result::Result::Failure(entry_result::Failure {
                             error_code,
                             message,
+                            metadata: _, // unsupported in old protocol
                         }) => restate_types::journal::EntryResult::Failure(
                             error_code.into(),
                             ByteString::try_from(message).map_err(ConversionError::invalid_data)?,
@@ -348,18 +350,39 @@ pub mod v1 {
             }
         }
 
+        impl From<FailureMetadata> for journal_v2::FailureMetadata {
+            fn from(value: FailureMetadata) -> Self {
+                Self {
+                    key: value.key.into(),
+                    value: value.value.into(),
+                }
+            }
+        }
+
+        impl From<journal_v2::FailureMetadata> for FailureMetadata {
+            fn from(value: journal_v2::FailureMetadata) -> Self {
+                Self {
+                    key: value.key.into(),
+                    value: value.value.into(),
+                }
+            }
+        }
+
         impl From<crate::promise_table::PromiseResult> for EntryResult {
             fn from(value: crate::promise_table::PromiseResult) -> Self {
                 match value {
                     crate::promise_table::PromiseResult::Success(s) => EntryResult {
                         result: Some(entry_result::Result::Value(s)),
                     },
-                    crate::promise_table::PromiseResult::Failure(code, message) => EntryResult {
-                        result: Some(entry_result::Result::Failure(entry_result::Failure {
-                            error_code: code.into(),
-                            message: message.into_bytes(),
-                        })),
-                    },
+                    crate::promise_table::PromiseResult::Failure(code, message, metadata) => {
+                        EntryResult {
+                            result: Some(entry_result::Result::Failure(entry_result::Failure {
+                                error_code: code.into(),
+                                message: message.into_bytes(),
+                                metadata: metadata.into_iter().map(Into::into).collect(),
+                            })),
+                        }
+                    }
                 }
             }
         }
@@ -379,9 +402,11 @@ pub mod v1 {
                         entry_result::Result::Failure(entry_result::Failure {
                             error_code,
                             message,
+                            metadata,
                         }) => crate::promise_table::PromiseResult::Failure(
                             error_code.into(),
                             ByteString::try_from(message).map_err(ConversionError::invalid_data)?,
+                            metadata.into_iter().map(Into::into).collect(),
                         ),
                     },
                 )
@@ -3975,6 +4000,7 @@ pub mod v1 {
                                 outbox_message::notify_signal::Failure {
                                     error_code: f.code.into(),
                                     message: f.message.into(),
+                                    metadata: f.metadata.into_iter().map(Into::into).collect(),
                                 },
                             )
                         }
@@ -4017,10 +4043,12 @@ pub mod v1 {
                                 outbox_message::notify_signal::Failure {
                                     error_code,
                                     message,
+                                    metadata,
                                 },
                             ) => journal_v2::SignalResult::Failure(journal_v2::Failure {
                                 code: error_code.into(),
                                 message: message.into(),
+                                metadata: metadata.into_iter().map(Into::into).collect(),
                             }),
                         },
                     ),
@@ -4198,6 +4226,11 @@ pub mod v1 {
                             response_result::ResponseFailure {
                                 failure_code: err.code().into(),
                                 failure_message: Bytes::copy_from_slice(err.message().as_ref()),
+                                failure_metadata: err
+                                    .metadata
+                                    .into_iter()
+                                    .map(|(key, value)| FailureMetadata { key, value })
+                                    .collect(),
                             },
                         )
                     }
