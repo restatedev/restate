@@ -759,7 +759,7 @@ impl Configuration {
                 initial_interval: **initial_interval,
                 exponentiation_factor: *exponentiation_factor,
                 max_attempts: max_attempts.clone().into(),
-                max_interval: max_interval.map(Into::into),
+                max_interval: Some(**max_interval),
                 on_max_attempts: match on_max_attempts {
                     crate::config::OnMaxAttempts::Pause => OnMaxAttempts::Pause,
                     crate::config::OnMaxAttempts::Kill => OnMaxAttempts::Kill,

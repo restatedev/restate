@@ -106,8 +106,8 @@ pub struct InvocationRetryPolicyOptions {
     /// # Max interval
     ///
     /// Maximum interval between retries.
-    #[serde(default)]
-    pub(crate) max_interval: Option<NonZeroFriendlyDuration>,
+    #[serde(default = "default_max_interval")]
+    pub(crate) max_interval: NonZeroFriendlyDuration,
 }
 
 impl Default for InvocationRetryPolicyOptions {
@@ -117,7 +117,7 @@ impl Default for InvocationRetryPolicyOptions {
             exponentiation_factor: default_exponentiation_factor(),
             max_attempts: MaxAttempts::default(),
             on_max_attempts: OnMaxAttempts::default(),
-            max_interval: None,
+            max_interval: default_max_interval(),
         }
     }
 }
@@ -128,6 +128,10 @@ fn default_initial_interval() -> NonZeroFriendlyDuration {
 
 fn default_exponentiation_factor() -> f32 {
     2.0
+}
+
+fn default_max_interval() -> NonZeroFriendlyDuration {
+    NonZeroFriendlyDuration::from_secs_unchecked(20)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -157,7 +161,7 @@ pub enum MaxAttempts {
 
 impl Default for MaxAttempts {
     fn default() -> Self {
-        Self::Bounded(NonZeroUsize::new(20).unwrap())
+        Self::Bounded(NonZeroUsize::new(200).unwrap())
     }
 }
 
