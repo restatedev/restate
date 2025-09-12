@@ -998,7 +998,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         if self.is_leader {
             counter!(
                 USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                "entry" => "Input",
+                "entry" => "Command/Input",
             )
             .increment(1);
         }
