@@ -28,6 +28,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::info;
 use tracing::{debug, trace};
 
 use restate_core::ShutdownError;
@@ -545,7 +546,36 @@ impl PartitionStore {
         scan: TableScan<K>,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
+        info!(name, "table scan: {scan:?}");
         let scan: PhysicalScan = scan.into();
+        match &scan {
+            PhysicalScan::Prefix(table_kind, key_kind, bytes_mut) => {
+                info!(
+                    name,
+                    "physical scan prefix: {table_kind:?} {key_kind} {:x}", bytes_mut
+                );
+            }
+            PhysicalScan::RangeExclusive(
+                table_kind,
+                key_kind,
+                scan_mode,
+                bytes_mut,
+                bytes_mut1,
+            ) => {
+                info!(
+                    name,
+                    "physical scan range exclusive: {table_kind:?} {key_kind} {scan_mode:?} {:x} {:x}",
+                    bytes_mut,
+                    bytes_mut1,
+                );
+            }
+            PhysicalScan::RangeOpen(table_kind, key_kind, bytes_mut) => {
+                info!(
+                    name,
+                    "physical scan range open: {table_kind:?} {key_kind} {:x}", bytes_mut
+                );
+            }
+        }
         match scan {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
                 assert!(table.has_key_kind(&prefix));

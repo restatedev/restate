@@ -13,6 +13,7 @@ use restate_storage_api::protobuf_types::v1::source::Source;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{ServiceType, TraceId};
+use tracing::info;
 
 use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 
@@ -23,6 +24,12 @@ pub(crate) fn append_invocation_status_row<'a>(
     invocation_status: InvocationStatusV2Lazy<'a>,
 ) -> Result<(), ConversionError> {
     let mut row = builder.row();
+
+    info!(
+        partition_key = invocation_id.partition_key(),
+        invocation_id = %invocation_id,
+        "Appending inv status row"
+    );
 
     if row.is_partition_key_defined() {
         row.partition_key(invocation_id.partition_key());
