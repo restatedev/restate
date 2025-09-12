@@ -28,7 +28,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use enumset::EnumSet;
 use futures::{StreamExt, TryStreamExt};
-use metrics::histogram;
+use metrics::{counter, histogram};
 use tracing::{Instrument, Span, debug, error, trace, warn};
 
 use restate_invoker_api::InvokeInputJournal;
@@ -107,7 +107,7 @@ use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
 
 use self::utils::SpanExt;
-use crate::metric_definitions::PARTITION_APPLY_COMMAND;
+use crate::metric_definitions::{PARTITION_APPLY_COMMAND, USAGE_LEADER_JOURNAL_ENTRY_COUNT};
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 
@@ -992,6 +992,17 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: JournalTable + InvocationStatusTable,
     {
+        // Usage metering for "actions" should include the Input journal entry
+        // type, but it gets filtered out before reaching the state machine.
+        // Therefore we count it here, as a special case.
+        if self.is_leader {
+            counter!(
+                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                "entry" => "Input",
+            )
+            .increment(1);
+        }
+
         let invoke_input_journal = if let Some(invocation_input) = invocation_input {
             self.init_journal(
                 invocation_id,
