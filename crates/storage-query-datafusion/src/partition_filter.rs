@@ -14,7 +14,8 @@ use datafusion::logical_expr::expr::InList;
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col};
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
-use std::collections::BTreeSet;
+use std::borrow::Cow;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
 
@@ -98,43 +99,92 @@ where
     /// partition_key
     fn try_extract(&self, filters: &[Expr]) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
         'filters: for filter in filters {
-            match filter {
-                Expr::BinaryExpr(BinaryExpr {
-                    op: Operator::Eq,
-                    left,
-                    right,
-                }) if **left == self.column => {
-                    if let Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _) = &**right {
-                        let f = &self.extractor;
-                        let pk = f(value)?;
-                        return Ok(Some(BTreeSet::from([pk])));
-                    }
-                }
-                Expr::InList(InList {
-                    expr,
-                    list,
-                    negated: false,
-                }) if **expr == self.column => {
-                    let mut list_keys = BTreeSet::new();
+            let Some(filter_as_inlist) = as_inlist(filter, 5) else {
+                continue;
+            };
 
-                    for item in list {
-                        if let Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _) = item {
-                            let f = &self.extractor;
-                            let pk = f(value)?;
-                            list_keys.insert(pk);
-                        } else {
-                            // items in the list are ORed. If we can't parse one, we can't apply this list
-                            continue 'filters;
-                        }
-                    }
-
-                    return Ok(Some(list_keys));
-                }
-                _ => {}
+            if *filter_as_inlist.expr != self.column {
+                continue;
             }
+
+            let mut list_keys = BTreeSet::new();
+
+            for item in &filter_as_inlist.list {
+                if let Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _) = item {
+                    let f = &self.extractor;
+                    let pk = f(value)?;
+                    list_keys.insert(pk);
+                } else {
+                    // items in the list are ORed. If we can't parse one, we can't apply this list
+                    continue 'filters;
+                }
+            }
+
+            return Ok(Some(list_keys));
         }
 
         Ok(None)
+    }
+}
+
+/// Try to convert an expression to an in-list expression, recursively handling OR if needed
+/// Adapted from datafusion functions `as_inlist` and `are_inlist_and_eq`
+fn as_inlist(expr: &Expr, depth_limit: usize) -> Option<Cow<'_, InList>> {
+    if depth_limit <= 1 {
+        return None;
+    }
+    match expr {
+        Expr::InList(inlist) => Some(Cow::Borrowed(inlist)),
+        Expr::BinaryExpr(BinaryExpr {
+            left,
+            op: Operator::Eq,
+            right,
+        }) => match (left.as_ref(), right.as_ref()) {
+            (Expr::Column(_), Expr::Literal(_, _)) => Some(Cow::Owned(InList {
+                expr: left.clone(),
+                list: vec![*right.clone()],
+                negated: false,
+            })),
+            (Expr::Literal(_, _), Expr::Column(_)) => Some(Cow::Owned(InList {
+                expr: right.clone(),
+                list: vec![*left.clone()],
+                negated: false,
+            })),
+            _ => None,
+        },
+        Expr::BinaryExpr(BinaryExpr {
+            left,
+            op: Operator::Or,
+            right,
+        }) => {
+            let left_as_inlist = as_inlist(left, depth_limit - 1)?;
+            let right_as_inlist = as_inlist(right, depth_limit - 1)?;
+
+            if matches!(left_as_inlist.expr.as_ref(), Expr::Column(_))
+                && matches!(right_as_inlist.expr.as_ref(), Expr::Column(_))
+                && left_as_inlist.expr == right_as_inlist.expr
+                && !left_as_inlist.negated
+                && !right_as_inlist.negated
+            {
+                let mut seen: HashSet<Expr> = HashSet::new();
+                let list = left_as_inlist
+                    .list
+                    .iter()
+                    .cloned()
+                    .chain(right_as_inlist.list.iter().cloned())
+                    .filter(|e| seen.insert(e.to_owned()))
+                    .collect::<Vec<_>>();
+
+                Some(Cow::Owned(InList {
+                    expr: left_as_inlist.expr.clone(),
+                    list,
+                    negated: false,
+                }))
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -150,35 +200,23 @@ impl IdentityPartitionKeyExtractor {
 impl PartitionKeyExtractor for IdentityPartitionKeyExtractor {
     fn try_extract(&self, filters: &[Expr]) -> Result<Option<BTreeSet<u64>>, anyhow::Error> {
         'filters: for filter in filters {
-            match filter {
-                Expr::BinaryExpr(BinaryExpr {
-                    op: Operator::Eq,
-                    left,
-                    right,
-                }) if **left == self.0 => {
-                    if let Expr::Literal(ScalarValue::UInt64(Some(value)), _) = &**right {
-                        return Ok(Some(BTreeSet::from([*value as PartitionKey])));
-                    }
-                }
-                Expr::InList(InList {
-                    expr,
-                    list,
-                    negated: false,
-                }) if **expr == self.0 => {
-                    let mut list_keys = BTreeSet::new();
+            let Some(filter_as_inlist) = as_inlist(filter, 5) else {
+                continue;
+            };
 
-                    for item in list {
-                        if let Expr::Literal(ScalarValue::UInt64(Some(value)), _) = item {
-                            list_keys.insert(*value as PartitionKey);
-                        } else {
-                            // items in the list are ORed. If we can't parse one, we can't apply this list
-                            continue 'filters;
-                        }
-                    }
+            if *filter_as_inlist.expr != self.0 {
+                continue;
+            }
 
-                    return Ok(Some(list_keys));
+            let mut list_keys = BTreeSet::new();
+
+            for item in &filter_as_inlist.list {
+                if let Expr::Literal(ScalarValue::UInt64(Some(value)), _) = item {
+                    list_keys.insert(*value as PartitionKey);
+                } else {
+                    // items in the list are ORed. If we can't parse one, we can't apply this list
+                    continue 'filters;
                 }
-                _ => {}
             }
         }
 
@@ -190,7 +228,7 @@ impl PartitionKeyExtractor for IdentityPartitionKeyExtractor {
 mod tests {
     use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
     use datafusion::common::ScalarValue;
-    use datafusion::logical_expr::{Expr, col};
+    use datafusion::logical_expr::{Expr, col, or};
     use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
 
@@ -232,6 +270,90 @@ mod tests {
         let mut got_keys = got_keys.into_iter();
         assert_eq!(expected_key_1, got_keys.next().unwrap());
         assert_eq!(expected_key_2, got_keys.next().unwrap());
+    }
+
+    #[test]
+    fn test_multiple_service_keys_ored() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+
+        let service_id_1 = ServiceId::new("greeter", "key-1");
+        let service_id_2 = ServiceId::new("greeter", "key-2");
+        let expected_key_1 = service_id_1.partition_key();
+        let expected_key_2 = service_id_2.partition_key();
+
+        let got_keys = extractor
+            .try_extract(&[or(
+                col("service_key").eq(utf8_lit("key-1")),
+                col("service_key").eq(utf8_lit("key-2")),
+            )])
+            .expect("extract")
+            .expect("to find a value");
+
+        assert_eq!(2, got_keys.len());
+        let mut got_keys = got_keys.into_iter();
+        assert_eq!(expected_key_1, got_keys.next().unwrap());
+        assert_eq!(expected_key_2, got_keys.next().unwrap());
+    }
+
+    #[test]
+    fn test_multiple_service_keys_nested_or() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+
+        let service_id_1 = ServiceId::new("greeter", "key-1");
+        let service_id_2 = ServiceId::new("greeter", "key-2");
+        let service_id_3 = ServiceId::new("greeter", "key-3");
+        let service_id_4 = ServiceId::new("greeter", "key-4");
+        let expected_key_1 = service_id_1.partition_key();
+        let expected_key_2 = service_id_2.partition_key();
+        let expected_key_3 = service_id_3.partition_key();
+        let expected_key_4 = service_id_4.partition_key();
+
+        let got_keys = extractor
+            .try_extract(&[or(
+                or(
+                    col("service_key").eq(utf8_lit("key-1")),
+                    col("service_key").eq(utf8_lit("key-2")),
+                ),
+                or(
+                    col("service_key").eq(utf8_lit("key-3")),
+                    col("service_key").eq(utf8_lit("key-4")),
+                ),
+            )])
+            .expect("extract")
+            .expect("to find a value");
+
+        assert_eq!(4, got_keys.len());
+        let mut got_keys = got_keys.into_iter();
+        assert_eq!(expected_key_4, got_keys.next().unwrap());
+        assert_eq!(expected_key_1, got_keys.next().unwrap());
+        assert_eq!(expected_key_3, got_keys.next().unwrap());
+        assert_eq!(expected_key_2, got_keys.next().unwrap());
+    }
+
+    #[test]
+    fn test_multiple_service_keys_too_deep_nesting() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+
+        let got_keys = extractor
+            .try_extract(&[or(
+                or(
+                    col("service_key").eq(utf8_lit("key-1")),
+                    or(
+                        col("service_key").eq(utf8_lit("key-2")),
+                        or(
+                            col("service_key").eq(utf8_lit("key-3")),
+                            col("service_key").eq(utf8_lit("key-4")),
+                        ),
+                    ),
+                ),
+                col("service_key").eq(utf8_lit("key-7")),
+            )])
+            .expect("extract");
+
+        assert_eq!(None, got_keys);
     }
 
     #[test]
