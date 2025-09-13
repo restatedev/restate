@@ -140,6 +140,7 @@ impl Service {
         // see ConsumerTask::run
         client_config.set("enable.auto.commit", "true");
         client_config.set("enable.auto.offset.store", "false");
+        client_config.set("statistics.interval.ms", "10000");
 
         let subscription_id = subscription.id();
 
