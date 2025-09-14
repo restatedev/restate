@@ -12,6 +12,9 @@ default = []
 schemars = ["dep:schemars", "restate-serde-util/schema", "restate-time-util/schema"]
 unsafe-mutable-config = []
 test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util"]
+# Runs every partition in a separate rocksdb database
+# Note: this is currently backwards-incompatible with the production builds.
+multi-db = []
 
 [dependencies]
 restate-workspace-hack = { workspace = true }

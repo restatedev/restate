@@ -7297,6 +7297,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "smartstring",
  "static_assertions",
  "strum 0.27.1",
  "tempfile",

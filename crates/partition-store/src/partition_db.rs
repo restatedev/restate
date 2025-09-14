@@ -39,6 +39,21 @@ pub struct PartitionDb {
     rocksdb: Arc<RocksDb>,
 }
 
+// impl Drop for PartitionDb {
+//     fn drop(&mut self) {
+//         // Safety: self.db is exclusives "taken" at drop time, so we know that it's
+//         // still valid. We don't provide &mut access to db, and it's not a public field.
+//         let inner_db = unsafe { ManuallyDrop::take(&mut self.db) };
+//
+//         if let Ok(_handle) = tokio::runtime::Handle::try_current() {
+//             self.manager.background_close_db(inner_db);
+//         } else {
+//             // inline shutdown if the last drop was outside of tokio (in tests mainly)
+//             inner_db.shutdown();
+//         }
+//     }
+// }
+
 impl PartitionDb {
     pub(crate) fn new(
         meta: Arc<Partition>,
@@ -337,6 +352,10 @@ pub(crate) enum State {
 }
 
 impl State {
+    /// The state of local column family is still unknown.
+    ///
+    /// The column family may or may not exist locally and we will only know
+    /// this after an attempt to opening it.
     pub fn is_unknown(&self) -> bool {
         matches!(self, State::Unknown)
     }
