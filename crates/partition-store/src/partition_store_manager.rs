@@ -102,7 +102,6 @@ impl SharedState {
     }
 }
 
-#[derive(Clone)]
 pub struct PartitionStoreManager {
     state: Arc<SharedState>,
     snapshots: Snapshots,
@@ -110,7 +109,7 @@ pub struct PartitionStoreManager {
 }
 
 impl PartitionStoreManager {
-    pub async fn create() -> Result<Self, BuildError> {
+    pub async fn create() -> Result<Arc<Self>, BuildError> {
         let mut live_config = Configuration::live();
 
         let config = live_config.live_load();
@@ -153,11 +152,11 @@ impl PartitionStoreManager {
             )
             .await?;
 
-        Ok(Self {
+        Ok(Arc::new(Self {
             state,
             snapshots,
             rocksdb,
-        })
+        }))
     }
 
     pub fn is_repository_configured(&self) -> bool {

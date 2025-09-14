@@ -19,6 +19,8 @@ mod partition_processor_manager;
 mod subscription_controller;
 mod subscription_integration;
 
+use std::sync::Arc;
+
 use codederror::CodedError;
 use tracing::info;
 
@@ -111,6 +113,7 @@ impl Worker {
     pub async fn create<T: TransportConnect>(
         health_status: HealthStatus<WorkerStatus>,
         replica_set_states: PartitionReplicaSetStates,
+        partition_store_manager: Arc<PartitionStoreManager>,
         networking: Networking<T>,
         bifrost: Bifrost,
         router_builder: &mut MessageRouterBuilder,
@@ -121,8 +124,6 @@ impl Worker {
 
         let partition_routing =
             PartitionRouting::new(replica_set_states.clone(), TaskCenter::current());
-
-        let partition_store_manager = PartitionStoreManager::create().await?;
 
         let config = Configuration::pinned();
         let metadata = Metadata::current();
@@ -168,7 +169,7 @@ impl Worker {
         let storage_query_context = QueryContext::with_user_tables(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,
-            Some(partition_store_manager.clone()),
+            partition_store_manager,
             Some(partition_processor_manager.invokers_status_reader()),
             schema,
             remote_scanner_manager.clone(),

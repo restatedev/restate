@@ -129,11 +129,11 @@ impl RemoteScannerManager {
     pub fn create_distributed_scanner(
         &self,
         table_name: impl Into<String>,
-        local_scanner: Option<Arc<dyn ScanPartition>>,
+        local_scanner: impl Into<Option<Arc<dyn ScanPartition>>>,
     ) -> impl ScanPartition + Clone {
         let name = table_name.into();
 
-        if let Some(local_scanner) = local_scanner {
+        if let Some(local_scanner) = local_scanner.into() {
             // make the local scanner available to serve a remote RPC.
             // see usages of [[local_partition_scanner]]
             // we use the table_name to associate a remote scanner with its local counterpart.

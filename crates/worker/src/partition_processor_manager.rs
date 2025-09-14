@@ -114,7 +114,7 @@ pub struct PartitionProcessorManager {
     name_cache: BTreeMap<PartitionId, SharedString>,
 
     metadata_writer: MetadataWriter,
-    partition_store_manager: PartitionStoreManager,
+    partition_store_manager: Arc<PartitionStoreManager>,
     ppm_svc_rx: ServiceReceiver<PartitionManagerService>,
     pp_rpc_rx: ServiceReceiver<PartitionLeaderService>,
     bifrost: Bifrost,
@@ -251,7 +251,7 @@ impl PartitionProcessorManager {
         health_status: HealthStatus<WorkerStatus>,
         updateable_config: Live<Configuration>,
         metadata_writer: MetadataWriter,
-        partition_store_manager: PartitionStoreManager,
+        partition_store_manager: Arc<PartitionStoreManager>,
         replica_set_states: PartitionReplicaSetStates,
         router_builder: &mut MessageRouterBuilder,
         bifrost: Bifrost,
