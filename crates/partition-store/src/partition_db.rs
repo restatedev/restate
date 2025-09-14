@@ -24,7 +24,11 @@ use restate_types::partitions::{CfName, Partition};
 
 use crate::snapshots::LocalPartitionSnapshot;
 
-#[derive(Clone)]
+/// A partition database may contain one or more column families for the partition.
+///
+/// It pins the underlying rocksdb database until the partition is dropped/removed
+/// from the node. If other partitions share the same database, the database will
+/// remain opened and pinned until all partitions are dropped/closed.
 pub struct PartitionDb {
     meta: Arc<Partition>,
     durable_lsn: watch::Sender<Option<Lsn>>,
@@ -127,7 +131,11 @@ impl PartitionCell {
         self.meta.cf_name()
     }
 
-    fn open_local_cf(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>, db: PartitionDb) {
+    fn open_local_cf(
+        &self,
+        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        db: Arc<PartitionDb>,
+    ) {
         let mut durable_lsn_guard = self.durable_lsn.write();
         *durable_lsn_guard = Some(db.durable_lsn_sender().clone());
         **guard = State::Open { db };
@@ -149,12 +157,12 @@ impl PartitionCell {
         let cf_name = self.cf_name();
         match rocksdb.inner().cf_handle(cf_name.as_ref()) {
             Some(handle) => {
-                let db = PartitionDb::new(
+                let db = Arc::new(PartitionDb::new(
                     self.meta.clone(),
                     self.archived_lsn.clone(),
                     rocksdb.clone(),
                     handle,
-                );
+                ));
                 self.open_local_cf(guard, db);
             }
             None => {
@@ -163,15 +171,15 @@ impl PartitionCell {
         }
     }
 
-    // low-level opening of a column family.
+    // low-level opening of a column famili(es) for the partition.
     //
     // Note: This doesn't check whether the column family exists or not
     #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name()))]
-    pub async fn create_cf(
+    pub async fn provision(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         rocksdb: Arc<RocksDb>,
-    ) -> Result<PartitionDb, RocksError> {
+    ) -> Result<Arc<PartitionDb>, RocksError> {
         let cf_name = self.meta.cf_name();
         debug!("Creating new column family {}", cf_name);
         rocksdb
@@ -185,12 +193,12 @@ impl PartitionCell {
             .inner()
             .cf_handle(cf_name.as_ref())
             .expect("cf must be open");
-        let db = PartitionDb::new(
+        let db = Arc::new(PartitionDb::new(
             self.meta.clone(),
             self.archived_lsn.clone(),
             rocksdb.clone(),
             handle,
-        );
+        ));
         self.open_local_cf(guard, db.clone());
         Ok(db)
     }
@@ -204,7 +212,7 @@ impl PartitionCell {
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         snapshot: LocalPartitionSnapshot,
         rocksdb: Arc<RocksDb>,
-    ) -> Result<PartitionDb, RocksError> {
+    ) -> Result<Arc<PartitionDb>, RocksError> {
         // Sanity check
         if snapshot.key_range.start() > self.meta.key_range.start()
             || snapshot.key_range.end() < self.meta.key_range.end()
@@ -245,7 +253,7 @@ impl PartitionCell {
             );
         };
 
-        let db = PartitionDb::new(
+        let db = Arc::new(PartitionDb::new(
             self.meta.clone(),
             self.archived_lsn.clone(),
             rocksdb.clone(),
@@ -253,7 +261,7 @@ impl PartitionCell {
                 .inner()
                 .cf_handle(self.meta.cf_name().as_ref())
                 .expect("cf must exist after import"),
-        );
+        ));
 
         self.open_local_cf(guard, db.clone());
         Ok(db)
@@ -287,7 +295,7 @@ impl PartitionCell {
     }
 
     /// Clone the underlying [`PartitionDb`], if it is open.
-    pub async fn clone_db(&self) -> Option<PartitionDb> {
+    pub async fn clone_db(&self) -> Option<Arc<PartitionDb>> {
         let guard = self.inner.read().await;
         match &*guard {
             State::Unknown | State::CfMissing => None,
@@ -324,7 +332,7 @@ pub(crate) enum State {
     /// The column famil(ies) for this partition does not exist locally
     CfMissing,
     Open {
-        db: PartitionDb,
+        db: Arc<PartitionDb>,
     },
 }
 
@@ -333,7 +341,7 @@ impl State {
         matches!(self, State::Unknown)
     }
 
-    pub fn get_db(&self) -> Option<&PartitionDb> {
+    pub fn get_db(&self) -> Option<&Arc<PartitionDb>> {
         match self {
             State::Unknown | State::CfMissing => None,
             State::Open { db } => Some(db),

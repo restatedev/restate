@@ -85,7 +85,7 @@ impl Snapshots {
             })
     }
 
-    pub async fn refresh_latest_archived_lsn(&self, db: PartitionDb) -> Option<Lsn> {
+    pub async fn refresh_latest_archived_lsn(&self, db: &PartitionDb) -> Option<Lsn> {
         let Some(repository) = &self.repository else {
             return None;
         };
