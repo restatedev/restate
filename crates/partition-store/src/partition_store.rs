@@ -182,9 +182,10 @@ impl TableKind {
 }
 
 pub struct PartitionStore {
-    db: PartitionDb,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
+    // NOTE: Keep this at the end to ensure that the db is pinned until all other fields are dropped.
+    db: Arc<PartitionDb>,
 }
 
 impl std::fmt::Debug for PartitionStore {
@@ -201,9 +202,9 @@ impl std::fmt::Debug for PartitionStore {
 impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
-            db: self.db.clone(),
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
+            db: self.db.clone(),
         }
     }
 }
@@ -256,18 +257,12 @@ fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize)
     opts.set_max_bytes_for_level_base(memtables_budget as u64);
 }
 
-impl From<PartitionDb> for PartitionStore {
-    fn from(db: PartitionDb) -> Self {
-        Self::new(db)
-    }
-}
-
 impl PartitionStore {
-    pub(crate) fn new(db: PartitionDb) -> Self {
+    pub(crate) fn new(db: Arc<PartitionDb>) -> Self {
         Self {
-            db,
             key_buffer: BytesMut::new(),
             value_buffer: BytesMut::new(),
+            db,
         }
     }
 
@@ -275,7 +270,7 @@ impl PartitionStore {
         &self.db
     }
 
-    pub fn into_inner(self) -> PartitionDb {
+    pub fn into_inner(self) -> Arc<PartitionDb> {
         self.db
     }
 

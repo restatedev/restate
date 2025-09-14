@@ -132,13 +132,13 @@ macro_rules! gen_message {
         }
     };
     (@gen_message_enum_proto_debug [$variant:ident Control = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        gen_message!(@gen_message_enum_proto_debug [$($tail)*] -> [Message::$variant(msg) => format!("{msg:#?}"), $($body)*]);
+        gen_message!(@gen_message_enum_proto_debug [$($tail)*] -> [Message::$variant(msg) => format!("{msg:?}"), $($body)*]);
     };
     (@gen_message_enum_proto_debug [$variant:ident $ty:ident noparse $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
         paste::paste! { gen_message!(@gen_message_enum_proto_debug [$($tail)*] -> [Message::[< $variant $ty >](b) => format!("{:?}", <proto::[< $variant $ty Message>] as prost::Message>::decode(&mut b.clone())), $($body)*]); }
     };
     (@gen_message_enum_proto_debug [$variant:ident $ty:ident $($ignore:ident)* = $id:literal, $($tail:tt)*] -> [$($body:tt)*]) => {
-        paste::paste! { gen_message!(@gen_message_enum_proto_debug [$($tail)*] -> [Message::[< $variant $ty >](msg) => format!("{msg:#?}"), $($body)*]); }
+        paste::paste! { gen_message!(@gen_message_enum_proto_debug [$($tail)*] -> [Message::[< $variant $ty >](msg) => format!("{msg:?}"), $($body)*]); }
     };
 
     (@gen_message_type_enum [] -> [$($body:tt)*]) => {

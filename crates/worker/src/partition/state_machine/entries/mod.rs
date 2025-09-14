@@ -145,7 +145,7 @@ where
             if ctx.is_leader {
                 counter!(
                     USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                    "entry" => <&'static str>::from(entry.ty()),
+                    "entry" => entry.ty().prometheus_label(),
                 )
                 .increment(1);
             }

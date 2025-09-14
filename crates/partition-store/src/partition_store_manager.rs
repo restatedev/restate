@@ -9,13 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, error, info, instrument, warn};
 
-use restate_rocksdb::{CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
+use restate_rocksdb::{CfPrefixPattern, DbSpecBuilder, RocksDb, RocksDbManager, RocksError};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, SnapshotId};
@@ -29,7 +30,6 @@ use crate::snapshots::{LocalPartitionSnapshot, Snapshots};
 use crate::{BuildError, OpenError, PartitionStore, SnapshotErrorKind};
 use crate::{SnapshotError, cf_options};
 
-const DB_NAME: &str = "db";
 const PARTITION_CF_PREFIX: &str = "data-";
 
 #[derive(Default)]
@@ -102,37 +102,50 @@ impl SharedState {
     }
 }
 
-#[derive(Clone)]
 pub struct PartitionStoreManager {
     state: Arc<SharedState>,
     snapshots: Snapshots,
-    rocksdb: Arc<RocksDb>,
+    db_cache: AsyncMutex<HashMap<restate_rocksdb::DbName, Weak<RocksDb>>>,
 }
 
 impl PartitionStoreManager {
-    pub async fn create() -> Result<Self, BuildError> {
+    pub async fn create() -> Result<Arc<Self>, BuildError> {
+        // Start the memory controller, how do we know when db is dropped?
+        Ok(Arc::new(Self {
+            state: Arc::new(SharedState::default()),
+            snapshots: Snapshots::create(&Configuration::pinned())
+                .await
+                .map_err(BuildError::Snapshots)?,
+            db_cache: Default::default(),
+        }))
+    }
+
+    async fn open_rocksdb(&self, partition: &Partition) -> Result<Arc<RocksDb>, RocksError> {
+        let mut db_cache_guard = self.db_cache.lock().await;
+        let db_name = restate_rocksdb::DbName::from(partition.db_name());
+
+        if let Some(db) = db_cache_guard.get(&db_name).and_then(|db| db.upgrade()) {
+            return Ok(db);
+        }
+
+        // We need to create/open this database.
         let mut live_config = Configuration::live();
 
         let config = live_config.live_load();
-        let snapshots = Snapshots::create(config)
-            .await
-            .map_err(BuildError::Snapshots)?;
-
         let per_partition_memory_budget = config.worker.storage.rocksdb_memory_budget()
             / config
                 .worker
                 .storage
                 .num_partitions_to_share_memory_budget() as usize;
 
-        let state = Arc::new(SharedState::default());
-        let event_listener = DurableLsnEventListener::new(&state);
+        let event_listener = DurableLsnEventListener::new(&self.state);
 
         let mut db_opts = rocksdb::Options::default();
         db_opts.add_event_listener(event_listener);
 
         let db_spec = DbSpecBuilder::new(
-            DbName::new(DB_NAME),
-            config.worker.storage.data_dir(),
+            db_name.clone(),
+            config.worker.storage.data_dir(&db_name),
             db_opts,
         )
         .add_cf_pattern(
@@ -145,19 +158,16 @@ impl PartitionStoreManager {
         .build()
         .expect("valid spec");
 
-        let manager = RocksDbManager::get();
-        let rocksdb = manager
+        let db = RocksDbManager::get()
             .open_db(
                 live_config.map(|opts| &opts.worker.storage.rocksdb),
                 db_spec,
             )
             .await?;
 
-        Ok(Self {
-            state,
-            snapshots,
-            rocksdb,
-        })
+        db_cache_guard.insert(db_name, Arc::downgrade(&db));
+
+        Ok(db)
     }
 
     pub fn is_repository_configured(&self) -> bool {
@@ -166,10 +176,10 @@ impl PartitionStoreManager {
 
     pub async fn refresh_latest_archived_lsn(&self, partition_id: PartitionId) -> Option<Lsn> {
         let db = self.get_partition_db(partition_id).await?;
-        self.snapshots.refresh_latest_archived_lsn(db).await
+        self.snapshots.refresh_latest_archived_lsn(&db).await
     }
 
-    pub async fn get_partition_db(&self, partition_id: PartitionId) -> Option<PartitionDb> {
+    pub async fn get_partition_db(&self, partition_id: PartitionId) -> Option<Arc<PartitionDb>> {
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
         // hence the `cloned()` call.
         let cell = self.state.partitions.read().get(&partition_id).cloned()?;
@@ -180,7 +190,7 @@ impl PartitionStoreManager {
         // note: we don't hold the map read lock while trying to acquire the partition cell's lock.
         // hence the `cloned()` call.
         let cell = self.state.partitions.read().get(&partition_id).cloned()?;
-        cell.clone_db().await.map(PartitionStore::from)
+        cell.clone_db().await.map(PartitionStore::new)
     }
 
     /// Opens a partition store for the given partition, potentially re-creating it from a snapshot
@@ -193,15 +203,17 @@ impl PartitionStoreManager {
         partition: &Partition,
         target_lsn: Option<Lsn>,
     ) -> Result<PartitionStore, OpenError> {
+        let rocksdb = self.open_rocksdb(partition).await?;
+
         // If we already have the partition locally and we don't have a fast-forward target, or the
         // store already meets the target LSN requirement, then we simply return it.
-        let cell = self.state.get_or_open(partition, &self.rocksdb).await;
+        let cell = self.state.get_or_open(partition, &rocksdb).await;
 
         let mut state_guard = cell.inner.write().await;
 
         if let Some(db) = state_guard.get_db().cloned() {
             // we have a database, but perhaps it doesn't meet the min_applied_lsn requirement?
-            let mut partition_store = PartitionStore::from(db);
+            let mut partition_store = PartitionStore::new(db);
             match target_lsn {
                 None => return Ok(partition_store),
                 Some(min_applied_lsn) => {
@@ -229,10 +241,8 @@ impl PartitionStoreManager {
         match (snapshot, target_lsn) {
             (None, None) => {
                 debug!("No snapshot found for partition, creating new partition store");
-                let db = cell
-                    .create_cf(&mut state_guard, self.rocksdb.clone())
-                    .await?;
-                Ok(PartitionStore::from(db))
+                let db = cell.provision(&mut state_guard, rocksdb.clone()).await?;
+                Ok(PartitionStore::new(db))
             }
 
             (Some(snapshot), None) => {
@@ -240,10 +250,10 @@ impl PartitionStoreManager {
                 // there is no existing store - we can import without first dropping the column family.
                 info!("Found partition snapshot, restoring it");
                 let db = cell
-                    .import_cf(&mut state_guard, snapshot, self.rocksdb.clone())
+                    .import_cf(&mut state_guard, snapshot, rocksdb.clone())
                     .await?;
 
-                Ok(PartitionStore::from(db))
+                Ok(PartitionStore::new(db))
             }
 
             // Good snapshot
@@ -257,9 +267,9 @@ impl PartitionStoreManager {
                 );
                 cell.drop_cf(&mut state_guard).await?;
                 let db = cell
-                    .import_cf(&mut state_guard, snapshot, self.rocksdb.clone())
+                    .import_cf(&mut state_guard, snapshot, rocksdb.clone())
                     .await?;
-                Ok(PartitionStore::from(db))
+                Ok(PartitionStore::new(db))
             }
             (maybe_snapshot, Some(fast_forward_lsn)) => {
                 // Play it safe and keep the partition store intact; we can't do much else at this
@@ -324,7 +334,7 @@ impl PartitionStoreManager {
             });
         };
 
-        let partition_store = PartitionStore::from(db.clone());
+        let partition_store = PartitionStore::new(Arc::clone(db));
 
         self.snapshots
             .create_local_snapshot(
@@ -350,12 +360,11 @@ impl PartitionStoreManager {
         partition: &Partition,
         snapshot: LocalPartitionSnapshot,
     ) -> Result<PartitionStore, restate_rocksdb::RocksError> {
+        let rocksdb = self.open_rocksdb(partition).await?;
         let cell = self.state.get_or_default(partition);
         let mut state_guard = cell.inner.write().await;
-        let db = cell
-            .import_cf(&mut state_guard, snapshot, self.rocksdb.clone())
-            .await?;
-        Ok(PartitionStore::from(db))
+        let db = cell.import_cf(&mut state_guard, snapshot, rocksdb).await?;
+        Ok(PartitionStore::new(db))
     }
 
     #[cfg(test)]

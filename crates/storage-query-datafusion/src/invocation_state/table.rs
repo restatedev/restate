@@ -8,15 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Debug;
+use std::ops::RangeInclusive;
+use std::sync::Arc;
+
 use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use std::fmt::Debug;
-use std::ops::RangeInclusive;
-use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 use restate_invoker_api::{InvocationStatusReport, StatusHandle};
@@ -38,24 +39,18 @@ pub(crate) fn register_self(
     ctx: &QueryContext,
     partition_selector: impl SelectPartitions,
     status: Option<impl StatusHandle + Send + Sync + Debug + Clone + 'static>,
-    local_partition_store_manager: Option<PartitionStoreManager>,
+    partition_store_manager: Arc<PartitionStoreManager>,
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    let local_partition_scanner = match (status, local_partition_store_manager) {
-        (Some(status_handle), Some(partition_store_manager)) => {
+    let local_partition_scanner = match status {
+        Some(status_handle) => {
             let status_scanner = Arc::new(StatusScanner {
                 status_handle,
                 partition_store_manager,
             }) as Arc<dyn ScanPartition>;
             Some(status_scanner)
         }
-        (None, None) => None,
-        _ => {
-            let err = anyhow!(
-                "Was expecting either both a status scanner and a local partition scanner OR none of them"
-            );
-            return Err(DataFusionError::External(err.into()));
-        }
+        None => None,
     };
 
     let schema = SysInvocationStateBuilder::schema();
@@ -76,7 +71,7 @@ pub(crate) fn register_self(
 }
 
 async fn partition_key_range(
-    partition_store_manager: PartitionStoreManager,
+    partition_store_manager: &PartitionStoreManager,
     partition_id: PartitionId,
 ) -> datafusion::common::Result<RangeInclusive<PartitionKey>> {
     partition_store_manager
@@ -93,7 +88,7 @@ async fn partition_key_range(
 struct StatusScanner<S> {
     status_handle: S,
     #[debug(skip)]
-    partition_store_manager: PartitionStoreManager,
+    partition_store_manager: Arc<PartitionStoreManager>,
 }
 
 impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for StatusScanner<S> {
@@ -112,7 +107,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         let tx = stream_builder.tx();
 
         let background_task = async move {
-            let range = partition_key_range(partition_store_manager, partition_id).await?;
+            let range = partition_key_range(&partition_store_manager, partition_id).await?;
             match limit {
                 Some(limit) => {
                     for_each_state(

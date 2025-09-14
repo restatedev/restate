@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::{fmt::Debug, ops::ControlFlow};
 
 use anyhow::anyhow;
@@ -49,7 +50,7 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
 #[derive(Clone, derive_more::Debug)]
 pub struct LocalPartitionsScanner<S> {
     #[debug(skip)]
-    partition_store_manager: PartitionStoreManager,
+    partition_store_manager: Arc<PartitionStoreManager>,
     _marker: std::marker::PhantomData<S>,
 }
 
@@ -57,7 +58,7 @@ impl<S> LocalPartitionsScanner<S>
 where
     S: ScanLocalPartition,
 {
-    pub fn new(partition_store_manager: PartitionStoreManager, _scanner: S) -> Self {
+    pub fn new(partition_store_manager: Arc<PartitionStoreManager>, _scanner: S) -> Self {
         Self {
             partition_store_manager,
             _marker: std::marker::PhantomData,

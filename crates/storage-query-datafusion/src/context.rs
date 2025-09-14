@@ -128,7 +128,7 @@ pub trait RegisterTable: Send + Sync + 'static {
 /// A query context registerer for user tables
 pub struct UserTables<P, S, D> {
     partition_selector: P,
-    local_partition_store_manager: Option<PartitionStoreManager>,
+    partition_store_manager: Arc<PartitionStoreManager>,
     status: Option<S>,
     schemas: Live<D>,
     remote_scanner_manager: RemoteScannerManager,
@@ -137,14 +137,14 @@ pub struct UserTables<P, S, D> {
 impl<P, S, D> UserTables<P, S, D> {
     pub fn new(
         partition_selector: P,
-        local_partition_store_manager: Option<PartitionStoreManager>,
+        partition_store_manager: Arc<PartitionStoreManager>,
         status: Option<S>,
         schemas: Live<D>,
         remote_scanner_manager: RemoteScannerManager,
     ) -> Self {
         Self {
             partition_selector,
-            local_partition_store_manager,
+            partition_store_manager,
             status,
             schemas,
             remote_scanner_manager,
@@ -167,55 +167,55 @@ where
             ctx,
             self.partition_selector.clone(),
             self.status.clone(),
-            self.local_partition_store_manager.clone(),
+            self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
         crate::invocation_status::register_self(
             ctx,
             self.partition_selector.clone(),
-            self.local_partition_store_manager.clone(),
+            self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
         crate::keyed_service_status::register_self(
             ctx,
             self.partition_selector.clone(),
-            self.local_partition_store_manager.clone(),
+            self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
         crate::state::register_self(
             ctx,
             self.partition_selector.clone(),
-            self.local_partition_store_manager.clone(),
+            self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
         crate::journal::register_self(
             ctx,
             self.partition_selector.clone(),
-            self.local_partition_store_manager.clone(),
+            self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
         crate::journal_events::register_self(
             ctx,
             self.partition_selector.clone(),
-            self.local_partition_store_manager.clone(),
+            self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
         crate::inbox::register_self(
             ctx,
             self.partition_selector.clone(),
-            self.local_partition_store_manager.clone(),
+            self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
         crate::idempotency::register_self(
             ctx,
             self.partition_selector.clone(),
-            self.local_partition_store_manager.clone(),
+            self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
         crate::promise::register_self(
             ctx,
             self.partition_selector.clone(),
-            self.local_partition_store_manager.clone(),
+            self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
 
@@ -296,7 +296,7 @@ impl QueryContext {
     pub async fn with_user_tables(
         options: &QueryEngineOptions,
         partition_selector: impl SelectPartitions + Clone,
-        local_partition_store_manager: Option<PartitionStoreManager>,
+        partition_store_manager: Arc<PartitionStoreManager>,
         status: Option<impl StatusHandle + Send + Sync + Debug + Clone + 'static>,
         schemas: Live<
             impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
@@ -305,7 +305,7 @@ impl QueryContext {
     ) -> Result<QueryContext, BuildError> {
         let tables = UserTables::new(
             partition_selector,
-            local_partition_store_manager,
+            partition_store_manager,
             status,
             schemas,
             remote_scanner_manager,

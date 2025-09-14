@@ -134,6 +134,59 @@ impl RocksDbManager {
         Self::get()
     }
 
+    // pub async fn get_or_open_db(
+    //     &'static self,
+    //     mut db_spec: DbSpec,
+    //     mut updateable_opts: impl LiveLoad<Live = RocksDbOptions> + 'static,
+    // ) -> Result<Arc<RocksDb>, RocksError> {
+    //     let read_guard = self.dbs.upgradable_read();
+    //     if let Some(Some(db)) = read_guard.get(db_spec.name()).map(Weak::upgrade) {
+    //         return Ok(db);
+    //     }
+    //
+    //     let mut write_guard = parking_lot::RwLockUpgradableReadGuard::upgrade(read_guard);
+    //
+    //     if self
+    //         .shutting_down
+    //         .load(std::sync::atomic::Ordering::Acquire)
+    //     {
+    //         return Err(RocksError::Shutdown(ShutdownError));
+    //     }
+    //
+    //     // get latest options
+    //     let options = updateable_opts.live_load().clone();
+    //     let name = db_spec.name.clone();
+    //     // use the spec default options as base then apply the config from the updateable.
+    //     self.amend_db_options(&mut db_spec.db_options, &options);
+    //
+    //     let path = db_spec.path.clone();
+    //     let wrapper = RocksDb::open(self, db_spec, self.default_cf_options(&options)).await?;
+    //     write_guard.insert(name.clone(), Arc::downgrade(&wrapper));
+    //
+    //     if let Err(e) = self
+    //         .watchdog_tx
+    //         .send(WatchdogCommand::Register(ConfigSubscription {
+    //             name: name.clone(),
+    //             updateable_rocksdb_opts: updateable_opts.boxed(),
+    //             last_applied_opts: options,
+    //         }))
+    //     {
+    //         warn!(
+    //             db = %name,
+    //             path = %path.display(),
+    //             "Failed to register database with watchdog: {}, this database will \
+    //                 not receive config updates but the system will continue to run as normal",
+    //             e
+    //         );
+    //     }
+    //     debug!(
+    //         db = %name,
+    //         path = %path.display(),
+    //         "Opened rocksdb database"
+    //     );
+    //     Ok(wrapper)
+    // }
+
     pub fn get_db(&self, name: DbName) -> Option<Arc<RocksDb>> {
         let read_guard = self.dbs.upgradable_read();
         let db = read_guard.get(&name)?.upgrade();

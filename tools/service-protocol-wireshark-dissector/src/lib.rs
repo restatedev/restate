@@ -11,8 +11,10 @@
 use bytes::Bytes;
 use mlua::prelude::*;
 use mlua::{Table, Value};
-use restate_service_protocol_v4::message_codec::{Decoder, MessageType};
+use restate_service_protocol_v4::message_codec::{Decoder, Message, MessageType};
+use restate_time_util::DurationExt;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
 #[error("unexpected lua value received")]
@@ -53,6 +55,14 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
         // Optional flags
         if let Some(requires_ack) = header.requires_ack() {
             set_table_values!(message_table, "requires_ack" => requires_ack);
+        }
+
+        // For some messages, spit out more stuff
+        if let Message::Start(start_message) = message {
+            set_table_values!(message_table,
+                  "start_message_retry_count_since_last_stored_entry" => start_message.retry_count_since_last_stored_entry,
+                  "start_message_duration_since_last_stored_entry" => Duration::from_millis(start_message.duration_since_last_stored_entry).friendly().to_string(),
+            );
         }
 
         result_messages.push(message_table)?;

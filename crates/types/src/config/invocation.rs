@@ -39,7 +39,7 @@ pub struct InvocationOptions {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_journal_retention: Option<FriendlyDuration>,
 
-    // TODO(slinkydeveloper) on 1.6 this option becomes mandatory, and serde should default to the values set below
+    // TODO(slinkydeveloper) on v1.6 this option becomes mandatory, and serde should default to the values set below
     /// # Default retry policy
     ///
     /// The default retry policy to use for invocations.
@@ -92,9 +92,10 @@ pub struct InvocationRetryPolicyOptions {
 
     /// # Max attempts
     ///
-    /// Number of maximum attempts (including the initial) before giving up. Infinite retries if unset. No retries if set to 1.
-    #[serde(default = "default_max_attempts")]
-    pub(crate) max_attempts: Option<NonZeroUsize>,
+    /// Number of maximum attempts (including the initial) before giving up.
+    /// No retries if set to 1.
+    #[serde(default)]
+    pub(crate) max_attempts: MaxAttempts,
 
     /// # On max attempts
     ///
@@ -105,8 +106,8 @@ pub struct InvocationRetryPolicyOptions {
     /// # Max interval
     ///
     /// Maximum interval between retries.
-    #[serde(default)]
-    pub(crate) max_interval: Option<NonZeroFriendlyDuration>,
+    #[serde(default = "default_max_interval")]
+    pub(crate) max_interval: NonZeroFriendlyDuration,
 }
 
 impl Default for InvocationRetryPolicyOptions {
@@ -114,9 +115,9 @@ impl Default for InvocationRetryPolicyOptions {
         Self {
             initial_interval: default_initial_interval(),
             exponentiation_factor: default_exponentiation_factor(),
-            max_attempts: default_max_attempts(),
+            max_attempts: MaxAttempts::default(),
             on_max_attempts: OnMaxAttempts::default(),
-            max_interval: None,
+            max_interval: default_max_interval(),
         }
     }
 }
@@ -125,12 +126,12 @@ fn default_initial_interval() -> NonZeroFriendlyDuration {
     NonZeroFriendlyDuration::from_millis_unchecked(500)
 }
 
-fn default_max_attempts() -> Option<NonZeroUsize> {
-    Some(NonZeroUsize::new(20).unwrap())
-}
-
 fn default_exponentiation_factor() -> f32 {
     2.0
+}
+
+fn default_max_interval() -> NonZeroFriendlyDuration {
+    NonZeroFriendlyDuration::from_secs_unchecked(20)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -143,4 +144,32 @@ pub enum OnMaxAttempts {
     Pause,
     /// Kill the invocation when max attempts are reached.
     Kill,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(rename = "MaxAttempts"))]
+pub enum MaxAttempts {
+    /// Unlimited retries.
+    #[serde(rename = "unlimited")]
+    #[serde(alias = "infinite")]
+    Unlimited,
+    /// Bounded number of retries.
+    #[serde(untagged)]
+    Bounded(NonZeroUsize),
+}
+
+impl Default for MaxAttempts {
+    fn default() -> Self {
+        Self::Bounded(NonZeroUsize::new(200).unwrap())
+    }
+}
+
+impl From<MaxAttempts> for Option<NonZeroUsize> {
+    fn from(value: MaxAttempts) -> Self {
+        match value {
+            MaxAttempts::Bounded(n) => Some(n),
+            MaxAttempts::Unlimited => None,
+        }
+    }
 }

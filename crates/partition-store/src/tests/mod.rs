@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use std::pin::pin;
+use std::sync::Arc;
 
 use futures::Stream;
 use restate_core::TestCoreEnv;
@@ -48,7 +49,7 @@ async fn storage_test_environment() -> PartitionStore {
     storage_test_environment_with_manager().await.1
 }
 
-async fn storage_test_environment_with_manager() -> (PartitionStoreManager, PartitionStore) {
+async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>, PartitionStore) {
     //
     // create a rocksdb storage from options
     //

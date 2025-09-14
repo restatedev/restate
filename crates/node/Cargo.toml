@@ -25,10 +25,11 @@ restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-log-server = { workspace = true }
-restate-metadata-server = { workspace = true }
-restate-metadata-store = { workspace = true, features = ["grpc-server"] }
-restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
 restate-metadata-providers = { workspace = true, features = ["replicated", "objstore", "etcd"] }
+restate-metadata-server = { workspace = true }
+restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
+restate-metadata-store = { workspace = true, features = ["grpc-server"] }
+restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }

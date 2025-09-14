@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use tempfile::tempdir;
@@ -23,7 +24,10 @@ use restate_types::time::MillisSinceEpoch;
 use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
 use crate::{PartitionStore, PartitionStoreManager};
 
-pub(crate) async fn run_tests(manager: PartitionStoreManager, mut partition_store: PartitionStore) {
+pub(crate) async fn run_tests(
+    manager: Arc<PartitionStoreManager>,
+    mut partition_store: PartitionStore,
+) {
     insert_test_data(&mut partition_store).await;
 
     let snapshots_dir = tempdir().unwrap();

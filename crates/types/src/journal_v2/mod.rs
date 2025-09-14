@@ -74,12 +74,46 @@ impl fmt::Display for EntryType {
     }
 }
 
-impl From<EntryType> for &'static str {
-    fn from(val: EntryType) -> Self {
-        match val {
-            EntryType::Command(cmd_type) => cmd_type.into(),
+impl EntryType {
+    pub fn prometheus_label(&self) -> &'static str {
+        // TODO (slinkydeveloper): write a macro for this
+        match self {
+            EntryType::Command(cmd_type) => match cmd_type {
+                CommandType::Input => "Command/Input",
+                CommandType::Output => "Command/Output",
+                CommandType::GetLazyState => "Command/GetLazyState",
+                CommandType::SetState => "Command/SetState",
+                CommandType::ClearState => "Command/ClearState",
+                CommandType::ClearAllState => "Command/ClearAllState",
+                CommandType::GetLazyStateKeys => "Command/GetLazyStateKeys",
+                CommandType::GetEagerState => "Command/GetEagerState",
+                CommandType::GetEagerStateKeys => "Command/GetEagerStateKeys",
+                CommandType::GetPromise => "Command/GetPromise",
+                CommandType::PeekPromise => "Command/PeekPromise",
+                CommandType::CompletePromise => "Command/CompletePromise",
+                CommandType::Sleep => "Command/Sleep",
+                CommandType::Call => "Command/Call",
+                CommandType::OneWayCall => "Command/OneWayCall",
+                CommandType::SendSignal => "Command/SendSignal",
+                CommandType::Run => "Command/Run",
+                CommandType::AttachInvocation => "Command/AttachInvocation",
+                CommandType::GetInvocationOutput => "Command/GetInvocationOutput",
+                CommandType::CompleteAwakeable => "Command/CompleteAwakeable",
+            },
             EntryType::Notification(notif_type) => match notif_type {
-                NotificationType::Completion(completion_type) => completion_type.into(),
+                NotificationType::Completion(completion_type) => match completion_type {
+                    CompletionType::GetLazyState => "Completion/GetLazyState",
+                    CompletionType::GetLazyStateKeys => "Completion/GetLazyStateKeys",
+                    CompletionType::GetPromise => "Completion/GetPromise",
+                    CompletionType::PeekPromise => "Completion/PeekPromise",
+                    CompletionType::CompletePromise => "Completion/CompletePromise",
+                    CompletionType::Sleep => "Completion/Sleep",
+                    CompletionType::CallInvocationId => "Completion/CallInvocationId",
+                    CompletionType::Call => "Completion/Call",
+                    CompletionType::Run => "Completion/Run",
+                    CompletionType::AttachInvocation => "Completion/AttachInvocation",
+                    CompletionType::GetInvocationOutput => "Completion/GetInvocationOutput",
+                },
                 NotificationType::Signal => "Signal",
             },
         }
