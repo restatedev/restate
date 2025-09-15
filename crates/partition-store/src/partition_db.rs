@@ -337,6 +337,10 @@ pub(crate) enum State {
 }
 
 impl State {
+    /// The state of local column family is still unknown.
+    ///
+    /// The column family may or may not exist locally and we will only know
+    /// this after an attempt to opening it.
     pub fn is_unknown(&self) -> bool {
         matches!(self, State::Unknown)
     }

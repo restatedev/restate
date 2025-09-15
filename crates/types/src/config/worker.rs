@@ -485,8 +485,8 @@ impl StorageOptions {
             .get()
     }
 
-    pub fn data_dir(&self) -> PathBuf {
-        super::data_dir("db")
+    pub fn data_dir(&self, db_name: &str) -> PathBuf {
+        super::data_dir(db_name)
     }
 
     pub fn snapshots_staging_dir(&self) -> PathBuf {
