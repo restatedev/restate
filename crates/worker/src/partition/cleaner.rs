@@ -14,7 +14,8 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use futures::StreamExt;
-use tokio::time::MissedTickBehavior;
+use restate_types::retries::with_jitter;
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
@@ -66,7 +67,8 @@ where
             bifrost,
             cleanup_interval,
         } = self;
-        debug!("Running cleaner");
+
+        debug!(?cleanup_interval, "Running cleaner");
 
         let my_node_id = Metadata::with_current(|m| m.my_node_id());
         let bifrost_envelope_source = Source::Processor {
@@ -77,7 +79,13 @@ where
             generational_node_id: Some(my_node_id),
         };
 
-        let mut interval = tokio::time::interval(cleanup_interval);
+        // the cleaner is currently quite an expensive scan and we don't strictly need to do it on startup, so we will wait
+        // for 20-40% of the interval (so, 12-24 minutes by default) before doing the first one
+        let initial_wait = with_jitter(cleanup_interval.mul_f32(0.2), 1.0);
+
+        // the first tick will fire after initial_wait
+        let mut interval =
+            tokio::time::interval_at(Instant::now() + initial_wait, cleanup_interval);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
@@ -329,8 +337,8 @@ mod tests {
         )
         .unwrap();
 
-        // By yielding once we let the cleaner task run, and perform the cleanup
-        tokio::task::yield_now().await;
+        // cleanup will run after around 200ms
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
         // All the invocation ids were created with same partition keys, hence same partition id.
         let partition_id = Metadata::with_current(|m| {
