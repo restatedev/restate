@@ -11,17 +11,15 @@
 use std::ops::ControlFlow;
 use std::ops::RangeInclusive;
 use std::path::Path;
-use std::slice;
 use std::sync::Arc;
 
 use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
 use enum_map::Enum;
-use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{
-    BoundColumnFamily, DBCompressionType, DBPinnableSlice, DBRawIteratorWithThreadMode,
-    PrefixRange, ReadOptions, SliceTransform, SnapshotWithThreadMode,
+    BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, PrefixRange, ReadOptions,
+    SnapshotWithThreadMode,
 };
 use static_assertions::const_assert_eq;
 use tokio::sync::mpsc;
@@ -31,7 +29,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace};
 
 use restate_core::ShutdownError;
-use restate_rocksdb::{CfName, IoMode, IterAction, Priority, RocksDb, RocksError};
+use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
@@ -41,7 +39,6 @@ use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
 
-use crate::durable_lsn_tracking::AppliedLsnCollectorFactory;
 use crate::fsm_table::{get_locally_durable_lsn, get_schema_version, put_schema_version};
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
@@ -57,7 +54,8 @@ pub type DBIterator<'b> = DBRawIteratorWithThreadMode<'b, DB>;
 pub type DBIteratorTransaction<'b> = DBRawIteratorWithThreadMode<'b, rocksdb::Transaction<'b, DB>>;
 
 // Key prefix is 10 bytes (KeyKind(2) + PartitionKey/Id(8))
-const DB_PREFIX_LENGTH: usize = KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>();
+pub(crate) const DB_PREFIX_LENGTH: usize =
+    KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>();
 
 // If this changes, we need to know.
 const_assert_eq!(DB_PREFIX_LENGTH, 10);
@@ -206,54 +204,6 @@ impl Clone for PartitionStore {
             value_buffer: BytesMut::default(),
         }
     }
-}
-
-pub(crate) fn cf_options(
-    memory_budget: usize,
-) -> impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static {
-    move |mut cf_options| {
-        set_memory_related_opts(&mut cf_options, memory_budget);
-        // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
-        // in the C API nor the rust binding. That's okay and we can change it later.
-        cf_options.set_prefix_extractor(SliceTransform::create_fixed_prefix(DB_PREFIX_LENGTH));
-        cf_options.set_memtable_prefix_bloom_ratio(0.2);
-        cf_options.set_memtable_whole_key_filtering(true);
-        // Most of the changes are highly temporal, we try to delay flushing
-        // As much as we can to increase the chances to observe a deletion.
-        //
-        cf_options.set_num_levels(7);
-        cf_options.set_compression_per_level(&[
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-        ]);
-
-        // Always collect applied LSN table properties in partition store CFs
-        cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
-
-        cf_options
-    }
-}
-
-fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
-    // We set the budget to allow 1 mutable + 3 immutable.
-    opts.set_write_buffer_size(memtables_budget / 4);
-
-    // merge 2 memtables when flushing to L0
-    opts.set_min_write_buffer_number_to_merge(2);
-    opts.set_max_write_buffer_number(4);
-    // start flushing L0->L1 as soon as possible. each file on level0 is
-    // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
-    // memtable_memory_budget.
-    opts.set_level_zero_file_num_compaction_trigger(2);
-    // doesn't really matter much, but we don't want to create too many files
-    opts.set_target_file_size_base(memtables_budget as u64 / 8);
-    // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
-    opts.set_max_bytes_for_level_base(memtables_budget as u64);
 }
 
 impl From<PartitionDb> for PartitionStore {
@@ -661,19 +611,6 @@ impl PartitionStore {
             meta: self.db.partition(),
             snapshot,
         }
-    }
-
-    pub async fn flush_memtables(&self, wait: bool) -> Result<()> {
-        self.db
-            .rocksdb()
-            .clone()
-            .flush_memtables(
-                slice::from_ref(&CfName::from(self.db.partition().cf_name())),
-                wait,
-            )
-            .await
-            .map_err(|err| StorageError::Generic(err.into()))?;
-        Ok(())
     }
 
     /// Creates a snapshot of the partition in the given directory, which must not exist prior to
@@ -1293,9 +1230,7 @@ mod tests {
     use bytes::{Buf, BufMut};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::{IsolationLevel, StorageError, Transaction};
-    use restate_types::config::CommonOptions;
     use restate_types::identifiers::{PartitionId, PartitionKey};
-    use restate_types::live::Constant;
     use restate_types::partitions::Partition;
 
     impl TableKey for String {
@@ -1333,7 +1268,7 @@ mod tests {
 
     #[restate_core::test]
     async fn concurrent_writes_and_reads() -> googletest::Result<()> {
-        let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
+        let rocksdb = RocksDbManager::init();
         let partition_store_manager = PartitionStoreManager::create().await?;
         let mut partition_store = partition_store_manager
             .open(

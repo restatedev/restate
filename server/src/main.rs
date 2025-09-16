@@ -228,7 +228,7 @@ fn main() {
             );
 
             // Initialize rocksdb manager
-            let rocksdb_manager = RocksDbManager::init(Configuration::map_live(|c| &c.common));
+            let rocksdb_manager = RocksDbManager::init();
 
             // ensures we run rocksdb shutdown after the shutdown_node routine.
             TaskCenter::set_on_shutdown(Box::pin(async {

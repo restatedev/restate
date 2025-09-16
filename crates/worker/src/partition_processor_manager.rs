@@ -708,12 +708,16 @@ impl PartitionProcessorManager {
         partition_id: PartitionId,
         runtime_task_handle: RuntimeTaskHandle<Result<(), ProcessorError>>,
     ) {
+        let psm = self.partition_store_manager.clone();
         self.asynchronous_operations
             .build_task()
             .name(&format!("runtime-result-{partition_id}"))
             .spawn(
                 async move {
                     let result = runtime_task_handle.await;
+                    // make sure we tell partition store manager to mark the partition db as closed
+                    psm.close(partition_id).await;
+
                     AsynchronousEvent {
                         partition_id,
                         inner: EventKind::Stopped(result),
@@ -1471,10 +1475,10 @@ mod tests {
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{CommonOptions, Configuration};
+    use restate_types::config::Configuration;
     use restate_types::health::HealthStatus;
     use restate_types::identifiers::PartitionId;
-    use restate_types::live::{Constant, Live};
+    use restate_types::live::Live;
     use restate_types::logs::{Lsn, SequenceNumber};
     use restate_types::net::AdvertisedAddress;
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
@@ -1506,7 +1510,7 @@ mod tests {
             .set_nodes_config(nodes_config);
         let health_status = HealthStatus::default();
 
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
 
         let bifrost_svc = BifrostService::new(env_builder.metadata_writer.clone())
             .with_factory(memory_loglet::Factory::default());

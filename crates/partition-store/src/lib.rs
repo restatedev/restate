@@ -19,6 +19,7 @@ pub mod journal_events;
 pub mod journal_table;
 pub mod journal_table_v2;
 pub mod keys;
+mod memory;
 mod migrations;
 pub mod outbox_table;
 mod owned_iter;

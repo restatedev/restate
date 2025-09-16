@@ -24,9 +24,8 @@ use restate_bifrost::loglet::OperationError;
 use restate_core::{ShutdownError, TaskCenter, TaskKind};
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::GenerationalNodeId;
-use restate_types::config::LogServerOptions;
+use restate_types::config::{Configuration, LogServerOptions};
 use restate_types::health::HealthStatus;
-use restate_types::live::{BoxLiveLoad, LiveLoad};
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{Seal, Store, Trim};
 use restate_types::protobuf::common::LogServerStatus;
@@ -63,21 +62,15 @@ pub(crate) struct LogStoreWriter {
     rocksdb: Arc<RocksDb>,
     batch_acks_buf: Vec<Ack>,
     buffer: BytesMut,
-    updateable_options: BoxLiveLoad<LogServerOptions>,
     health_status: HealthStatus<LogServerStatus>,
 }
 
 impl LogStoreWriter {
-    pub(crate) fn new(
-        rocksdb: Arc<RocksDb>,
-        updateable_options: BoxLiveLoad<LogServerOptions>,
-        health_status: HealthStatus<LogServerStatus>,
-    ) -> Self {
+    pub(crate) fn new(rocksdb: Arc<RocksDb>, health_status: HealthStatus<LogServerStatus>) -> Self {
         Self {
             rocksdb,
             batch_acks_buf: Vec::default(),
             buffer: BytesMut::with_capacity(INITIAL_SERDE_BUFFER_SIZE),
-            updateable_options,
             health_status,
         }
     }
@@ -87,9 +80,7 @@ impl LogStoreWriter {
         // big enough to allow a second full batch to queue up while the existing one is being processed
         let batch_size = std::cmp::max(
             1,
-            self.updateable_options
-                .live_load()
-                .writer_batch_commit_count,
+            Configuration::pinned().log_server.writer_batch_commit_count,
         );
         // leave twice as much space in the the channel to ensure we can enqueue up-to a full batch in
         // the backlog while we process this one.
@@ -100,12 +91,13 @@ impl LogStoreWriter {
             "log-server-rocksdb-writer",
             async move {
                 debug!("Start running LogStoreWriter");
-                let mut opts = self.updateable_options.clone();
+                let mut config = Configuration::live();
                 let mut receiver =
                     std::pin::pin!(ReceiverStream::new(receiver).ready_chunks(batch_size));
 
                 while let Some(cmds) = TokioStreamExt::next(&mut receiver).await {
-                    self.handle_commands(opts.live_load(), cmds).await;
+                    self.handle_commands(&config.live_load().log_server, cmds)
+                        .await;
                 }
                 debug!("LogStore loglet writer task finished");
             },
