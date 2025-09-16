@@ -163,11 +163,11 @@ impl PartitionCell {
         }
     }
 
-    // low-level opening of a column family.
+    // low-level opening of a column famili(es) for the partition.
     //
     // Note: This doesn't check whether the column family exists or not
     #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name()))]
-    pub async fn create_cf(
+    pub async fn provision(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         rocksdb: Arc<RocksDb>,
@@ -329,6 +329,10 @@ pub(crate) enum State {
 }
 
 impl State {
+    /// The state of local column family is still unknown.
+    ///
+    /// The column family may or may not exist locally and we will only know
+    /// this after an attempt to opening it.
     pub fn is_unknown(&self) -> bool {
         matches!(self, State::Unknown)
     }

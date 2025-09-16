@@ -37,6 +37,13 @@ impl DbName {
     }
 }
 
+impl From<restate_types::partitions::DbName> for DbName {
+    fn from(name: restate_types::partitions::DbName) -> Self {
+        let inner: SmartString = name.into();
+        Self(inner)
+    }
+}
+
 #[derive(
     Debug,
     derive_more::Deref,
