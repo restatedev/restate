@@ -128,6 +128,8 @@ datafusion = { version = "49.0.0", default-features = false, features = [
     "recursive_protection",
 ] }
 datafusion-expr = { version = "49.0.0" }
+datafusion-functions-json = { version = "0.49.0" }
+datafusion-proto = { version = "49.0.0", default-features = false }
 derive_builder = "0.20.0"
 derive_more = { version = "2.0.1", features = ["full"] }
 dialoguer = { version = "0.11.0" }
