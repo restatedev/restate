@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use tracing::{debug, info, instrument, warn};
@@ -30,7 +31,7 @@ pub struct SnapshotPartitionTask {
     pub partition_id: PartitionId,
     pub min_target_lsn: Option<Lsn>,
     pub snapshot_base_path: PathBuf,
-    pub partition_store_manager: PartitionStoreManager,
+    pub partition_store_manager: Arc<PartitionStoreManager>,
     pub cluster_name: String,
     pub cluster_fingerprint: Option<ClusterFingerprint>,
     pub node_name: String,

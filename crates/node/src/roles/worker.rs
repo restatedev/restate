@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use codederror::CodedError;
 
 use restate_bifrost::Bifrost;
@@ -17,6 +19,7 @@ use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_partition_store::PartitionStoreManager;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
@@ -42,6 +45,7 @@ impl WorkerRole {
         health_status: HealthStatus<WorkerStatus>,
         replica_set_states: PartitionReplicaSetStates,
         router_builder: &mut MessageRouterBuilder,
+        partition_store_manager: Arc<PartitionStoreManager>,
         networking: Networking<T>,
         bifrost: Bifrost,
         metadata_writer: MetadataWriter,
@@ -49,6 +53,7 @@ impl WorkerRole {
         let worker = Worker::create(
             health_status,
             replica_set_states,
+            partition_store_manager,
             networking,
             bifrost,
             router_builder,

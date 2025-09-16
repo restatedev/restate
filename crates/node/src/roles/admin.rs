@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use codederror::CodedError;
@@ -21,6 +22,7 @@ use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::PartitionProcessorInvocationClient;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
+use restate_partition_store::PartitionStoreManager;
 use restate_service_client::{AssumeRoleCacheMode, HttpClient, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
@@ -74,6 +76,7 @@ impl<T: TransportConnect> AdminRole<T> {
         networking: Networking<T>,
         metadata: Metadata,
         metadata_writer: MetadataWriter,
+        partition_store_manager: Arc<PartitionStoreManager>,
         server_builder: &mut NetworkServerBuilder,
         local_query_context: Option<QueryContext>,
     ) -> Result<Self, AdminRoleBuildError> {
@@ -104,7 +107,7 @@ impl<T: TransportConnect> AdminRole<T> {
             QueryContext::with_user_tables(
                 &config.admin.query_engine,
                 SelectPartitionsFromMetadata,
-                None,
+                partition_store_manager,
                 Option::<EmptyInvokerStatusHandle>::None,
                 metadata.updateable_schema(),
                 remote_scanner_manager,

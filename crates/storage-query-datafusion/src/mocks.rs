@@ -103,7 +103,7 @@ impl SelectPartitions for MockPartitionSelector {
 }
 
 #[allow(dead_code)]
-pub(crate) struct MockQueryEngine(PartitionStoreManager, PartitionStore, QueryContext);
+pub(crate) struct MockQueryEngine(Arc<PartitionStoreManager>, PartitionStore, QueryContext);
 
 #[derive(Debug)]
 struct NoopSvc;
@@ -161,7 +161,7 @@ impl MockQueryEngine {
             QueryContext::with_user_tables(
                 &QueryEngineOptions::default(),
                 MockPartitionSelector,
-                Some(manager),
+                manager,
                 Some(status),
                 Live::from_value(schemas),
                 RemoteScannerManager::new(Arc::new(NoopSvc), Arc::new(AlwaysLocalPartitionLocator)),

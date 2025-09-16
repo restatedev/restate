@@ -7219,6 +7219,7 @@ dependencies = [
  "restate-metadata-server",
  "restate-metadata-server-grpc",
  "restate-metadata-store",
+ "restate-partition-store",
  "restate-rocksdb",
  "restate-service-client",
  "restate-service-protocol",

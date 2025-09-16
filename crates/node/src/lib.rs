@@ -36,6 +36,7 @@ use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
 };
 use restate_metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
+use restate_partition_store::PartitionStoreManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_types::health::NodeStatus;
@@ -81,6 +82,10 @@ pub enum BuildError {
     #[error("Invalid configuration: {0}")]
     #[code(unknown)]
     InvalidConfiguration(anyhow::Error),
+
+    #[error("building partition-store-manager failed: {0}")]
+    #[code(unknown)]
+    PartitionStoreManager(#[from] restate_partition_store::BuildError),
 
     #[error("building worker failed: {0}")]
     Worker(
@@ -230,6 +235,8 @@ impl Node {
 
         let bifrost = bifrost_svc.handle();
 
+        let partition_store_manager = PartitionStoreManager::create().await?;
+
         let log_server = if config.has_role(Role::LogServer) {
             Some(
                 LogServerService::create(
@@ -251,6 +258,7 @@ impl Node {
                     tc.health().worker_status(),
                     replica_set_states.clone(),
                     &mut router_builder,
+                    partition_store_manager.clone(),
                     networking.clone(),
                     bifrost_svc.handle(),
                     metadata_manager.writer(),
@@ -289,6 +297,7 @@ impl Node {
                     networking.clone(),
                     metadata,
                     metadata_manager.writer(),
+                    partition_store_manager.clone(),
                     &mut server_builder,
                     worker_role
                         .as_ref()
