@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use crate::raft::storage::{DATA_CF, DATA_DIR, DB_NAME, METADATA_CF};
+use restate_rocksdb::configuration::{DefaultCfConfigurator, DefaultDbConfigurator};
 use restate_rocksdb::{
     CfExactPattern, CfName, CfPrefixPattern, DbName, DbSpecBuilder, RocksDb, RocksDbManager,
     RocksError,
 };
-use restate_types::config::{MetadataServerOptions, data_dir};
-use restate_types::live::{LiveLoad, LiveLoadExt};
+use restate_types::config::{Configuration, data_dir};
 use rocksdb::DBCompressionType;
 use static_assertions::const_assert;
 use std::sync::Arc;
@@ -22,40 +22,46 @@ use std::sync::Arc;
 const DATA_CF_BUDGET_RATIO: f64 = 0.85;
 const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 
-pub async fn build_rocksdb(
-    mut options: impl LiveLoad<Live = MetadataServerOptions> + 'static,
-) -> Result<Arc<RocksDb>, RocksError> {
+pub async fn build_rocksdb() -> Result<Arc<RocksDb>, RocksError> {
     let data_dir = data_dir(DATA_DIR);
     let db_name = DbName::new(DB_NAME);
     let db_manager = RocksDbManager::get();
     let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
-    let live_options = options.live_load();
 
-    let db_spec = DbSpecBuilder::new(db_name, data_dir, db_options(live_options))
-        .add_cf_pattern(
-            CfPrefixPattern::new(DATA_CF),
-            cf_data_options(live_options.rocksdb_memory_budget()),
-        )
-        .add_cf_pattern(
-            CfPrefixPattern::new(METADATA_CF),
-            cf_metadata_options(live_options.rocksdb_memory_budget()),
-        )
-        // not very important but it's to reduce the number of merges by flushing.
-        // it's also a small cf so it should be quick.
-        .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
-        .add_to_flush_on_shutdown(CfExactPattern::new(DATA_CF))
-        .ensure_column_families(cfs)
-        .build()
-        .expect("valid spec");
+    let db_spec = DbSpecBuilder::new(
+        db_name,
+        data_dir,
+        DefaultDbConfigurator::new_with_post_config(
+            move || Configuration::pinned().metadata_server.rocksdb.clone(),
+            db_options,
+        ),
+    )
+    .add_cf_pattern(
+        CfPrefixPattern::new(DATA_CF),
+        DefaultCfConfigurator::new_with_post_config(
+            move || Configuration::pinned().metadata_server.rocksdb.clone(),
+            cf_data_options,
+        ),
+    )
+    .add_cf_pattern(
+        CfPrefixPattern::new(METADATA_CF),
+        DefaultCfConfigurator::new_with_post_config(
+            move || Configuration::pinned().metadata_server.rocksdb.clone(),
+            cf_metadata_options,
+        ),
+    )
+    // not very important but it's to reduce the number of merges by flushing.
+    // it's also a small cf so it should be quick.
+    .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
+    .add_to_flush_on_shutdown(CfExactPattern::new(DATA_CF))
+    .ensure_column_families(cfs)
+    .build()
+    .expect("valid spec");
 
-    db_manager
-        .open_db(options.map(|options| &options.rocksdb), db_spec)
-        .await
+    db_manager.open_db(db_spec).await
 }
 
-pub fn db_options(_options: &MetadataServerOptions) -> rocksdb::Options {
-    let mut opts = rocksdb::Options::default();
-
+pub fn db_options(opts: &mut rocksdb::Options) {
     // Enable atomic flushes.
     // If WAL is disabled, this ensure we do not persist inconsistent data.
     // If WAL is enabled, this ensures that flushing either cf flushes both.
@@ -72,37 +78,32 @@ pub fn db_options(_options: &MetadataServerOptions) -> rocksdb::Options {
     opts.set_wal_compression_type(DBCompressionType::Zstd);
     // most reads are sequential
     opts.set_advise_random_on_open(false);
-
-    opts
 }
 
-fn cf_data_options(
-    memory_budget: usize,
-) -> impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static {
-    move |mut opts| {
-        // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
-        let memtables_budget = (memory_budget as f64 * DATA_CF_BUDGET_RATIO).floor() as usize;
-        assert!(
-            memtables_budget > 0,
-            "memory budget should be greater than 0"
-        );
+fn cf_data_options(cf_options: &mut rocksdb::Options) {
+    let memory_budget = Configuration::pinned()
+        .metadata_server
+        .rocksdb_memory_budget();
+    // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
+    let memtables_budget = (memory_budget as f64 * DATA_CF_BUDGET_RATIO).floor() as usize;
+    assert!(
+        memtables_budget > 0,
+        "memory budget should be greater than 0"
+    );
 
-        set_memory_related_opts(&mut opts, memtables_budget);
-        opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
-        opts.set_num_levels(7);
+    set_memory_related_opts(cf_options, memtables_budget);
+    cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
+    cf_options.set_num_levels(7);
 
-        opts.set_compression_per_level(&[
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Zstd,
-        ]);
-
-        opts
-    }
+    cf_options.set_compression_per_level(&[
+        DBCompressionType::Lz4,
+        DBCompressionType::Lz4,
+        DBCompressionType::Lz4,
+        DBCompressionType::Lz4,
+        DBCompressionType::Lz4,
+        DBCompressionType::Lz4,
+        DBCompressionType::Zstd,
+    ]);
 }
 
 fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
@@ -122,29 +123,26 @@ fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize)
     opts.set_max_bytes_for_level_base(memtables_budget as u64);
 }
 
-fn cf_metadata_options(
-    memory_budget: usize,
-) -> impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static {
-    move |mut opts| {
-        let memtables_budget =
-            (memory_budget as f64 * (1.0 - DATA_CF_BUDGET_RATIO)).floor() as usize;
-        assert!(
-            memtables_budget > 0,
-            "memory budget should be greater than 0"
-        );
-        set_memory_related_opts(&mut opts, memtables_budget);
-        //
-        // Set compactions per level
-        //
-        opts.set_num_levels(3);
-        opts.set_compression_per_level(&[
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-            DBCompressionType::Lz4,
-        ]);
-        opts.set_memtable_whole_key_filtering(true);
-        opts.set_max_write_buffer_number(4);
-        opts.set_max_successive_merges(10);
-        opts
-    }
+fn cf_metadata_options(cf_options: &mut rocksdb::Options) {
+    let memory_budget = Configuration::pinned()
+        .metadata_server
+        .rocksdb_memory_budget();
+    let memtables_budget = (memory_budget as f64 * (1.0 - DATA_CF_BUDGET_RATIO)).floor() as usize;
+    assert!(
+        memtables_budget > 0,
+        "memory budget should be greater than 0"
+    );
+    set_memory_related_opts(cf_options, memtables_budget);
+    //
+    // Set compactions per level
+    //
+    cf_options.set_num_levels(3);
+    cf_options.set_compression_per_level(&[
+        DBCompressionType::Lz4,
+        DBCompressionType::Lz4,
+        DBCompressionType::Lz4,
+    ]);
+    cf_options.set_memtable_whole_key_filtering(true);
+    cf_options.set_max_write_buffer_number(4);
+    cf_options.set_max_successive_merges(10);
 }

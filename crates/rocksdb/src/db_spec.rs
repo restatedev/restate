@@ -12,7 +12,8 @@ use std::path::PathBuf;
 
 use derive_builder::Builder;
 
-use crate::{BoxedCfMatcher, BoxedCfOptionUpdater};
+use crate::BoxedCfMatcher;
+use crate::configuration::{CfConfigurator, DbConfigurator};
 
 type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
@@ -68,6 +69,12 @@ impl CfName {
 impl From<&str> for CfName {
     fn from(name: &str) -> Self {
         Self(name.into())
+    }
+}
+
+impl AsRef<str> for CfName {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
     }
 }
 
@@ -142,9 +149,8 @@ pub struct DbSpec {
     /// otherwise opening the database will fail with `UnknownColumnFamily` error.
     #[builder(default)]
     pub(crate) ensure_column_families: Vec<CfName>,
-    /// Options applied to the database _before_ applying RocksDbOptions loaded from disk/env.
-    #[builder(default)]
-    pub(crate) db_options: rocksdb::Options,
+    /// Configurator for the database-level options.
+    pub(crate) db_configurator: Box<dyn DbConfigurator + Send + Sync>,
     /// Options of the column family are applied after the values loaded from
     /// RocksDbOptions from disk/env. Those act as column-family specific overrides for that
     /// particular pattern.
@@ -154,7 +160,7 @@ pub struct DbSpec {
     /// Patterns are checked in order to find the correct options to apply to the column family, if
     /// a column family didn't match any, opening the database or the column family will fail with
     /// `UnknownColumnFamily` error
-    pub(crate) cf_patterns: Vec<(BoxedCfMatcher, BoxedCfOptionUpdater)>,
+    pub(crate) cf_patterns: Vec<(BoxedCfMatcher, Box<dyn CfConfigurator + Send + Sync>)>,
 }
 
 impl DbSpec {
@@ -164,11 +170,15 @@ impl DbSpec {
 }
 
 impl DbSpecBuilder {
-    pub fn new(name: DbName, path: PathBuf, db_options: rocksdb::Options) -> DbSpecBuilder {
+    pub fn new(
+        name: DbName,
+        path: PathBuf,
+        configurator: impl DbConfigurator + Send + Sync + 'static,
+    ) -> DbSpecBuilder {
         Self {
             name: Some(name),
             path: Some(path),
-            db_options: Some(db_options),
+            db_configurator: Some(Box::new(configurator)),
             ..Self::default()
         }
     }
@@ -186,7 +196,7 @@ impl DbSpecBuilder {
     pub fn add_cf_pattern(
         mut self,
         pattern: impl CfNameMatch + Send + Sync + 'static,
-        options: impl Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync + 'static,
+        options: impl CfConfigurator + Send + Sync + 'static,
     ) -> Self {
         let mut cfs = self.cf_patterns.unwrap_or_default();
         cfs.push((Box::new(pattern), Box::new(options)));

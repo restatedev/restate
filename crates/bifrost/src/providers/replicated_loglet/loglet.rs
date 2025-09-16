@@ -442,7 +442,7 @@ mod tests {
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{Configuration, set_current_config};
     use restate_types::health::HealthStatus;
-    use restate_types::live::{Live, LiveLoadExt};
+    use restate_types::live::Live;
     use restate_types::logs::{Keys, LogletId};
     use restate_types::replication::{NodeSet, ReplicationProperty};
     use restate_types::{GenerationalNodeId, PlainNodeId};
@@ -467,7 +467,7 @@ mod tests {
         set_current_config(config.clone());
         let config = Live::from_value(config);
 
-        RocksDbManager::init(config.clone().map(|c| &c.common));
+        RocksDbManager::init();
 
         let mut node_env =
             TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();

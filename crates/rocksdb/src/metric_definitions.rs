@@ -36,9 +36,6 @@ pub const WRITE_PRE_AND_POST_DURATION: &str =
 pub const WRITE_ARTIFICIAL_DELAY_DURATION: &str =
     "restate.rocksdb.perf.write_artificial_delay_duration.seconds";
 
-pub const ROCKSDB_STALL_FLARE: &str = "restate.rocksdb_stall_flare";
-pub const ROCKSDB_STALL_DURATION: &str = "restate.rocksdb_stall_duration.seconds";
-
 pub const OP_TYPE: &str = "operation";
 pub const OP_NAME: &str = "name";
 pub const PRIORITY: &str = "priority";
@@ -52,12 +49,6 @@ pub const DISPOSITION_MOVED_TO_BG: &str = "moved-to-bg";
 pub const DISPOSITION_FAILED: &str = "failed";
 
 pub fn describe_metrics() {
-    describe_gauge!(
-        ROCKSDB_STALL_FLARE,
-        Unit::Count,
-        "Number of in-flight operations that are considered stalled by the stall detector"
-    );
-
     describe_gauge!(
         STORAGE_BG_TASK_IN_FLIGHT,
         Unit::Count,
@@ -80,12 +71,6 @@ pub fn describe_metrics() {
         NEXT_ON_MEMTABLE,
         Unit::Count,
         "Number of next() issued on memtables"
-    );
-
-    describe_histogram!(
-        ROCKSDB_STALL_DURATION,
-        Unit::Seconds,
-        "Time spent after a write is considered as stalled by the stall detector, note that this is only updated when the write is unstalled"
     );
 
     describe_histogram!(

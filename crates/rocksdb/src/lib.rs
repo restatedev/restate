@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod background;
+pub mod configuration;
 mod db_manager;
 mod db_spec;
 mod error;
@@ -18,17 +19,13 @@ mod perf;
 mod rock_access;
 
 use metrics::counter;
-use metrics::gauge;
-use metrics::histogram;
 use tracing::debug;
 use tracing::error;
-use tracing::info;
 use tracing::warn;
 
 use std::mem::ManuallyDrop;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
 
 use rocksdb::ExportImportFilesMetaData;
 use rocksdb::checkpoint::Checkpoint;
@@ -37,7 +34,6 @@ use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
 
 use restate_core::ShutdownError;
-use restate_types::config::RocksDbOptions;
 
 // re-exports
 pub use self::db_manager::RocksDbManager;
@@ -48,14 +44,12 @@ use self::iterator::RocksIterator;
 pub use self::perf::RocksDbPerfGuard;
 pub use self::rock_access::RocksAccess;
 
-use self::background::ReadyStorageTask;
 use self::background::StorageTask;
 use self::background::StorageTaskKind;
 use self::metric_definitions::*;
 
 pub type RawRocksDb = rocksdb::DBWithThreadMode<rocksdb::MultiThreaded>;
 type BoxedCfMatcher = Box<dyn CfNameMatch + Send + Sync>;
-type BoxedCfOptionUpdater = Box<dyn Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync>;
 
 /// Denotes whether an operation is considered latency sensitive or not
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
@@ -120,13 +114,17 @@ impl RocksDb {
     pub(crate) async fn open(
         manager: &'static RocksDbManager,
         spec: DbSpec,
-        default_cf_options: rocksdb::Options,
     ) -> Result<Arc<Self>, RocksError> {
         let task = StorageTask::default()
             .kind(StorageTaskKind::OpenDb)
             .op(move || {
                 let _x = RocksDbPerfGuard::new("open-db");
-                RocksAccess::open_db(spec, default_cf_options)
+                RocksAccess::open_db(
+                    spec,
+                    &manager.env,
+                    &manager.write_buffer_manager,
+                    &manager.cache,
+                )
             })
             .build()
             .unwrap();
@@ -137,6 +135,12 @@ impl RocksDb {
             manager,
             db: ManuallyDrop::new(db),
         }))
+    }
+
+    pub(crate) fn note_config_update(&self) {
+        let db_name = &self.db.spec().name;
+        let configurator = &self.db.spec().db_configurator;
+        configurator.note_config_update(&self.db, db_name);
     }
 
     /// Returns the raw rocksdb handle, this should only be used for server operations that
@@ -239,7 +243,7 @@ impl RocksDb {
                 )
                 .increment(1);
 
-                return Ok(race_against_stall_detector(self.manager, task).await??);
+                return Ok(self.manager.async_spawn(task).await??);
             }
             IoMode::OnlyIfNonBlocking => {
                 let _x = RocksDbPerfGuard::new(name);
@@ -297,7 +301,7 @@ impl RocksDb {
                     .build()
                     .unwrap();
 
-                Ok(race_against_stall_detector(self.manager, task).await??)
+                return Ok(self.manager.async_spawn(task).await??);
             }
             Err(e) => {
                 counter!(STORAGE_IO_OP,
@@ -459,16 +463,14 @@ impl RocksDb {
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn open_cf(
-        self: Arc<Self>,
-        name: CfName,
-        opts: &RocksDbOptions,
-    ) -> Result<(), RocksError> {
+    pub async fn open_cf(self: Arc<Self>, name: CfName) -> Result<(), RocksError> {
         let manager = self.manager;
-        let default_cf_options = self.manager.default_cf_options(opts);
         let task = StorageTask::default()
             .kind(StorageTaskKind::OpenColumnFamily)
-            .op(move || self.db.open_cf(name, default_cf_options))
+            .op(move || {
+                self.db
+                    .open_cf(name, &manager.write_buffer_manager, &manager.cache)
+            })
             .build()
             .unwrap();
 
@@ -479,17 +481,20 @@ impl RocksDb {
     pub async fn import_cf(
         self: Arc<Self>,
         name: CfName,
-        opts: &RocksDbOptions,
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError> {
         let manager = self.manager;
-        let default_cf_options = self.manager.default_cf_options(opts);
         let task = StorageTask::default()
             .kind(StorageTaskKind::ImportColumnFamily)
             .priority(Priority::Low)
             .op(move || {
                 let _x = RocksDbPerfGuard::new("import-column-family");
-                self.db.import_cf(name, default_cf_options, metadata)
+                self.db.import_cf(
+                    name,
+                    &manager.write_buffer_manager,
+                    &manager.cache,
+                    metadata,
+                )
             })
             .build()
             .unwrap();
@@ -551,39 +556,4 @@ fn is_retryable_error(error_kind: rocksdb::ErrorKind) -> bool {
         error_kind,
         rocksdb::ErrorKind::Incomplete | rocksdb::ErrorKind::TryAgain | rocksdb::ErrorKind::Busy
     )
-}
-
-async fn race_against_stall_detector<OP, R>(
-    manager: &RocksDbManager,
-    task: ReadyStorageTask<OP>,
-) -> Result<R, ShutdownError>
-where
-    OP: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
-{
-    let mut task = std::pin::pin!(manager.async_spawn(task));
-    let mut timeout = std::pin::pin!(tokio::time::sleep(manager.stall_detection_duration()));
-    let mut stalled = false;
-    let mut stalled_since = Instant::now();
-    loop {
-        tokio::select! {
-            result = &mut task => {
-                if stalled {
-                    // reset the flare guage
-                    gauge!(ROCKSDB_STALL_FLARE).decrement(1);
-                    let elapsed = stalled_since.elapsed();
-                    histogram!(ROCKSDB_STALL_DURATION).record(elapsed);
-                    info!("[Stall Detector] Rocksdb write operation completed after a stall time of {:?}!", elapsed);
-                }
-                return result;
-            }
-            _ = &mut timeout, if !stalled => {
-                stalled = true;
-                stalled_since = Instant::now();
-                gauge!(ROCKSDB_STALL_FLARE).increment(1);
-                warn!("[Stall Detector] Rocksdb write operation exceeded rocksdb-write-stall-threshold, will continue waiting");
-            }
-
-        }
-    }
 }

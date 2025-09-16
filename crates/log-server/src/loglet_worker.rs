@@ -623,8 +623,7 @@ mod tests {
 
     async fn setup() -> Result<RocksDbLogStore> {
         let config = Constant::new(Configuration::default());
-        let common_rocks_opts = config.clone().map(|c| &c.common);
-        RocksDbManager::init(common_rocks_opts);
+        RocksDbManager::init();
         let metadata_builder = MetadataBuilder::default();
         assert!(TaskCenter::try_set_global_metadata(
             metadata_builder.to_metadata()

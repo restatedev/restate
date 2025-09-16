@@ -25,7 +25,6 @@ use restate_types::config::{
     MetadataServerOptionsBuilder, WorkerOptionsBuilder,
 };
 use restate_types::config_loader::ConfigLoaderBuilder;
-use restate_types::live::Constant;
 use restate_types::logs::metadata::ProviderKind;
 use restate_types::retries::RetryPolicy;
 use std::time::Duration;
@@ -108,7 +107,7 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
     let live_config = Configuration::live();
 
     tc.block_on(async {
-        RocksDbManager::init(Constant::new(config.common));
+        RocksDbManager::init();
         prometheus.start_upkeep_task();
 
         TaskCenter::spawn(TaskKind::SystemBoot, "restate", async move {
