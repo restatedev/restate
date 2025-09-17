@@ -180,11 +180,11 @@ parking_lot = { version = "0.12" }
 paste = "1.0"
 pin-project = "1.0"
 pin-project-lite = { version = "0.2" }
-prost = { version = "0.13.1" }
-prost-build = { version = "0.13.1" }
+prost = { version = "0.14.1" }
+prost-build = { version = "0.14.1" }
 priority-queue = "2.0.3"
 prost-dto = { version = "0.0.3" }
-prost-types = { version = "0.13.1" }
+prost-types = { version = "0.14.1" }
 rand = "0.9.0"
 rangemap = "1.5.1"
 rayon = { version = "1.10" }
@@ -233,10 +233,11 @@ tokio = { version = "1.47.0", default-features = false, features = [
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.14" }
 toml = { version = "0.8.23" }
-tonic = { version = "0.13.1", default-features = false }
-tonic-reflection = { version = "0.13.1" }
-tonic-health = { version = "0.13.1" }
-tonic-build = { version = "0.13.1" }
+tonic = { version = "0.14.2", default-features = false }
+tonic-reflection = { version = "0.14.2" }
+tonic-health = { version = "0.14.2" }
+tonic-prost = "0.14.2"
+tonic-prost-build = { version = "0.14.2" }
 tower = "0.5.2"
 tower-http = { version = "0.6.2", default-features = false }
 tracing = { version = "0.1" }

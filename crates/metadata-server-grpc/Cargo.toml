@@ -26,9 +26,10 @@ prost = { workspace = true }
 prost-dto = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tonic = { workspace = true, features = ["codegen", "prost"] }
+tonic = { workspace = true, features = ["codegen"] }
+tonic-prost = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true, features = ["serde"] }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }

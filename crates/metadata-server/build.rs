@@ -14,8 +14,8 @@ use std::path::PathBuf;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    tonic_build::configure()
-        .bytes(["."])
+    tonic_prost_build::configure()
+        .bytes(".")
         .file_descriptor_set_path(out_dir.join("metadata_server_network_svc.bin"))
         .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(&["./proto/metadata_server_network_svc.proto"], &["proto"])?;

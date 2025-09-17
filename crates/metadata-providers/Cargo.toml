@@ -66,7 +66,7 @@ derive_more = { workspace = true, optional = true }
 indexmap = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-tonic = { workspace = true, optional = true, features = ["codegen", "prost", "transport"] }
+tonic = { workspace = true, optional = true, features = ["codegen", "transport"] }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
