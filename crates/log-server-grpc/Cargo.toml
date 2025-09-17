@@ -18,7 +18,8 @@ restate-workspace-hack = { workspace = true }
 restate-types = { workspace = true }
 
 prost = { workspace = true }
-tonic = { workspace = true, features = ["codegen", "prost"] }
+tonic = { workspace = true, features = ["codegen"] }
+tonic-prost = { workspace = true }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }

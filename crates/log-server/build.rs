@@ -14,8 +14,8 @@ use std::path::PathBuf;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    tonic_build::configure()
-        .bytes(["."])
+    tonic_prost_build::configure()
+        .bytes(".")
         .file_descriptor_set_path(out_dir.join("log_server_svc_descriptor.bin"))
         .client_mod_attribute("log_server", "#[cfg(feature = \"clients\")]")
         // allow older protobuf compiler to be used

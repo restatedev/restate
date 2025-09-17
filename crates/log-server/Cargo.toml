@@ -38,11 +38,12 @@ prost = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
-tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip"] }
+tonic = { workspace = true, features = ["transport", "codegen", "gzip"] }
+tonic-prost = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }

@@ -14,8 +14,8 @@ use std::path::PathBuf;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    tonic_build::configure()
-        .bytes(["."])
+    tonic_prost_build::configure()
+        .bytes(".")
         .file_descriptor_set_path(out_dir.join("cluster_ctrl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
@@ -26,8 +26,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &["protobuf", "../types/protobuf"],
         )?;
 
-    tonic_build::configure()
-        .bytes(["."])
+    tonic_prost_build::configure()
+        .bytes(".")
         .file_descriptor_set_path(out_dir.join("node_ctl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
@@ -38,8 +38,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &["protobuf", "../types/protobuf"],
         )?;
 
-    tonic_build::configure()
-        .bytes(["."])
+    tonic_prost_build::configure()
+        .bytes(".")
         .enum_attribute("Datagram", "#[derive(::derive_more::From)]")
         .enum_attribute("Datagram.datagram", "#[derive(::derive_more::From)]")
         .enum_attribute(

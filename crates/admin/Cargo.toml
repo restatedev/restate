@@ -61,7 +61,7 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip", "zstd"] }
+tonic = { workspace = true, features = ["transport", "codegen", "gzip", "zstd"] }
 tower = { workspace = true, features = ["load-shed", "limit"] }
 tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
