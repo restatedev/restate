@@ -160,8 +160,10 @@ impl SpawnPartitionProcessorTask {
                         return Ok(());
                     };
 
+                    let partition_store = partition_store?;
+
                     let pp = pp_builder
-                        .build(bifrost, partition_store?, replica_set_states)
+                        .build(bifrost, partition_store, replica_set_states)
                         .await
                         .map_err(ProcessorError::from)?;
 

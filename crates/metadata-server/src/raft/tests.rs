@@ -22,11 +22,9 @@ use restate_metadata_providers::create_client;
 use restate_metadata_store::serialize_value;
 use restate_rocksdb::RocksDbManager;
 use restate_types::config::{
-    CommonOptions, Configuration, MetadataClientKind, MetadataClientOptions, MetadataServerOptions,
-    RaftOptions, set_current_config,
+    Configuration, MetadataClientKind, MetadataClientOptions, RaftOptions, set_current_config,
 };
 use restate_types::health::Health;
-use restate_types::live::Constant;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::{AdvertisedAddress, BindAddress};
@@ -48,13 +46,10 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     let bind_address = BindAddress::Uds(uds.clone());
     let advertised_address = AdvertisedAddress::Uds(uds);
 
-    RocksDbManager::init(Constant::new(CommonOptions::default()));
+    RocksDbManager::init();
 
     // initialize the local storage with some data that we can migrate
-    let mut local_storage = crate::local::storage::RocksDbStorage::create(Constant::new(
-        MetadataServerOptions::default(),
-    ))
-    .await?;
+    let mut local_storage = crate::local::storage::RocksDbStorage::create().await?;
 
     let my_generation = 1;
     let zero_plain_node_id = PlainNodeId::from(0);
@@ -110,12 +105,8 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     let mut server_builder = NetworkServerBuilder::default();
     let health = Health::default();
 
-    let metadata_server = RaftMetadataServer::create(
-        Constant::new(MetadataServerOptions::default()),
-        health.metadata_server_status(),
-        &mut server_builder,
-    )
-    .await?;
+    let metadata_server =
+        RaftMetadataServer::create(health.metadata_server_status(), &mut server_builder).await?;
 
     TaskCenter::spawn_child(TaskKind::NodeRpcServer, "node-rpc-server", async move {
         server_builder

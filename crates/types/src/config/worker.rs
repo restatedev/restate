@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU16, NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -407,18 +407,12 @@ pub struct StorageOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
-    /// How many partitions to divide memory across?
-    ///
-    /// By default this uses the value defined in `default-num-partitions` in the common section of
-    /// the config.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    num_partitions_to_share_memory_budget: Option<NonZeroU16>,
-
     /// The memory budget for rocksdb memtables in bytes
     ///
-    /// The total is divided evenly across partitions. The divisor is defined in
-    /// `num-partitions-to-share-memory-budget`. If this value is set, it overrides the ratio
-    /// defined in `rocksdb-memory-ratio`.
+    /// The total is divided evenly across partitions. The server will rebalance the memory budget
+    /// periodically depending on the number of running partitions on this node.
+    ///
+    /// If this value is set, it overrides the ratio defined in `rocksdb-memory-ratio`.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "Option<NonZeroByteCount>")]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
@@ -428,7 +422,7 @@ pub struct StorageOptions {
     ///
     /// This defines the total memory for rocksdb as a ratio of all memory available to memtables
     /// (See `rocksdb-total-memtables-ratio` in common). The budget is then divided evenly across
-    /// partitions. The divisor is defined in `num-partitions-to-share-memory-budget`
+    /// partitions.
     rocksdb_memory_ratio: f32,
 
     /// Whether to perform commits in background IO thread pools eagerly or not
@@ -440,16 +434,6 @@ pub struct StorageOptions {
 impl StorageOptions {
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
-        if self.num_partitions_to_share_memory_budget.is_none() {
-            self.num_partitions_to_share_memory_budget = Some(
-                NonZeroU16::new(common.default_num_partitions)
-                    // todo add support for configuring the memory budget after the system has
-                    //  been started.
-                    // In the absence of a configured number of default partitions, we default to
-                    // its default value of 24 partitions. This is not great :-(
-                    .unwrap_or(NonZeroU16::new(24).expect("to be non zero")),
-            )
-        }
 
         // todo: move to a shared struct and deduplicate
         if self.rocksdb_memory_budget.is_none() {
@@ -476,15 +460,6 @@ impl StorageOptions {
             .get()
     }
 
-    pub fn num_partitions_to_share_memory_budget(&self) -> u16 {
-        self.num_partitions_to_share_memory_budget
-            .unwrap_or_else(|| {
-                warn!("num-partitions-to-share-memory-budget is not set, defaulting to 10");
-                NonZeroU16::new(10).unwrap()
-            })
-            .get()
-    }
-
     pub fn data_dir(&self, db_name: &str) -> PathBuf {
         super::data_dir(db_name)
     }
@@ -504,7 +479,6 @@ impl Default for StorageOptions {
         #[allow(deprecated)]
         StorageOptions {
             rocksdb,
-            num_partitions_to_share_memory_budget: None,
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,

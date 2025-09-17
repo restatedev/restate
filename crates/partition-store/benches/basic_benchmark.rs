@@ -20,9 +20,7 @@ use restate_storage_api::Transaction;
 use restate_storage_api::deduplication_table::{
     DedupSequenceNumber, DeduplicationTable, ProducerId,
 };
-use restate_types::config::CommonOptions;
 use restate_types::identifiers::{PartitionId, PartitionKey};
-use restate_types::live::Constant;
 use restate_types::partitions::Partition;
 
 async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
@@ -50,7 +48,7 @@ fn basic_writing_reading_benchmark(c: &mut Criterion) {
         .expect("task_center builds")
         .into_handle();
 
-    tc.block_on(async { RocksDbManager::init(Constant::new(CommonOptions::default())) });
+    tc.block_on(async { RocksDbManager::init() });
     let rocksdb = tc.block_on(async {
         //
         // setup

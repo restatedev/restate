@@ -29,10 +29,10 @@ use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_types::NodeId;
-use restate_types::config::{CommonOptions, QueryEngineOptions};
+use restate_types::config::QueryEngineOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
-use restate_types::live::{Constant, Live};
+use restate_types::live::Live;
 use restate_types::net::remote_query_scanner::RemoteQueryScannerOpen;
 use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
@@ -142,7 +142,7 @@ impl MockQueryEngine {
         + 'static,
     ) -> Self {
         // Prepare Rocksdb
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
         let manager = PartitionStoreManager::create()
             .await
             .expect("DB creation succeeds");

@@ -249,6 +249,11 @@ impl CfName {
     pub fn for_partition(partition_id: PartitionId) -> Self {
         Self(format!("{PARTITION_CF_PREFIX}{partition_id}").into())
     }
+
+    #[inline]
+    pub fn into_inner(self) -> SmartString {
+        self.0
+    }
 }
 
 impl From<CfName> for SmartString {
@@ -281,6 +286,10 @@ impl Partition {
             db_name: None,
             cf_name: None,
         }
+    }
+
+    pub const fn id(&self) -> PartitionId {
+        self.partition_id
     }
 
     pub fn log_id(&self) -> LogId {

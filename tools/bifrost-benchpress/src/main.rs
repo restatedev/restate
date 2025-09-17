@@ -162,7 +162,7 @@ fn spawn_environment(config: Live<Configuration>, num_logs: u16) -> (task_center
         let metadata_writer = metadata_manager.writer();
         TaskCenter::try_set_global_metadata(metadata.clone());
 
-        RocksDbManager::init(config.clone().map(|c| &c.common));
+        RocksDbManager::init();
 
         let logs = restate_types::logs::metadata::bootstrap_logs_metadata(
             config.pinned().bifrost.default_provider,

@@ -22,12 +22,10 @@ use tokio_stream::StreamExt;
 use crate::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::StorageError;
-use restate_types::config::CommonOptions;
 use restate_types::identifiers::{
     InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
-use restate_types::live::Constant;
 use restate_types::state_mut::ExternalStateMutation;
 
 mod barrier_test;
@@ -53,7 +51,7 @@ async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>,
     //
     // create a rocksdb storage from options
     //
-    RocksDbManager::init(Constant::new(CommonOptions::default()));
+    RocksDbManager::init();
     let manager = PartitionStoreManager::create()
         .await
         .expect("DB storage creation succeeds");

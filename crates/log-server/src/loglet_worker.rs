@@ -612,8 +612,6 @@ mod tests {
 
     use restate_core::{MetadataBuilder, TaskCenter};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
-    use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{KeyFilter, Keys, Record};
 
     use crate::metadata::LogletStateMap;
@@ -622,16 +620,13 @@ mod tests {
     use super::LogletWorker;
 
     async fn setup() -> Result<RocksDbLogStore> {
-        let config = Constant::new(Configuration::default());
-        let common_rocks_opts = config.clone().map(|c| &c.common);
-        RocksDbManager::init(common_rocks_opts);
+        RocksDbManager::init();
         let metadata_builder = MetadataBuilder::default();
         assert!(TaskCenter::try_set_global_metadata(
             metadata_builder.to_metadata()
         ));
         // create logstore.
-        let builder =
-            RocksDbLogStoreBuilder::create(config.map(|config| &config.log_server)).await?;
+        let builder = RocksDbLogStoreBuilder::create().await?;
         Ok(builder.start(Default::default()).await?)
     }
 
