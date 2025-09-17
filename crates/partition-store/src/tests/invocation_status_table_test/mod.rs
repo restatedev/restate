@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use bytestring::ByteString;
 
+use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     CompletionRangeEpochMap, InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
@@ -274,4 +275,6 @@ async fn test_migration() {
                 .unwrap()
         );
     }
+
+    RocksDbManager::get().shutdown().await;
 }
