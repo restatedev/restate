@@ -13,6 +13,8 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use datafusion::optimizer::Optimizer;
+use itertools::Itertools;
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -86,16 +88,16 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             sis.last_failure_related_command_name,
             sis.last_failure_related_command_type,
 
-            arrow_cast(CASE
-                WHEN ss.status = 'inboxed' THEN 'pending'
-                WHEN ss.status = 'scheduled' THEN 'scheduled'
-                WHEN ss.status = 'completed' THEN 'completed'
-                WHEN ss.status = 'suspended' THEN 'suspended'
-                WHEN ss.status = 'paused' THEN 'paused'
-                WHEN sis.in_flight THEN 'running'
-                WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
-                ELSE 'ready'
-            END, 'LargeUtf8') AS status,
+            CASE
+                WHEN ss.status = 'inboxed' THEN arrow_cast('pending', 'LargeUtf8')
+                WHEN ss.status = 'scheduled' THEN arrow_cast('scheduled', 'LargeUtf8')
+                WHEN ss.status = 'completed' THEN arrow_cast('completed', 'LargeUtf8')
+                WHEN ss.status = 'suspended' THEN arrow_cast('suspended', 'LargeUtf8')
+                WHEN ss.status = 'paused' THEN arrow_cast('paused', 'LargeUtf8')
+                WHEN sis.in_flight THEN arrow_cast('running', 'LargeUtf8')
+                WHEN ss.status = 'invoked' AND retry_count > 0 THEN arrow_cast('backing-off', 'LargeUtf8')
+                ELSE arrow_cast('ready', 'LargeUtf8')
+            END AS status,
             ss.completion_result,
             ss.completion_failure
         FROM sys_invocation_state sis
@@ -387,6 +389,18 @@ impl QueryContext {
         state_builder = state_builder.with_analyzer_rule(Arc::new(
             analyzer::UseSymmetricHashJoinWhenPartitionKeyIsPresent::new(),
         ));
+
+        // Add the case filter simplifier optimizer so that filters on the sys_invocation status field
+        // can be pushed down in many cases.
+        let mut optimizer_rules = Optimizer::new().rules;
+        let (common_i, _) = optimizer_rules
+            .iter()
+            .find_position(|rule| rule.name() == "common_sub_expression_eliminate")
+            .expect("an optimizer called common_sub_expression_eliminate should exist");
+        // we insert before common_sub_expression_eliminate otherwise the case expr will be shared across multiple comparisons
+        // and we won't be able to do our optimization
+        optimizer_rules.insert(common_i, Arc::new(analyzer::CaseFilterSimplifier::new()));
+        state_builder = state_builder.with_optimizer_rules(optimizer_rules);
 
         let state = state_builder.build();
 
