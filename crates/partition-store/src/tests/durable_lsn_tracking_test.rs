@@ -7,9 +7,7 @@ use restate_storage_api::{
     fsm_table::{FsmTable, PartitionDurability, ReadOnlyFsmTable},
 };
 use restate_types::{
-    config::CommonOptions,
     identifiers::{PartitionId, PartitionKey},
-    live::Constant,
     logs::Lsn,
     partitions::Partition,
     time::MillisSinceEpoch,
@@ -22,7 +20,7 @@ const PARTITION: Partition =
 
 #[restate_core::test]
 async fn track_latest_applied_lsn() -> googletest::Result<()> {
-    let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
+    let rocksdb = RocksDbManager::init();
 
     let partition_store_manager = PartitionStoreManager::create().await?;
 
@@ -37,7 +35,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     assert_eq!(None, *partition_store.get_durable_lsn().await?.borrow());
     assert_eq!(None, *watch_durable_lsn.borrow());
 
-    partition_store.flush_memtables(true).await?;
+    partition_store.partition_db().flush_memtables(true).await?;
 
     assert_eq!(Some(Lsn::new(100)), *watch_durable_lsn.borrow());
     assert_eq!(
@@ -63,7 +61,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     let watch_durable_lsn = partition_store.get_durable_lsn().await?;
     assert_eq!(Some(Lsn::new(100)), *watch_durable_lsn.borrow());
 
-    partition_store.flush_memtables(true).await?;
+    partition_store.partition_db().flush_memtables(true).await?;
 
     let mut rng = rng();
     for lsn in 101..=200 {
@@ -80,7 +78,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
         assert_eq!(Some(Lsn::new(100)), *watch_durable_lsn.borrow());
     }
 
-    partition_store.flush_memtables(true).await?;
+    partition_store.partition_db().flush_memtables(true).await?;
     assert_eq!(Some(Lsn::new(200)), *watch_durable_lsn.borrow());
 
     rocksdb.shutdown().await;
@@ -89,7 +87,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 
 #[restate_core::test]
 async fn partition_durability_fsm() -> googletest::Result<()> {
-    let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
+    let rocksdb = RocksDbManager::init();
 
     let partition_store_manager = PartitionStoreManager::create().await?;
 

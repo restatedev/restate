@@ -18,9 +18,7 @@ use tracing::trace;
 use restate_bifrost::loglet::OperationError;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::GenerationalNodeId;
-use restate_types::config::LogServerOptions;
 use restate_types::health::HealthStatus;
-use restate_types::live::BoxLiveLoad;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
     Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
@@ -39,7 +37,6 @@ use crate::rocksdb_logstore::keys::DataRecordKey;
 #[derive(Clone)]
 pub struct RocksDbLogStore {
     pub(super) health_status: HealthStatus<LogServerStatus>,
-    pub(super) _updateable_options: BoxLiveLoad<LogServerOptions>,
     pub(super) rocksdb: Arc<RocksDb>,
     pub(super) writer_handle: RocksDbLogWriterHandle,
 }
@@ -502,8 +499,6 @@ mod tests {
 
     use restate_core::TaskCenter;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::Configuration;
-    use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::{LogletId, LogletOffset, Record, SequenceNumber};
     use restate_types::net::log_server::{
         DigestEntry, GetDigest, LogServerRequestHeader, RecordStatus, Status, Store, StoreFlags,
@@ -516,11 +511,9 @@ mod tests {
     use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
 
     async fn setup() -> Result<RocksDbLogStore> {
-        let config = Constant::new(Configuration::default());
-        let common_rocks_opts = config.clone().map(|c| &c.common);
-        RocksDbManager::init(common_rocks_opts);
+        RocksDbManager::init();
         // create logstore.
-        let builder = RocksDbLogStoreBuilder::create(config.map(|c| &c.log_server)).await?;
+        let builder = RocksDbLogStoreBuilder::create().await?;
         Ok(builder.start(Default::default()).await?)
     }
 

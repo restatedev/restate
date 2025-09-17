@@ -22,7 +22,6 @@ use restate_types::GenerationalNodeId;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
-use restate_types::live::LiveLoadExt;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::protobuf::common::LogServerStatus;
@@ -57,10 +56,9 @@ impl LogServerService {
         // What do we need to create the log-server?
         //
         // 1. A log-store
-        let log_store_builder =
-            RocksDbLogStoreBuilder::create(updateable_config.clone().map(|c| &c.log_server))
-                .await
-                .map_err(LogServerBuildError::other)?;
+        let log_store_builder = RocksDbLogStoreBuilder::create()
+            .await
+            .map_err(LogServerBuildError::other)?;
 
         // 2. Fire up the log store.
         let log_store = log_store_builder

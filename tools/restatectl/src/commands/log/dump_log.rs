@@ -171,7 +171,7 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
             );
         }
 
-        let rocksdb_manager = RocksDbManager::init(Configuration::map_live(|c| &c.common));
+        let rocksdb_manager = RocksDbManager::init();
         debug!("RocksDB Initialized");
 
         let metadata_builder = MetadataBuilder::default();
