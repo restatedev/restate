@@ -14,6 +14,7 @@
 
 use super::storage_test_environment;
 
+use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
@@ -117,4 +118,6 @@ async fn test_idempotency_key() {
             .unwrap(),
         None
     );
+
+    RocksDbManager::get().shutdown().await;
 }

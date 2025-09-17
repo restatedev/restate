@@ -15,6 +15,7 @@ use super::storage_test_environment;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
+use restate_rocksdb::RocksDbManager;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Transaction;
 use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
@@ -240,6 +241,8 @@ async fn test_sleep_journal() {
 
     let mut txn = rocksdb.transaction();
     verify_journal_deleted(&mut txn, 10).await;
+
+    RocksDbManager::get().shutdown().await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -314,4 +317,5 @@ async fn test_call_journal() {
     );
 
     txn.commit().await.expect("should not fail");
+    RocksDbManager::get().shutdown().await;
 }

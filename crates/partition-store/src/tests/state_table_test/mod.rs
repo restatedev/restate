@@ -12,6 +12,7 @@ use super::{assert_stream_eq, storage_test_environment};
 
 use crate::PartitionStore;
 use bytes::Bytes;
+use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_types::identifiers::ServiceId;
@@ -150,4 +151,6 @@ async fn test_delete_all() {
         .expect("should not fail")
         .is_some()
     );
+
+    RocksDbManager::get().shutdown().await;
 }
