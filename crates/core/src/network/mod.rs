@@ -18,7 +18,6 @@ mod io;
 mod lazy_connection;
 mod message_router;
 pub(crate) mod metric_definitions;
-mod multiplex;
 pub mod net_util;
 mod network_sender;
 mod networking;

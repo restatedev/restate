@@ -60,7 +60,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["tracing"] }
 tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, features = ["net"] }
-tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip", "zstd"] }
+tonic = { workspace = true, features = ["transport", "codegen", "prost", "gzip", "zstd", "router"] }
 tonic-reflection = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true, features = ["trace"] }

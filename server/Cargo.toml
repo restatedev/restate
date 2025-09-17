@@ -28,7 +28,6 @@ options_schema = [
     "restate-types/schemars",
 ]
 memory-loglet = ["restate-node/memory-loglet"]
-crate_per_service = ["restate-tracing-instrumentation/service_per_crate"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 metadata-api = ["restate-admin/metadata-api"]
 
