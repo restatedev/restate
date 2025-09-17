@@ -73,7 +73,7 @@ serde_json = { workspace = true }
 test-log = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { workspace = true, features = ["transport", "prost", "zstd", "gzip"] }
+tonic = { workspace = true, features = ["transport", "zstd", "gzip"] }
 tracing = { workspace = true }
 
 [build-dependencies]

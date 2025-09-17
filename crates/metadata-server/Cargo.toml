@@ -49,7 +49,8 @@ static_assertions = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-tonic = { workspace = true, features = ["transport", "codegen", "prost"] }
+tonic = { workspace = true, features = ["transport", "codegen"] }
+tonic-prost = { workspace = true }
 tracing = { workspace = true }
 tracing-slog = { version = "0.3.0" }
 ulid = { workspace = true, features = ["serde"] }
@@ -63,4 +64,4 @@ tempfile = { workspace = true }
 test-log = { workspace = true }
 
 [build-dependencies]
-tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }
