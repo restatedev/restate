@@ -95,7 +95,7 @@ arrow = { version = "55.2.0", default-features = false }
 assert2 = "0.3.11"
 async-channel = "2.3.1"
 async-trait = "0.1.88"
-axum = { version = "0.7.9", default-features = false }
+axum = { version = "0.8.4", default-features = false }
 aws-config = "1.8.0"
 aws-credential-types = "1.2.2"
 aws-smithy-async = { version = "1.2.5", default-features = false }
@@ -170,12 +170,12 @@ moka = "0.12.5"
 mockall = { version = "0.13.1" }
 num-traits = { version = "0.2.17" }
 object_store = { version = "0.12.2", features = ["aws"] }
-opentelemetry = { version = "0.27" }
-opentelemetry-contrib = { version = "0.19" }
-opentelemetry-http = { version = "0.27" }
-opentelemetry-otlp = { version = "0.27" }
-opentelemetry-semantic-conventions = { version = "0.27" }
-opentelemetry_sdk = { version = "0.27" }
+opentelemetry = { version = "0.30" }
+opentelemetry-contrib = { version = "0.22" }
+opentelemetry-http = { version = "0.30" }
+opentelemetry-otlp = { version = "0.30" }
+opentelemetry-semantic-conventions = { version = "0.30" }
+opentelemetry_sdk = { version = "0.30" }
 parking_lot = { version = "0.12" }
 paste = "1.0"
 pin-project = "1.0"
@@ -233,14 +233,14 @@ tokio = { version = "1.47.0", default-features = false, features = [
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.14" }
 toml = { version = "0.8.23" }
-tonic = { version = "0.12.3", default-features = false }
-tonic-reflection = { version = "0.12.3" }
-tonic-health = { version = "0.12.3" }
-tonic-build = { version = "0.12.3" }
+tonic = { version = "0.13.1", default-features = false }
+tonic-reflection = { version = "0.13.1" }
+tonic-health = { version = "0.13.1" }
+tonic-build = { version = "0.13.1" }
 tower = "0.5.2"
 tower-http = { version = "0.6.2", default-features = false }
 tracing = { version = "0.1" }
-tracing-opentelemetry = { version = "0.28.0" }
+tracing-opentelemetry = { version = "0.31.0" }
 tracing-subscriber = { version = "0.3", features = [
     "env-filter",
     "fmt",

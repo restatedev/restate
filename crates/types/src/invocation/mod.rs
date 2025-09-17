@@ -1196,17 +1196,17 @@ impl TraceStateDef {
         }
     }
 
-    pub fn into_trace_state(self) -> Result<TraceState, opentelemetry::trace::TraceError> {
+    pub fn into_trace_state(self) -> anyhow::Result<TraceState> {
         match self {
             TraceStateDef::TraceState(ts) => Ok(ts),
-            TraceStateDef::Header(header) => TraceState::from_str(&header),
+            TraceStateDef::Header(header) => TraceState::from_str(&header).map_err(Into::into),
         }
     }
 
-    pub fn trace_state(&self) -> Result<TraceState, opentelemetry::trace::TraceError> {
+    pub fn trace_state(&self) -> anyhow::Result<TraceState> {
         match self {
             TraceStateDef::TraceState(ts) => Ok(ts.clone()),
-            TraceStateDef::Header(header) => TraceState::from_str(header),
+            TraceStateDef::Header(header) => TraceState::from_str(header).map_err(Into::into),
         }
     }
 }

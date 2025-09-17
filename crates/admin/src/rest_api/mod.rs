@@ -48,68 +48,68 @@ where
             post(openapi_handler!(deployments::create_deployment)),
         )
         .route(
-            "/deployments/:deployment",
+            "/deployments/{deployment}",
             get(openapi_handler!(deployments::get_deployment)),
         )
         .route(
-            "/deployments/:deployment",
+            "/deployments/{deployment}",
             delete(openapi_handler!(deployments::delete_deployment)),
         )
         .route(
-            "/deployments/:deployment",
+            "/deployments/{deployment}",
             put(openapi_handler!(deployments::update_deployment)),
         )
         .route("/services", get(openapi_handler!(services::list_services)))
         .route(
-            "/services/:service",
+            "/services/{service}",
             get(openapi_handler!(services::get_service)),
         )
         .route(
-            "/services/:service/openapi",
+            "/services/{service}/openapi",
             get(openapi_handler!(services::get_service_openapi)),
         )
         .route(
-            "/services/:service",
+            "/services/{service}",
             patch(openapi_handler!(services::modify_service)),
         )
         .route(
-            "/services/:service/state",
+            "/services/{service}/state",
             post(openapi_handler!(services::modify_service_state)),
         )
         .route(
-            "/services/:service/handlers",
+            "/services/{service}/handlers",
             get(openapi_handler!(handlers::list_service_handlers)),
         )
         .route(
-            "/services/:service/handlers/:handler",
+            "/services/{service}/handlers/{handler}",
             get(openapi_handler!(handlers::get_service_handler)),
         )
         .route(
-            "/invocations/:invocation_id",
+            "/invocations/{invocation_id}",
             delete(openapi_handler!(invocations::delete_invocation)),
         )
         .route(
-            "/invocations/:invocation_id/kill",
+            "/invocations/{invocation_id}/kill",
             patch(openapi_handler!(invocations::kill_invocation)),
         )
         .route(
-            "/invocations/:invocation_id/cancel",
+            "/invocations/{invocation_id}/cancel",
             patch(openapi_handler!(invocations::cancel_invocation)),
         )
         .route(
-            "/invocations/:invocation_id/purge",
+            "/invocations/{invocation_id}/purge",
             patch(openapi_handler!(invocations::purge_invocation)),
         )
         .route(
-            "/invocations/:invocation_id/purge-journal",
+            "/invocations/{invocation_id}/purge-journal",
             patch(openapi_handler!(invocations::purge_journal)),
         )
         .route(
-            "/invocations/:invocation_id/restart-as-new",
+            "/invocations/{invocation_id}/restart-as-new",
             patch(openapi_handler!(invocations::restart_as_new_invocation)),
         )
         .route(
-            "/invocations/:invocation_id/resume",
+            "/invocations/{invocation_id}/resume",
             patch(openapi_handler!(invocations::resume_invocation)),
         )
         .route(
@@ -121,11 +121,11 @@ where
             get(openapi_handler!(subscriptions::list_subscriptions)),
         )
         .route(
-            "/subscriptions/:subscription",
+            "/subscriptions/{subscription}",
             get(openapi_handler!(subscriptions::get_subscription)),
         )
         .route(
-            "/subscriptions/:subscription",
+            "/subscriptions/{subscription}",
             delete(openapi_handler!(subscriptions::delete_subscription)),
         )
         .route("/health", get(openapi_handler!(health::health)))

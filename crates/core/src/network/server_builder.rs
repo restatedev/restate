@@ -11,11 +11,8 @@
 use std::convert::Infallible;
 
 use http::Request;
-use hyper::body::Incoming;
 use hyper_util::service::TowerToHyperService;
-use tonic::body::boxed;
 use tonic::service::Routes;
-use tower::ServiceExt;
 use tower_http::trace::{DefaultOnFailure, TraceLayer};
 use tracing::{Level, debug};
 
@@ -23,7 +20,6 @@ use restate_types::health::HealthStatus;
 use restate_types::net::BindAddress;
 use restate_types::protobuf::common::NodeRpcStatus;
 
-use super::multiplex::MultiplexService;
 use super::net_util::run_hyper_server;
 
 #[derive(Debug, Default)]
@@ -45,12 +41,13 @@ impl NetworkServerBuilder {
     ) -> &mut Self
     where
         S: tower::Service<
-                Request<tonic::body::BoxBody>,
-                Response = http::Response<tonic::body::BoxBody>,
+                Request<tonic::body::Body>,
+                Response = http::Response<tonic::body::Body>,
                 Error = Infallible,
             > + tonic::server::NamedService
             + Clone
             + Send
+            + Sync
             + 'static,
         S::Future: Send + 'static,
     {
@@ -71,37 +68,41 @@ impl NetworkServerBuilder {
         bind_address: &BindAddress,
     ) -> Result<(), anyhow::Error> {
         node_rpc_health.update(NodeRpcStatus::StartingUp);
-        // Trace layer
-        let span_factory = tower_http::trace::DefaultMakeSpan::new()
+
+        // Trace layer for HTTP requests
+        let http_span_factory = tower_http::trace::DefaultMakeSpan::new()
             .include_headers(true)
             .level(tracing::Level::ERROR);
 
-        let axum_router = self
-            .axum_router
-            .unwrap_or_default()
-            .layer(TraceLayer::new_for_http().make_span_with(span_factory.clone()))
-            .fallback(handler_404);
+        // Prepare Axum router for HTTP requests
+        let axum_router = self.axum_router.unwrap_or_default();
 
+        // Prepare gRPC routes
+        let mut grpc_routes = self.grpc_routes.unwrap_or_default();
+
+        // Add reflection service to gRPC routes
         let mut reflection_service_builder = tonic_reflection::server::Builder::configure();
         for descriptor in self.grpc_descriptors {
             reflection_service_builder =
                 reflection_service_builder.register_encoded_file_descriptor_set(descriptor);
         }
+        grpc_routes = grpc_routes.add_service(reflection_service_builder.build_v1()?);
 
-        let server_builder = tonic::transport::Server::builder()
-            .layer(
-                TraceLayer::new_for_grpc()
-                    .make_span_with(span_factory)
-                    .on_failure(DefaultOnFailure::new().level(Level::DEBUG)),
-            )
-            .add_routes(self.grpc_routes.unwrap_or_default())
-            .add_service(reflection_service_builder.build_v1()?);
-
-        // Multiplex both grpc and http based on content-type
-        let service = TowerToHyperService::new(
-            MultiplexService::new(axum_router, server_builder.into_service())
-                .map_request(|req: Request<Incoming>| req.map(boxed)),
+        // Convert gRPC routes to Axum router
+        let grpc_router = grpc_routes.prepare().into_axum_router().layer(
+            TraceLayer::new_for_grpc()
+                .make_span_with(http_span_factory.clone())
+                .on_failure(DefaultOnFailure::new().level(Level::DEBUG)),
         );
+
+        // Merge HTTP and gRPC routers
+        let combined_router = axum_router
+            .layer(TraceLayer::new_for_http().make_span_with(http_span_factory))
+            .merge(grpc_router)
+            .fallback(handler_404);
+
+        // Convert to hyper service using TowerToHyperService wrapper
+        let service = TowerToHyperService::new(combined_router);
 
         run_hyper_server(
             bind_address,
@@ -116,7 +117,6 @@ impl NetworkServerBuilder {
     }
 }
 
-// handle 404
 async fn handler_404() -> (http::StatusCode, &'static str) {
     (
         axum::http::StatusCode::NOT_FOUND,
