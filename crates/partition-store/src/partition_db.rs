@@ -71,6 +71,11 @@ impl PartitionDb {
         &self.rocksdb
     }
 
+    #[cfg(test)]
+    pub fn into_rocksdb(self) -> Arc<RocksDb> {
+        self.rocksdb
+    }
+
     pub fn cf_handle(&self) -> &Arc<BoundColumnFamily<'_>> {
         &self.cf.0
     }

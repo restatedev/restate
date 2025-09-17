@@ -390,10 +390,22 @@ impl PartitionStoreManager {
 
     #[cfg(test)]
     pub async fn close_partition_store(&self, partition_id: PartitionId) {
+        use crate::partition_db::State;
         let Some(cell) = self.state.partitions.read().get(&partition_id).cloned() else {
             return;
         };
         let mut state_guard = cell.inner.write().await;
+        let db = match &*state_guard {
+            State::Unknown | State::CfMissing | State::Closed { .. } => None,
+            State::Open { db } => Some(db.clone()),
+        };
         cell.reset_to_unknown(&mut state_guard).await;
+        // making sure the rocksdb database is fully closed.
+        if let Some(db) = db {
+            db.into_rocksdb()
+                .close()
+                .await
+                .expect("rocksdb cannot be closed if others are still holding references to it");
+        }
     }
 }
