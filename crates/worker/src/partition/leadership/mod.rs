@@ -672,9 +672,8 @@ mod tests {
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::GenerationalNodeId;
-    use restate_types::config::{CommonOptions, Configuration};
+    use restate_types::config::Configuration;
     use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
-    use restate_types::live::Constant;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_types::partitions::Partition;
     use restate_types::partitions::state::PartitionReplicaSetStates;
@@ -694,7 +693,7 @@ mod tests {
     async fn become_leader_then_step_down() -> googletest::Result<()> {
         let env = TestCoreEnv::create_with_single_node(0, 0).await;
 
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
         let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
         let replica_set_states = PartitionReplicaSetStates::default();
 

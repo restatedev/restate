@@ -694,7 +694,6 @@ mod tests {
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
     use restate_rocksdb::RocksDbManager;
     use restate_types::Versioned;
-    use restate_types::config::CommonOptions;
     use restate_types::config::LocalLogletOptions;
     use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::metadata::{ProviderKind, new_single_node_loglet_params};
@@ -717,7 +716,7 @@ mod tests {
         let read_from = Lsn::from(6);
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
 
         let svc = BifrostService::new(env.metadata_writer).enable_local_loglet(config);
         let bifrost = svc.handle();
@@ -796,7 +795,7 @@ mod tests {
             .build()
             .await;
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
 
         let svc = BifrostService::new(node_env.metadata_writer.clone()).enable_local_loglet(config);
         let bifrost = svc.handle();
@@ -894,7 +893,7 @@ mod tests {
             .await;
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer.clone())
@@ -1049,7 +1048,7 @@ mod tests {
             .await;
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer)
@@ -1173,7 +1172,7 @@ mod tests {
             .await;
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer)
@@ -1304,7 +1303,7 @@ mod tests {
             .await;
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer.clone())

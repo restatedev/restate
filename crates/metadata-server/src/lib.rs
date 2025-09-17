@@ -38,7 +38,6 @@ use restate_types::config::{Configuration, MetadataClientKind};
 use restate_types::errors::{ConversionError, GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
-use restate_types::live::LiveLoadExt;
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::nodes_config::{
     MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
@@ -205,9 +204,8 @@ pub async fn create_metadata_server_and_client(
     server_builder: &mut NetworkServerBuilder,
 ) -> anyhow::Result<(BoxedMetadataServer, MetadataStoreClient)> {
     metric_definitions::describe_metrics();
-    let metadata_server_options = config.clone().map(|config| &config.metadata_server);
     let config = config.live_load();
-    RaftMetadataServer::create(metadata_server_options, health_status, server_builder)
+    RaftMetadataServer::create(health_status, server_builder)
         .await
         .map_err(anyhow::Error::from)
         .map(|server| {

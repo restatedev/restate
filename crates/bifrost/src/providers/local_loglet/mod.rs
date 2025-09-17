@@ -323,7 +323,7 @@ mod tests {
             .await;
 
         let config = Live::from_value(Configuration::default());
-        RocksDbManager::init(config.clone().map(|c| &c.common));
+        RocksDbManager::init();
         let params = LogletParams::from("42".to_string());
 
         let local_loglet_config = config.map(|config| &config.bifrost.local);
@@ -356,7 +356,7 @@ mod tests {
             .await;
 
         let config = Live::from_value(Configuration::default());
-        RocksDbManager::init(config.clone().map(|c| &c.common));
+        RocksDbManager::init();
 
         let local_loglet_config = config.map(|config| &config.bifrost.local);
         let log_store = RocksDbLogStore::create(local_loglet_config.clone()).await?;

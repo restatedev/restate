@@ -9,33 +9,23 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use parking_lot::RwLock;
-use rocksdb::{BlockBasedOptions, Cache, LogLevel, WriteBufferManager};
-use tokio::sync::mpsc;
+use rocksdb::{Cache, WriteBufferManager};
 use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_serde_util::ByteCount;
-use restate_types::config::{
-    CommonOptions, Configuration, RocksDbLogLevel, RocksDbOptions, StatisticsLevel,
-};
-use restate_types::live::{BoxLiveLoad, LiveLoad, LiveLoadExt};
+use restate_types::config::{CommonOptions, Configuration};
 
 use crate::background::ReadyStorageTask;
 use crate::{DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError, metric_definitions};
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
-
-enum WatchdogCommand {
-    Register(ConfigSubscription),
-    #[cfg(any(test, feature = "test-util"))]
-    ResetAll(tokio::sync::oneshot::Sender<()>),
-}
 
 /// Tracks rocksdb databases created by various components, memory budgeting, monitoring, and
 /// acting as a single entry point for all running databases on the node.
@@ -44,14 +34,12 @@ enum WatchdogCommand {
 #[derive(derive_more::Debug)]
 #[debug("RocksDbManager")]
 pub struct RocksDbManager {
-    env: rocksdb::Env,
+    pub(crate) env: rocksdb::Env,
     /// a shared rocksdb block cache
-    cache: Cache,
+    pub(crate) cache: Cache,
     // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
-    write_buffer_manager: WriteBufferManager,
-    stall_detection_millis: AtomicUsize,
+    pub(crate) write_buffer_manager: WriteBufferManager,
     dbs: RwLock<HashMap<DbName, Weak<RocksDb>>>,
-    watchdog_tx: mpsc::UnboundedSender<WatchdogCommand>,
     shutting_down: AtomicBool,
     close_db_tasks: TaskTracker,
     high_pri_pool: threadpool::ThreadPool,
@@ -68,24 +56,18 @@ impl RocksDbManager {
     /// only run it once on program startup.
     ///
     /// Must run in task_center scope.
-    pub fn init(mut base_opts: impl LiveLoad<Live = CommonOptions> + 'static) -> &'static Self {
+    pub fn init() -> &'static Self {
         // best-effort, it doesn't make concurrent access safe, but it's better than nothing.
         if let Some(manager) = DB_MANAGER.get() {
             return manager;
         }
         metric_definitions::describe_metrics();
-        let opts = base_opts.live_load();
+        let opts = &Configuration::pinned().common;
         let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_size.get());
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
             opts.rocksdb_actual_total_memtables_size(),
-            opts.rocksdb_enable_stall_on_memory_limit,
+            false,
             cache.clone(),
-        );
-        // There is no atomic u128 (and it's a ridiculous amount of time anyway), we trim the value
-        // to usize and hope for the best.
-        let stall_detection_millis = AtomicUsize::new(
-            usize::try_from(opts.rocksdb_write_stall_threshold.as_millis())
-                .expect("threshold fits usize"),
         );
         // Setup the shared rocksdb environment
         let mut env = rocksdb::Env::new().expect("rocksdb env is created");
@@ -106,20 +88,15 @@ impl RocksDbManager {
 
         let dbs = RwLock::default();
 
-        // unbounded channel since commands are rare and we don't want to block
-        let (watchdog_tx, watchdog_rx) = mpsc::unbounded_channel();
-
         let manager = Self {
             env,
             cache,
             write_buffer_manager,
             dbs,
-            watchdog_tx,
             shutting_down: AtomicBool::new(false),
             close_db_tasks: TaskTracker::default(),
             high_pri_pool,
             low_pri_pool,
-            stall_detection_millis,
         };
 
         DB_MANAGER.set(manager).expect("DBManager initialized once");
@@ -127,7 +104,7 @@ impl RocksDbManager {
         TaskCenter::spawn(
             TaskKind::SystemService,
             "db-manager",
-            DbWatchdog::run(Self::get(), watchdog_rx, base_opts.boxed()),
+            DbWatchdog::run(Self::get()),
         )
         .expect("run db watchdog");
 
@@ -153,11 +130,7 @@ impl RocksDbManager {
         }
     }
 
-    pub async fn open_db(
-        &'static self,
-        mut updateable_opts: impl LiveLoad<Live = RocksDbOptions> + 'static,
-        mut db_spec: DbSpec,
-    ) -> Result<Arc<RocksDb>, RocksError> {
+    pub async fn open_db(&'static self, db_spec: DbSpec) -> Result<Arc<RocksDb>, RocksError> {
         if self
             .shutting_down
             .load(std::sync::atomic::Ordering::Acquire)
@@ -166,33 +139,13 @@ impl RocksDbManager {
         }
 
         // get latest options
-        let options = updateable_opts.live_load().clone();
         let name = db_spec.name.clone();
-        // use the spec default options as base then apply the config from the updateable.
-        self.amend_db_options(&mut db_spec.db_options, &options);
-
         let path = db_spec.path.clone();
-        let wrapper = RocksDb::open(self, db_spec, self.default_cf_options(&options)).await?;
+        let wrapper = RocksDb::open(self, db_spec).await?;
         self.dbs
             .write()
             .insert(name.clone(), Arc::downgrade(&wrapper));
 
-        if let Err(e) = self
-            .watchdog_tx
-            .send(WatchdogCommand::Register(ConfigSubscription {
-                name: name.clone(),
-                updateable_rocksdb_opts: updateable_opts.boxed(),
-                last_applied_opts: options,
-            }))
-        {
-            warn!(
-                db = %name,
-                path = %path.display(),
-                "Failed to register database with watchdog: {}, this database will \
-                    not receive config updates but the system will continue to run as normal",
-                e
-            );
-        }
         debug!(
             db = %name,
             path = %path.display(),
@@ -202,13 +155,13 @@ impl RocksDbManager {
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn reset(&self) -> anyhow::Result<()> {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        self.watchdog_tx
-            .send(WatchdogCommand::ResetAll(tx))
-            .map_err(|_| RocksError::Shutdown(ShutdownError))?;
-        // safe to unwrap since we use this only in tests
-        rx.await.unwrap();
+    pub async fn reset(&'static self) -> anyhow::Result<()> {
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.shutdown().await;
+        self.dbs.write().clear();
+        self.shutting_down
+            .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
@@ -333,104 +286,6 @@ impl RocksDbManager {
         }
     }
 
-    fn amend_db_options(&self, db_options: &mut rocksdb::Options, opts: &RocksDbOptions) {
-        db_options.set_env(&self.env);
-        db_options.create_if_missing(true);
-        db_options.create_missing_column_families(true);
-        db_options.set_max_background_jobs(opts.rocksdb_max_background_jobs().get() as i32);
-
-        // write buffer is controlled by write buffer manager
-        db_options.set_write_buffer_manager(&self.write_buffer_manager);
-
-        db_options.set_avoid_unnecessary_blocking_io(true);
-
-        if !opts.rocksdb_disable_statistics() {
-            db_options.enable_statistics();
-            db_options
-                .set_statistics_level(convert_statistics_level(opts.rocksdb_statistics_level()));
-        }
-
-        // no need to retain 1000 log files by default.
-        if !opts.rocksdb_disable_wal() {
-            // RocksDB does not support recycling wal log files if wal is disabled when writing
-            db_options.set_recycle_log_file_num(4);
-        }
-        // Disable WAL archiving.
-        // the following two options has to be both 0 to disable WAL log archive.
-        db_options.set_wal_size_limit_mb(0);
-        db_options.set_wal_ttl_seconds(0);
-
-        //
-        // Let rocksdb decide for level sizes.
-        //
-        db_options.set_level_compaction_dynamic_level_bytes(true);
-        db_options.set_compaction_readahead_size(opts.rocksdb_compaction_readahead_size().get());
-        //
-        // [Not important setting, consider removing], allows to shard compressed
-        // block cache to up to 64 shards in memory.
-        //
-        db_options.set_table_cache_num_shard_bits(6);
-
-        // Speed up database open, useful for large databases and slow disk.
-        db_options.set_skip_stats_update_on_db_open(true);
-
-        // Use Direct I/O for reads, do not use OS page cache to cache compressed blocks.
-        db_options.set_use_direct_reads(!opts.rocksdb_disable_direct_io_for_reads());
-        db_options.set_use_direct_io_for_flush_and_compaction(
-            !opts.rocksdb_disable_direct_io_for_flush_and_compaction(),
-        );
-
-        // Configure info logs
-        db_options.set_keep_log_file_num(opts.rocksdb_log_keep_file_num());
-        db_options.set_max_log_file_size(opts.rocksdb_log_max_file_size().as_usize());
-        db_options.set_log_level(self.get_log_level(opts));
-    }
-
-    fn get_log_level(&self, opts: &RocksDbOptions) -> LogLevel {
-        match opts.rocksdb_log_level() {
-            RocksDbLogLevel::Debug => LogLevel::Debug,
-            RocksDbLogLevel::Error => LogLevel::Error,
-            RocksDbLogLevel::Fatal => LogLevel::Fatal,
-            RocksDbLogLevel::Header => LogLevel::Header,
-            RocksDbLogLevel::Info => LogLevel::Info,
-            RocksDbLogLevel::Warn => LogLevel::Warn,
-        }
-    }
-
-    pub(crate) fn stall_detection_duration(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(
-            self.stall_detection_millis
-                .load(std::sync::atomic::Ordering::Relaxed) as u64,
-        )
-    }
-
-    pub(crate) fn default_cf_options(&self, opts: &RocksDbOptions) -> rocksdb::Options {
-        let mut cf_options = rocksdb::Options::default();
-        // write buffer
-        cf_options.set_write_buffer_manager(&self.write_buffer_manager);
-        cf_options.set_max_background_jobs(opts.rocksdb_max_background_jobs().get() as i32);
-        cf_options.set_avoid_unnecessary_blocking_io(true);
-
-        cf_options.set_optimize_filters_for_hits(true);
-        // bloom filters and block cache.
-        //
-        let mut block_opts = BlockBasedOptions::default();
-        block_opts.set_bloom_filter(10.0, true);
-        // use the latest Rocksdb table format.
-        // https://github.com/facebook/rocksdb/blob/56359da69132d769e97f0a7cc89681d3500e166d/include/rocksdb/table.h#L571
-        block_opts.set_format_version(6);
-        block_opts.set_optimize_filters_for_memory(true);
-        block_opts.set_index_block_restart_interval(4);
-        block_opts.set_cache_index_and_filter_blocks(true);
-        block_opts.set_pin_l0_filter_and_index_blocks_in_cache(true);
-        block_opts.set_block_size(opts.rocksdb_block_size().get());
-
-        block_opts.set_block_cache(&self.cache);
-        cf_options.set_block_based_table_factory(&block_opts);
-
-        cf_options
-    }
-
     /// Spawn a rocksdb blocking operation in the background
     pub(crate) async fn async_spawn<OP, R>(
         &self,
@@ -498,33 +353,21 @@ impl RocksDbManager {
 #[allow(dead_code)]
 struct ConfigSubscription {
     name: DbName,
-    updateable_rocksdb_opts: BoxLiveLoad<RocksDbOptions>,
-    last_applied_opts: RocksDbOptions,
 }
 
 struct DbWatchdog {
     manager: &'static RocksDbManager,
     cache: Cache,
-    watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
-    updateable_common_opts: BoxLiveLoad<CommonOptions>,
     current_common_opts: CommonOptions,
-    subscriptions: Vec<ConfigSubscription>,
 }
 
 impl DbWatchdog {
-    pub async fn run(
-        manager: &'static RocksDbManager,
-        watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
-        mut updateable_common_opts: BoxLiveLoad<CommonOptions>,
-    ) -> anyhow::Result<()> {
-        let prev_opts = updateable_common_opts.live_load().clone();
+    pub async fn run(manager: &'static RocksDbManager) -> anyhow::Result<()> {
+        let prev_opts = Configuration::pinned().common.clone();
         let mut watchdog = Self {
             manager,
             cache: manager.cache.clone(),
-            watchdog_rx,
-            updateable_common_opts,
             current_common_opts: prev_opts,
-            subscriptions: Vec::new(),
         };
 
         let shutdown_watch = cancellation_watcher();
@@ -543,9 +386,6 @@ impl DbWatchdog {
                         .store(true, std::sync::atomic::Ordering::Release);
                     break;
                 }
-                Some(cmd) = watchdog.watchdog_rx.recv() => {
-                    watchdog.handle_command(cmd).await;
-                }
                 _ = config_watch.changed() => {
                     watchdog.on_config_update();
                 }
@@ -553,26 +393,6 @@ impl DbWatchdog {
         }
 
         Ok(())
-    }
-
-    async fn handle_command(&mut self, cmd: WatchdogCommand) {
-        match cmd {
-            #[cfg(any(test, feature = "test-util"))]
-            WatchdogCommand::ResetAll(response) => {
-                self.manager
-                    .shutting_down
-                    .store(true, std::sync::atomic::Ordering::Release);
-                self.manager.shutdown().await;
-                self.manager.dbs.write().clear();
-                self.subscriptions.clear();
-                self.manager
-                    .shutting_down
-                    .store(false, std::sync::atomic::Ordering::Release);
-                // safe to unwrap since we use this only in tests
-                response.send(()).unwrap();
-            }
-            WatchdogCommand::Register(sub) => self.subscriptions.push(sub),
-        }
     }
 
     fn on_config_update(&mut self) {
@@ -585,26 +405,7 @@ impl DbWatchdog {
             info!("Ignoring config update as we are shutting down");
             return;
         }
-        let new_common_opts = self.updateable_common_opts.live_load();
-
-        // Stall detection threshold changed?
-        let current_stall_detection_millis =
-            self.manager
-                .stall_detection_millis
-                .load(std::sync::atomic::Ordering::Relaxed) as u64;
-        let new_stall_detection_millis =
-            new_common_opts.rocksdb_write_stall_threshold.as_millis() as u64;
-        if current_stall_detection_millis != new_stall_detection_millis {
-            warn!(
-                old = current_stall_detection_millis,
-                new = new_stall_detection_millis,
-                "[config update] Stall detection threshold is updated",
-            );
-            self.manager.stall_detection_millis.store(
-                new_stall_detection_millis as usize,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-        }
+        let new_common_opts = &Configuration::pinned().common;
 
         // Memory budget changed?
         if new_common_opts.rocksdb_total_memory_size
@@ -642,40 +443,16 @@ impl DbWatchdog {
                 .set_buffer_size(new_common_opts.rocksdb_actual_total_memtables_size());
         }
 
-        // Enable/disable WBM stall
-        if new_common_opts.rocksdb_enable_stall_on_memory_limit
-            != self
-                .current_common_opts
-                .rocksdb_enable_stall_on_memory_limit
-        {
-            warn!(
-                old = self
-                    .current_common_opts
-                    .rocksdb_enable_stall_on_memory_limit,
-                new = new_common_opts.rocksdb_enable_stall_on_memory_limit,
-                "[config update] Setting rocksdb-enable-stall-on-memory-limit",
-            );
-            self.manager
-                .write_buffer_manager
-                .set_allow_stall(new_common_opts.rocksdb_enable_stall_on_memory_limit);
+        // Databases choose to react to config updates as they see fit.
+        // e.g. set write_buffer_size
+        for db in self.manager.dbs.read().values() {
+            let Some(db) = db.upgrade() else {
+                continue;
+            };
+            db.note_config_update();
         }
 
-        // todo: Apply other changes to the databases.
-        // e.g. set write_buffer_size
-
         self.current_common_opts = new_common_opts.clone();
-    }
-}
-
-fn convert_statistics_level(input: StatisticsLevel) -> rocksdb::statistics::StatsLevel {
-    use rocksdb::statistics::StatsLevel;
-    match input {
-        StatisticsLevel::DisableAll => StatsLevel::DisableAll,
-        StatisticsLevel::ExceptHistogramOrTimers => StatsLevel::ExceptHistogramOrTimers,
-        StatisticsLevel::ExceptTimers => StatsLevel::ExceptTimers,
-        StatisticsLevel::ExceptDetailedTimers => StatsLevel::ExceptDetailedTimers,
-        StatisticsLevel::ExceptTimeForMutex => StatsLevel::ExceptTimeForMutex,
-        StatisticsLevel::All => StatsLevel::All,
     }
 }
 

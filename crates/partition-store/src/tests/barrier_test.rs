@@ -7,9 +7,7 @@ use restate_storage_api::{
 };
 use restate_types::{
     SemanticRestateVersion,
-    config::CommonOptions,
     identifiers::{PartitionId, PartitionKey},
-    live::Constant,
     partitions::Partition,
 };
 
@@ -23,7 +21,7 @@ async fn barrier_fsm() -> googletest::Result<()> {
         not(eq(&SemanticRestateVersion::unknown()))
     );
 
-    let rocksdb = RocksDbManager::init(Constant::new(CommonOptions::default()));
+    let rocksdb = RocksDbManager::init();
 
     let partition_store_manager = PartitionStoreManager::create().await?;
 

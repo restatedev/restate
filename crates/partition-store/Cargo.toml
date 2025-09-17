@@ -17,6 +17,7 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-object-store-util = { workspace = true }
 restate-rocksdb = { workspace = true }
+restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 
@@ -40,6 +41,7 @@ rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
+smartstring = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 tempfile = { workspace = true }

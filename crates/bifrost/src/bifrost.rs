@@ -776,8 +776,6 @@ mod tests {
     use restate_core::TestCoreEnvBuilder;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::CommonOptions;
-    use restate_types::live::Constant;
     use restate_types::logs::SequenceNumber;
     use restate_types::logs::metadata::{SegmentIndex, new_single_node_loglet_params};
     use restate_types::metadata::Precondition;
@@ -890,7 +888,7 @@ mod tests {
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
 
         let bifrost = Bifrost::init_local(node_env.metadata_writer).await;
 
@@ -1389,7 +1387,7 @@ mod tests {
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
         let bifrost = Bifrost::init_local(node_env.metadata_writer).await;
 
         // create an appender

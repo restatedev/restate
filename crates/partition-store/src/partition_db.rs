@@ -8,21 +8,31 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::marker::PhantomData;
 use std::ops::DerefMut;
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::RwLock;
-use rocksdb::{BoundColumnFamily, ExportImportFilesMetaData};
+use rocksdb::table_properties::TablePropertiesExt;
+use rocksdb::{BoundColumnFamily, DBCompressionType, ExportImportFilesMetaData};
 use tokio::sync::{RwLock as AsyncRwLock, watch};
+use tokio::time::Instant;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::ShutdownError;
+use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::{RocksDb, RocksError};
+use restate_serde_util::ByteCount;
 use restate_types::config::Configuration;
 use restate_types::logs::Lsn;
 use restate_types::partitions::{CfName, Partition};
 
+use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};
+use crate::memory::MemoryBudget;
 use crate::snapshots::LocalPartitionSnapshot;
+
+type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
 #[derive(Clone)]
 pub struct PartitionDb {
@@ -65,6 +75,20 @@ impl PartitionDb {
         &self.cf.0
     }
 
+    pub fn cf_names(&self) -> Vec<SmartString> {
+        vec![self.meta.cf_name().into_inner()]
+    }
+
+    pub async fn flush_memtables(&self, wait: bool) -> Result<(), RocksError> {
+        self.rocksdb
+            .clone()
+            .flush_memtables(
+                std::slice::from_ref(&restate_rocksdb::CfName::from(self.partition().cf_name())),
+                wait,
+            )
+            .await
+    }
+
     pub(crate) fn note_archived_lsn(&self, lsn: Lsn) -> bool {
         self.archived_lsn.send_if_modified(|current| {
             if current.is_none_or(|c| lsn > c) {
@@ -87,6 +111,40 @@ impl PartitionDb {
 
     pub(crate) fn durable_lsn_sender(&self) -> &watch::Sender<Option<Lsn>> {
         &self.durable_lsn
+    }
+
+    pub(crate) fn update_memory_budget(&self, memory_budget: usize) {
+        let max_bytes_for_level_base = memory_budget;
+        let single_memtable_budget = memory_budget / 4;
+        let target_file_size_base = memory_budget / 8;
+
+        let max_bytes_for_level_base_str = max_bytes_for_level_base.to_string();
+        let single_memtable_budget_str = single_memtable_budget.to_string();
+        let target_file_size_base_str = target_file_size_base.to_string();
+
+        // impacts only this partition's column-families
+        for cf in self.cf_names() {
+            debug!(
+                "Updating memory budget for {}/{} to {}",
+                self.rocksdb.name(),
+                cf,
+                ByteCount::from(memory_budget)
+            );
+
+            if let Err(err) = self.rocksdb.inner().set_options_cf(
+                &cf,
+                &[
+                    ("write_buffer_size", &single_memtable_budget_str),
+                    ("target_file_size_base", &target_file_size_base_str),
+                    ("max_bytes_for_level_base", &max_bytes_for_level_base_str),
+                ],
+            ) {
+                warn!(
+                    "Failed to update memory budget for {}/{cf}: {err}",
+                    self.rocksdb.name(),
+                );
+            }
+        }
     }
 }
 
@@ -174,13 +232,7 @@ impl PartitionCell {
     ) -> Result<PartitionDb, RocksError> {
         let cf_name = self.meta.cf_name();
         debug!("Creating new column family {}", cf_name);
-        rocksdb
-            .clone()
-            .open_cf(
-                self.meta.cf_name().into(),
-                &Configuration::pinned().worker.storage.rocksdb,
-            )
-            .await?;
+        rocksdb.clone().open_cf(self.meta.cf_name().into()).await?;
         let handle = rocksdb
             .inner()
             .cf_handle(cf_name.as_ref())
@@ -229,11 +281,7 @@ impl PartitionCell {
 
         rocksdb
             .clone()
-            .import_cf(
-                self.meta.cf_name().into(),
-                &Configuration::pinned().worker.storage.rocksdb,
-                import_metadata,
-            )
+            .import_cf(self.meta.cf_name().into(), import_metadata)
             .await?;
 
         if let Err(err) = tokio::fs::remove_dir_all(&snapshot.base_dir).await {
@@ -269,7 +317,7 @@ impl PartitionCell {
         match state {
             State::Unknown => return Ok(()),
             State::CfMissing => { /* nothing to do.*/ }
-            State::Open { db } => {
+            State::Open { db } | State::Closed { db, .. } => {
                 let db = Arc::clone(&db.rocksdb);
                 let cf_name = self.meta.cf_name().clone();
 
@@ -290,7 +338,7 @@ impl PartitionCell {
     pub async fn clone_db(&self) -> Option<PartitionDb> {
         let guard = self.inner.read().await;
         match &*guard {
-            State::Unknown | State::CfMissing => None,
+            State::Unknown | State::CfMissing | State::Closed { .. } => None,
             State::Open { db } => Some(db.clone()),
         }
     }
@@ -313,7 +361,7 @@ impl PartitionCell {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) enum State {
     /// The state of local column family is still unknown.
     ///
@@ -326,6 +374,13 @@ pub(crate) enum State {
     Open {
         db: PartitionDb,
     },
+    /// The partition exists locally but it's closed and not being actively used by a partition
+    /// processor. In this state, the partition can be re-opened, or it can be dropped but it'll
+    /// not be accounted against the total partition memory budget.
+    Closed {
+        db: PartitionDb,
+        closed_at: Instant,
+    },
 }
 
 impl State {
@@ -337,10 +392,170 @@ impl State {
         matches!(self, State::Unknown)
     }
 
-    pub fn get_db(&self) -> Option<&PartitionDb> {
+    pub fn closed_since(&self) -> Option<Duration> {
+        match self {
+            State::Unknown | State::CfMissing => None,
+            State::Open { .. } => None,
+            State::Closed { closed_at, .. } => Some(closed_at.elapsed()),
+        }
+    }
+
+    pub fn maybe_open(&self) -> bool {
+        matches!(self, State::Closed { .. } | State::Open { .. })
+    }
+
+    pub fn get_or_reopen(&mut self) -> Option<PartitionDb> {
+        match &mut *self {
+            State::Unknown | State::CfMissing => None,
+            State::Open { db } => Some(db.clone()),
+            State::Closed { db, .. } => {
+                let db = db.clone();
+                *self = State::Open { db: db.clone() };
+                Some(db)
+            }
+        }
+    }
+
+    pub fn db(&self) -> Option<&PartitionDb> {
         match self {
             State::Unknown | State::CfMissing => None,
             State::Open { db } => Some(db),
+            State::Closed { db, .. } => Some(db),
         }
+    }
+
+    pub fn close(&mut self) {
+        match &mut *self {
+            State::Unknown | State::CfMissing | State::Closed { .. } => {}
+            State::Open { db } => {
+                *self = State::Closed {
+                    db: db.clone(),
+                    closed_at: Instant::now(),
+                };
+            }
+        }
+    }
+}
+
+// -- How to configure partition-db column families? --
+
+pub struct RocksConfigurator<T> {
+    memory_budget: Arc<MemoryBudget>,
+    shared_state: Arc<crate::SharedState>,
+    _marker: PhantomData<T>,
+}
+
+impl<T> Clone for RocksConfigurator<T> {
+    fn clone(&self) -> Self {
+        Self {
+            memory_budget: self.memory_budget.clone(),
+            shared_state: self.shared_state.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> RocksConfigurator<T> {
+    pub fn new(memory_budget: Arc<MemoryBudget>, psm_state: Arc<crate::SharedState>) -> Self {
+        Self {
+            memory_budget,
+            shared_state: psm_state,
+            _marker: PhantomData,
+        }
+    }
+}
+
+// Configuration of column families that hold all partition data.
+pub struct AllDataCf;
+
+impl DbConfigurator for RocksConfigurator<AllDataCf> {
+    fn get_db_options(
+        &self,
+        _db_name: &str,
+        env: &rocksdb::Env,
+        write_buffer_manager: &rocksdb::WriteBufferManager,
+    ) -> rocksdb::Options {
+        let mut db_options = restate_rocksdb::configuration::create_default_db_options(
+            env,
+            true, /* create_db_if_missing */
+            write_buffer_manager,
+        );
+
+        self.apply_db_opts_from_config(
+            &mut db_options,
+            &Configuration::pinned().worker.storage.rocksdb,
+        );
+
+        let event_listener = DurableLsnEventListener::new(&self.shared_state);
+        db_options.add_event_listener(event_listener);
+
+        db_options
+    }
+}
+
+impl CfConfigurator for RocksConfigurator<AllDataCf> {
+    fn get_cf_options(
+        &self,
+        db_name: &str,
+        cf_name: &str,
+        global_cache: &rocksdb::Cache,
+        write_buffer_manager: &rocksdb::WriteBufferManager,
+    ) -> rocksdb::Options {
+        let mut cf_options =
+            restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
+
+        let block_options = restate_rocksdb::configuration::create_default_block_options(
+            &Configuration::pinned().worker.storage.rocksdb,
+            // use global block cache
+            Some(global_cache),
+        );
+        cf_options.set_block_based_table_factory(&block_options);
+
+        // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
+        // in the C API nor the rust binding. That's okay and we can change it later.
+        cf_options.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(
+            crate::DB_PREFIX_LENGTH,
+        ));
+        cf_options.set_memtable_prefix_bloom_ratio(0.2);
+        cf_options.set_memtable_whole_key_filtering(true);
+        // Most of the changes are highly temporal, we try to delay flushing
+        // As much as we can to increase the chances to observe a deletion.
+        //
+        cf_options.set_num_levels(7);
+        cf_options.set_compression_per_level(&[
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+            DBCompressionType::Zstd,
+        ]);
+
+        // Always collect applied LSN table properties in partition store CFs
+        cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
+
+        // -- Initial Memory Configuration --
+        let memtables_budget = self.memory_budget.current_per_partition_budget();
+        tracing::debug!(
+            "Configured {db_name}/{cf_name} with memtable budget={}",
+            ByteCount::from(memtables_budget)
+        );
+        // We set the budget to allow 1 mutable + 3 immutable.
+        cf_options.set_write_buffer_size(memtables_budget / 4);
+
+        // merge 2 memtables when flushing to L0
+        cf_options.set_min_write_buffer_number_to_merge(2);
+        cf_options.set_max_write_buffer_number(4);
+        // start flushing L0->L1 as soon as possible. each file on level0 is
+        // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
+        // memtable_memory_budget.
+        cf_options.set_level_zero_file_num_compaction_trigger(2);
+        // doesn't really matter much, but we don't want to create too many files
+        cf_options.set_target_file_size_base(memtables_budget as u64 / 8);
+        // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
+        cf_options.set_max_bytes_for_level_base(memtables_budget as u64);
+
+        cf_options
     }
 }

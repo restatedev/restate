@@ -47,7 +47,7 @@ use restate_storage_api::service_status_table::{
 };
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_test_util::matchers::*;
-use restate_types::config::{CommonOptions, StorageOptions};
+use restate_types::config::StorageOptions;
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::{
     AwakeableIdentifier, InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
@@ -65,7 +65,6 @@ use restate_types::journal::{
 use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
-use restate_types::live::Constant;
 use restate_types::logs::SequenceNumber;
 use restate_types::partitions::Partition;
 use restate_types::state_mut::ExternalStateMutation;
@@ -127,7 +126,7 @@ impl TestEnv {
                 None => FmtSpan::NONE,
             }).with_test_writer().try_init();
 
-        RocksDbManager::init(Constant::new(CommonOptions::default()));
+        RocksDbManager::init();
         let storage_options = StorageOptions::default();
         info!(
             "Using RocksDB temp directory {}",

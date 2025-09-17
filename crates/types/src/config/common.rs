@@ -240,21 +240,6 @@ pub struct CommonOptions {
     /// The number of threads to reserve to high priority Rocksdb background tasks.
     pub rocksdb_high_priority_bg_threads: NonZeroU32,
 
-    /// # Rocksdb stall detection threshold
-    ///
-    /// This defines the duration after which a write is to be considered in "stall" state. For
-    /// every write that meets this threshold, the system will increment the
-    /// `restate.rocksdb_stall_flare` gauge, if the write is unstalled, the guage will be updated
-    /// accordingly.
-    pub rocksdb_write_stall_threshold: NonZeroFriendlyDuration,
-
-    /// # Allow rocksdb writes to stall if memory limit is reached
-    ///
-    /// Note if automatic memory budgeting is enabled, it should be safe to allow rocksdb to stall
-    /// if it hits the limit. However, if rocksdb stall kicked in, it's unlikely that the system
-    /// will recover from this without intervention.
-    pub rocksdb_enable_stall_on_memory_limit: bool,
-
     /// # Rocksdb performance statistics level
     ///
     /// Defines the level of PerfContext used internally by rocksdb. Default is `enable-count`
@@ -459,8 +444,6 @@ impl Default for CommonOptions {
             rocksdb_total_memory_size: NonZeroUsize::new(6 * 1024 * 1024 * 1024).unwrap(), // 6GiB
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
-            rocksdb_write_stall_threshold: NonZeroFriendlyDuration::from_secs_unchecked(3),
-            rocksdb_enable_stall_on_memory_limit: false,
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
             metadata_update_interval: NonZeroFriendlyDuration::from_secs_unchecked(10),
