@@ -92,7 +92,7 @@ spec:
             httpGet:
               path: /restate/health
               port: ingress
-            initialDelaySeconds: 5
+            initialDelaySeconds: 30
             periodSeconds: 5
           volumeMounts:
             - mountPath: /restate-data
