@@ -65,10 +65,10 @@ pub fn router(metadata_store_client: &MetadataStoreClient) -> Router {
     };
 
     Router::new()
-        .route("/metadata/:key", get(get_key))
-        .route("/metadata/:key", head(get_key_version))
-        .route("/metadata/:key", put(put_key))
-        .route("/metadata/:key", delete(delete_key))
+        .route("/metadata/{key}", get(get_key))
+        .route("/metadata/{key}", head(get_key_version))
+        .route("/metadata/{key}", put(put_key))
+        .route("/metadata/{key}", delete(delete_key))
         .with_state(state)
 }
 

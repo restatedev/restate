@@ -51,5 +51,5 @@ pub(crate) fn web_ui_router() -> axum::Router {
         .route("/", get(|| async { Redirect::permanent("/ui/") }))
         .route("/ui", get(|| async { Redirect::permanent("/ui/") }))
         .route("/ui/", get(serve_web_ui))
-        .route("/ui/*path", get(serve_web_ui))
+        .route("/ui/{*path}", get(serve_web_ui))
 }

@@ -30,8 +30,8 @@ aws-smithy-http = { version = "0.62", default-features = false, features = ["eve
 aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "default-https-client", "rt-tokio"] }
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
-axum = { version = "0.7", features = ["http2"] }
-axum-core = { version = "0.4", default-features = false, features = ["tracing"] }
+axum = { version = "0.8", features = ["http2"] }
+axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
 base64 = { version = "0.22" }
 bilrost = { version = "0.1014", features = ["bytestring"] }
 byteorder = { version = "1" }
@@ -87,7 +87,7 @@ num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 object_store = { version = "0.12", features = ["aws"] }
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry_sdk = { version = "0.30", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 phf_shared = { version = "0.11" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
@@ -122,9 +122,9 @@ tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt"] }
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
-tonic = { version = "0.12", features = ["gzip", "tls-roots", "zstd"] }
+tonic = { version = "0.13", default-features = false, features = ["codegen", "gzip", "prost", "router", "tls-native-roots", "tls-ring", "transport", "zstd"] }
 tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "util"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["buffer", "limit", "load-shed", "log", "make", "retry", "timeout"] }
+tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
@@ -155,8 +155,8 @@ aws-smithy-http = { version = "0.62", default-features = false, features = ["eve
 aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "default-https-client", "rt-tokio"] }
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
-axum = { version = "0.7", features = ["http2"] }
-axum-core = { version = "0.4", default-features = false, features = ["tracing"] }
+axum = { version = "0.8", features = ["http2"] }
+axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
 base64 = { version = "0.22" }
 bilrost = { version = "0.1014", features = ["bytestring"] }
 byteorder = { version = "1" }
@@ -214,7 +214,7 @@ num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 object_store = { version = "0.12", features = ["aws"] }
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry_sdk = { version = "0.30", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 phf_shared = { version = "0.11" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
@@ -250,9 +250,9 @@ tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt"] }
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
-tonic = { version = "0.12", features = ["gzip", "tls-roots", "zstd"] }
+tonic = { version = "0.13", default-features = false, features = ["codegen", "gzip", "prost", "router", "tls-native-roots", "tls-ring", "transport", "zstd"] }
 tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "util"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["buffer", "limit", "load-shed", "log", "make", "retry", "timeout"] }
+tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
