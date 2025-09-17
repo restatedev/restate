@@ -69,11 +69,16 @@ pub struct MemoryController {
 impl MemoryController {
     pub fn start(psm_state: Arc<SharedState>) -> Result<MemoryController, ShutdownError> {
         let memory_budget = MemoryBudget::new();
-        TaskCenter::spawn(
-            TaskKind::Background,
-            "partition-memory-controller",
-            memory_controller_task(memory_budget.clone(), psm_state),
-        )?;
+        // this task will not run in tests to avoid interfering with the test environment
+        if cfg!(not(test)) {
+            TaskCenter::spawn(
+                TaskKind::Background,
+                "partition-memory-controller",
+                memory_controller_task(memory_budget.clone(), psm_state),
+            )?;
+        } else {
+            info!("Memory controller is disabled in tests");
+        }
 
         Ok(Self { memory_budget })
     }
