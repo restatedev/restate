@@ -15,6 +15,9 @@ spec:
     metadata:
       labels:
         {{- include "restate.selectorLabels" . | nindent 8 }}
+        {{- if .Values.podLabels }}
+        {{- toYaml .Values.podLabels | nindent 8 }}
+        {{- end }}
       annotations:
         kubectl.kubernetes.io/default-container: {{ include "restate.fullname" . }}
         {{- if .Values.podAnnotations }}
