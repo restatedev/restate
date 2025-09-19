@@ -67,7 +67,7 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::PartitionLeaderService;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, CreateSnapshotRequest, CreateSnapshotResponse,
-    PartitionManagerService, ProcessorCommand, Snapshot, SnapshotError as NetSnapshotError,
+    CreateSnapshotStatus, PartitionManagerService, ProcessorCommand, Snapshot,
 };
 use restate_types::net::{RpcRequest as _, UnaryMessage};
 use restate_types::nodes_config::{NodesConfigError, NodesConfiguration, WorkerState};
@@ -1209,14 +1209,16 @@ impl PartitionProcessorManager {
             };
             match result {
                 Ok(snapshot) => reciprocal.send(CreateSnapshotResponse {
-                    result: Ok(Snapshot {
+                    status: CreateSnapshotStatus::Ok,
+                    snapshot: Some(Snapshot {
                         snapshot_id: snapshot.snapshot_id,
                         log_id: snapshot.log_id,
                         min_applied_lsn: snapshot.min_applied_lsn,
                     }),
                 }),
                 Err(err) => reciprocal.send(CreateSnapshotResponse {
-                    result: Err(NetSnapshotError::SnapshotCreationFailed(err.to_string())),
+                    status: CreateSnapshotStatus::Error(err.to_string()),
+                    snapshot: None,
                 }),
             };
         });

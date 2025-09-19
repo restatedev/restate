@@ -18,6 +18,9 @@ enum ProtocolVersion {
   // V1 = 1;
   // [Native RPC] Released in >= v1.3.3
   V2 = 2;
+  // Released in v1.6.0
+  // Some messages has switched to bilrost
+  V3 = 3;
 }
 
 message NodeId {
@@ -42,7 +45,7 @@ message Version { uint32 value = 1; }
 // The handle name or type tag of the message. For every service there must be
 // exactly one message handler implementation.
 enum ServiceTag {
-  reserved 1 to 25, 40 to 43, 50 to 53, 60, 61, 80 to 85  ;
+  reserved 1 to 25, 40 to 43, 50 to 53, 60, 61, 80 to 85;
   ServiceTag_UNKNOWN = 0;
   // LogServer
   LOG_SERVER_DATA_SERVICE = 26;
