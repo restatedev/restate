@@ -19,6 +19,14 @@ use restate_types::time::NanosSinceEpoch;
 
 use crate::LsnExt;
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, derive_more::Display)]
+pub enum RecordKind {
+    Data,
+    TrimGap,
+    DataLoss,
+    Filtered,
+}
+
 /// An entry in the log.
 ///
 /// The entry might represent a data record or a placeholder for a trim gap if the log is trimmed
@@ -32,7 +40,13 @@ pub struct LogEntry<S = Lsn> {
 impl LogEntry<LogletOffset> {
     pub(crate) fn with_base_lsn(self, base_lsn: Lsn) -> LogEntry<Lsn> {
         let record = match self.record {
-            MaybeRecord::TrimGap(TrimGap { to }) => MaybeRecord::TrimGap(TrimGap {
+            MaybeRecord::TrimGap(Gap { to }) => MaybeRecord::TrimGap(Gap {
+                to: base_lsn.offset_by(to),
+            }),
+            MaybeRecord::DataLoss(Gap { to }) => MaybeRecord::DataLoss(Gap {
+                to: base_lsn.offset_by(to),
+            }),
+            MaybeRecord::Filtered(Gap { to }) => MaybeRecord::Filtered(Gap {
                 to: base_lsn.offset_by(to),
             }),
             MaybeRecord::Data(record) => MaybeRecord::Data(record),
@@ -55,11 +69,41 @@ impl<S: Copy> LogEntry<S> {
         }
     }
 
+    pub fn dissolve(self) -> (S, MaybeRecord<S>) {
+        (self.offset, self.record)
+    }
+
     /// `to` is inclusive
     pub(crate) fn new_trim_gap(offset: S, to: S) -> Self {
         LogEntry {
             offset,
-            record: MaybeRecord::TrimGap(TrimGap { to }),
+            record: MaybeRecord::TrimGap(Gap { to }),
+        }
+    }
+
+    /// `to` is inclusive
+    #[allow(dead_code)]
+    pub(crate) fn new_data_loss_gap(offset: S, to: S) -> Self {
+        LogEntry {
+            offset,
+            record: MaybeRecord::DataLoss(Gap { to }),
+        }
+    }
+
+    /// `to` is inclusive
+    pub(crate) fn new_filtered_gap(offset: S, to: S) -> Self {
+        LogEntry {
+            offset,
+            record: MaybeRecord::Filtered(Gap { to }),
+        }
+    }
+
+    pub fn kind(&self) -> RecordKind {
+        match &self.record {
+            MaybeRecord::Data(_) => RecordKind::Data,
+            MaybeRecord::TrimGap(_) => RecordKind::TrimGap,
+            MaybeRecord::DataLoss(_) => RecordKind::DataLoss,
+            MaybeRecord::Filtered(_) => RecordKind::Filtered,
         }
     }
 
@@ -83,7 +127,9 @@ impl<S: Copy> LogEntry<S> {
     {
         match &self.record {
             MaybeRecord::TrimGap(gap) => gap.to.next(),
-            _ => self.offset.next(),
+            MaybeRecord::DataLoss(gap) => gap.to.next(),
+            MaybeRecord::Filtered(gap) => gap.to.next(),
+            MaybeRecord::Data(_) => self.offset.next(),
         }
     }
 
@@ -92,6 +138,16 @@ impl<S: Copy> LogEntry<S> {
         match &self.record {
             MaybeRecord::TrimGap(gap) => Some(gap.to),
             _ => None,
+        }
+    }
+
+    /// The last sequence number covered by this record/gap (inclusive)
+    pub fn to_sequence_number(&self) -> S {
+        match &self.record {
+            MaybeRecord::TrimGap(gap) => gap.to,
+            MaybeRecord::DataLoss(gap) => gap.to,
+            MaybeRecord::Filtered(gap) => gap.to,
+            MaybeRecord::Data(_) => self.offset,
         }
     }
 
@@ -128,15 +184,16 @@ impl<S: Copy> LogEntry<S> {
 }
 
 #[derive(Debug, Clone, derive_more::IsVariant)]
-enum MaybeRecord<S = Lsn> {
-    TrimGap(TrimGap<S>),
+pub enum MaybeRecord<S = Lsn> {
+    TrimGap(Gap<S>),
+    Filtered(Gap<S>),
+    DataLoss(Gap<S>),
     // Only used if any of the feature-gated providers is activated
-    #[allow(dead_code)]
     Data(Record),
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct TrimGap<S> {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Gap<S> {
     /// to is inclusive
     pub to: S,
 }
