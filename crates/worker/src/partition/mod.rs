@@ -23,14 +23,14 @@ use std::time::Duration;
 use anyhow::Context;
 use assert2::let_assert;
 use enumset::EnumSet;
-use futures::{FutureExt, Stream, StreamExt, TryStreamExt as _};
+use futures::{FutureExt, Stream, StreamExt};
 use metrics::{SharedString, gauge, histogram};
 use tokio::sync::{mpsc, watch};
-use tokio::time::MissedTickBehavior;
+use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{Span, debug, error, info, instrument, trace, warn};
 
-use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
+use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
 use restate_core::network::{Oneshot, Reciprocal, ServiceMessage, Verdict};
 use restate_core::{Metadata, ShutdownError, cancellation_watcher, my_node_id};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
@@ -41,11 +41,11 @@ use restate_storage_api::deduplication_table::{
 use restate_storage_api::fsm_table::{FsmTable, PartitionDurability, ReadOnlyFsmTable};
 use restate_storage_api::outbox_table::ReadOnlyOutboxTable;
 use restate_storage_api::{StorageError, Transaction};
+use restate_time_util::DurationExt;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::identifiers::LeaderEpoch;
-use restate_types::logs::MatchKeyQuery;
-use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
+use restate_types::logs::{KeyFilter, Lsn, Record, SequenceNumber};
 use restate_types::net::RpcRequest;
 use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
@@ -232,6 +232,19 @@ pub enum ProcessorError {
         read_pointer: Lsn,
         trim_gap_end: Lsn,
     },
+    #[error("[{read_pointer}..{data_loss_gap_end}]")]
+    DataLossGapEncountered {
+        read_pointer: Lsn,
+        data_loss_gap_end: Lsn,
+    },
+    #[error(
+        "partition appears to be ahead of the log, \
+    this indicates data-loss in the log or that partition mismatches its backing log. partition_applied_lsn: {partition_applied_lsn}, log_tail_lsn: {log_tail_lsn}"
+    )]
+    PartitionAheadOfLog {
+        partition_applied_lsn: Lsn,
+        log_tail_lsn: Lsn,
+    },
     #[error(transparent)]
     Storage(#[from] StorageError),
     #[error(transparent)]
@@ -362,6 +375,15 @@ where
             .find_tail(log_id, FindTailOptions::ConsistentRead)
             .await?;
 
+        // If our `last_applied_lsn` is at or beyond the tail, this is a strong indicator
+        // that the log has reverted backwards.
+        if last_applied_lsn >= current_tail.offset() {
+            return Err(ProcessorError::PartitionAheadOfLog {
+                partition_applied_lsn: last_applied_lsn,
+                log_tail_lsn: current_tail.offset(),
+            });
+        }
+
         debug!(
             last_applied_lsn = %last_applied_lsn,
             current_log_tail = %current_tail,
@@ -369,10 +391,6 @@ where
         );
         if current_tail.offset() == last_applied_lsn.next() {
             if self.status.replay_status != ReplayStatus::Active {
-                debug!(
-                    %last_applied_lsn,
-                    "Processor has caught up with the log tail."
-                );
                 self.status.target_tail_lsn = None;
                 self.status.replay_status = ReplayStatus::Active;
             }
@@ -380,23 +398,6 @@ where
             // catching up.
             self.status.target_tail_lsn = Some(current_tail.offset());
             self.status.replay_status = ReplayStatus::CatchingUp;
-        }
-
-        // If our `last_applied_lsn` is at or beyond the tail, this is a strong indicator
-        // that the log has reverted backwards.
-        if last_applied_lsn >= current_tail.offset() {
-            error!(
-                %last_applied_lsn,
-                log_tail_lsn = %current_tail.offset(),
-                "Processor has applied log entries beyond the log tail. This indicates data-loss in the log!"
-            );
-            // todo: declare unhealthy state to cluster controller, or raise a flare.
-        } else if last_applied_lsn.next() != current_tail.offset() {
-            debug!(
-                "Replaying the log from lsn={}, log tail lsn={}",
-                last_applied_lsn.next(),
-                current_tail.offset()
-            );
         }
 
         let mut live_config = Configuration::live();
@@ -408,43 +409,13 @@ where
         let follower_record_write_to_read_latency =
             histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, "leader" => "0");
         // Start reading after the last applied lsn
-        let key_query = KeyFilter::Within(self.partition_store.partition_key_range().clone());
 
-        let mut record_stream = self
-            .bifrost
-            .create_reader(log_id, key_query.clone(), last_applied_lsn.next(), Lsn::MAX)?
-            .map(|entry| match entry {
-                Ok(entry) => {
-                    trace!(?entry, "Read entry");
-                    let lsn = entry.sequence_number();
-                    if entry.is_data_record() {
-                        let record = entry.into_record().unwrap();
-                        let created_at = record.created_at();
-                        let envelope = record.decode_arc()?;
-                        Ok(LsnEnvelope {
-                            lsn,
-                            created_at,
-                            envelope,
-                        })
-                    } else {
-                        Err(ProcessorError::TrimGapEncountered {
-                            trim_gap_end: entry
-                                .trim_gap_to_sequence_number()
-                                .expect("trim gap has to-LSN"),
-                            read_pointer: entry.sequence_number(),
-                        })
-                    }
-                }
-                Err(err) => Err(ProcessorError::from(err)),
-            })
-            .try_take_while(|record| {
-                // a catch-all safety net if all lower layers didn't filter this record out. This
-                // could happen for old records that didn't store `Keys` in the log store.
-                //
-                // At some point, we should remove this and trust that stored records have Keys
-                // stored correctly.
-                std::future::ready(Ok(record.envelope.matches_key_query(&key_query)))
-            });
+        let mut record_stream = self.bifrost.create_reader(
+            log_id,
+            KeyFilter::Within(self.partition_store.partition_key_range().clone()),
+            last_applied_lsn.next(),
+            Lsn::MAX,
+        )?;
 
         // avoid synchronized timers.
         let mut status_update_timer =
@@ -458,7 +429,17 @@ where
         let mut watch_leader_changes = self.replica_set_states.watch_leadership_state(partition_id);
         watch_leader_changes.mark_changed();
 
-        info!("Partition {} started", partition_id);
+        let started_at = Instant::now();
+        if self.status.replay_status == ReplayStatus::CatchingUp {
+            let catchup_len = current_tail.offset().as_u64() - last_applied_lsn.next().as_u64();
+            info!(
+                "Partition {partition_id} started. Replaying {catchup_len} record(s) in range: [{}..{}]",
+                last_applied_lsn.next(),
+                current_tail.offset().prev()
+            );
+        } else {
+            info!("Partition {partition_id} started");
+        }
 
         loop {
             let config = live_config.live_load();
@@ -507,7 +488,7 @@ where
                         old.updated_at = MillisSinceEpoch::now();
                     });
                 }
-                operation = Self::read_commands(&mut record_stream, config.worker.max_command_batch_size(), &mut command_buffer) => {
+                operation = Self::read_entries(&mut record_stream, config.worker.max_command_batch_size(), &mut command_buffer) => {
                     // check that reading has succeeded
                     operation?;
 
@@ -516,14 +497,25 @@ where
                     // clear buffers used when applying the next record
                     action_collector.clear();
 
-                    for record in command_buffer.drain(..) {
-                        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.command.name(), record.envelope.header);
+                    for entry in command_buffer.drain(..) {
+                        let Some((lsn, record)) = self.maybe_advance(entry, &mut transaction, &started_at).await? else {
+                            // this happens when we are reading a filtered gap
+                            continue;
+                        };
+
 
                         if self.leadership_state.is_leader() {
-                            leader_record_write_to_read_latency.record(record.created_at.elapsed());
+                            leader_record_write_to_read_latency.record(record.created_at().elapsed());
                         } else {
-                            follower_record_write_to_read_latency.record(record.created_at.elapsed());
+                            follower_record_write_to_read_latency.record(record.created_at().elapsed());
                         }
+
+                        let record = LsnEnvelope {
+                            lsn,
+                            created_at: record.created_at(),
+                            envelope: record.decode_arc()?,
+                        };
+
                         let maybe_announce_leader = self.apply_record(
                             record,
                             &mut transaction,
@@ -621,6 +613,68 @@ where
         )
         .await;
     }
+    async fn maybe_advance<'a>(
+        &mut self,
+        maybe_record: LogEntry,
+        transaction: &mut PartitionStoreTransaction<'a>,
+        started_at: &Instant,
+    ) -> Result<Option<(Lsn, Record)>, ProcessorError> {
+        trace!(
+            "Processing {} record at lsn {}",
+            maybe_record.kind(),
+            maybe_record.sequence_number()
+        );
+
+        let (mut lsn, maybe_record) = maybe_record.dissolve();
+        let maybe_envelope = match maybe_record {
+            MaybeRecord::TrimGap(gap) => {
+                return Err(ProcessorError::TrimGapEncountered {
+                    trim_gap_end: gap.to,
+                    read_pointer: lsn,
+                });
+            }
+            MaybeRecord::Filtered(gap) => {
+                // We advance our applied lsn to the end of the filtered gap
+                lsn = gap.to;
+                None
+            }
+            MaybeRecord::DataLoss(gap) => {
+                let log_id = self.partition_store.partition().log_id();
+                error!(%log_id, "Encountered a data-loss gap in the log: [{lsn}..{}]", gap.to);
+                return Err(ProcessorError::DataLossGapEncountered {
+                    data_loss_gap_end: gap.to,
+                    read_pointer: lsn,
+                });
+            }
+            MaybeRecord::Data(record) => Some((lsn, record)),
+        };
+
+        // make sure we advance the FSM, even if it's a filtered gap.
+        transaction.put_applied_lsn(lsn).await?;
+        // Update replay status
+        self.status.last_applied_log_lsn = Some(lsn);
+        self.status.last_record_applied_at = Some(MillisSinceEpoch::now());
+        match self.status.replay_status {
+            ReplayStatus::CatchingUp
+                if self
+                    .status
+                    .target_tail_lsn
+                    .is_some_and(|tail| lsn.next() >= tail) =>
+            {
+                // finished catching up
+                self.status.replay_status = ReplayStatus::Active;
+                self.status.target_tail_lsn = None;
+                info!(
+                    "Partition {} caught up in {}!",
+                    self.partition_id_str,
+                    started_at.elapsed().friendly()
+                );
+            }
+            _ => {}
+        };
+
+        Ok(maybe_envelope)
+    }
 
     // --- Apply new commands/records
 
@@ -630,24 +684,7 @@ where
         transaction: &mut PartitionStoreTransaction<'b>,
         action_collector: &mut ActionCollector,
     ) -> Result<Option<Box<AnnounceLeader>>, state_machine::Error> {
-        transaction.put_applied_lsn(record.lsn).await?;
-
-        // Update replay status
-        self.status.last_applied_log_lsn = Some(record.lsn);
-        self.status.last_record_applied_at = Some(MillisSinceEpoch::now());
-        match self.status.replay_status {
-            ReplayStatus::CatchingUp
-                if self
-                    .status
-                    .target_tail_lsn
-                    .is_some_and(|tail| record.lsn.next() >= tail) =>
-            {
-                // finished catching up
-                self.status.replay_status = ReplayStatus::Active;
-                self.status.target_tail_lsn = None;
-            }
-            _ => {}
-        };
+        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.command.name(), record.envelope.header);
 
         if let Some(dedup_information) = self.is_targeted_to_me(&record.envelope.header) {
             // deduplicate if deduplication information has been provided
@@ -765,13 +802,13 @@ where
 
     /// Tries to read as many records from the `log_reader` as are immediately available and stops
     /// reading at `max_batching_size`. Trim gaps will result in an immediate error.
-    async fn read_commands<S>(
+    async fn read_entries<S>(
         log_reader: &mut S,
         max_batching_size: usize,
-        record_buffer: &mut Vec<LsnEnvelope>,
+        record_buffer: &mut Vec<LogEntry>,
     ) -> Result<(), ProcessorError>
     where
-        S: Stream<Item = Result<LsnEnvelope, ProcessorError>> + Unpin,
+        S: Stream<Item = Result<LogEntry, restate_bifrost::Error>> + Unpin,
     {
         // beyond this point we must not await; otherwise we are no longer cancellation safe
         let first_record = log_reader.next().await;
