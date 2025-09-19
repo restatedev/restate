@@ -12,6 +12,7 @@ serviceAccount:
   create: true
   annotations: {}
 podAnnotations: {}
+podLabels: {}
 
 podSecurityContext:
   fsGroup: 2000
