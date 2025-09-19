@@ -30,7 +30,7 @@ pub use bifrost::{Bifrost, ErrorRecoveryStrategy};
 pub use bifrost_admin::{BifrostAdmin, MaybeSealedSegment};
 pub use error::{Error, Result};
 pub use read_stream::LogReadStream;
-pub use record::{InputRecord, LogEntry};
+pub use record::{InputRecord, LogEntry, MaybeRecord, RecordKind};
 pub use service::BifrostService;
 pub use types::*;
 

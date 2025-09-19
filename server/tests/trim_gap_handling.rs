@@ -186,8 +186,10 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         addresses: vec![cluster.nodes[0].node_address().clone()],
     };
 
-    let mut trim_gap_encountered =
-        worker_2.lines("Partition processor stopped due to a log trim gap, and no snapshot repository is configured".parse()?);
+    let mut trim_gap_encountered = worker_2.lines(
+        "Partition processor stopped due to a log gap .*, and no snapshot repository is configured"
+            .parse()?,
+    );
     let mut joined_cluster = worker_2.lines("My Node ID is".parse()?);
 
     let mut worker_2 = worker_2

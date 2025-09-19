@@ -601,23 +601,26 @@ impl PartitionProcessorManager {
 
                             match &result {
                                 Err(ProcessorError::TrimGapEncountered {
-                                    trim_gap_end: to_lsn,
                                     read_pointer: sequence_number,
+                                    trim_gap_end: to_lsn,
+                                })
+                                | Err(ProcessorError::DataLossGapEncountered {
+                                    read_pointer: sequence_number,
+                                    data_loss_gap_end: to_lsn,
                                 }) => {
                                     if self.partition_store_manager.is_repository_configured() {
                                         info!(
                                             %partition_id,
-                                            trim_gap_to_lsn = ?to_lsn,
-                                            ?sequence_number,
-                                            "Partition processor stopped due to a log trim gap, will attempt to fast-forward on restart",
+                                            "Partition processor stopped due to a log gap [{sequence_number}..{to_lsn}], \
+                                                will attempt to fast-forward on restart",
                                         );
                                         self.fast_forward_on_startup.insert(partition_id, *to_lsn);
                                         RestartDelay::Immediate
                                     } else {
                                         error!(
                                             %partition_id,
-                                            trim_gap_to_lsn = ?to_lsn,
-                                            "Partition processor stopped due to a log trim gap, and no snapshot repository is configured",
+                                            "Partition processor stopped due to a log gap [{sequence_number}..{to_lsn}], and no snapshot repository is configured. \
+                                                Cannot recover without a partition snapshot!",
                                         );
                                         // configuration problem; until we have peer-to-peer state exchange we can only wait
                                         RestartDelay::MaxBackoff
