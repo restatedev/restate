@@ -138,7 +138,7 @@ where
 
     async fn scan(
         &self,
-        state: &(dyn datafusion::catalog::Session),
+        state: &dyn datafusion::catalog::Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
@@ -407,7 +407,7 @@ impl TableProvider for GenericTableProvider {
 
     async fn scan(
         &self,
-        _state: &(dyn datafusion::catalog::Session),
+        _state: &dyn datafusion::catalog::Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
