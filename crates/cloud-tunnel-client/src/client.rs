@@ -26,6 +26,7 @@ use hyper::Response;
 use hyper::body::Incoming;
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::rt::TokioTimer;
 use rustls::ClientConfig;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
@@ -236,6 +237,9 @@ where
         {
             let server =
                 hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    // use server-initiated http2 keepalives to detect stuck tunnel connections
+                    .keep_alive_interval(Duration::from_secs(75))
+                    .timer(TokioTimer::new())
                     .serve_connection(
                         io,
                         hyper::service::service_fn(|req| {
