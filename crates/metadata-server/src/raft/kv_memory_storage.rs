@@ -259,10 +259,3 @@ impl KvMemoryStorage {
             .collect();
     }
 }
-
-#[serde_with::serde_as]
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct KvSnapshot {
-    #[serde_as(as = "serde_with::Seq<(_, _)>")]
-    kv_entries: HashMap<ByteString, VersionedValue>,
-}
