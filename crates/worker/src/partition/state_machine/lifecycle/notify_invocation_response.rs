@@ -58,11 +58,9 @@ where
             caller_completion_id,
             result,
         } = self;
-        let invocation_status = ctx.get_invocation_status(&invocation_id).await?;
 
         // Verify that we need to ingest this
-        if !invocation_status
-            .should_accept_completion(this_completion_invocation_epoch, caller_completion_id)
+        if !status.should_accept_completion(this_completion_invocation_epoch, caller_completion_id)
         {
             debug_if_leader!(
                 ctx.is_leader,
