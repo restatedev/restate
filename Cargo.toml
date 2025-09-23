@@ -213,7 +213,7 @@ smartstring = { version = "1.0.1" }
 static_assertions = { version = "1.1.0" }
 strum = { version = "0.27.1", features = ["derive"] }
 sync_wrapper = "1.0.1"
-smallvec = { version = "1.15.1", features = ["serde"] }
+smallvec = { version = "1.15.1", features = ["serde", "union"] }
 tempfile = "3.6.0"
 test-log = { version = "0.2.11", default-features = false, features = [
     "trace",
