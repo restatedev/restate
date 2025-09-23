@@ -10,7 +10,7 @@
 
 use super::*;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, ReadOnlyInvocationStatusTable,
+    InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
 };
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::client::PatchDeploymentId;
@@ -31,7 +31,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
 where
     TActuator: Actuator,
     TSchemas: DeploymentResolver,
-    TStorage: ReadOnlyInvocationStatusTable,
+    TStorage: ReadInvocationStatusTable,
 {
     type Output = ResumeInvocationRpcResponse;
     type Error = ();
@@ -184,7 +184,7 @@ mod tests {
         status: InvocationStatus,
     }
 
-    impl ReadOnlyInvocationStatusTable for MockStorage {
+    impl ReadInvocationStatusTable for MockStorage {
         fn get_invocation_status(
             &mut self,
             inv_id: &InvocationId,

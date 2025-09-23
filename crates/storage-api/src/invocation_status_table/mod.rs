@@ -137,6 +137,33 @@ impl StatusTimestamps {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DetailedStatus {
+    /// Finished execution with terminal error.
+    Failed = 1,
+    /// Held in a queue, waiting for concurrency limit or capacity.
+    Pending = 2,
+    /// Scheduled to run in a future time point.
+    Scheduled = 3,
+    /// Invocation is ready to be picked up by the invoker.
+    Ready = 4,
+    /// An attempt of execution is in progress.
+    Running = 5,
+    /// Suspended at a yielding point in its execution.
+    Suspended = 6,
+    /// Previous invocation attempts have failed and will not be retried unless resumed manually.
+    Paused = 7,
+    /// Invocation attempt failed, and is waiting to be retried.
+    BackingOff = 8,
+    /// Invocation has finished successfully.
+    Succeeded = 9,
+    /// Invocation has been cancelled gracefully.
+    Cancelled = 10,
+    /// Invocation has been killed.
+    Killed = 11,
+}
+
 /// Status of an invocation.
 #[derive(Debug, Default, Clone, PartialEq, strum::EnumTryAs)]
 pub enum InvocationStatus {
@@ -856,7 +883,7 @@ pub struct InvokedInvocationStatusLite {
     pub current_invocation_epoch: InvocationEpoch,
 }
 
-pub trait ReadOnlyInvocationStatusTable {
+pub trait ReadInvocationStatusTable {
     fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -888,17 +915,14 @@ pub trait ScanInvocationStatusTable {
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
 }
 
-pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
+pub trait WriteInvocationStatusTable {
     fn put_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
         status: &InvocationStatus,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
-    fn delete_invocation_status(
-        &mut self,
-        invocation_id: &InvocationId,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn delete_invocation_status(&mut self, invocation_id: &InvocationId) -> Result<()>;
 }
 
 #[cfg(any(test, feature = "test-util"))]

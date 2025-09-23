@@ -12,7 +12,7 @@ use super::*;
 use restate_storage_api::StorageError;
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadOnlyInvocationStatusTable,
+    InvocationStatus, ReadInvocationStatusTable,
 };
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus,
@@ -38,7 +38,7 @@ impl<'a, TActuator, TSchemas, TStorage> RpcContext<'a, TActuator, TSchemas, TSto
 where
     TActuator: Actuator,
     TStorage:
-        ReadOnlyInvocationStatusTable + ReadOnlyVirtualObjectStatusTable + ReadOnlyIdempotencyTable,
+        ReadInvocationStatusTable + ReadOnlyVirtualObjectStatusTable + ReadOnlyIdempotencyTable,
 {
     async fn get_invocation_output(
         &mut self,
@@ -99,7 +99,7 @@ impl<'a, Proposer: Actuator, TSchemas, Storage> RpcHandler<Request>
     for RpcContext<'a, Proposer, TSchemas, Storage>
 where
     Storage:
-        ReadOnlyInvocationStatusTable + ReadOnlyVirtualObjectStatusTable + ReadOnlyIdempotencyTable,
+        ReadInvocationStatusTable + ReadOnlyVirtualObjectStatusTable + ReadOnlyIdempotencyTable,
 {
     type Output = PartitionProcessorRpcResponse;
     type Error = ();

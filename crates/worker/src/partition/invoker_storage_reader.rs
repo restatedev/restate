@@ -15,7 +15,7 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction,
 };
 use restate_storage_api::invocation_status_table::{
-    InvocationStatus, ReadOnlyInvocationStatusTable,
+    InvocationStatus, ReadInvocationStatusTable,
 };
 use restate_storage_api::state_table::ReadOnlyStateTable;
 use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};

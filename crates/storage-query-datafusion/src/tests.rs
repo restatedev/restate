@@ -23,7 +23,7 @@ use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport};
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
+    CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
 };
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::PartitionId;
@@ -73,7 +73,6 @@ async fn query_sys_invocation() {
             ..InFlightInvocationMetadata::mock()
         }),
     )
-    .await
     .unwrap();
     tx.commit().await.unwrap();
 
@@ -205,7 +204,6 @@ async fn query_sys_invocation_with_protocol_v4() {
             ..InFlightInvocationMetadata::mock()
         }),
     )
-    .await
     .unwrap();
     tx.commit().await.unwrap();
 
@@ -269,7 +267,6 @@ async fn query_sys_invocation_status_completed() {
         &invocation_id_1,
         &InvocationStatus::Completed(completed_invocation_1.clone()),
     )
-    .await
     .unwrap();
     tx.put_invocation_status(
         &invocation_id_2,
@@ -279,7 +276,6 @@ async fn query_sys_invocation_status_completed() {
             ..completed_invocation_1.clone()
         }),
     )
-    .await
     .unwrap();
     tx.put_invocation_status(
         &invocation_id_3,
@@ -289,7 +285,6 @@ async fn query_sys_invocation_status_completed() {
             ..completed_invocation_1
         }),
     )
-    .await
     .unwrap();
     tx.commit().await.unwrap();
 

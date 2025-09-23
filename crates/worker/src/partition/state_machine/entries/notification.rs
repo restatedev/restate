@@ -207,7 +207,7 @@ mod tests {
     use googletest::prelude::*;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_storage_api::invocation_status_table::{
-        InvocationStatus, InvocationStatusDiscriminants, ReadOnlyInvocationStatusTable,
+        InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
     use restate_types::invocation::{

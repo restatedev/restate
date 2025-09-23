@@ -229,8 +229,7 @@ async fn kill_call_tree() -> anyhow::Result<()> {
     .await?;
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await?;
     invocation_status.get_journal_metadata_mut().unwrap().length = 4;
-    tx.put_invocation_status(&invocation_id, &invocation_status)
-        .await?;
+    tx.put_invocation_status(&invocation_id, &invocation_status)?;
     tx.commit().await?;
 
     // Now let's send the termination command
@@ -354,8 +353,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await?;
     invocation_status.get_journal_metadata_mut().unwrap().length =
         (journal_length + 1) as EntryIndex;
-    tx.put_invocation_status(&invocation_id, &invocation_status)
-        .await?;
+    tx.put_invocation_status(&invocation_id, &invocation_status)?;
     // Add timer
     tx.put_timer(
         &TimerKey {
@@ -494,8 +492,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
                 NotificationId::for_completion(9),
             ]),
         },
-    )
-    .await?;
+    )?;
     // Add timer
     tx.put_timer(
         &TimerKey {
@@ -606,7 +603,6 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await.unwrap();
     invocation_status.get_journal_metadata_mut().unwrap().length = 3;
     tx.put_invocation_status(&invocation_id, &invocation_status)
-        .await
         .unwrap();
     tx.commit().await.unwrap();
 

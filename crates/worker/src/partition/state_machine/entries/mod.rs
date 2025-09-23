@@ -31,7 +31,9 @@ use tracing::debug;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, WriteInvocationStatusTable, ReadInvocationStatusTable,
+};
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::JournalTable;
 use restate_storage_api::outbox_table::OutboxTable;
@@ -104,7 +106,8 @@ impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>
 where
     S: JournalTable
         + journal_table_v1::JournalTable
-        + InvocationStatusTable
+        + ReadInvocationStatusTable
+        + WriteInvocationStatusTable
         + TimerTable
         + FsmTable
         + OutboxTable
@@ -377,7 +380,6 @@ where
         // Store invocation status
         ctx.storage
             .put_invocation_status(&self.invocation_id, &self.invocation_status)
-            .await
             .map_err(Error::Storage)?;
 
         Ok(())
@@ -404,7 +406,7 @@ mod tests {
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
     use googletest::prelude::*;
-    use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
+    use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
     use restate_types::identifiers::{InvocationId, ServiceId};
     use restate_types::invocation::{
         Header, InvocationResponse, InvocationTarget, JournalCompletionTarget, ResponseResult,
