@@ -17,8 +17,9 @@ use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::inbox_table::InboxTable;
 use restate_storage_api::invocation_status_table::{
-    InvocationStatus, InvocationStatusTable, JournalMetadata, PreFlightInvocationArgument,
-    PreFlightInvocationJournal, PreFlightInvocationMetadata, StatusTimestamps,
+    InvocationStatus, JournalMetadata, PreFlightInvocationArgument, PreFlightInvocationJournal,
+    PreFlightInvocationMetadata, ReadInvocationStatusTable, StatusTimestamps,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
@@ -66,10 +67,10 @@ impl<'ctx, 's: 'ctx, S> StateMachineApplyContext<'s, S> {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnRestartAsNewInvocationCommand
 where
-    S: InvocationStatusTable
-        + JournalTable
+    S: JournalTable
         + IdempotencyTable
-        + InvocationStatusTable
+        + ReadInvocationStatusTable
+        + WriteInvocationStatusTable
         + OutboxTable
         + FsmTable
         + VirtualObjectStatusTable
@@ -283,7 +284,7 @@ mod tests {
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
-        InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadOnlyInvocationStatusTable,
+        InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_types::identifiers::{
         DeploymentId, InvocationId, InvocationUuid, PartitionProcessorRpcRequestId,

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
 use restate_storage_api::journal_events::{EventView, JournalEventsTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
@@ -20,7 +20,7 @@ pub struct OnInvokerEventCommand {
     pub event: RawEvent,
 }
 
-impl<'ctx, 's: 'ctx, S: JournalEventsTable + InvocationStatusTable>
+impl<'ctx, 's: 'ctx, S: JournalEventsTable + WriteInvocationStatusTable>
     CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnInvokerEventCommand
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
@@ -40,7 +40,6 @@ impl<'ctx, 's: 'ctx, S: JournalEventsTable + InvocationStatusTable>
         // Store invocation status
         ctx.storage
             .put_invocation_status(&invocation_id, &invocation_status)
-            .await
             .map_err(Error::Storage)?;
 
         Ok(())

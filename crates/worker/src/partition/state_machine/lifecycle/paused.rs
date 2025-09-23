@@ -11,7 +11,9 @@
 use crate::debug_if_leader;
 use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
+};
 use restate_storage_api::journal_events::JournalEventsTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
@@ -24,7 +26,7 @@ pub struct OnPausedCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnPausedCommand
 where
-    S: InvocationStatusTable + JournalEventsTable,
+    S: ReadInvocationStatusTable + WriteInvocationStatusTable + JournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPausedCommand {
@@ -62,8 +64,7 @@ where
         }
 
         ctx.storage
-            .put_invocation_status(&self.invocation_id, &invocation_status)
-            .await?;
+            .put_invocation_status(&self.invocation_id, &invocation_status)?;
 
         Ok(())
     }
@@ -74,7 +75,7 @@ mod tests {
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
-        InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadOnlyInvocationStatusTable,
+        InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
     use restate_wal_protocol::Command;
