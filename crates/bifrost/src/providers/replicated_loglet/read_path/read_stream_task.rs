@@ -330,7 +330,7 @@ impl ReadStreamTask {
                 'attempt_from_cache: loop {
                     match self.send_next_from_cache(&mut permits) {
                         // fast-forward
-                        CacheReadResult::Filtered | CacheReadResult::Sent => {
+                        CacheReadResult::Sent => {
                             self.read_pointer = self.read_pointer.next();
                             continue 'attempt_from_cache;
                         }
@@ -405,10 +405,27 @@ impl ReadStreamTask {
                             }
                             MaybeRecord::FilteredGap(gap) => {
                                 // records didn't match the filter.
+                                let permit = permits.next().expect("must have at least one permit");
                                 // There is a risk that this gap goes beyond the global_tail, so we
                                 // clamp it to our known_tail to avoid drifting outside the
                                 // committed window.
-                                self.read_pointer = self.last_known_tail.min(gap.to.next());
+                                //
+                                // we clamp the end of the gap to the last safe offset we can
+                                // return before the tail.
+                                let gap_to = self.last_known_tail.min(gap.to.next()).prev();
+
+                                trace!(
+                                    loglet_id = %self.my_params.loglet_id,
+                                    offset = %self.read_pointer,
+                                    "Shipping a filtered gap from node {} to offset {}",
+                                    server,
+                                    gap_to
+                                );
+                                permit.send(Ok(LogEntry::new_filtered_gap(
+                                    self.read_pointer,
+                                    gap_to,
+                                )));
+                                self.read_pointer = gap_to.next();
                             }
                             MaybeRecord::Data(record) => {
                                 let permit = permits.next().expect("must have at least one permit");
@@ -489,25 +506,38 @@ impl ReadStreamTask {
             .get(self.my_params.loglet_id, self.read_pointer)
         {
             if !record.matches_key_query(&self.filter) {
-                // fast-forward this record
+                let permit = permits.next().expect("must have at least one permit");
+                trace!(
+                    loglet_id = %self.my_params.loglet_id,
+                    offset = %self.read_pointer,
+                    "Shipping a filtered gap from record cache at offset {}",
+                    self.read_pointer,
+                );
+                permit.send(Ok(LogEntry::new_filtered_gap(
+                    self.read_pointer,
+                    self.read_pointer,
+                )));
+                self.stats.cache_hits.increment(1);
                 self.stats.cache_filtered.increment(1);
-                return CacheReadResult::Filtered;
+                CacheReadResult::Sent
+            } else {
+                let permit = permits.next().expect("must have at least one permit");
+                trace!(
+                    loglet_id = %self.my_params.loglet_id,
+                    offset = %self.read_pointer,
+                    "Shipping record from record cache",
+                );
+                // Removes from cache, we are unlikely to need to read this record again, and if we need
+                // to, we'll get it from log-servers.
+                // Note: remove this when/if we decided to have multiple readers of the same log on
+                // the same machine (i.e. sharing logs between partitions)
+                self.record_cache
+                    .invalidate_record(self.my_params.loglet_id, self.read_pointer);
+                self.stats.cache_hits.increment(1);
+                self.stats.records_read.increment(1);
+                permit.send(Ok(LogEntry::new_data(self.read_pointer, record)));
+                CacheReadResult::Sent
             }
-
-            let permit = permits.next().expect("must have at least one permit");
-            trace!(
-                loglet_id = %self.my_params.loglet_id,
-                offset = %self.read_pointer,
-                "Shipping record from record cache",
-            );
-            // Removes from cache, we are unlikely to need to read this record again, and if we need
-            // to, we'll get it from log-servers.
-            self.record_cache
-                .invalidate_record(self.my_params.loglet_id, self.read_pointer);
-            self.stats.cache_hits.increment(1);
-            self.stats.records_read.increment(1);
-            permit.send(Ok(LogEntry::new_data(self.read_pointer, record)));
-            CacheReadResult::Sent
         } else {
             CacheReadResult::Miss
         }
@@ -585,8 +615,6 @@ impl ReadStreamTask {
 }
 
 enum CacheReadResult {
-    /// Record was found but didn't match filter, read_pointer advanced
-    Filtered,
     /// Record was found and sent
     Sent,
     /// Not in cache, read_pointer not advanced
