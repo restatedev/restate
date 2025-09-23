@@ -8,11 +8,11 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0.
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS planner
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.4 AS planner
 COPY . .
 RUN just chef-prepare
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS base
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.4 AS base
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 
@@ -58,7 +58,7 @@ RUN --mount=type=cache,target=/var/cache/sccache \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/debug/restate target/restate
 
 # We do not need the Rust toolchain to run the server binary!
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 COPY --from=builder /restate/target/restate-server /usr/local/bin
 COPY --from=builder /restate/target/restatectl /usr/local/bin
 COPY --from=builder /restate/target/restate /usr/local/bin

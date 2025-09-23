@@ -10,11 +10,11 @@
 
 ARG UPLOAD_DEBUGINFO=false
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS planner
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.4 AS planner
 COPY . .
 RUN just chef-prepare
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:latest AS base
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.4 AS base
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 
@@ -89,7 +89,7 @@ RUN cp docker/scripts/download-restate-debug-symbols.sh target/ && \
 FROM upload-$UPLOAD_DEBUGINFO AS upload
 
 # We do not need the Rust toolchain to run the server binary!
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 # useful for health checks
 RUN apt-get update && apt-get install --no-install-recommends -y jq curl && rm -rf /var/lib/apt/lists/*
 COPY --from=upload /restate/NOTICE /NOTICE
