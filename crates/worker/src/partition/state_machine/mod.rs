@@ -3282,7 +3282,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         match status {
             InvocationStatus::Invoked(_) => {
-                self.handle_completion_for_invoked( invocation_id, completion).await?;
+                self.handle_completion_for_invoked(invocation_id, completion).await?;
             }
             InvocationStatus::Suspended {
                 metadata,
@@ -3301,7 +3301,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await?
                 {
-            self.do_resume_service( invocation_id, metadata).await?;
+            self.do_resume_service(invocation_id, metadata).await?;
                 }
             }
             _ => {
