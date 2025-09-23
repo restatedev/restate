@@ -18,8 +18,6 @@ use arrow::util::display::FormatOptions;
 use cling::prelude::*;
 use comfy_table::Cell;
 use comfy_table::Table;
-use serde::Deserialize;
-use serde::Serialize;
 
 use restate_cli_util::c_eprintln;
 use restate_cli_util::c_println;
@@ -46,11 +44,6 @@ pub struct Sql {
     /// Print result as json array instead of using the tabular format
     #[arg(long)]
     pub json: bool,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct SqlQueryRequest {
-    pub query: String,
 }
 
 pub async fn run_sql(State(env): State<CliEnv>, opts: &Sql) -> Result<()> {

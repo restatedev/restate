@@ -30,7 +30,6 @@ macro_rules! prefixed_ids {
             )+
         }
 
-        #[automatically_derived]
         impl $typename {
             #[doc = "The prefix string for this identifier"]
             pub const fn as_str(&self) -> &'static str {

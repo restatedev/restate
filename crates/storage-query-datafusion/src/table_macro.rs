@@ -587,7 +587,6 @@ macro_rules! define_table {
         // RowBuilder
         // --------------------------------------------------------------------------
 
-        #[automatically_derived]
         #[allow(dead_code)]
         #[allow(clippy::all)]
         impl<'a> [< $table_name:camel RowBuilder >]<'a> {
@@ -611,7 +610,6 @@ macro_rules! define_table {
                     )+
         }
 
-        #[automatically_derived]
         #[allow(dead_code)]
         #[allow(clippy::all)]
         impl<'a> Drop for [< $table_name:camel RowBuilder >]<'a> {
@@ -635,7 +633,6 @@ macro_rules! define_table {
         // ArrayBuilder
         // --------------------------------------------------------------------------
 
-        #[automatically_derived]
         #[allow(dead_code)]
         #[allow(clippy::all)]
         impl [< $table_name:camel ArrayBuilder >] {
@@ -687,7 +684,6 @@ macro_rules! define_table {
         // Builder
         // --------------------------------------------------------------------------
 
-        #[automatically_derived]
         #[allow(dead_code)]
         #[allow(clippy::all)]
         impl [< $table_name:camel Builder >] {
