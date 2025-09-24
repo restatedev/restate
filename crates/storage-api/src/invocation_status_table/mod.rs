@@ -856,7 +856,7 @@ pub struct InvokedInvocationStatusLite {
     pub current_invocation_epoch: InvocationEpoch,
 }
 
-pub trait ReadOnlyInvocationStatusTable {
+pub trait ReadInvocationStatusTable {
     fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -888,17 +888,14 @@ pub trait ScanInvocationStatusTable {
     ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
 }
 
-pub trait InvocationStatusTable: ReadOnlyInvocationStatusTable {
+pub trait WriteInvocationStatusTable {
     fn put_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
         status: &InvocationStatus,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
-    fn delete_invocation_status(
-        &mut self,
-        invocation_id: &InvocationId,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn delete_invocation_status(&mut self, invocation_id: &InvocationId) -> Result<()>;
 }
 
 #[cfg(any(test, feature = "test-util"))]

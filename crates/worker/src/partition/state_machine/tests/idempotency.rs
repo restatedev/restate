@@ -252,7 +252,6 @@ async fn complete_already_completed_invocation() {
             random_seed: None,
         }),
     )
-    .await
     .unwrap();
     txn.commit().await.unwrap();
 
@@ -770,7 +769,6 @@ async fn purge_completed_idempotent_invocation() {
             ..CompletedInvocation::mock_neo()
         }),
     )
-    .await
     .unwrap();
     txn.commit().await.unwrap();
 

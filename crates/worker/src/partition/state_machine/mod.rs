@@ -39,9 +39,9 @@ use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
 use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatusTable,
-    JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationJournal,
-    PreFlightInvocationMetadata, ReadOnlyInvocationStatusTable,
+    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalRetentionPolicy,
+    PreFlightInvocationArgument, PreFlightInvocationJournal, PreFlightInvocationMetadata,
+    ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::JournalEventsTable;
@@ -291,7 +291,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: &InvocationId,
     ) -> Result<InvocationStatus, Error>
     where
-        S: ReadOnlyInvocationStatusTable,
+        S: ReadInvocationStatusTable,
     {
         Span::current().record_invocation_id(invocation_id);
         let status = self.storage.get_invocation_status(invocation_id).await?;
@@ -420,7 +420,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: IdempotencyTable
             + PromiseTable
             + JournalTable
-            + InvocationStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + OutboxTable
             + FsmTable
             + TimerTable
@@ -609,9 +610,10 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: IdempotencyTable
-            + InvocationStatusTable
             + OutboxTable
             + FsmTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + VirtualObjectStatusTable
             + TimerTable
             + InboxTable
@@ -667,8 +669,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: IdempotencyTable
-            + InvocationStatusTable
             + OutboxTable
+            + WriteInvocationStatusTable
             + FsmTable
             + VirtualObjectStatusTable
             + TimerTable
@@ -742,7 +744,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<Option<Box<ServiceInvocation>>, Error>
     where
         S: IdempotencyTable
-            + InvocationStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + VirtualObjectStatusTable
             + OutboxTable
             + FsmTable,
@@ -855,8 +858,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         .expect("response sink must be present")
                         .contains(response_sink)
                 {
-                    self.do_append_response_sink(invocation_id, is, response_sink.clone())
-                        .await?
+                    self.do_append_response_sink(invocation_id, is, response_sink.clone())?
                 }
             }
             InvocationStatus::Completed(completed) => {
@@ -885,7 +887,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         metadata: PreFlightInvocationMetadata,
     ) -> Result<Option<PreFlightInvocationMetadata>, Error>
     where
-        S: TimerTable + InvocationStatusTable,
+        S: TimerTable + WriteInvocationStatusTable,
     {
         if let Some(execution_time) = metadata.execution_time {
             let span_context = metadata.span_context().clone();
@@ -907,7 +909,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                         ),
                     ),
                 )
-                .await
                 .map_err(Error::Storage)?;
             // The span will be created later on invocation
             return Ok(None);
@@ -923,7 +924,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         metadata: PreFlightInvocationMetadata,
     ) -> Result<Option<PreFlightInvocationMetadata>, Error>
     where
-        S: VirtualObjectStatusTable + InvocationStatusTable + InboxTable + FsmTable,
+        S: VirtualObjectStatusTable + WriteInvocationStatusTable + InboxTable + FsmTable,
     {
         if metadata.invocation_target.invocation_target_ty()
             == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
@@ -959,7 +960,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                             ),
                         ),
                     )
-                    .await
                     .map_err(Error::Storage)?;
 
                 return Ok(None);
@@ -990,7 +990,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_input: Option<InvocationInput>,
     ) -> Result<(), Error>
     where
-        S: JournalTable + InvocationStatusTable,
+        S: JournalTable + WriteInvocationStatusTable,
     {
         // Usage metering for "actions" should include the Input journal entry
         // type, but it gets filtered out before reaching the state machine.
@@ -1019,7 +1019,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             in_flight_invocation_metadata,
             invoke_input_journal,
         )
-        .await
     }
 
     async fn init_journal(
@@ -1074,14 +1073,14 @@ impl<S> StateMachineApplyContext<'_, S> {
         ))
     }
 
-    async fn invoke(
+    fn invoke(
         &mut self,
         invocation_id: InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
         invoke_input_journal: InvokeInputJournal,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable,
+        S: WriteInvocationStatusTable,
     {
         debug_if_leader!(self.is_leader, "Invoke");
 
@@ -1096,7 +1095,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &invocation_id,
                 &InvocationStatus::Invoked(in_flight_invocation_metadata),
             )
-            .await
             .map_err(Error::Storage)?;
 
         Ok(())
@@ -1159,7 +1157,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: VirtualObjectStatusTable
-            + InvocationStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + InboxTable
             + FsmTable
             + StateTable
@@ -1186,7 +1185,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: VirtualObjectStatusTable
-            + InvocationStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + InboxTable
             + FsmTable
             + StateTable
@@ -1253,7 +1253,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: VirtualObjectStatusTable
-            + InvocationStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + InboxTable
             + FsmTable
             + StateTable
@@ -1305,8 +1306,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 };
 
                 self.storage
-                    .put_invocation_status(&invocation_id, &status)
-                    .await?;
+                    .put_invocation_status(&invocation_id, &status)?;
                 self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
                 return Ok(());
             }
@@ -1345,7 +1345,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     )
                     .await?
                 {
-                    self.do_resume_service( invocation_id, metadata).await?;
+                    self.do_resume_service( invocation_id, metadata)?;
                 }
                 self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
@@ -1356,7 +1356,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     metadata.journal_metadata.length,
                 )
                 .await?;
-                self.do_resume_service(invocation_id, metadata).await?;
+                self.do_resume_service(invocation_id, metadata)?;
                 self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
             InvocationStatus::Inboxed(inboxed) => {
@@ -1406,7 +1406,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         inboxed_invocation: InboxedInvocation,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable
+        S: WriteInvocationStatusTable
             + InboxTable
             + OutboxTable
             + FsmTable
@@ -1448,7 +1448,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             inbox_sequence_number,
         )
         .await?;
-        self.do_free_invocation(invocation_id).await?;
+        self.do_free_invocation(invocation_id)?;
 
         // If there's a journal, delete journal
         if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
@@ -1486,7 +1486,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         scheduled_invocation: ScheduledInvocation,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable
+        S: WriteInvocationStatusTable
             + TimerTable
             + OutboxTable
             + FsmTable
@@ -1532,7 +1532,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
 
         // Free invocation
-        self.do_free_invocation(invocation_id).await?;
+        self.do_free_invocation(invocation_id)?;
 
         // If there's a journal, delete journal
         if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
@@ -1571,7 +1571,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: InboxTable
             + VirtualObjectStatusTable
-            + InvocationStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + VirtualObjectStatusTable
             + StateTable
             + JournalTable
@@ -1601,7 +1602,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: InboxTable
             + VirtualObjectStatusTable
-            + InvocationStatusTable
+            + WriteInvocationStatusTable
+            + ReadInvocationStatusTable
             + VirtualObjectStatusTable
             + StateTable
             + JournalTable
@@ -1824,7 +1826,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     async fn on_timer(&mut self, timer_value: TimerKeyValue) -> Result<(), Error>
     where
         S: IdempotencyTable
-            + InvocationStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + OutboxTable
             + FsmTable
             + VirtualObjectStatusTable
@@ -1890,7 +1893,12 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_neo_invoke_timer(&mut self, invocation_id: InvocationId) -> Result<(), Error>
     where
-        S: VirtualObjectStatusTable + InvocationStatusTable + InboxTable + FsmTable + JournalTable,
+        S: VirtualObjectStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
+            + InboxTable
+            + FsmTable
+            + JournalTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -1942,7 +1950,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn try_invoker_effect(&mut self, invoker_effect: InvokerEffect) -> Result<(), Error>
     where
-        S: InvocationStatusTable
+        S: ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + JournalTable
             + StateTable
             + PromiseTable
@@ -1968,7 +1977,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_status: InvocationStatus,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable
+        S: WriteInvocationStatusTable
+            + ReadInvocationStatusTable
             + JournalTable
             + StateTable
             + PromiseTable
@@ -2091,15 +2101,13 @@ impl<S> StateMachineApplyContext<'_, S> {
                     }
                 }
                 if any_completed {
-                    self.do_resume_service(effect.invocation_id, invocation_metadata)
-                        .await?;
+                    self.do_resume_service(effect.invocation_id, invocation_metadata)?;
                 } else {
                     self.do_suspend_service(
                         effect.invocation_id,
                         invocation_metadata,
                         waiting_for_completed_entries,
-                    )
-                    .await?;
+                    )?;
                 }
             }
             InvokerEffectKind::SuspendedV2 {
@@ -2156,11 +2164,12 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: InboxTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + VirtualObjectStatusTable
             + JournalTable
             + OutboxTable
             + FsmTable
-            + InvocationStatusTable
             + StateTable
             + journal_table_v2::JournalTable
             + JournalEventsTable,
@@ -2235,8 +2244,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     response_result,
                     self.record_created_at,
                 );
-                self.do_store_completed_invocation(invocation_id, completed_invocation)
-                    .await?;
+                self.do_store_completed_invocation(invocation_id, completed_invocation)?;
             }
         } else {
             // Just notify Ok, no need to read the output entry
@@ -2251,7 +2259,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // If no retention, immediately cleanup the invocation status
         if completion_retention.is_zero() {
-            self.do_free_invocation(invocation_id).await?;
+            self.do_free_invocation(invocation_id)?;
         }
 
         if journal_retention.is_zero() {
@@ -2319,7 +2327,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: InboxTable
             + VirtualObjectStatusTable
-            + InvocationStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + VirtualObjectStatusTable
             + StateTable
             + JournalTable,
@@ -2411,7 +2420,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + FsmTable
             + TimerTable
             + JournalTable
-            + InvocationStatusTable,
+            + WriteInvocationStatusTable,
     {
         debug_assert_eq!(
             entry_index, invocation_metadata.journal_metadata.length,
@@ -3278,7 +3287,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         completion: Completion,
     ) -> Result<(), Error>
     where
-        S: JournalTable + InvocationStatusTable + TimerTable + FsmTable + OutboxTable,
+        S: JournalTable + WriteInvocationStatusTable + TimerTable + FsmTable + OutboxTable,
     {
         match status {
             InvocationStatus::Invoked(_) => {
@@ -3301,7 +3310,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await?
                 {
-            self.do_resume_service(invocation_id, metadata).await?;
+            self.do_resume_service(invocation_id, metadata)?;
                 }
             }
             _ => {
@@ -3474,7 +3483,8 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: ReadOnlyIdempotencyTable
-            + InvocationStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
             + ReadOnlyVirtualObjectStatusTable
             + OutboxTable
             + FsmTable,
@@ -3529,8 +3539,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         invocation_id,
                         is,
                         attach_invocation_request.response_sink,
-                    )
-                    .await?;
+                    )?;
                 } else {
                     self.send_response_to_sinks(
                         vec![attach_invocation_request.response_sink],
@@ -3733,13 +3742,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    async fn do_resume_service(
+    fn do_resume_service(
         &mut self,
         invocation_id: InvocationId,
         mut metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable,
+        S: WriteInvocationStatusTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -3753,7 +3762,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         let invocation_target = metadata.invocation_target.clone();
         self.storage
             .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
-            .await
             .map_err(Error::Storage)?;
 
         self.action_collector.push(Action::Invoke {
@@ -3775,14 +3783,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             restate.invocation.id = %invocation_id)
         )
     ]
-    async fn do_suspend_service(
+    fn do_suspend_service(
         &mut self,
         invocation_id: InvocationId,
         mut metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable,
+        S: WriteInvocationStatusTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -3803,17 +3811,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                         .collect(),
                 },
             )
-            .await
             .map_err(Error::Storage)
     }
 
-    async fn do_store_completed_invocation(
+    fn do_store_completed_invocation(
         &mut self,
         invocation_id: InvocationId,
         completed_invocation: CompletedInvocation,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable,
+        S: WriteInvocationStatusTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -3826,13 +3833,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &invocation_id,
                 &InvocationStatus::Completed(completed_invocation),
             )
-            .await
             .map_err(Error::Storage)
     }
 
-    async fn do_free_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
+    fn do_free_invocation(&mut self, invocation_id: InvocationId) -> Result<(), Error>
     where
-        S: InvocationStatusTable,
+        S: WriteInvocationStatusTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -3842,7 +3848,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_invocation_status(&invocation_id, &InvocationStatus::Free)
-            .await
             .map_err(Error::Storage)
     }
 
@@ -4100,7 +4105,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         journal_entry: &JournalEntry,
     ) -> Result<(), Error>
     where
-        S: JournalTable + InvocationStatusTable,
+        S: JournalTable + WriteInvocationStatusTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4134,7 +4139,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         // Store invocation status
         self.storage
             .put_invocation_status(&invocation_id, &previous_invocation_status)
-            .await
             .map_err(Error::Storage)
     }
 
@@ -4287,7 +4291,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         });
     }
 
-    async fn do_append_response_sink(
+    fn do_append_response_sink(
         &mut self,
         invocation_id: InvocationId,
         // We pass around the invocation_status here to avoid an additional read.
@@ -4297,7 +4301,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         additional_response_sink: ServiceInvocationResponseSink,
     ) -> Result<(), Error>
     where
-        S: InvocationStatusTable,
+        S: WriteInvocationStatusTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4316,7 +4320,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_invocation_status(&invocation_id, &previous_invocation_status)
-            .await
             .map_err(Error::Storage)?;
 
         Ok(())

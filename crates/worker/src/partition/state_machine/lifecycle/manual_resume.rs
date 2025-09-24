@@ -10,7 +10,9 @@
 
 use crate::partition::state_machine::lifecycle::ResumeInvocationCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
+};
 use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::ResumeInvocationResponse;
@@ -25,7 +27,7 @@ pub struct OnManualResumeCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnManualResumeCommand
 where
-    S: InvocationStatusTable,
+    S: ReadInvocationStatusTable + WriteInvocationStatusTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnManualResumeCommand {
@@ -62,9 +64,7 @@ where
                 .await?;
 
                 // Update invocation status
-                ctx.storage
-                    .put_invocation_status(&invocation_id, &is)
-                    .await?;
+                ctx.storage.put_invocation_status(&invocation_id, &is)?;
 
                 ctx.reply_to_resume_invocation(response_sink, ResumeInvocationResponse::Ok);
             }
@@ -96,7 +96,7 @@ mod tests {
     use googletest::prelude::{all, assert_that, contains, eq, pat};
     use restate_invoker_api::Effect;
     use restate_storage_api::invocation_status_table::{
-        InvocationStatusDiscriminants, ReadOnlyInvocationStatusTable,
+        InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_types::deployment::PinnedDeployment;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;

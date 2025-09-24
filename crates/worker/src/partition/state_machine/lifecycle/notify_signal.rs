@@ -12,7 +12,9 @@ use crate::partition::state_machine::entries::OnJournalEntryCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::inbox_table::InboxTable;
-use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
+};
 use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::JournalTable;
@@ -34,7 +36,8 @@ impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>
     for OnNotifySignalCommand
 where
     S: JournalTable
-        + InvocationStatusTable
+        + ReadInvocationStatusTable
+        + WriteInvocationStatusTable
         + InboxTable
         + FsmTable
         + StateTable

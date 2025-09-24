@@ -9,7 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
+};
 use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::JournalTable;
@@ -27,7 +29,11 @@ pub struct OnPurgeJournalCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnPurgeJournalCommand
 where
-    S: JournalTable + InvocationStatusTable + journal_table::JournalTable + JournalEventsTable,
+    S: JournalTable
+        + ReadInvocationStatusTable
+        + WriteInvocationStatusTable
+        + journal_table::JournalTable
+        + JournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPurgeJournalCommand {
@@ -58,9 +64,10 @@ where
                 completed.journal_metadata.commands = 0;
 
                 // Update invocation status
-                ctx.storage
-                    .put_invocation_status(&invocation_id, &InvocationStatus::Completed(completed))
-                    .await?;
+                ctx.storage.put_invocation_status(
+                    &invocation_id,
+                    &InvocationStatus::Completed(completed),
+                )?;
                 ctx.reply_to_purge_journal(response_sink, PurgeInvocationResponse::Ok);
             }
             InvocationStatus::Free => {
@@ -97,7 +104,7 @@ mod tests {
     use bytestring::ByteString;
     use googletest::prelude::{all, assert_that, contains, eq, none, ok, pat, some};
     use restate_storage_api::invocation_status_table::{
-        InvocationStatusDiscriminants, ReadOnlyInvocationStatusTable,
+        InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;
