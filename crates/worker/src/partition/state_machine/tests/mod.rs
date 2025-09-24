@@ -37,8 +37,8 @@ use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::Transaction;
 use restate_storage_api::inbox_table::ReadOnlyInboxTable;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
-    ReadOnlyInvocationStatusTable,
+    InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
 use restate_storage_api::outbox_table::OutboxTable;
@@ -272,9 +272,7 @@ impl TestEnv {
         let mut tx = self.storage().transaction();
         let mut status = tx.get_invocation_status(&invocation_id).await.unwrap();
         f(&mut status);
-        tx.put_invocation_status(&invocation_id, &status)
-            .await
-            .unwrap();
+        tx.put_invocation_status(&invocation_id, &status).unwrap();
         tx.commit().await.unwrap();
     }
 
@@ -787,7 +785,6 @@ async fn get_invocation_id_entry() {
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await.unwrap();
     invocation_status.get_journal_metadata_mut().unwrap().length = 3;
     tx.put_invocation_status(&invocation_id, &invocation_status)
-        .await
         .unwrap();
     tx.commit().await.unwrap();
 
@@ -1012,8 +1009,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
             request_id: request_id_3,
         },
     );
-    txn.put_invocation_status(&invocation_id, &invocation_status)
-        .await?;
+    txn.put_invocation_status(&invocation_id, &invocation_status)?;
     txn.commit().await.unwrap();
 
     // Now let's send the output entry

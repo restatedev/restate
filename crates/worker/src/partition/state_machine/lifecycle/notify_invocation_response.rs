@@ -12,7 +12,9 @@ use crate::debug_if_leader;
 use crate::partition::state_machine::invocation_status_ext::InvocationStatusExt;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext, entries};
 use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::invocation_status_table::{
+    InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
+};
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2;
 use restate_storage_api::outbox_table::OutboxTable;
@@ -43,8 +45,9 @@ impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>
 where
     S: journal_table_v1::JournalTable
         + journal_table_v2::JournalTable
-        + InvocationStatusTable
         + TimerTable
+        + ReadInvocationStatusTable
+        + WriteInvocationStatusTable
         + FsmTable
         + PromiseTable
         + StateTable

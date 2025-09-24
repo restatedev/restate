@@ -23,8 +23,8 @@ use bytestring::ByteString;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
-    CompletionRangeEpochMap, InFlightInvocationMetadata, InvocationStatus, InvocationStatusTable,
-    InvocationStatusV1, JournalMetadata, ReadOnlyInvocationStatusTable, StatusTimestamps,
+    CompletionRangeEpochMap, InFlightInvocationMetadata, InvocationStatus, InvocationStatusV1,
+    JournalMetadata, ReadInvocationStatusTable, StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_types::RestateVersion;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
@@ -134,37 +134,33 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
     }
 }
 
-async fn populate_data<T: InvocationStatusTable>(txn: &mut T) {
+async fn populate_data<T: WriteInvocationStatusTable>(txn: &mut T) {
     txn.put_invocation_status(
         &INVOCATION_ID_1,
         &invoked_status(INVOCATION_TARGET_1.clone()),
     )
-    .await
     .unwrap();
 
     txn.put_invocation_status(
         &INVOCATION_ID_2,
         &invoked_status(INVOCATION_TARGET_2.clone()),
     )
-    .await
     .expect("");
 
     txn.put_invocation_status(
         &INVOCATION_ID_3,
         &suspended_status(INVOCATION_TARGET_3.clone()),
     )
-    .await
     .unwrap();
 
     txn.put_invocation_status(
         &INVOCATION_ID_4,
         &suspended_status(INVOCATION_TARGET_4.clone()),
     )
-    .await
     .unwrap();
 }
 
-async fn verify_point_lookups<T: InvocationStatusTable>(txn: &mut T) {
+async fn verify_point_lookups<T: ReadInvocationStatusTable>(txn: &mut T) {
     assert_eq!(
         txn.get_invocation_status(&INVOCATION_ID_1)
             .await

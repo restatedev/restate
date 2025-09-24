@@ -11,7 +11,7 @@
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InvocationStatus, InvocationStatusTable,
+    CompletedInvocation, InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
@@ -35,7 +35,8 @@ pub struct OnPurgeCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnPurgeCommand
 where
     S: JournalTable
-        + InvocationStatusTable
+        + ReadInvocationStatusTable
+        + WriteInvocationStatusTable
         + StateTable
         + journal_table::JournalTable
         + IdempotencyTable
@@ -61,7 +62,7 @@ where
                         pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
                     });
 
-                ctx.do_free_invocation(invocation_id).await?;
+                ctx.do_free_invocation(invocation_id)?;
 
                 // Also cleanup the associated idempotency key if any
                 if let Some(idempotency_key) = idempotency_key {

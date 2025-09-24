@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::invocation_status_table::{InvocationStatus, InvocationStatusTable};
+use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
 use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::NotificationId;
@@ -25,7 +25,7 @@ pub struct OnSuspendCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnSuspendCommand
 where
-    S: ReadOnlyJournalTable + InvocationStatusTable,
+    S: ReadOnlyJournalTable + WriteInvocationStatusTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         debug_assert!(
@@ -85,7 +85,6 @@ where
         // Store invocation status
         ctx.storage
             .put_invocation_status(&self.invocation_id, &invocation_status)
-            .await
             .map_err(Error::Storage)
     }
 }

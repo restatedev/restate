@@ -24,7 +24,7 @@ use crate::partition::leadership::LeadershipState;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_invoker_api::InvokerHandle;
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
-use restate_storage_api::invocation_status_table::ReadOnlyInvocationStatusTable;
+use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
 use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
@@ -183,7 +183,7 @@ impl<'a, TActuator, TSchemas, TStorage> RpcHandler<PartitionProcessorRpcRequest>
 where
     TActuator: Actuator,
     TSchemas: DeploymentResolver,
-    TStorage: ReadOnlyInvocationStatusTable
+    TStorage: ReadInvocationStatusTable
         + ReadOnlyVirtualObjectStatusTable
         + ReadOnlyIdempotencyTable
         + ReadOnlyJournalTable,

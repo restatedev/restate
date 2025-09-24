@@ -326,7 +326,6 @@ async fn purge_completed_workflow() {
             ..CompletedInvocation::mock_neo()
         }),
     )
-    .await
     .unwrap();
     txn.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),

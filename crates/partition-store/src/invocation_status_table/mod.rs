@@ -16,9 +16,9 @@ use tokio_stream::StreamExt;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusTable,
-    InvocationStatusV1, InvokedInvocationStatusLite, ReadOnlyInvocationStatusTable,
-    ScanInvocationStatusTable,
+    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusV1,
+    InvokedInvocationStatusLite, ReadInvocationStatusTable, ScanInvocationStatusTable,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError, Transaction};
@@ -161,7 +161,7 @@ pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionSt
     Ok(())
 }
 
-impl ReadOnlyInvocationStatusTable for PartitionStore {
+impl ReadInvocationStatusTable for PartitionStore {
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -266,7 +266,7 @@ impl ScanInvocationStatusTable for PartitionStore {
     }
 }
 
-impl ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'_> {
+impl ReadInvocationStatusTable for PartitionStoreTransaction<'_> {
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -276,8 +276,8 @@ impl ReadOnlyInvocationStatusTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl InvocationStatusTable for PartitionStoreTransaction<'_> {
-    async fn put_invocation_status(
+impl WriteInvocationStatusTable for PartitionStoreTransaction<'_> {
+    fn put_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
         status: &InvocationStatus,
@@ -286,7 +286,7 @@ impl InvocationStatusTable for PartitionStoreTransaction<'_> {
         put_invocation_status(self, invocation_id, status)
     }
 
-    async fn delete_invocation_status(&mut self, invocation_id: &InvocationId) -> Result<()> {
+    fn delete_invocation_status(&mut self, invocation_id: &InvocationId) -> Result<()> {
         self.assert_partition_key(invocation_id)?;
         delete_invocation_status(self, invocation_id)
     }
