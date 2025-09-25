@@ -38,7 +38,7 @@ where
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + StateTable
-        + journal_table::JournalTable
+        + journal_table::WriteJournalTable
         + IdempotencyTable
         + VirtualObjectStatusTable
         + PromiseTable

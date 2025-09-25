@@ -125,7 +125,7 @@ where
                         invoked_status.timestamps.modification_time(),
                         random_seed,
                     ),
-                    journal_table_v1::ReadOnlyJournalTable::get_journal(
+                    journal_table_v1::ReadJournalTable::get_journal(
                         &mut self.txn,
                         invocation_id,
                         invoked_status.journal_metadata.length,
