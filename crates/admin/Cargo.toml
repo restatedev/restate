@@ -23,7 +23,6 @@ restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-lo
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-metadata-store = { workspace = true }
-restate-serde-util = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
@@ -70,7 +69,6 @@ urlencoding = { workspace = true }
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
-restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
