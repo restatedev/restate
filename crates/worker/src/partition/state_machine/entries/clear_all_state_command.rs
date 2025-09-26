@@ -11,7 +11,7 @@
 use crate::debug_if_leader;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::state_table::StateTable;
+use restate_storage_api::state_table::WriteStateTable;
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::journal_v2::{ClearAllStateCommand, EntryMetadata};
 use tracing::warn;
@@ -21,7 +21,7 @@ pub(super) type ApplyClearAllStateCommand<'e> = ApplyJournalCommandEffect<'e, Cl
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyClearAllStateCommand<'e>
 where
-    S: StateTable,
+    S: WriteStateTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self
@@ -47,7 +47,7 @@ where
         if let Some(service_id) = invocation_metadata.invocation_target.as_keyed_service_id() {
             debug_if_leader!(ctx.is_leader, "Clear all state");
 
-            ctx.storage.delete_all_user_state(&service_id).await?;
+            ctx.storage.delete_all_user_state(&service_id)?;
         } else {
             warn!(
                 "Trying to process entry {} for a target that has no state",
@@ -68,7 +68,7 @@ mod tests {
     use googletest::matchers::empty;
     use googletest::prelude::assert_that;
     use restate_storage_api::Transaction;
-    use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
+    use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
     use restate_types::identifiers::ServiceId;
     use restate_types::journal_v2::ClearAllStateCommand;
 
@@ -80,10 +80,8 @@ mod tests {
         // Fill with some state the service K/V store
         let mut txn = test_env.storage.transaction();
         txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")
-            .await
             .unwrap();
         txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")
-            .await
             .unwrap();
         txn.commit().await.unwrap();
 

@@ -39,7 +39,7 @@ use restate_storage_api::deduplication_table::{
     ReadOnlyDeduplicationTable,
 };
 use restate_storage_api::fsm_table::{FsmTable, PartitionDurability, ReadOnlyFsmTable};
-use restate_storage_api::outbox_table::ReadOnlyOutboxTable;
+use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::{StorageError, Transaction};
 use restate_time_util::DurationExt;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};

@@ -10,7 +10,7 @@
 
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::timer_table::TimerTable;
+use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::journal_v2::command::SleepCommand;
 use restate_wal_protocol::timer::TimerKeyValue;
 
@@ -19,7 +19,7 @@ pub(super) type ApplySleepCommand<'e> = ApplyJournalCommandEffect<'e, SleepComma
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplySleepCommand<'e>
 where
-    S: TimerTable,
+    S: WriteTimerTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self

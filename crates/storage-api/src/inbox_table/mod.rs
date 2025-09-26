@@ -17,7 +17,6 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 
 use crate::Result;
-use crate::promise_table::ReadOnlyPromiseTable;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,7 +84,7 @@ impl SequenceNumberInboxEntry {
     }
 }
 
-pub trait ReadOnlyInboxTable {
+pub trait ReadInboxTable {
     fn peek_inbox(
         &mut self,
         service_id: &ServiceId,
@@ -107,19 +106,20 @@ pub trait ScanInboxTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait InboxTable: ReadOnlyPromiseTable {
+pub trait WriteInboxTable {
     fn put_inbox_entry(
         &mut self,
         sequence_number: MessageIndex,
         inbox_entry: &InboxEntry,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
-    fn delete_inbox_entry(
-        &mut self,
-        service_id: &ServiceId,
-        sequence_number: u64,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) -> Result<()>;
 
+    /// Pops the next inbox entry for the given service.
+    ///
+    /// This method returns a `Future` because it performs a blocking read operation.
+    /// The implementation may need to interact with storage in a way that is not
+    /// immediately non-blocking, so the async interface is required.
     fn pop_inbox(
         &mut self,
         service_id: &ServiceId,
