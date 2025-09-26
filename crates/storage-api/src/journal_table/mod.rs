@@ -54,7 +54,7 @@ pub enum JournalEntryType {
     Completion,
 }
 
-pub trait ReadOnlyJournalTable {
+pub trait ReadJournalTable {
     fn get_journal_entry(
         &mut self,
         invocation_id: &InvocationId,
@@ -78,17 +78,17 @@ pub trait ScanJournalTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait JournalTable: ReadOnlyJournalTable {
+pub trait WriteJournalTable {
     fn put_journal_entry(
         &mut self,
         invocation_id: &InvocationId,
         journal_index: u32,
         journal_entry: &JournalEntry,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
     fn delete_journal(
         &mut self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 }

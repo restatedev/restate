@@ -17,8 +17,8 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::JournalTable;
-use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
+use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::PromiseTable;
 use restate_storage_api::service_status_table::VirtualObjectStatusTable;
 use restate_storage_api::state_table::StateTable;
@@ -35,15 +35,16 @@ pub struct OnNotifySignalCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnNotifySignalCommand
 where
-    S: JournalTable
+    S: WriteJournalTable
+        + ReadJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + InboxTable
         + FsmTable
         + StateTable
-        + JournalTable
-        + OutboxTable
-        + journal_table::JournalTable
+        + WriteOutboxTable
+        + journal_table::WriteJournalTable
+        + journal_table::ReadJournalTable
         + JournalEventsTable
         + TimerTable
         + PromiseTable

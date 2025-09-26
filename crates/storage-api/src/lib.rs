@@ -84,10 +84,12 @@ pub trait Transaction:
     + invocation_status_table::WriteInvocationStatusTable
     + service_status_table::VirtualObjectStatusTable
     + inbox_table::InboxTable
-    + outbox_table::OutboxTable
+    + outbox_table::WriteOutboxTable
     + deduplication_table::DeduplicationTable
-    + journal_table::JournalTable
-    + journal_table_v2::JournalTable
+    + journal_table::WriteJournalTable
+    + journal_table::ReadJournalTable
+    + journal_table_v2::WriteJournalTable
+    + journal_table_v2::ReadJournalTable
     + fsm_table::FsmTable
     + timer_table::TimerTable
     + idempotency_table::IdempotencyTable

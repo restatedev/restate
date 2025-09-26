@@ -36,7 +36,7 @@ use restate_storage_api::fsm_table::ReadOnlyFsmTable;
 use restate_storage_api::invocation_status_table::{
     InvokedInvocationStatusLite, ScanInvocationStatusTable,
 };
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable};
 use restate_storage_api::timer_table::{TimerKey, TimerTable};
 use restate_timer::TokioClock;
 use restate_types::GenerationalNodeId;

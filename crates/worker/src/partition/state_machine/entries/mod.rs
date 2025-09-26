@@ -35,8 +35,8 @@ use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_table as journal_table_v1;
-use restate_storage_api::journal_table_v2::JournalTable;
-use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
+use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::PromiseTable;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
@@ -104,13 +104,15 @@ impl OnJournalEntryCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnJournalEntryCommand
 where
-    S: JournalTable
-        + journal_table_v1::JournalTable
+    S: WriteJournalTable
+        + ReadJournalTable
+        + journal_table_v1::WriteJournalTable
+        + journal_table_v1::ReadJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + TimerTable
         + FsmTable
-        + OutboxTable
+        + WriteOutboxTable
         + PromiseTable
         + StateTable,
 {
@@ -358,7 +360,7 @@ where
             }
 
             // Store journal entry
-            JournalTable::put_journal_entry(
+            WriteJournalTable::put_journal_entry(
                 ctx.storage,
                 self.invocation_id,
                 entry_index,
@@ -368,8 +370,7 @@ where
                 // append times.
                 &StoredRawEntry::new(StoredRawEntryHeader::new(ctx.record_created_at), entry),
                 &related_completion_ids,
-            )
-            .await?;
+            )?;
         }
 
         // Update timestamps
