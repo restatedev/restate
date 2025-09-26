@@ -17,12 +17,12 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::JournalTable;
-use restate_storage_api::outbox_table::OutboxTable;
-use restate_storage_api::promise_table::PromiseTable;
-use restate_storage_api::service_status_table::VirtualObjectStatusTable;
-use restate_storage_api::state_table::StateTable;
-use restate_storage_api::timer_table::TimerTable;
+use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
+use restate_storage_api::outbox_table::WriteOutboxTable;
+use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
+use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
+use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::{BuiltInSignal, Signal, SignalId};
 
@@ -35,19 +35,22 @@ pub struct OnNotifySignalCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnNotifySignalCommand
 where
-    S: JournalTable
+    S: WriteJournalTable
+        + ReadJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + InboxTable
         + FsmTable
-        + StateTable
-        + JournalTable
-        + OutboxTable
-        + journal_table::JournalTable
+        + ReadStateTable
+        + WriteStateTable
+        + WriteOutboxTable
+        + journal_table::WriteJournalTable
+        + journal_table::ReadJournalTable
         + JournalEventsTable
-        + TimerTable
-        + PromiseTable
-        + VirtualObjectStatusTable,
+        + WriteTimerTable
+        + ReadPromiseTable
+        + WritePromiseTable
+        + WriteVirtualObjectStatusTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnNotifySignalCommand {

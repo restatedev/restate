@@ -119,7 +119,7 @@ pub struct OwnedPromiseRow {
     pub metadata: Promise,
 }
 
-pub trait ReadOnlyPromiseTable {
+pub trait ReadPromiseTable {
     fn get_promise(
         &mut self,
         service_id: &ServiceId,
@@ -137,16 +137,13 @@ pub trait ScanPromiseTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait PromiseTable: ReadOnlyPromiseTable {
+pub trait WritePromiseTable {
     fn put_promise(
         &mut self,
         service_id: &ServiceId,
         key: &ByteString,
         promise: &Promise,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
-    fn delete_all_promises(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn delete_all_promises(&mut self, service_id: &ServiceId) -> Result<()>;
 }

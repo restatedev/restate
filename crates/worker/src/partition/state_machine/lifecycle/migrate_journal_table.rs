@@ -28,19 +28,21 @@ pub struct VerifyOrMigrateJournalTableToV2Command<'e> {
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for VerifyOrMigrateJournalTableToV2Command<'e>
 where
-    S: journal_table_v1::JournalTable + journal_table_v2::JournalTable,
+    S: journal_table_v1::WriteJournalTable
+        + journal_table_v1::ReadJournalTable
+        + journal_table_v2::WriteJournalTable
+        + journal_table_v2::ReadJournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         // Check if we need to perform journal table migrations!
         if self.metadata.journal_metadata.length == 1 {
             // This contains only the input entry, we can run a migration
-            if let Some(old_journal_entry) =
-                journal_table_v1::ReadOnlyJournalTable::get_journal_entry(
-                    ctx.storage,
-                    &self.invocation_id,
-                    0,
-                )
-                .await?
+            if let Some(old_journal_entry) = journal_table_v1::ReadJournalTable::get_journal_entry(
+                ctx.storage,
+                &self.invocation_id,
+                0,
+            )
+            .await?
             {
                 // Extract the old entry, it must be an input entry!
                 let_assert!(journal_table_v1::JournalEntry::Entry(old_entry) = old_journal_entry);
@@ -59,7 +61,7 @@ where
                 let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
 
                 // Now write the entry in the new table, and remove it from the old one
-                journal_table_v2::JournalTable::put_journal_entry(
+                journal_table_v2::WriteJournalTable::put_journal_entry(
                     ctx.storage,
                     self.invocation_id,
                     0,
@@ -68,11 +70,13 @@ where
                         new_raw_entry,
                     ),
                     &[],
+                )?;
+                journal_table_v1::WriteJournalTable::delete_journal(
+                    ctx.storage,
+                    &self.invocation_id,
+                    1,
                 )
-                .await?;
-                journal_table_v1::JournalTable::delete_journal(ctx.storage, &self.invocation_id, 1)
-                    .await
-                    .map_err(Error::Storage)?;
+                .map_err(Error::Storage)?;
 
                 // Mutate the journal metadata commands
                 self.metadata.journal_metadata.commands = 1;
@@ -84,7 +88,7 @@ where
             // Length can be greater than 1 when we have either Completions (in the old table) or Notifications (in the new table).
             // Because of the different Awakeable id format, we cannot incur in the situation where we write to the old table for a Completion arrived before the pinned deployment.
             assert!(
-                journal_table_v2::ReadOnlyJournalTable::get_journal_entry(
+                journal_table_v2::ReadJournalTable::get_journal_entry(
                     ctx.storage,
                     self.invocation_id,
                     0,

@@ -116,7 +116,6 @@ async fn send_with_delay_to_locked_virtual_object() {
         &invocation_target.as_keyed_service_id().unwrap(),
         &VirtualObjectStatus::Locked(InvocationId::mock_generate(&invocation_target)),
     )
-    .await
     .unwrap();
     tx.commit().await.unwrap();
 
