@@ -17,7 +17,7 @@ use futures_util::stream;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::inbox_table::{
-    InboxEntry, InboxTable, ReadOnlyInboxTable, ScanInboxTable, SequenceNumberInboxEntry,
+    InboxEntry, ReadInboxTable, ScanInboxTable, SequenceNumberInboxEntry, WriteInboxTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
@@ -81,7 +81,7 @@ fn inbox<S: StorageAccess>(
     )?))
 }
 
-impl ReadOnlyInboxTable for PartitionStore {
+impl ReadInboxTable for PartitionStore {
     async fn peek_inbox(
         &mut self,
         service_id: &ServiceId,
@@ -123,7 +123,7 @@ impl ScanInboxTable for PartitionStore {
     }
 }
 
-impl ReadOnlyInboxTable for PartitionStoreTransaction<'_> {
+impl ReadInboxTable for PartitionStoreTransaction<'_> {
     async fn peek_inbox(
         &mut self,
         service_id: &ServiceId,
@@ -141,8 +141,8 @@ impl ReadOnlyInboxTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl InboxTable for PartitionStoreTransaction<'_> {
-    async fn put_inbox_entry(
+impl WriteInboxTable for PartitionStoreTransaction<'_> {
+    fn put_inbox_entry(
         &mut self,
         inbox_sequence_number: MessageIndex,
         inbox_entry: &InboxEntry,
@@ -159,11 +159,7 @@ impl InboxTable for PartitionStoreTransaction<'_> {
         self.put_kv(key, inbox_entry)
     }
 
-    async fn delete_inbox_entry(
-        &mut self,
-        service_id: &ServiceId,
-        sequence_number: u64,
-    ) -> Result<()> {
+    fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) -> Result<()> {
         self.assert_partition_key(service_id)?;
         delete_inbox_entry(self, service_id, sequence_number)
     }

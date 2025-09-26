@@ -16,7 +16,7 @@ use futures_util::stream;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table::{
-    JournalEntry, JournalTable, ReadOnlyJournalTable, ScanJournalTable,
+    JournalEntry, ReadJournalTable, ScanJournalTable, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
@@ -115,7 +115,7 @@ fn delete_journal<S: StorageAccess>(
     Ok(())
 }
 
-impl ReadOnlyJournalTable for PartitionStore {
+impl ReadJournalTable for PartitionStore {
     async fn get_journal_entry(
         &mut self,
         invocation_id: &InvocationId,
@@ -171,7 +171,7 @@ impl ScanJournalTable for PartitionStore {
     }
 }
 
-impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
+impl ReadJournalTable for PartitionStoreTransaction<'_> {
     async fn get_journal_entry(
         &mut self,
         invocation_id: &InvocationId,
@@ -196,8 +196,8 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl JournalTable for PartitionStoreTransaction<'_> {
-    async fn put_journal_entry(
+impl WriteJournalTable for PartitionStoreTransaction<'_> {
+    fn put_journal_entry(
         &mut self,
         invocation_id: &InvocationId,
         journal_index: u32,
@@ -207,7 +207,7 @@ impl JournalTable for PartitionStoreTransaction<'_> {
         put_journal_entry(self, invocation_id, journal_index, journal_entry)
     }
 
-    async fn delete_journal(
+    fn delete_journal(
         &mut self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,

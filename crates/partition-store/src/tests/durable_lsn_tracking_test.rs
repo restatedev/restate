@@ -4,7 +4,7 @@ use rand::{RngCore, rng};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::{
     Transaction,
-    fsm_table::{FsmTable, PartitionDurability, ReadOnlyFsmTable},
+    fsm_table::{PartitionDurability, ReadFsmTable, WriteFsmTable},
 };
 use restate_types::{
     identifiers::{PartitionId, PartitionKey},
@@ -38,7 +38,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     let watch_durable_lsn = partition_store.get_durable_lsn().await?;
 
     let mut txn = partition_store.transaction();
-    txn.put_applied_lsn(Lsn::new(100)).await.unwrap();
+    txn.put_applied_lsn(Lsn::new(100)).unwrap();
     txn.commit().await.expect("commit succeeds");
 
     assert_eq!(None, *partition_store.get_durable_lsn().await?.borrow());
@@ -75,8 +75,8 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     let mut rng = rng();
     for lsn in 101..=200 {
         let mut txn = partition_store.transaction();
-        txn.put_applied_lsn(Lsn::new(lsn)).await.unwrap();
-        txn.put_inbox_seq_number(rng.next_u64()).await.unwrap();
+        txn.put_applied_lsn(Lsn::new(lsn)).unwrap();
+        txn.put_inbox_seq_number(rng.next_u64()).unwrap();
         txn.commit().await.expect("commit succeeds");
 
         assert_eq!(
@@ -111,8 +111,7 @@ async fn partition_durability_fsm() -> googletest::Result<()> {
     txn.put_partition_durability(&PartitionDurability {
         durable_point: Lsn::new(100),
         modification_time: now,
-    })
-    .await?;
+    })?;
 
     // commit.
     txn.commit().await?;

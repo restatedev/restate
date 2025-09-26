@@ -10,9 +10,9 @@
 
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::timer_table::TimerTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
+use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::invocation::{AttachInvocationRequest, ServiceInvocationResponseSink};
 use restate_types::journal_v2::AttachInvocationCommand;
 
@@ -22,7 +22,7 @@ pub(super) type ApplyAttachInvocationCommand<'e> =
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyAttachInvocationCommand<'e>
 where
-    S: TimerTable + OutboxTable + FsmTable,
+    S: WriteTimerTable + WriteOutboxTable + WriteFsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         ctx.handle_outgoing_message(OutboxMessage::AttachInvocation(AttachInvocationRequest {
