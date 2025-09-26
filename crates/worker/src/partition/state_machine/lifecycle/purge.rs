@@ -15,9 +15,9 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::JournalTable;
-use restate_storage_api::promise_table::PromiseTable;
-use restate_storage_api::service_status_table::VirtualObjectStatusTable;
+use restate_storage_api::journal_table_v2::WriteJournalTable;
+use restate_storage_api::promise_table::WritePromiseTable;
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::StateTable;
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::client::PurgeInvocationResponse;
@@ -34,14 +34,14 @@ pub struct OnPurgeCommand {
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnPurgeCommand
 where
-    S: JournalTable
+    S: WriteJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + StateTable
-        + journal_table::JournalTable
+        + journal_table::WriteJournalTable
         + IdempotencyTable
-        + VirtualObjectStatusTable
-        + PromiseTable
+        + WriteVirtualObjectStatusTable
+        + WritePromiseTable
         + JournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {

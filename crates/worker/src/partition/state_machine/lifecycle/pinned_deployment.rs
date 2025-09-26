@@ -18,9 +18,9 @@ use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::JournalEventsTable;
-use restate_storage_api::outbox_table::OutboxTable;
-use restate_storage_api::promise_table::PromiseTable;
-use restate_storage_api::service_status_table::VirtualObjectStatusTable;
+use restate_storage_api::outbox_table::WriteOutboxTable;
+use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
@@ -38,19 +38,21 @@ pub struct OnPinnedDeploymentCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnPinnedDeploymentCommand
 where
-    S: journal_table_v1::JournalTable
-        + journal_table_v2::JournalTable
+    S: journal_table_v1::WriteJournalTable
+        + journal_table_v1::ReadJournalTable
+        + journal_table_v2::WriteJournalTable
+        + journal_table_v2::ReadJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
-        + OutboxTable
+        + WriteOutboxTable
         + StateTable
         + FsmTable
         + InboxTable
-        + VirtualObjectStatusTable
+        + WriteVirtualObjectStatusTable
         + JournalEventsTable
         + TimerTable
-        + PromiseTable
-        + OutboxTable,
+        + ReadPromiseTable
+        + WritePromiseTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let mut in_flight_invocation_metadata = self

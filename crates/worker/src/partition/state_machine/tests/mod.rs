@@ -40,10 +40,10 @@ use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
     WriteInvocationStatusTable,
 };
-use restate_storage_api::journal_table::{JournalEntry, ReadOnlyJournalTable};
-use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable};
+use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
+    ReadVirtualObjectStatusTable, VirtualObjectStatus, WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_test_util::matchers::*;
@@ -209,7 +209,7 @@ impl TestEnv {
         invocation_id: InvocationId,
         journal_length: EntryIndex,
     ) -> Vec<journal_v2::Entry> {
-        restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal(
+        restate_storage_api::journal_table_v2::ReadJournalTable::get_journal(
             self.storage(),
             invocation_id,
             journal_length,
@@ -232,7 +232,7 @@ impl TestEnv {
         invocation_id: InvocationId,
         idx: EntryIndex,
     ) -> E {
-        restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal_entry(
+        restate_storage_api::journal_table_v2::ReadJournalTable::get_journal_entry(
             self.storage(),
             invocation_id,
             idx,
@@ -340,8 +340,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
     tx.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),
         &VirtualObjectStatus::Locked(InvocationId::mock_random()),
-    )
-    .await?;
+    )?;
     tx.commit().await.unwrap();
 
     // Start the invocation
@@ -777,10 +776,8 @@ async fn get_invocation_id_entry() {
     // Add call and one way call journal entry
     let mut tx = test_env.storage.transaction();
     tx.put_journal_entry(&invocation_id, 1, &background_invoke_entry(callee_1))
-        .await
         .unwrap();
     tx.put_journal_entry(&invocation_id, 2, &incomplete_invoke_entry(callee_2))
-        .await
         .unwrap();
     let mut invocation_status = tx.get_invocation_status(&invocation_id).await.unwrap();
     invocation_status.get_journal_metadata_mut().unwrap().length = 3;
