@@ -13,12 +13,12 @@ use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
-use restate_storage_api::journal_events::JournalEventsTable;
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::JournalTable;
-use restate_storage_api::promise_table::PromiseTable;
-use restate_storage_api::service_status_table::VirtualObjectStatusTable;
-use restate_storage_api::state_table::StateTable;
+use restate_storage_api::journal_table_v2::WriteJournalTable;
+use restate_storage_api::promise_table::WritePromiseTable;
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
+use restate_storage_api::state_table::WriteStateTable;
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
@@ -34,15 +34,15 @@ pub struct OnPurgeCommand {
 
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnPurgeCommand
 where
-    S: JournalTable
+    S: WriteJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
-        + StateTable
-        + journal_table::JournalTable
+        + WriteStateTable
+        + journal_table::WriteJournalTable
         + IdempotencyTable
-        + VirtualObjectStatusTable
-        + PromiseTable
-        + JournalEventsTable,
+        + WriteVirtualObjectStatusTable
+        + WritePromiseTable
+        + WriteJournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPurgeCommand {
@@ -83,8 +83,7 @@ where
                         .expect("Workflow methods must have keyed service id");
 
                     ctx.do_unlock_service(service_id.clone()).await?;
-                    ctx.do_clear_all_state(service_id.clone(), invocation_id)
-                        .await?;
+                    ctx.do_clear_all_state(service_id.clone(), invocation_id)?;
                     ctx.do_clear_all_promises(service_id).await?;
                 }
 

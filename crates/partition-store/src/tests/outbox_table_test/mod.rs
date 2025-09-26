@@ -12,13 +12,13 @@ use super::mock_random_service_invocation;
 
 use crate::PartitionStore;
 use restate_storage_api::Transaction;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable, WriteOutboxTable};
 
 fn mock_outbox_message() -> OutboxMessage {
     OutboxMessage::ServiceInvocation(mock_random_service_invocation())
 }
 
-pub(crate) async fn populate_data<T: OutboxTable>(txn: &mut T, initial: Vec<u64>) {
+pub(crate) async fn populate_data<T: WriteOutboxTable>(txn: &mut T, initial: Vec<u64>) {
     for seq_no in initial {
         txn.put_outbox_message(seq_no, &mock_outbox_message())
             .await
@@ -26,7 +26,7 @@ pub(crate) async fn populate_data<T: OutboxTable>(txn: &mut T, initial: Vec<u64>
     }
 }
 
-pub(crate) async fn verify_outbox_head_seq_number<T: OutboxTable>(
+pub(crate) async fn verify_outbox_head_seq_number<T: ReadOutboxTable>(
     txn: &mut T,
     expected: Option<u64>,
 ) {
@@ -37,7 +37,7 @@ pub(crate) async fn verify_outbox_head_seq_number<T: OutboxTable>(
     assert_eq!(expected, head);
 }
 
-pub(crate) async fn consume_messages_and_truncate_range<T: OutboxTable>(
+pub(crate) async fn consume_messages_and_truncate_range<T: ReadOutboxTable + WriteOutboxTable>(
     txn: &mut T,
     expected: Vec<u64>,
 ) {
@@ -54,7 +54,7 @@ pub(crate) async fn consume_messages_and_truncate_range<T: OutboxTable>(
         .unwrap();
 }
 
-pub(crate) async fn verify_outbox_is_empty_after_truncation<T: OutboxTable>(txn: &mut T) {
+pub(crate) async fn verify_outbox_is_empty_after_truncation<T: ReadOutboxTable>(txn: &mut T) {
     let result = txn
         .get_next_outbox_message(0)
         .await

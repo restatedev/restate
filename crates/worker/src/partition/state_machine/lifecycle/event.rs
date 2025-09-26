@@ -10,7 +10,7 @@
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
-use restate_storage_api::journal_events::{EventView, JournalEventsTable};
+use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
 
@@ -20,7 +20,7 @@ pub struct OnInvokerEventCommand {
     pub event: RawEvent,
 }
 
-impl<'ctx, 's: 'ctx, S: JournalEventsTable + WriteInvocationStatusTable>
+impl<'ctx, 's: 'ctx, S: WriteJournalEventsTable + WriteInvocationStatusTable>
     CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for OnInvokerEventCommand
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
@@ -52,7 +52,7 @@ pub(super) struct ApplyEventCommand<'e> {
     pub(super) event: RawEvent,
 }
 
-impl<'e, 'ctx: 'e, 's: 'ctx, S: JournalEventsTable>
+impl<'e, 'ctx: 'e, 's: 'ctx, S: WriteJournalEventsTable>
     CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>> for ApplyEventCommand<'e>
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
@@ -65,17 +65,15 @@ impl<'e, 'ctx: 'e, 's: 'ctx, S: JournalEventsTable>
         let after_journal_entry_index = journal_metadata.length.checked_sub(1).unwrap_or_default();
 
         // Store event
-        ctx.storage
-            .put_journal_event(
-                self.invocation_id,
-                EventView {
-                    append_time: ctx.record_created_at,
-                    after_journal_entry_index,
-                    event: self.event,
-                },
-                ctx.record_lsn.as_u64(),
-            )
-            .await?;
+        ctx.storage.put_journal_event(
+            self.invocation_id,
+            EventView {
+                append_time: ctx.record_created_at,
+                after_journal_entry_index,
+                event: self.event,
+            },
+            ctx.record_lsn.as_u64(),
+        )?;
 
         Ok(())
     }

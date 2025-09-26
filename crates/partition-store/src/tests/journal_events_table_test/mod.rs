@@ -13,7 +13,7 @@ use futures_util::StreamExt;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::journal_events::EventView;
-use restate_storage_api::journal_events::{JournalEventsTable, ReadOnlyJournalEventsTable};
+use restate_storage_api::journal_events::{ReadJournalEventsTable, WriteJournalEventsTable};
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, TransientErrorEvent};
@@ -42,7 +42,6 @@ async fn test_event() {
 
     // Populate
     txn.put_journal_event(MOCK_INVOCATION_ID_1, event_view.clone(), 0)
-        .await
         .unwrap();
 
     // Get all events
@@ -57,9 +56,7 @@ async fn test_event() {
     // Verify we can remove events
 
     let mut txn = rocksdb.transaction();
-    txn.delete_journal_events(MOCK_INVOCATION_ID_1)
-        .await
-        .unwrap();
+    txn.delete_journal_events(MOCK_INVOCATION_ID_1).unwrap();
     txn.commit().await.expect("should not fail");
 
     // Should be empty

@@ -30,7 +30,7 @@ use tracing::{debug, trace};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
-use restate_storage_api::fsm_table::ReadOnlyFsmTable;
+use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::config::Configuration;

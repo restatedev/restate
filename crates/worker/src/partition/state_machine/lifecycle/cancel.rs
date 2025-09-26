@@ -10,18 +10,18 @@
 
 use crate::partition::state_machine::entries::OnJournalEntryCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::inbox_table::InboxTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
+use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
-use restate_storage_api::journal_events::JournalEventsTable;
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::JournalTable;
-use restate_storage_api::outbox_table::OutboxTable;
-use restate_storage_api::promise_table::PromiseTable;
-use restate_storage_api::state_table::StateTable;
-use restate_storage_api::timer_table::TimerTable;
+use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
+use restate_storage_api::outbox_table::WriteOutboxTable;
+use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
+use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
+use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::CancelInvocationResponse;
 use restate_types::invocation::{
@@ -39,18 +39,21 @@ pub struct OnCancelCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnCancelCommand
 where
-    S: JournalTable
+    S: WriteJournalTable
+        + ReadJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
-        + InboxTable
-        + FsmTable
-        + StateTable
-        + JournalTable
-        + OutboxTable
-        + journal_table::JournalTable
-        + JournalEventsTable
-        + TimerTable
-        + PromiseTable,
+        + WriteInboxTable
+        + WriteFsmTable
+        + ReadStateTable
+        + WriteStateTable
+        + WriteOutboxTable
+        + journal_table::WriteJournalTable
+        + journal_table::ReadJournalTable
+        + WriteJournalEventsTable
+        + WriteTimerTable
+        + ReadPromiseTable
+        + WritePromiseTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         match self.invocation_status {
@@ -124,6 +127,7 @@ mod tests {
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, ReadInvocationStatusTable,
     };
+    use restate_storage_api::outbox_table::ReadOutboxTable;
     use restate_types::deployment::PinnedDeployment;
     use restate_types::errors::CANCELED_INVOCATION_ERROR;
     use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};

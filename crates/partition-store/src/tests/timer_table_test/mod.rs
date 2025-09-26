@@ -16,7 +16,9 @@ use googletest::{assert_that, pat};
 use std::pin::pin;
 
 use restate_storage_api::Transaction;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
+use restate_storage_api::timer_table::{
+    ReadTimerTable, Timer, TimerKey, TimerKeyKind, WriteTimerTable,
+};
 use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
 
 use crate::PartitionStore;
@@ -24,7 +26,7 @@ use crate::PartitionStore;
 const FIXTURE_INVOCATION_UUID: InvocationUuid = InvocationUuid::from_u128(12345678900001);
 const FIXTURE_INVOCATION: InvocationId = InvocationId::from_parts(1337, FIXTURE_INVOCATION_UUID);
 
-async fn populate_data<T: TimerTable>(txn: &mut T) {
+async fn populate_data<T: WriteTimerTable>(txn: &mut T) {
     txn.put_timer(
         &TimerKey {
             kind: TimerKeyKind::CompleteJournalEntry {
@@ -85,7 +87,7 @@ async fn populate_data<T: TimerTable>(txn: &mut T) {
     .unwrap();
 }
 
-async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T) {
+async fn demo_how_to_find_first_timers_in_a_partition<T: ReadTimerTable>(txn: &mut T) {
     let mut stream = pin!(txn.next_timers_greater_than(None, usize::MAX).unwrap());
 
     let mut count = 0;
@@ -96,7 +98,7 @@ async fn demo_how_to_find_first_timers_in_a_partition<T: TimerTable>(txn: &mut T
     assert_eq!(count, 3);
 }
 
-async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
+async fn find_timers_greater_than<T: ReadTimerTable>(txn: &mut T) {
     let timer_key = &TimerKey {
         kind: TimerKeyKind::CompleteJournalEntry {
             invocation_uuid: FIXTURE_INVOCATION_UUID,
@@ -130,7 +132,7 @@ async fn find_timers_greater_than<T: TimerTable>(txn: &mut T) {
     }
 }
 
-async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
+async fn delete_the_first_timer<T: WriteTimerTable>(txn: &mut T) {
     txn.delete_timer(&TimerKey {
         kind: TimerKeyKind::CompleteJournalEntry {
             invocation_uuid: FIXTURE_INVOCATION_UUID,
@@ -142,7 +144,7 @@ async fn delete_the_first_timer<T: TimerTable>(txn: &mut T) {
     .unwrap();
 }
 
-async fn verify_next_timer_after_deletion<T: TimerTable>(txn: &mut T) {
+async fn verify_next_timer_after_deletion<T: ReadTimerTable>(txn: &mut T) {
     let timer_key = &TimerKey {
         kind: TimerKeyKind::CompleteJournalEntry {
             invocation_uuid: FIXTURE_INVOCATION_UUID,

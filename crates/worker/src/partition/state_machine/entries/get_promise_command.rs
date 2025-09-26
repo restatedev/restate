@@ -12,7 +12,9 @@ use crate::debug_if_leader;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use bytes::Bytes;
-use restate_storage_api::promise_table::{Promise, PromiseState, PromiseTable};
+use restate_storage_api::promise_table::{
+    Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
+};
 use restate_types::invocation::JournalCompletionTarget;
 use restate_types::journal_v2::{
     EntryMetadata, GetPromiseCommand, GetPromiseCompletion, GetPromiseResult,
@@ -24,7 +26,7 @@ pub(super) type ApplyGetPromiseCommand<'e> = ApplyJournalCommandEffect<'e, GetPr
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyGetPromiseCommand<'e>
 where
-    S: PromiseTable,
+    S: ReadPromiseTable + WritePromiseTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self
@@ -82,7 +84,6 @@ where
                         state: uncompleted_promise_state,
                     },
                 )
-                .await
                 .map_err(Error::Storage)?;
         } else {
             warn!(

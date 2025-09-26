@@ -12,9 +12,9 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
-use restate_storage_api::journal_events::JournalEventsTable;
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::JournalTable;
+use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
@@ -29,11 +29,11 @@ pub struct OnPurgeJournalCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnPurgeJournalCommand
 where
-    S: JournalTable
+    S: WriteJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
-        + journal_table::JournalTable
-        + JournalEventsTable,
+        + journal_table::WriteJournalTable
+        + WriteJournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPurgeJournalCommand {
@@ -106,7 +106,7 @@ mod tests {
     use restate_storage_api::invocation_status_table::{
         InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
-    use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
+    use restate_storage_api::journal_table_v2::ReadJournalTable;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;
     use restate_types::invocation::client::InvocationOutputResponse;
     use restate_types::invocation::{
