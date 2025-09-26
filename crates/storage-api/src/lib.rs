@@ -86,8 +86,10 @@ pub trait Transaction:
     + inbox_table::InboxTable
     + outbox_table::OutboxTable
     + deduplication_table::DeduplicationTable
-    + journal_table::JournalTable
-    + journal_table_v2::JournalTable
+    + journal_table::WriteJournalTable
+    + journal_table::ReadJournalTable
+    + journal_table_v2::WriteJournalTable
+    + journal_table_v2::ReadJournalTable
     + fsm_table::FsmTable
     + timer_table::TimerTable
     + idempotency_table::IdempotencyTable

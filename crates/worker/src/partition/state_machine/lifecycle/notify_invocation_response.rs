@@ -43,8 +43,10 @@ pub struct OnNotifyInvocationResponse {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnNotifyInvocationResponse
 where
-    S: journal_table_v1::JournalTable
-        + journal_table_v2::JournalTable
+    S: journal_table_v1::WriteJournalTable
+        + journal_table_v1::ReadJournalTable
+        + journal_table_v2::WriteJournalTable
+        + journal_table_v2::ReadJournalTable
         + TimerTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
