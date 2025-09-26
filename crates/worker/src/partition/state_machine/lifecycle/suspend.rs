@@ -10,7 +10,7 @@
 
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
-use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
+use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::NotificationId;
 use std::collections::HashSet;
@@ -25,7 +25,7 @@ pub struct OnSuspendCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnSuspendCommand
 where
-    S: ReadOnlyJournalTable + WriteInvocationStatusTable,
+    S: ReadJournalTable + WriteInvocationStatusTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         debug_assert!(

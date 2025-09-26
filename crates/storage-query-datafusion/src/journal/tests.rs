@@ -19,7 +19,7 @@ use googletest::prelude::{assert_that, eq};
 use prost::Message;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::Transaction;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
+use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::{
@@ -44,7 +44,6 @@ async fn get_entries() {
             },
         ))),
     )
-    .await
     .unwrap();
     let invoked_invocation_id = InvocationId::mock_random();
     let invoked_invocation_target = InvocationTarget::mock_virtual_object();
@@ -64,7 +63,6 @@ async fn get_entries() {
             Bytes::new(),
         )),
     )
-    .await
     .unwrap();
     tx.put_journal_entry(
         &journal_invocation_id,
@@ -79,7 +77,6 @@ async fn get_entries() {
             .into(),
         )),
     )
-    .await
     .unwrap();
     tx.commit().await.unwrap();
 
@@ -144,7 +141,6 @@ async fn select_count_star() {
             },
         ))),
     )
-    .await
     .unwrap();
     tx.put_journal_entry(
         &journal_invocation_id,
@@ -162,7 +158,6 @@ async fn select_count_star() {
             Bytes::new(),
         )),
     )
-    .await
     .unwrap();
     tx.put_journal_entry(
         &journal_invocation_id,
@@ -177,7 +172,6 @@ async fn select_count_star() {
             .into(),
         )),
     )
-    .await
     .unwrap();
     tx.commit().await.unwrap();
 
