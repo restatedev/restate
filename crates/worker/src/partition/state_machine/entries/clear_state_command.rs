@@ -11,7 +11,7 @@
 use crate::debug_if_leader;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::state_table::StateTable;
+use restate_storage_api::state_table::WriteStateTable;
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::journal_v2::{ClearStateCommand, EntryMetadata};
 use tracing::warn;
@@ -21,7 +21,7 @@ pub(super) type ApplyClearStateCommand<'e> = ApplyJournalCommandEffect<'e, Clear
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyClearStateCommand<'e>
 where
-    S: StateTable,
+    S: WriteStateTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self
@@ -53,7 +53,6 @@ where
 
             ctx.storage
                 .delete_user_state(&service_id, &self.entry.key)
-                .await
                 .map_err(Error::Storage)?;
         } else {
             warn!(

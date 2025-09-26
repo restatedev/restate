@@ -11,7 +11,7 @@ use tracing::trace;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InFlightInvocationMetadata, InvocationStatus};
-use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
+use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawNotification;
@@ -36,7 +36,7 @@ impl<'e> ApplyNotificationCommand<'e> {
         invocation_metadata: &InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
-        S: ReadOnlyJournalTable,
+        S: ReadJournalTable,
     {
         let (header, command) = ctx.storage
                     .get_command_by_completion_id(self.invocation_id, completion_id)
@@ -115,7 +115,7 @@ impl<'e> ApplyNotificationCommand<'e> {
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyNotificationCommand<'e>
 where
-    S: ReadOnlyJournalTable,
+    S: ReadJournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         if ctx.is_leader {
@@ -209,7 +209,7 @@ mod tests {
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
-    use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
+    use restate_storage_api::journal_table_v2::ReadJournalTable;
     use restate_types::invocation::{
         InvocationTermination, NotifySignalRequest, TerminationFlavor,
     };

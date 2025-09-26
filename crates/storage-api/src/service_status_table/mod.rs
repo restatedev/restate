@@ -27,7 +27,7 @@ impl PartitionStoreProtobufValue for VirtualObjectStatus {
     type ProtobufType = crate::protobuf_types::v1::VirtualObjectStatus;
 }
 
-pub trait ReadOnlyVirtualObjectStatusTable {
+pub trait ReadVirtualObjectStatusTable {
     fn get_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
@@ -47,15 +47,12 @@ pub trait ScanVirtualObjectStatusTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait VirtualObjectStatusTable: ReadOnlyVirtualObjectStatusTable {
+pub trait WriteVirtualObjectStatusTable {
     fn put_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
         status: &VirtualObjectStatus,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
-    fn delete_virtual_object_status(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn delete_virtual_object_status(&mut self, service_id: &ServiceId) -> Result<()>;
 }

@@ -10,7 +10,7 @@
 
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::state_table::ReadOnlyStateTable;
+use restate_storage_api::state_table::ReadStateTable;
 use restate_types::journal_v2::{
     EntryMetadata, GetLazyStateCommand, GetLazyStateCompletion, GetStateResult,
 };
@@ -21,7 +21,7 @@ pub(super) type ApplyGetLazyStateCommand<'e> = ApplyJournalCommandEffect<'e, Get
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyGetLazyStateCommand<'e>
 where
-    S: ReadOnlyStateTable,
+    S: ReadStateTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self
