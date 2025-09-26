@@ -47,7 +47,9 @@ use restate_types::logs::metadata::{
 };
 use restate_types::logs::{LogId, LogletId, Lsn};
 use restate_types::net::node::NodeState;
-use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
+use restate_types::net::partition_processor_manager::{
+    CreateSnapshotRequest, CreateSnapshotStatus, Snapshot,
+};
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
@@ -712,7 +714,8 @@ where
         partition_id: PartitionId,
         min_target_lsn: Option<Lsn>,
     ) -> anyhow::Result<Snapshot> {
-        self.network_sender
+        let response = self
+            .network_sender
             .call_rpc(
                 node_id,
                 Swimlane::default(),
@@ -723,9 +726,13 @@ where
                 Some(partition_id.into()),
                 None,
             )
-            .await?
-            .result
-            .map_err(|e| anyhow!("Failed to create snapshot: {:?}", e))
+            .await?;
+
+        match response.status {
+            CreateSnapshotStatus::Ok => Ok(response.snapshot.expect("to be set")),
+            CreateSnapshotStatus::Error(e) => Err(anyhow!("Failed to create snapshot: {}", e)),
+            CreateSnapshotStatus::Unknown => Err(anyhow!("Unknown error creating snapshot")),
+        }
     }
 }
 
