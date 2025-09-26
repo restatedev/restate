@@ -105,7 +105,8 @@ impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>
     for OnJournalEntryCommand
 where
     S: JournalTable
-        + journal_table_v1::JournalTable
+        + journal_table_v1::WriteJournalTable
+        + journal_table_v1::ReadJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + TimerTable
