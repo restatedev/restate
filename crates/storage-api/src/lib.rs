@@ -85,7 +85,7 @@ pub trait Transaction:
     + invocation_status_table::WriteInvocationStatusTable
     + service_status_table::ReadVirtualObjectStatusTable
     + service_status_table::WriteVirtualObjectStatusTable
-    + inbox_table::InboxTable
+    + inbox_table::WriteInboxTable
     + outbox_table::WriteOutboxTable
     + deduplication_table::DeduplicationTable
     + journal_table::WriteJournalTable

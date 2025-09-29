@@ -37,7 +37,7 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Result as StorageResult;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
+use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalRetentionPolicy,
     PreFlightInvocationArgument, PreFlightInvocationJournal, PreFlightInvocationMetadata,
@@ -430,7 +430,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteTimerTable
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
-            + InboxTable
+            + WriteInboxTable
             + ReadStateTable
             + WriteStateTable
             + journal_table_v2::WriteJournalTable
@@ -623,7 +623,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
             + WriteTimerTable
-            + InboxTable
+            + WriteInboxTable
             + FsmTable
             + WriteJournalTable,
     {
@@ -681,7 +681,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
             + WriteTimerTable
-            + InboxTable
+            + WriteInboxTable
             + FsmTable
             + WriteJournalTable,
     {
@@ -934,7 +934,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
             + WriteInvocationStatusTable
-            + InboxTable
+            + WriteInboxTable
             + FsmTable,
     {
         if metadata.invocation_target.invocation_target_ty()
@@ -1110,7 +1110,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn enqueue_into_inbox(&mut self, inbox_entry: InboxEntry) -> Result<MessageIndex, Error>
     where
-        S: InboxTable + FsmTable,
+        S: WriteInboxTable + FsmTable,
     {
         let seq_number = *self.inbox_seq_number;
         debug_if_leader!(
@@ -1121,7 +1121,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_inbox_entry(seq_number, &inbox_entry)
-            .await
             .map_err(Error::Storage)?;
         // need to store the next inbox sequence number
         self.storage
@@ -1139,7 +1138,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: ReadStateTable
             + WriteStateTable
-            + InboxTable
+            + WriteInboxTable
             + FsmTable
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable,
@@ -1172,7 +1171,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + InboxTable
+            + WriteInboxTable
             + FsmTable
             + ReadStateTable
             + WriteStateTable
@@ -1204,7 +1203,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + InboxTable
+            + WriteInboxTable
             + FsmTable
             + ReadStateTable
             + WriteStateTable
@@ -1275,7 +1274,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + InboxTable
+            + WriteInboxTable
             + FsmTable
             + ReadStateTable
             + WriteStateTable
@@ -1431,7 +1430,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: WriteInvocationStatusTable
-            + InboxTable
+            + WriteInboxTable
             + WriteOutboxTable
             + FsmTable
             + WriteJournalTable
@@ -1593,7 +1592,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
-        S: InboxTable
+        S: WriteInboxTable
             + WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
@@ -1627,7 +1626,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
-        S: InboxTable
+        S: WriteInboxTable
             + WriteVirtualObjectStatusTable
             + WriteInvocationStatusTable
             + ReadInvocationStatusTable
@@ -1863,7 +1862,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
             + WriteTimerTable
-            + InboxTable
+            + WriteInboxTable
             + FsmTable
             + ReadJournalTable
             + WriteJournalTable
@@ -1931,7 +1930,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + InboxTable
+            + WriteInboxTable
             + FsmTable
             + WriteJournalTable,
     {
@@ -1995,7 +1994,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteOutboxTable
             + FsmTable
             + WriteTimerTable
-            + InboxTable
+            + WriteInboxTable
             + WriteVirtualObjectStatusTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
@@ -2026,7 +2025,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteOutboxTable
             + FsmTable
             + WriteTimerTable
-            + InboxTable
+            + WriteInboxTable
             + WriteVirtualObjectStatusTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
@@ -2205,7 +2204,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         response_result_override: Option<ResponseResult>,
     ) -> Result<(), Error>
     where
-        S: InboxTable
+        S: WriteInboxTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
             + WriteVirtualObjectStatusTable
@@ -2370,7 +2369,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn consume_inbox(&mut self, invocation_target: &InvocationTarget) -> Result<(), Error>
     where
-        S: InboxTable
+        S: WriteInboxTable
             + WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
@@ -3904,7 +3903,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         sequence_number: MessageIndex,
     ) -> Result<(), Error>
     where
-        S: InboxTable,
+        S: WriteInboxTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -3915,7 +3914,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .delete_inbox_entry(&service_id, sequence_number)
-            .await
             .map_err(Error::Storage)?;
 
         Ok(())

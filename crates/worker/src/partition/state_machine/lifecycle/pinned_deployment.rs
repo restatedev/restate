@@ -13,7 +13,7 @@ use super::VerifyOrMigrateJournalTableToV2Command;
 use crate::debug_if_leader;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::inbox_table::InboxTable;
+use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -48,7 +48,7 @@ where
         + ReadStateTable
         + WriteStateTable
         + FsmTable
-        + InboxTable
+        + WriteInboxTable
         + WriteVirtualObjectStatusTable
         + JournalEventsTable
         + WriteTimerTable

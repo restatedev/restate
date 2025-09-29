@@ -35,7 +35,7 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::Transaction;
-use restate_storage_api::inbox_table::ReadOnlyInboxTable;
+use restate_storage_api::inbox_table::ReadInboxTable;
 use restate_storage_api::invocation_status_table::{
     InFlightInvocationMetadata, InvocationStatus, ReadInvocationStatusTable,
     WriteInvocationStatusTable,
