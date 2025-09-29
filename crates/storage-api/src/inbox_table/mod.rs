@@ -17,7 +17,7 @@ use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
 
 use crate::Result;
-use crate::promise_table::ReadOnlyPromiseTable;
+use crate::promise_table::ReadPromiseTable;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,7 +107,7 @@ pub trait ScanInboxTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait InboxTable: ReadOnlyPromiseTable {
+pub trait InboxTable: ReadPromiseTable {
     fn put_inbox_entry(
         &mut self,
         sequence_number: MessageIndex,

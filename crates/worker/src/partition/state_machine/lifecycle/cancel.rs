@@ -19,7 +19,7 @@ use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
 use restate_storage_api::outbox_table::WriteOutboxTable;
-use restate_storage_api::promise_table::PromiseTable;
+use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
@@ -51,7 +51,8 @@ where
         + journal_table::ReadJournalTable
         + JournalEventsTable
         + TimerTable
-        + PromiseTable,
+        + ReadPromiseTable
+        + WritePromiseTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         match self.invocation_status {

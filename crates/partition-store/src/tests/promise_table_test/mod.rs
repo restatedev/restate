@@ -19,7 +19,7 @@ use bytestring::ByteString;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::promise_table::{
-    Promise, PromiseResult, PromiseState, PromiseTable, ReadOnlyPromiseTable,
+    Promise, PromiseResult, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
 use restate_types::identifiers::{InvocationId, InvocationUuid, ServiceId};
 use restate_types::invocation::JournalCompletionTarget;
@@ -57,13 +57,10 @@ async fn test_promise_table() {
     // Fill in some data
     let mut txn = rocksdb.transaction();
     txn.put_promise(&SERVICE_ID_1, &PROMISE_KEY_1, &PROMISE_COMPLETED)
-        .await
         .unwrap();
     txn.put_promise(&SERVICE_ID_1, &PROMISE_KEY_2, &promise_not_completed)
-        .await
         .unwrap();
     txn.put_promise(&SERVICE_ID_2, &PROMISE_KEY_3, &PROMISE_COMPLETED)
-        .await
         .unwrap();
     txn.commit().await.unwrap();
 
@@ -99,7 +96,7 @@ async fn test_promise_table() {
 
     // Delete and query afterwards
     let mut txn = rocksdb.transaction();
-    txn.delete_all_promises(&SERVICE_ID_1).await.unwrap();
+    txn.delete_all_promises(&SERVICE_ID_1).unwrap();
     txn.commit().await.unwrap();
 
     assert_eq!(
