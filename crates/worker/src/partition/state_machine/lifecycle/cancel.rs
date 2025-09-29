@@ -47,7 +47,8 @@ where
         + StateTable
         + JournalTable
         + OutboxTable
-        + journal_table::JournalTable
+        + journal_table::WriteJournalTable
+        + journal_table::ReadJournalTable
         + JournalEventsTable
         + TimerTable
         + PromiseTable,

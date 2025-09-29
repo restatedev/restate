@@ -32,7 +32,7 @@ where
     S: JournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
-        + journal_table::JournalTable
+        + journal_table::WriteJournalTable
         + JournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {

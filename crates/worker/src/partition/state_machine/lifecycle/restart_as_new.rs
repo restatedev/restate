@@ -76,7 +76,7 @@ where
         + VirtualObjectStatusTable
         + TimerTable
         + InboxTable
-        + journal_table_v1::JournalTable,
+        + journal_table_v1::WriteJournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnRestartAsNewInvocationCommand {

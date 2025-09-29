@@ -18,7 +18,7 @@ use futures_util::StreamExt;
 
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
-use restate_storage_api::journal_table::{JournalEntry, JournalTable};
+use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable, WriteJournalTable};
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal::enriched::{
@@ -57,25 +57,20 @@ static MOCK_INVOKE_JOURNAL_ENTRY: LazyLock<JournalEntry> = LazyLock::new(|| {
 const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_u128(12345678900001));
 
-async fn populate_data<T: JournalTable>(txn: &mut T) {
+fn populate_data<T: WriteJournalTable>(txn: &mut T) {
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 0, &MOCK_SLEEP_JOURNAL_ENTRY)
-        .await
         .unwrap();
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 1, &MOCK_SLEEP_JOURNAL_ENTRY)
-        .await
         .unwrap();
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 2, &MOCK_SLEEP_JOURNAL_ENTRY)
-        .await
         .unwrap();
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 3, &MOCK_SLEEP_JOURNAL_ENTRY)
-        .await
         .unwrap();
     txn.put_journal_entry(&MOCK_INVOCATION_ID_1, 4, &MOCK_INVOKE_JOURNAL_ENTRY)
-        .await
         .unwrap();
 }
 
-async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
+async fn get_entire_journal<T: ReadJournalTable>(txn: &mut T) {
     let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 5).unwrap());
     let mut count = 0;
     while (journal.next().await).is_some() {
@@ -85,7 +80,7 @@ async fn get_entire_journal<T: JournalTable>(txn: &mut T) {
     assert_eq!(count, 5);
 }
 
-async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
+async fn get_subset_of_a_journal<T: ReadJournalTable>(txn: &mut T) {
     let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 2).unwrap());
     let mut count = 0;
     while (journal.next().await).is_some() {
@@ -95,7 +90,7 @@ async fn get_subset_of_a_journal<T: JournalTable>(txn: &mut T) {
     assert_eq!(count, 2);
 }
 
-async fn point_lookups<T: JournalTable>(txn: &mut T) {
+async fn point_lookups<T: ReadJournalTable>(txn: &mut T) {
     let result = txn
         .get_journal_entry(&MOCK_INVOCATION_ID_1, 2)
         .await
@@ -122,11 +117,11 @@ async fn point_lookups<T: JournalTable>(txn: &mut T) {
     assert!(result.is_none());
 }
 
-async fn delete_journal<T: JournalTable>(txn: &mut T) {
-    txn.delete_journal(&MOCK_INVOCATION_ID_1, 5).await.unwrap();
+fn delete_journal<T: WriteJournalTable>(txn: &mut T) {
+    txn.delete_journal(&MOCK_INVOCATION_ID_1, 5).unwrap();
 }
 
-async fn verify_journal_deleted<T: JournalTable>(txn: &mut T) {
+async fn verify_journal_deleted<T: ReadJournalTable>(txn: &mut T) {
     for i in 0..5 {
         let result = txn
             .get_journal_entry(&MOCK_INVOCATION_ID_1, i)
@@ -143,11 +138,11 @@ async fn journal_tests() {
 
     let mut txn = rocksdb.transaction();
 
-    populate_data(&mut txn).await;
+    populate_data(&mut txn);
     get_entire_journal(&mut txn).await;
     get_subset_of_a_journal(&mut txn).await;
     point_lookups(&mut txn).await;
-    delete_journal(&mut txn).await;
+    delete_journal(&mut txn);
 
     txn.commit().await.expect("should not fail");
 
