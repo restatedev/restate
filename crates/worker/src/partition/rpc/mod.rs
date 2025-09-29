@@ -26,7 +26,7 @@ use restate_invoker_api::InvokerHandle;
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
-use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
+use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{InvocationEpoch, InvocationRequest};
 use restate_types::net::partition_processor::{
@@ -184,7 +184,7 @@ where
     TActuator: Actuator,
     TSchemas: DeploymentResolver,
     TStorage: ReadInvocationStatusTable
-        + ReadOnlyVirtualObjectStatusTable
+        + ReadVirtualObjectStatusTable
         + ReadOnlyIdempotencyTable
         + ReadJournalTable,
 {

@@ -17,7 +17,7 @@ use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_storage_api::promise_table::WritePromiseTable;
-use restate_storage_api::service_status_table::VirtualObjectStatusTable;
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::StateTable;
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::client::PurgeInvocationResponse;
@@ -40,7 +40,7 @@ where
         + StateTable
         + journal_table::WriteJournalTable
         + IdempotencyTable
-        + VirtualObjectStatusTable
+        + WriteVirtualObjectStatusTable
         + WritePromiseTable
         + JournalEventsTable,
 {
