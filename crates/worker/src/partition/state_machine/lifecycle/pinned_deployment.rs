@@ -19,7 +19,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::outbox_table::WriteOutboxTable;
-use restate_storage_api::promise_table::PromiseTable;
+use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
 use restate_storage_api::service_status_table::VirtualObjectStatusTable;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
@@ -51,7 +51,8 @@ where
         + VirtualObjectStatusTable
         + JournalEventsTable
         + TimerTable
-        + PromiseTable,
+        + ReadPromiseTable
+        + WritePromiseTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let mut in_flight_invocation_metadata = self

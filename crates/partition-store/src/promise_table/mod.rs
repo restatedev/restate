@@ -15,7 +15,7 @@ use bytestring::ByteString;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::promise_table::{
-    OwnedPromiseRow, Promise, PromiseTable, ReadOnlyPromiseTable, ScanPromiseTable,
+    OwnedPromiseRow, Promise, ReadPromiseTable, ScanPromiseTable, WritePromiseTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
@@ -83,7 +83,7 @@ fn delete_all_promises<S: StorageAccess>(storage: &mut S, service_id: &ServiceId
     Ok(())
 }
 
-impl ReadOnlyPromiseTable for PartitionStore {
+impl ReadPromiseTable for PartitionStore {
     async fn get_promise(
         &mut self,
         service_id: &ServiceId,
@@ -133,7 +133,7 @@ impl ScanPromiseTable for PartitionStore {
     }
 }
 
-impl ReadOnlyPromiseTable for PartitionStoreTransaction<'_> {
+impl ReadPromiseTable for PartitionStoreTransaction<'_> {
     async fn get_promise(
         &mut self,
         service_id: &ServiceId,
@@ -144,8 +144,8 @@ impl ReadOnlyPromiseTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl PromiseTable for PartitionStoreTransaction<'_> {
-    async fn put_promise(
+impl WritePromiseTable for PartitionStoreTransaction<'_> {
+    fn put_promise(
         &mut self,
         service_id: &ServiceId,
         key: &ByteString,
@@ -155,7 +155,7 @@ impl PromiseTable for PartitionStoreTransaction<'_> {
         put_promise(self, service_id, key, promise)
     }
 
-    async fn delete_all_promises(&mut self, service_id: &ServiceId) -> Result<()> {
+    fn delete_all_promises(&mut self, service_id: &ServiceId) -> Result<()> {
         self.assert_partition_key(service_id)?;
         delete_all_promises(self, service_id)
     }
