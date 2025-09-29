@@ -41,7 +41,7 @@ use restate_storage_api::invocation_status_table::{
     WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable};
-use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::service_status_table::{
     ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
 };

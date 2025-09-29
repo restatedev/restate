@@ -36,7 +36,7 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
-use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::PromiseTable;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
@@ -112,7 +112,7 @@ where
         + WriteInvocationStatusTable
         + TimerTable
         + FsmTable
-        + OutboxTable
+        + WriteOutboxTable
         + PromiseTable
         + StateTable,
 {
