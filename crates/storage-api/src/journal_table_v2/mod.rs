@@ -20,7 +20,7 @@ use restate_types::journal_v2::raw::RawCommand;
 use restate_types::journal_v2::{CompletionId, NotificationId};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
-pub trait ReadOnlyJournalTable {
+pub trait ReadJournalTable {
     fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
@@ -66,7 +66,7 @@ pub trait ScanJournalTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait JournalTable: ReadOnlyJournalTable {
+pub trait WriteJournalTable {
     /// Related completion ids to this RawEntry, used to build the internal index
     fn put_journal_entry(
         &mut self,
@@ -74,14 +74,10 @@ pub trait JournalTable: ReadOnlyJournalTable {
         index: u32,
         entry: &StoredRawEntry,
         related_completion_ids: &[CompletionId],
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
     /// When length is available, it is suggested to provide it as it makes the delete more efficient.
-    fn delete_journal(
-        &mut self,
-        invocation_id: InvocationId,
-        length: EntryIndex,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn delete_journal(&mut self, invocation_id: InvocationId, length: EntryIndex) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
