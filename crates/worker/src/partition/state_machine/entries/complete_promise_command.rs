@@ -16,7 +16,7 @@ use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
-use restate_storage_api::state_table::ReadOnlyStateTable;
+use restate_storage_api::state_table::ReadStateTable;
 use restate_types::errors::ALREADY_COMPLETED_INVOCATION_ERROR;
 use restate_types::invocation::{InvocationResponse, ResponseResult};
 use restate_types::journal_v2::{
@@ -31,7 +31,7 @@ pub(super) type ApplyCompletePromiseCommand<'e> =
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyCompletePromiseCommand<'e>
 where
-    S: ReadOnlyStateTable + ReadPromiseTable + WritePromiseTable + FsmTable + WriteOutboxTable,
+    S: ReadStateTable + ReadPromiseTable + WritePromiseTable + FsmTable + WriteOutboxTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self

@@ -11,7 +11,7 @@
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use futures::{StreamExt, TryStreamExt};
-use restate_storage_api::state_table::ReadOnlyStateTable;
+use restate_storage_api::state_table::ReadStateTable;
 use restate_types::journal_v2::{
     EntryMetadata, GetLazyStateKeysCommand, GetLazyStateKeysCompletion,
 };
@@ -23,7 +23,7 @@ pub(super) type ApplyGetLazyStateKeysCommand<'e> =
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyGetLazyStateKeysCommand<'e>
 where
-    S: ReadOnlyStateTable,
+    S: ReadStateTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self
@@ -67,7 +67,7 @@ mod tests {
     use googletest::matchers::contains;
     use googletest::prelude::assert_that;
     use restate_storage_api::Transaction;
-    use restate_storage_api::state_table::StateTable;
+    use restate_storage_api::state_table::WriteStateTable;
     use restate_types::identifiers::ServiceId;
     use restate_types::journal_v2::{GetLazyStateKeysCommand, GetLazyStateKeysCompletion};
 
@@ -82,12 +82,8 @@ mod tests {
 
         // Mock some state
         let mut txn = test_env.storage.transaction();
-        txn.put_user_state(&service_id, b"key1", b"value1")
-            .await
-            .unwrap();
-        txn.put_user_state(&service_id, b"key2", b"value2")
-            .await
-            .unwrap();
+        txn.put_user_state(&service_id, b"key1", b"value1").unwrap();
+        txn.put_user_state(&service_id, b"key2", b"value2").unwrap();
         txn.commit().await.unwrap();
 
         let completion_id = 1;

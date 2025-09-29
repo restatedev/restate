@@ -20,7 +20,7 @@ use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
 use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
-use restate_storage_api::state_table::StateTable;
+use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::CancelInvocationResponse;
@@ -45,7 +45,8 @@ where
         + WriteInvocationStatusTable
         + InboxTable
         + FsmTable
-        + StateTable
+        + ReadStateTable
+        + WriteStateTable
         + WriteOutboxTable
         + journal_table::WriteJournalTable
         + journal_table::ReadJournalTable

@@ -18,7 +18,7 @@ use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_storage_api::promise_table::WritePromiseTable;
 use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
-use restate_storage_api::state_table::StateTable;
+use restate_storage_api::state_table::WriteStateTable;
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
@@ -37,7 +37,7 @@ where
     S: WriteJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
-        + StateTable
+        + WriteStateTable
         + journal_table::WriteJournalTable
         + IdempotencyTable
         + WriteVirtualObjectStatusTable
@@ -83,8 +83,7 @@ where
                         .expect("Workflow methods must have keyed service id");
 
                     ctx.do_unlock_service(service_id.clone()).await?;
-                    ctx.do_clear_all_state(service_id.clone(), invocation_id)
-                        .await?;
+                    ctx.do_clear_all_state(service_id.clone(), invocation_id)?;
                     ctx.do_clear_all_promises(service_id).await?;
                 }
 

@@ -79,7 +79,8 @@ pub trait Storage {
 }
 
 pub trait Transaction:
-    state_table::StateTable
+    state_table::WriteStateTable
+    + state_table::ReadStateTable
     + invocation_status_table::ReadInvocationStatusTable
     + invocation_status_table::WriteInvocationStatusTable
     + service_status_table::ReadVirtualObjectStatusTable
