@@ -25,7 +25,7 @@ use crate::{
 };
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
-    JournalEntryIndex, JournalTable, ReadOnlyJournalTable, ScanJournalTable, StoredEntry,
+    JournalEntryIndex, ReadJournalTable, ScanJournalTable, StoredEntry, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
@@ -290,7 +290,7 @@ fn has_completion<S: StorageAccess>(
     Ok(storage.get_value::<_, JournalEntryIndex>(key)?.is_some())
 }
 
-impl ReadOnlyJournalTable for PartitionStore {
+impl ReadJournalTable for PartitionStore {
     async fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
@@ -377,7 +377,7 @@ impl ScanJournalTable for PartitionStore {
     }
 }
 
-impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
+impl ReadJournalTable for PartitionStoreTransaction<'_> {
     async fn get_journal_entry(
         &mut self,
         invocation_id: InvocationId,
@@ -425,8 +425,8 @@ impl ReadOnlyJournalTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl JournalTable for PartitionStoreTransaction<'_> {
-    async fn put_journal_entry(
+impl WriteJournalTable for PartitionStoreTransaction<'_> {
+    fn put_journal_entry(
         &mut self,
         invocation_id: InvocationId,
         index: u32,
@@ -437,7 +437,7 @@ impl JournalTable for PartitionStoreTransaction<'_> {
         put_journal_entry(self, &invocation_id, index, entry, related_completion_ids)
     }
 
-    async fn delete_journal(
+    fn delete_journal(
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,

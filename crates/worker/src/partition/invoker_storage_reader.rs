@@ -87,7 +87,7 @@ where
                 .is_some_and(|p| p.service_protocol_version >= ServiceProtocolVersion::V4)
             {
                 // If pinned service protocol version exists and >= V4, we need to read from Journal Table V2!
-                let entries = journal_table_v2::ReadOnlyJournalTable::get_journal(
+                let entries = journal_table_v2::ReadJournalTable::get_journal(
                     &mut self.txn,
                     *invocation_id,
                     invoked_status.journal_metadata.length,

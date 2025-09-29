@@ -209,7 +209,7 @@ impl TestEnv {
         invocation_id: InvocationId,
         journal_length: EntryIndex,
     ) -> Vec<journal_v2::Entry> {
-        restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal(
+        restate_storage_api::journal_table_v2::ReadJournalTable::get_journal(
             self.storage(),
             invocation_id,
             journal_length,
@@ -232,7 +232,7 @@ impl TestEnv {
         invocation_id: InvocationId,
         idx: EntryIndex,
     ) -> E {
-        restate_storage_api::journal_table_v2::ReadOnlyJournalTable::get_journal_entry(
+        restate_storage_api::journal_table_v2::ReadJournalTable::get_journal_entry(
             self.storage(),
             invocation_id,
             idx,

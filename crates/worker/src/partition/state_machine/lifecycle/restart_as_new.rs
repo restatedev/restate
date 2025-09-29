@@ -22,7 +22,7 @@ use restate_storage_api::invocation_status_table::{
     WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_table as journal_table_v1;
-use restate_storage_api::journal_table_v2::{JournalTable, ReadOnlyJournalTable};
+use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
 use restate_storage_api::outbox_table::OutboxTable;
 use restate_storage_api::service_status_table::VirtualObjectStatusTable;
 use restate_storage_api::timer_table::TimerTable;
@@ -67,7 +67,8 @@ impl<'ctx, 's: 'ctx, S> StateMachineApplyContext<'s, S> {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnRestartAsNewInvocationCommand
 where
-    S: JournalTable
+    S: WriteJournalTable
+        + ReadJournalTable
         + IdempotencyTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
@@ -128,7 +129,7 @@ where
         // Scan up to the index we want to copy (included)
         for i in 0..(copy_prefix_up_to_index_included + 1) {
             let Some(entry) =
-                ReadOnlyJournalTable::get_journal_entry(ctx.storage, invocation_id, i).await?
+                ReadJournalTable::get_journal_entry(ctx.storage, invocation_id, i).await?
             else {
                 break;
             };
@@ -144,14 +145,13 @@ where
                     new_journal_commands += 1;
 
                     // Now copy to the new journal
-                    JournalTable::put_journal_entry(
+                    WriteJournalTable::put_journal_entry(
                         ctx.storage,
                         new_invocation_id,
                         new_journal_index,
                         &entry,
                         &related_completion_ids,
-                    )
-                    .await?;
+                    )?;
                 }
                 EntryType::Notification(_) => {
                     let id = entry
@@ -165,14 +165,13 @@ where
                     }
 
                     // Now copy to the new journal
-                    JournalTable::put_journal_entry(
+                    WriteJournalTable::put_journal_entry(
                         ctx.storage,
                         new_invocation_id,
                         new_journal_index,
                         &entry,
                         &[],
-                    )
-                    .await?;
+                    )?;
                 }
             }
 
@@ -186,20 +185,19 @@ where
             (copy_prefix_up_to_index_included + 1)..completed_invocation.journal_metadata.length
         {
             if let Some(entry) =
-                ReadOnlyJournalTable::get_journal_entry(ctx.storage, invocation_id, i).await?
+                ReadJournalTable::get_journal_entry(ctx.storage, invocation_id, i).await?
                 && let Some(notification) = entry.inner.try_as_notification_ref()
                 && let NotificationId::CompletionId(completion_id) = notification.id()
                 && missing_completions.remove(&completion_id)
             {
                 // Copy over this notification
-                JournalTable::put_journal_entry(
+                WriteJournalTable::put_journal_entry(
                     ctx.storage,
                     new_invocation_id,
                     new_journal_index,
                     &entry,
                     &[],
-                )
-                .await?;
+                )?;
 
                 // Increment journal index
                 new_journal_index += 1;
