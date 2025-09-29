@@ -93,7 +93,7 @@ pub trait Transaction:
     + journal_table_v2::WriteJournalTable
     + journal_table_v2::ReadJournalTable
     + fsm_table::FsmTable
-    + timer_table::TimerTable
+    + timer_table::WriteTimerTable
     + idempotency_table::IdempotencyTable
     + promise_table::ReadPromiseTable
     + promise_table::WritePromiseTable
