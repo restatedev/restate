@@ -55,7 +55,7 @@ use restate_storage_api::promise_table::{
 use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, VirtualObjectStatus, WriteVirtualObjectStatusTable,
 };
-use restate_storage_api::state_table::StateTable;
+use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, TimerTable};
 use restate_tracing_instrumentation as instrumentation;
@@ -432,7 +432,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVirtualObjectStatusTable
             + WriteVirtualObjectStatusTable
             + InboxTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + JournalEventsTable,
@@ -1137,7 +1138,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         mutation: ExternalStateMutation,
     ) -> Result<(), Error>
     where
-        S: StateTable
+        S: ReadStateTable
+            + WriteStateTable
             + InboxTable
             + FsmTable
             + ReadVirtualObjectStatusTable
@@ -1173,7 +1175,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInvocationStatusTable
             + InboxTable
             + FsmTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + ReadJournalTable
             + WriteJournalTable
             + WriteOutboxTable
@@ -1204,7 +1207,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInvocationStatusTable
             + InboxTable
             + FsmTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + ReadJournalTable
             + WriteJournalTable
             + WriteOutboxTable
@@ -1274,7 +1278,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInvocationStatusTable
             + InboxTable
             + FsmTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + WriteJournalTable
             + ReadJournalTable
             + WriteOutboxTable
@@ -1594,7 +1599,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
             + WriteVirtualObjectStatusTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + WriteJournalTable
             + ReadJournalTable
             + WriteOutboxTable
@@ -1627,7 +1633,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInvocationStatusTable
             + ReadInvocationStatusTable
             + WriteVirtualObjectStatusTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + WriteJournalTable
             + ReadJournalTable
             + WriteOutboxTable
@@ -1864,7 +1871,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + TimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + JournalEventsTable,
@@ -1982,7 +1990,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInvocationStatusTable
             + ReadJournalTable
             + WriteJournalTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + ReadPromiseTable
             + WritePromiseTable
             + WriteOutboxTable
@@ -2012,7 +2021,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadInvocationStatusTable
             + ReadJournalTable
             + WriteJournalTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + ReadPromiseTable
             + WritePromiseTable
             + WriteOutboxTable
@@ -2205,7 +2215,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadJournalTable
             + WriteOutboxTable
             + FsmTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + JournalEventsTable,
@@ -2366,7 +2377,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
             + WriteVirtualObjectStatusTable
-            + StateTable
+            + ReadStateTable
+            + WriteStateTable
             + WriteJournalTable,
     {
         // Inbox exists only for virtual object exclusive handler cases
@@ -2447,7 +2459,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
-        S: StateTable
+        S: ReadStateTable
+            + WriteStateTable
             + ReadPromiseTable
             + WritePromiseTable
             + WriteOutboxTable
@@ -2557,7 +2570,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
-                    self.do_clear_state(service_id, invocation_id, key).await?;
+                    self.do_clear_state(service_id, invocation_id, key)?;
                 } else {
                     warn!(
                         "Trying to process entry {} for a target that has no state",
@@ -2582,7 +2595,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 if let Some(service_id) =
                     invocation_metadata.invocation_target.as_keyed_service_id()
                 {
-                    self.do_clear_all_state(service_id, invocation_id).await?;
+                    self.do_clear_all_state(service_id, invocation_id)?;
                 } else {
                     warn!(
                         "Trying to process entry {} for a target that has no state",
@@ -4039,7 +4052,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         value: Bytes,
     ) -> Result<(), Error>
     where
-        S: StateTable,
+        S: WriteStateTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4049,7 +4062,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_user_state(&service_id, key, value)
-            .await
             .map_err(Error::Storage)
     }
 
@@ -4063,14 +4075,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             rpc.service = %service_id.service_name
         )
     )]
-    async fn do_clear_state(
+    fn do_clear_state(
         &mut self,
         service_id: ServiceId,
         invocation_id: InvocationId,
         key: Bytes,
     ) -> Result<(), Error>
     where
-        S: StateTable,
+        S: WriteStateTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4080,7 +4092,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .delete_user_state(&service_id, &key)
-            .await
             .map_err(Error::Storage)
     }
 
@@ -4093,17 +4104,17 @@ impl<S> StateMachineApplyContext<'_, S> {
             rpc.service = %service_id.service_name
         )
     )]
-    async fn do_clear_all_state(
+    fn do_clear_all_state(
         &mut self,
         service_id: ServiceId,
         invocation_id: InvocationId,
     ) -> Result<(), Error>
     where
-        S: StateTable,
+        S: WriteStateTable,
     {
         debug_if_leader!(self.is_leader, "Effect: Clear all state");
 
-        self.storage.delete_all_user_state(&service_id).await?;
+        self.storage.delete_all_user_state(&service_id)?;
 
         Ok(())
     }
@@ -4386,7 +4397,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn do_mutate_state(&mut self, state_mutation: ExternalStateMutation) -> Result<(), Error>
     where
-        S: StateTable,
+        S: ReadStateTable + WriteStateTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4432,7 +4443,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn mutate_state(&mut self, state_mutation: ExternalStateMutation) -> StorageResult<()>
     where
-        S: StateTable,
+        S: ReadStateTable + WriteStateTable,
     {
         let ExternalStateMutation {
             service_id,
@@ -4463,13 +4474,13 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         for (key, _) in &all_user_states {
             if !state.contains_key(key) {
-                self.storage.delete_user_state(&service_id, key).await?;
+                self.storage.delete_user_state(&service_id, key)?;
             }
         }
 
         // overwrite existing key value pairs
         for (key, value) in state {
-            self.storage.put_user_state(&service_id, key, value).await?;
+            self.storage.put_user_state(&service_id, key, value)?;
         }
 
         Ok(())

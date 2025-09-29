@@ -45,7 +45,7 @@ use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, VirtualObjectStatus, WriteVirtualObjectStatusTable,
 };
-use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
+use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_test_util::matchers::*;
 use restate_types::config::StorageOptions;
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
@@ -690,10 +690,8 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
 
     // Fill with some state the service K/V store
     let mut txn = test_env.storage.transaction();
-    txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")
-        .await?;
-    txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")
-        .await?;
+    txn.put_user_state(&service_id, b"my-key-1", b"my-val-1")?;
+    txn.put_user_state(&service_id, b"my-key-2", b"my-val-2")?;
     txn.commit().await.unwrap();
 
     let invocation_id =
@@ -731,8 +729,8 @@ async fn get_state_keys() -> TestResult {
 
     // Mock some state
     let mut txn = test_env.storage.transaction();
-    txn.put_user_state(&service_id, b"key1", b"value1").await?;
-    txn.put_user_state(&service_id, b"key2", b"value2").await?;
+    txn.put_user_state(&service_id, b"key1", b"value1")?;
+    txn.put_user_state(&service_id, b"key2", b"value2")?;
     txn.commit().await.unwrap();
 
     let actions = test_env
