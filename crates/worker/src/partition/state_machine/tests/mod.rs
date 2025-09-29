@@ -43,7 +43,7 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable};
 use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
+    ReadVirtualObjectStatusTable, VirtualObjectStatus, WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
 use restate_test_util::matchers::*;
@@ -340,8 +340,7 @@ async fn shared_invocation_skips_inbox() -> TestResult {
     tx.put_virtual_object_status(
         &invocation_target.as_keyed_service_id().unwrap(),
         &VirtualObjectStatus::Locked(InvocationId::mock_random()),
-    )
-    .await?;
+    )?;
     tx.commit().await.unwrap();
 
     // Start the invocation

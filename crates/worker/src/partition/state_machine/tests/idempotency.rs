@@ -514,7 +514,6 @@ async fn attach_inboxed_with_send_service_invocation() {
             &invocation_target.as_keyed_service_id().unwrap(),
             &VirtualObjectStatus::Locked(InvocationId::mock_generate(&invocation_target)),
         )
-        .await
         .unwrap();
         tx.commit().await.unwrap();
     }

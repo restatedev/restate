@@ -53,7 +53,7 @@ use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
 use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, VirtualObjectStatus, VirtualObjectStatusTable,
+    ReadVirtualObjectStatusTable, VirtualObjectStatus, WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerKey;
@@ -429,7 +429,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteOutboxTable
             + FsmTable
             + TimerTable
-            + VirtualObjectStatusTable
+            + ReadVirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + InboxTable
             + StateTable
             + journal_table_v2::WriteJournalTable
@@ -619,7 +620,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + FsmTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + VirtualObjectStatusTable
+            + ReadVirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + TimerTable
             + InboxTable
             + FsmTable
@@ -676,7 +678,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: IdempotencyTable
             + WriteInvocationStatusTable
             + FsmTable
-            + VirtualObjectStatusTable
+            + ReadVirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + TimerTable
             + InboxTable
             + FsmTable
@@ -749,7 +752,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: IdempotencyTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + VirtualObjectStatusTable
+            + ReadVirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + WriteOutboxTable
             + FsmTable,
     {
@@ -927,7 +931,11 @@ impl<S> StateMachineApplyContext<'_, S> {
         metadata: PreFlightInvocationMetadata,
     ) -> Result<Option<PreFlightInvocationMetadata>, Error>
     where
-        S: VirtualObjectStatusTable + WriteInvocationStatusTable + InboxTable + FsmTable,
+        S: ReadVirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
+            + WriteInvocationStatusTable
+            + InboxTable
+            + FsmTable,
     {
         if metadata.invocation_target.invocation_target_ty()
             == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
@@ -979,7 +987,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                         &keyed_service_id,
                         &VirtualObjectStatus::Locked(invocation_id),
                     )
-                    .await
                     .map_err(Error::Storage)?;
             }
         }
@@ -1130,7 +1137,11 @@ impl<S> StateMachineApplyContext<'_, S> {
         mutation: ExternalStateMutation,
     ) -> Result<(), Error>
     where
-        S: StateTable + InboxTable + FsmTable + VirtualObjectStatusTable,
+        S: StateTable
+            + InboxTable
+            + FsmTable
+            + ReadVirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable,
     {
         let service_status = self
             .storage
@@ -1157,7 +1168,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         }: InvocationTermination,
     ) -> Result<(), Error>
     where
-        S: VirtualObjectStatusTable
+        S: WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
             + InboxTable
@@ -1188,7 +1199,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         response_sink: Option<InvocationMutationResponseSink>,
     ) -> Result<(), Error>
     where
-        S: VirtualObjectStatusTable
+        S: WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
             + InboxTable
@@ -1258,7 +1269,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         response_sink: Option<InvocationMutationResponseSink>,
     ) -> Result<(), Error>
     where
-        S: VirtualObjectStatusTable
+        S: WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
             + InboxTable
@@ -1579,10 +1590,10 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: InboxTable
-            + VirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + VirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + StateTable
             + WriteJournalTable
             + ReadJournalTable
@@ -1612,10 +1623,10 @@ impl<S> StateMachineApplyContext<'_, S> {
     ) -> Result<(), Error>
     where
         S: InboxTable
-            + VirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + WriteInvocationStatusTable
             + ReadInvocationStatusTable
-            + VirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + StateTable
             + WriteJournalTable
             + ReadJournalTable
@@ -1843,7 +1854,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInvocationStatusTable
             + WriteOutboxTable
             + FsmTable
-            + VirtualObjectStatusTable
+            + ReadVirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + TimerTable
             + InboxTable
             + FsmTable
@@ -1909,7 +1921,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn on_neo_invoke_timer(&mut self, invocation_id: InvocationId) -> Result<(), Error>
     where
-        S: VirtualObjectStatusTable
+        S: ReadVirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
             + InboxTable
@@ -1976,7 +1989,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + FsmTable
             + TimerTable
             + InboxTable
-            + VirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + JournalEventsTable,
@@ -2006,7 +2019,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + FsmTable
             + TimerTable
             + InboxTable
-            + VirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + JournalEventsTable,
@@ -2187,7 +2200,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: InboxTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + VirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + WriteJournalTable
             + ReadJournalTable
             + WriteOutboxTable
@@ -2349,10 +2362,10 @@ impl<S> StateMachineApplyContext<'_, S> {
     async fn consume_inbox(&mut self, invocation_target: &InvocationTarget) -> Result<(), Error>
     where
         S: InboxTable
-            + VirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + VirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
             + StateTable
             + WriteJournalTable,
     {
@@ -2395,7 +2408,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 &keyed_service_id,
                                 &VirtualObjectStatus::Locked(invocation_id),
                             )
-                            .await
                             .map_err(Error::Storage)?;
 
                         let (in_flight_invocation_meta, invocation_input) =
@@ -2421,7 +2433,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             // We consumed the inbox, nothing else to do here
             self.storage
                 .put_virtual_object_status(&keyed_service_id, &VirtualObjectStatus::Unlocked)
-                .await
                 .map_err(Error::Storage)?;
         }
 
@@ -3510,7 +3521,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: ReadOnlyIdempotencyTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + ReadOnlyVirtualObjectStatusTable
+            + ReadVirtualObjectStatusTable
             + WriteOutboxTable
             + FsmTable,
     {
@@ -3995,7 +4006,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     async fn do_unlock_service(&mut self, service_id: ServiceId) -> Result<(), Error>
     where
-        S: VirtualObjectStatusTable,
+        S: WriteVirtualObjectStatusTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4005,7 +4016,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.storage
             .put_virtual_object_status(&service_id, &VirtualObjectStatus::Unlocked)
-            .await
             .map_err(Error::Storage)?;
 
         Ok(())

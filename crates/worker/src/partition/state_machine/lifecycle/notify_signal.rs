@@ -20,7 +20,7 @@ use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
 use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
-use restate_storage_api::service_status_table::VirtualObjectStatusTable;
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
 use restate_types::identifiers::InvocationId;
@@ -49,7 +49,7 @@ where
         + TimerTable
         + ReadPromiseTable
         + WritePromiseTable
-        + VirtualObjectStatusTable,
+        + WriteVirtualObjectStatusTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnNotifySignalCommand {
