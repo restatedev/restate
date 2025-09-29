@@ -18,7 +18,7 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::journal_events::JournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
-use restate_storage_api::outbox_table::OutboxTable;
+use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::PromiseTable;
 use restate_storage_api::state_table::StateTable;
 use restate_storage_api::timer_table::TimerTable;
@@ -46,7 +46,7 @@ where
         + InboxTable
         + FsmTable
         + StateTable
-        + OutboxTable
+        + WriteOutboxTable
         + journal_table::WriteJournalTable
         + journal_table::ReadJournalTable
         + JournalEventsTable
@@ -125,6 +125,7 @@ mod tests {
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, ReadInvocationStatusTable,
     };
+    use restate_storage_api::outbox_table::ReadOutboxTable;
     use restate_types::deployment::PinnedDeployment;
     use restate_types::errors::CANCELED_INVOCATION_ERROR;
     use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};

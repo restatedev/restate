@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
+use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_storage_api::state_table::StateTable;
 use restate_types::invocation::{NotifySignalRequest, ResponseResult};
 use restate_types::journal_v2::{
@@ -26,7 +26,7 @@ pub(super) type ApplyCompleteAwakeableCommand<'e> =
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyCompleteAwakeableCommand<'e>
 where
-    S: StateTable + OutboxTable + FsmTable,
+    S: StateTable + WriteOutboxTable + FsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         ctx.handle_outgoing_message(match self.entry.id {

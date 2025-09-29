@@ -13,7 +13,7 @@ use std::ops::RangeInclusive;
 
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::Result;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable, ReadOnlyOutboxTable};
+use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable, WriteOutboxTable};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::identifiers::PartitionId;
 
@@ -120,19 +120,9 @@ fn truncate_outbox<S: StorageAccess>(
     Ok(())
 }
 
-impl ReadOnlyOutboxTable for PartitionStore {
+impl ReadOutboxTable for PartitionStore {
     async fn get_outbox_head_seq_number(&mut self) -> Result<Option<u64>> {
         get_outbox_head_seq_number(self, self.partition_id())
-    }
-}
-
-impl OutboxTable for PartitionStore {
-    async fn put_outbox_message(
-        &mut self,
-        message_index: u64,
-        outbox_message: &OutboxMessage,
-    ) -> Result<()> {
-        add_message(self, self.partition_id(), message_index, outbox_message)
     }
 
     async fn get_next_outbox_message(
@@ -145,25 +135,11 @@ impl OutboxTable for PartitionStore {
     async fn get_outbox_message(&mut self, sequence_number: u64) -> Result<Option<OutboxMessage>> {
         get_outbox_message(self, self.partition_id(), sequence_number)
     }
-
-    async fn truncate_outbox(&mut self, range: RangeInclusive<u64>) -> Result<()> {
-        truncate_outbox(self, self.partition_id(), range)
-    }
 }
 
-impl ReadOnlyOutboxTable for PartitionStoreTransaction<'_> {
+impl ReadOutboxTable for PartitionStoreTransaction<'_> {
     async fn get_outbox_head_seq_number(&mut self) -> Result<Option<u64>> {
         get_outbox_head_seq_number(self, self.partition_id())
-    }
-}
-
-impl OutboxTable for PartitionStoreTransaction<'_> {
-    async fn put_outbox_message(
-        &mut self,
-        message_index: u64,
-        outbox_message: &OutboxMessage,
-    ) -> Result<()> {
-        add_message(self, self.partition_id(), message_index, outbox_message)
     }
 
     async fn get_next_outbox_message(
@@ -176,8 +152,18 @@ impl OutboxTable for PartitionStoreTransaction<'_> {
     async fn get_outbox_message(&mut self, sequence_number: u64) -> Result<Option<OutboxMessage>> {
         get_outbox_message(self, self.partition_id(), sequence_number)
     }
+}
 
-    async fn truncate_outbox(&mut self, range: RangeInclusive<u64>) -> Result<()> {
+impl WriteOutboxTable for PartitionStoreTransaction<'_> {
+    fn put_outbox_message(
+        &mut self,
+        message_index: u64,
+        outbox_message: &OutboxMessage,
+    ) -> Result<()> {
+        add_message(self, self.partition_id(), message_index, outbox_message)
+    }
+
+    fn truncate_outbox(&mut self, range: RangeInclusive<u64>) -> Result<()> {
         truncate_outbox(self, self.partition_id(), range)
     }
 }
