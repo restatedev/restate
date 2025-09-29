@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::cmp::Ordering;
-use std::future::Future;
 
 use futures::Stream;
 
@@ -262,18 +261,16 @@ impl WithPartitionKey for Timer {
     }
 }
 
-pub trait TimerTable {
-    fn put_timer(
-        &mut self,
-        timer_key: &TimerKey,
-        timer: &Timer,
-    ) -> impl Future<Output = Result<()>> + Send;
-
-    fn delete_timer(&mut self, timer_key: &TimerKey) -> impl Future<Output = Result<()>> + Send;
-
+pub trait ReadTimerTable {
     fn next_timers_greater_than(
         &mut self,
         exclusive_start: Option<&TimerKey>,
         limit: usize,
     ) -> Result<impl Stream<Item = Result<(TimerKey, Timer)>> + Send>;
+}
+
+pub trait WriteTimerTable {
+    fn put_timer(&mut self, timer_key: &TimerKey, timer: &Timer) -> Result<()>;
+
+    fn delete_timer(&mut self, timer_key: &TimerKey) -> Result<()>;
 }

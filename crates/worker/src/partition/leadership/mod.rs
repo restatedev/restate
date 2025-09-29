@@ -37,7 +37,7 @@ use restate_storage_api::invocation_status_table::{
     InvokedInvocationStatusLite, ScanInvocationStatusTable,
 };
 use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable};
-use restate_storage_api::timer_table::{TimerKey, TimerTable};
+use restate_storage_api::timer_table::{ReadTimerTable, TimerKey};
 use restate_timer::TokioClock;
 use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::RunMode;

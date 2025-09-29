@@ -26,7 +26,7 @@ use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable}
 use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, WriteVirtualObjectStatusTable,
 };
-use restate_storage_api::timer_table::TimerTable;
+use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId};
 use restate_types::invocation::client::RestartAsNewInvocationResponse;
 use restate_types::invocation::{
@@ -76,7 +76,7 @@ where
         + FsmTable
         + ReadVirtualObjectStatusTable
         + WriteVirtualObjectStatusTable
-        + TimerTable
+        + WriteTimerTable
         + InboxTable
         + journal_table_v1::WriteJournalTable,
 {

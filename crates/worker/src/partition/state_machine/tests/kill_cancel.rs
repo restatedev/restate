@@ -15,7 +15,9 @@ use assert2::let_assert;
 use googletest::any;
 use prost::Message;
 use restate_storage_api::journal_table::WriteJournalTable;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
+use restate_storage_api::timer_table::{
+    ReadTimerTable, Timer, TimerKey, TimerKeyKind, WriteTimerTable,
+};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::{IngressInvocationResponseSink, TerminationFlavor};
@@ -360,8 +362,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
             },
         },
         &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32, 0),
-    )
-    .await?;
+    )?;
     tx.commit().await?;
 
     let actions = test_env
@@ -498,8 +499,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
             },
         },
         &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32, 0),
-    )
-    .await?;
+    )?;
     tx.commit().await?;
 
     let request_id = PartitionProcessorRpcRequestId::new();

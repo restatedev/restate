@@ -22,7 +22,7 @@ use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
 use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
-use restate_storage_api::timer_table::TimerTable;
+use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
@@ -51,7 +51,7 @@ where
         + InboxTable
         + WriteVirtualObjectStatusTable
         + JournalEventsTable
-        + TimerTable
+        + WriteTimerTable
         + ReadPromiseTable
         + WritePromiseTable,
 {
