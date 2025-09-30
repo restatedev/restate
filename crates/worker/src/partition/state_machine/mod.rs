@@ -44,7 +44,7 @@ use restate_storage_api::invocation_status_table::{
     ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
-use restate_storage_api::journal_events::JournalEventsTable;
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table::ReadJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_storage_api::journal_table_v2;
@@ -435,7 +435,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         match command {
             Command::UpdatePartitionDurability(_) => {
@@ -1182,7 +1182,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         match termination_flavor {
             TerminationFlavor::Kill => self.on_kill_invocation(invocation_id, response_sink).await,
@@ -1213,7 +1213,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
 
@@ -1282,7 +1282,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteOutboxTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + JournalEventsTable
+            + WriteJournalEventsTable
             + ReadPromiseTable
             + WritePromiseTable
             + WriteTimerTable,
@@ -1434,7 +1434,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + WriteJournalTable
             + journal_table_v2::WriteJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1514,7 +1514,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + WriteJournalTable
             + journal_table_v2::WriteJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1604,7 +1604,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -1638,7 +1638,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -1875,7 +1875,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         let (key, value) = timer_value.into_inner();
         self.do_delete_timer(key).await?;
@@ -2001,7 +2001,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVirtualObjectStatusTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         let status = self
             .get_invocation_status(&invoker_effect.invocation_id)
@@ -2032,7 +2032,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVirtualObjectStatusTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         let is_status_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
 
@@ -2219,7 +2219,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + JournalEventsTable,
+            + WriteJournalEventsTable,
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
@@ -4190,7 +4190,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         should_remove_journal_table_v2: bool,
     ) -> Result<(), Error>
     where
-        S: WriteJournalTable + journal_table_v2::WriteJournalTable + JournalEventsTable,
+        S: WriteJournalTable + journal_table_v2::WriteJournalTable + WriteJournalEventsTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4209,8 +4209,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             WriteJournalTable::delete_journal(self.storage, &invocation_id, journal_length)
                 .map_err(Error::Storage)?;
         }
-        JournalEventsTable::delete_journal_events(self.storage, invocation_id)
-            .await
+        WriteJournalEventsTable::delete_journal_events(self.storage, invocation_id)
             .map_err(Error::Storage)?;
         Ok(())
     }

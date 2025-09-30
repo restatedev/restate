@@ -12,7 +12,7 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
-use restate_storage_api::journal_events::JournalEventsTable;
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_types::identifiers::InvocationId;
@@ -33,7 +33,7 @@ where
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + journal_table::WriteJournalTable
-        + JournalEventsTable,
+        + WriteJournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPurgeJournalCommand {

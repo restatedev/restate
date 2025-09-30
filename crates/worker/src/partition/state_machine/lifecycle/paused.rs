@@ -14,7 +14,7 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
-use restate_storage_api::journal_events::JournalEventsTable;
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
 
@@ -26,7 +26,7 @@ pub struct OnPausedCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnPausedCommand
 where
-    S: ReadInvocationStatusTable + WriteInvocationStatusTable + JournalEventsTable,
+    S: ReadInvocationStatusTable + WriteInvocationStatusTable + WriteJournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPausedCommand {

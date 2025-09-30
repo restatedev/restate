@@ -13,7 +13,7 @@ use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
-use restate_storage_api::journal_events::JournalEventsTable;
+use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_storage_api::promise_table::WritePromiseTable;
@@ -42,7 +42,7 @@ where
         + IdempotencyTable
         + WriteVirtualObjectStatusTable
         + WritePromiseTable
-        + JournalEventsTable,
+        + WriteJournalEventsTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPurgeCommand {
