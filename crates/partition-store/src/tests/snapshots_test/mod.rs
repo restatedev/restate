@@ -15,7 +15,7 @@ use std::time::SystemTime;
 use tempfile::tempdir;
 
 use restate_storage_api::Transaction;
-use restate_storage_api::fsm_table::{FsmTable, ReadOnlyFsmTable};
+use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
 use restate_types::identifiers::{PartitionKey, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::partitions::Partition;
@@ -85,7 +85,7 @@ pub(crate) async fn run_tests(
 
 async fn insert_test_data(partition: &mut PartitionStore) {
     let mut txn = partition.transaction();
-    txn.put_applied_lsn(Lsn::new(100)).await.unwrap();
+    txn.put_applied_lsn(Lsn::new(100)).unwrap();
     txn.commit().await.expect("commit succeeds");
 }
 

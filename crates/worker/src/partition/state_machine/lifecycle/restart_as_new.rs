@@ -13,7 +13,7 @@ use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachin
 use ahash::HashSet;
 use opentelemetry::trace::Span;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::idempotency_table::IdempotencyTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -73,7 +73,7 @@ where
         + IdempotencyTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
-        + FsmTable
+        + WriteFsmTable
         + ReadVirtualObjectStatusTable
         + WriteVirtualObjectStatusTable
         + WriteTimerTable

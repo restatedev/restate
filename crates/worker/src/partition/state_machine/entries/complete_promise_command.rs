@@ -11,7 +11,7 @@
 use crate::debug_if_leader;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
@@ -31,7 +31,7 @@ pub(super) type ApplyCompletePromiseCommand<'e> =
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyCompletePromiseCommand<'e>
 where
-    S: ReadStateTable + ReadPromiseTable + WritePromiseTable + FsmTable + WriteOutboxTable,
+    S: ReadStateTable + ReadPromiseTable + WritePromiseTable + WriteFsmTable + WriteOutboxTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self

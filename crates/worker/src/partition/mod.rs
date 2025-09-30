@@ -38,7 +38,7 @@ use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
     ReadOnlyDeduplicationTable,
 };
-use restate_storage_api::fsm_table::{FsmTable, PartitionDurability, ReadOnlyFsmTable};
+use restate_storage_api::fsm_table::{PartitionDurability, ReadFsmTable, WriteFsmTable};
 use restate_storage_api::outbox_table::ReadOutboxTable;
 use restate_storage_api::{StorageError, Transaction};
 use restate_time_util::DurationExt;
@@ -650,7 +650,7 @@ where
         };
 
         // make sure we advance the FSM, even if it's a filtered gap.
-        transaction.put_applied_lsn(lsn).await?;
+        transaction.put_applied_lsn(lsn)?;
         // Update replay status
         self.status.last_applied_log_lsn = Some(lsn);
         self.status.last_record_applied_at = Some(MillisSinceEpoch::now());
@@ -731,9 +731,7 @@ where
                     durable_point: partition_durability.durable_point,
                 };
                 if self.trim_queue.push(&partition_durability) {
-                    transaction
-                        .put_partition_durability(&partition_durability)
-                        .await?;
+                    transaction.put_partition_durability(&partition_durability)?;
                 }
             } else {
                 self.state_machine

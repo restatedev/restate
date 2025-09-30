@@ -11,7 +11,7 @@
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_types::identifiers::InvocationId;
@@ -27,7 +27,7 @@ pub(super) type ApplyCallCommand<'e> = ApplyJournalCommandEffect<'e, CallCommand
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyJournalCommandEffect<'e, CallCommand>
 where
-    S: WriteOutboxTable + FsmTable,
+    S: WriteOutboxTable + WriteFsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         _ApplyCallCommand {
@@ -49,7 +49,7 @@ pub(super) type ApplyOneWayCallCommand<'e> = ApplyJournalCommandEffect<'e, OneWa
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyJournalCommandEffect<'e, OneWayCallCommand>
 where
-    S: WriteOutboxTable + FsmTable,
+    S: WriteOutboxTable + WriteFsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let execution_time = if self.entry.invoke_time == MillisSinceEpoch::UNIX_EPOCH {
@@ -84,7 +84,7 @@ struct _ApplyCallCommand<'e> {
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for _ApplyCallCommand<'e>
 where
-    S: WriteOutboxTable + FsmTable,
+    S: WriteOutboxTable + WriteFsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let caller_invocation_metadata = self

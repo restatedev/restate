@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_wal_protocol::control::VersionBarrier;
 
 use crate::debug_if_leader;
@@ -21,16 +21,14 @@ pub struct OnVersionBarrierCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnVersionBarrierCommand
 where
-    S: FsmTable,
+    S: WriteFsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         if matches!(
             self.barrier.version.cmp_precedence(ctx.min_restate_version),
             std::cmp::Ordering::Greater,
         ) {
-            ctx.storage
-                .put_min_restate_version(&self.barrier.version)
-                .await?;
+            ctx.storage.put_min_restate_version(&self.barrier.version)?;
             *ctx.min_restate_version = self.barrier.version;
             debug_if_leader!(
                 ctx.is_leader,
@@ -46,7 +44,7 @@ where
 mod tests {
     use googletest::prelude::*;
 
-    use restate_storage_api::fsm_table::ReadOnlyFsmTable;
+    use restate_storage_api::fsm_table::ReadFsmTable;
     use restate_types::SemanticRestateVersion;
     use restate_types::identifiers::PartitionKey;
     use restate_types::logs::Keys;
