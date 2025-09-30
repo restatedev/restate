@@ -11,7 +11,7 @@
 use crate::partition::state_machine::entries::OnJournalEntryCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::inbox_table::InboxTable;
+use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -43,7 +43,7 @@ where
         + ReadJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
-        + InboxTable
+        + WriteInboxTable
         + FsmTable
         + ReadStateTable
         + WriteStateTable

@@ -15,7 +15,7 @@ use opentelemetry::trace::Span;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::FsmTable;
 use restate_storage_api::idempotency_table::IdempotencyTable;
-use restate_storage_api::inbox_table::InboxTable;
+use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, JournalMetadata, PreFlightInvocationArgument, PreFlightInvocationJournal,
     PreFlightInvocationMetadata, ReadInvocationStatusTable, StatusTimestamps,
@@ -77,7 +77,7 @@ where
         + ReadVirtualObjectStatusTable
         + WriteVirtualObjectStatusTable
         + WriteTimerTable
-        + InboxTable
+        + WriteInboxTable
         + journal_table_v1::WriteJournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {

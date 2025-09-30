@@ -10,7 +10,7 @@
 
 use super::*;
 
-use restate_storage_api::inbox_table::ReadOnlyInboxTable;
+use restate_storage_api::inbox_table::ReadInboxTable;
 use restate_types::invocation::SubmitNotificationSink;
 use restate_types::time::MillisSinceEpoch;
 use std::time::{Duration, SystemTime};

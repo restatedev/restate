@@ -15,7 +15,7 @@ use restate_invoker_api::Effect;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
-use restate_storage_api::inbox_table::{InboxEntry, ReadOnlyInboxTable, SequenceNumberInboxEntry};
+use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, JournalMetadata, StatusTimestamps,
 };
