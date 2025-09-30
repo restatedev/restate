@@ -97,6 +97,32 @@ impl ActiveServiceRevision {
         self.service_revision
             .to_service_metadata(self.deployment_id)
     }
+
+    fn create_index<'a>(
+        deployments: impl IntoIterator<Item = &'a Deployment>,
+    ) -> HashMap<String, Self> {
+        let mut active_service_revisions = HashMap::new();
+        for deployment in deployments {
+            for service in deployment.services.values() {
+                active_service_revisions
+                    .entry(service.name.clone())
+                    .and_modify(|registered_service_revision: &mut ActiveServiceRevision| {
+                        if registered_service_revision.service_revision.revision < service.revision
+                        {
+                            *registered_service_revision = ActiveServiceRevision {
+                                deployment_id: deployment.id,
+                                service_revision: Arc::clone(service),
+                            }
+                        }
+                    })
+                    .or_insert(ActiveServiceRevision {
+                        deployment_id: deployment.id,
+                        service_revision: Arc::clone(service),
+                    });
+            }
+        }
+        active_service_revisions
+    }
 }
 
 #[serde_as]
