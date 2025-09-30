@@ -406,37 +406,10 @@ impl From<Schema> for super::Schema {
             subscriptions,
         }: Schema,
     ) -> Self {
-        fn build_active_service_revision_index(
-            deployments: &Vec<Deployment>,
-        ) -> HashMap<String, ActiveServiceRevision> {
-            let mut active_service_revisions = HashMap::new();
-            for deployment in deployments {
-                for service in deployment.services.values() {
-                    active_service_revisions
-                        .entry(service.name.clone())
-                        .and_modify(|registered_service_revision: &mut ActiveServiceRevision| {
-                            if registered_service_revision.service_revision.revision
-                                < service.revision
-                            {
-                                *registered_service_revision = ActiveServiceRevision {
-                                    deployment_id: deployment.id,
-                                    service_revision: Arc::clone(service),
-                                }
-                            }
-                        })
-                        .or_insert(ActiveServiceRevision {
-                            deployment_id: deployment.id,
-                            service_revision: Arc::clone(service),
-                        });
-                }
-            }
-            active_service_revisions
-        }
-
         if let Some(deployments_v2) = deployments_v2 {
             Self {
                 version,
-                active_service_revisions: build_active_service_revision_index(&deployments_v2),
+                active_service_revisions: ActiveServiceRevision::create_index(&deployments_v2),
                 deployments: deployments_v2
                     .into_iter()
                     .map(|deployment| (deployment.id, deployment))
@@ -452,7 +425,7 @@ impl From<Schema> for super::Schema {
 
             Self {
                 version,
-                active_service_revisions: build_active_service_revision_index(&deployments),
+                active_service_revisions: ActiveServiceRevision::create_index(&deployments),
                 deployments: deployments
                     .into_iter()
                     .map(|deployment| (deployment.id, deployment))

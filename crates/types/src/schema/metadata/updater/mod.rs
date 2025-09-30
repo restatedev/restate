@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::num::NonZeroUsize;
-use std::ops::{Not, RangeInclusive};
+use std::ops::{Deref, Not, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -280,6 +280,17 @@ impl ServiceLevelSettingsBehavior {
     }
 }
 
+enum ServiceRevisionBehavior {
+    Bump,
+    KeepExisting,
+}
+
+impl ServiceRevisionBehavior {
+    fn bump(&self) -> bool {
+        matches!(self, ServiceRevisionBehavior::Bump)
+    }
+}
+
 /// Responsible for updating the provided [`Schema`] with new
 /// schema information. It makes sure that the version of schema information
 /// is incremented on changes.
@@ -308,6 +319,7 @@ impl SchemaUpdater {
         Ok((t, schema_updater.into_inner()))
     }
 
+    // TODO(slinkydeveloper) MAKE THIS PRIVATE, just expose update and update_and_return
     pub fn new(schema: Schema) -> Self {
         Self {
             schema,
@@ -315,12 +327,19 @@ impl SchemaUpdater {
         }
     }
 
+    // TODO(slinkydeveloper) MAKE THIS PRIVATE, just expose update and update_and_return
     pub fn into_inner(mut self) -> Schema {
         if self.modified {
             self.schema.version = self.schema.version.next()
         }
 
         self.schema
+    }
+
+    fn mark_updated(&mut self) {
+        self.schema.active_service_revisions =
+            ActiveServiceRevision::create_index(self.schema.deployments.values());
+        self.modified = true;
     }
 
     pub fn add_deployment(
@@ -385,11 +404,17 @@ impl SchemaUpdater {
 
         // Compute service schemas
         for (service_name, service) in proposed_services {
+            let previous_service_revision = self
+                .schema
+                .active_service_revisions
+                .get(service_name.as_ref())
+                .map(|revision| revision.service_revision.as_ref());
             let new_service_revision = self.create_service_revision(
                 deployment_id,
                 &deployment_metadata.ty,
                 &service_name,
                 service,
+                previous_service_revision,
                 if force {
                     RemovedHandlerBehavior::Warn
                 } else {
@@ -401,28 +426,12 @@ impl SchemaUpdater {
                     ServiceTypeMismatchBehavior::Fail
                 },
                 ServiceLevelSettingsBehavior::UseDefaults,
+                ServiceRevisionBehavior::Bump,
             )?;
             computed_services.insert(service_name.to_string(), Arc::new(new_service_revision));
         }
 
         drop(existing_deployments);
-
-        // Update the active_service_revision index
-        // TODO do we even need this?!
-        for service_revision in computed_services.values() {
-            self.schema.active_service_revisions.insert(
-                service_revision.name.clone(),
-                ActiveServiceRevision {
-                    deployment_id,
-                    service_revision: Arc::clone(service_revision),
-                },
-            );
-        }
-        for service_to_remove in services_to_remove {
-            self.schema
-                .active_service_revisions
-                .remove(&service_to_remove);
-        }
 
         self.schema.deployments.insert(
             deployment_id,
@@ -437,7 +446,7 @@ impl SchemaUpdater {
             },
         );
 
-        self.modified = true;
+        self.mark_updated();
 
         Ok(deployment_id)
     }
@@ -460,6 +469,7 @@ impl SchemaUpdater {
             )));
         };
 
+        // Check protocol versions are equals
         if existing_deployment.supported_protocol_versions
             != deployment_metadata.supported_protocol_versions
         {
@@ -471,14 +481,13 @@ impl SchemaUpdater {
             ));
         };
 
+        // Check we don't remove services
         let mut services_to_remove = Vec::default();
-
         for service in existing_deployment.services.values() {
             if !proposed_services.contains_key(&service.name) {
                 services_to_remove.push(service.name.clone());
             }
         }
-
         if !services_to_remove.is_empty() {
             // we don't allow removing services as part of update deployment
             return Err(SchemaError::Deployment(DeploymentError::RemovedServices(
@@ -486,18 +495,23 @@ impl SchemaUpdater {
             )));
         }
 
-        let mut computed_services = HashMap::with_capacity(proposed_services.len());
-
         // Compute service schemas
+        let mut computed_services = HashMap::with_capacity(proposed_services.len());
         for (service_name, service) in proposed_services {
+            let previous_service_revision = existing_deployment
+                .services
+                .get(service_name.as_ref())
+                .map(|arc| arc.deref());
             let service_revision = self.create_service_revision(
                 deployment_id,
                 &deployment_metadata.ty,
                 &service_name,
                 service,
+                previous_service_revision,
                 RemovedHandlerBehavior::Fail,
                 ServiceTypeMismatchBehavior::Fail,
                 ServiceLevelSettingsBehavior::Preserve,
+                ServiceRevisionBehavior::KeepExisting,
             )?;
 
             computed_services.insert(service_name, Arc::new(service_revision));
@@ -511,17 +525,11 @@ impl SchemaUpdater {
                              deployment_id: latest_deployment,
                              ..
                          }) if latest_deployment == &deployment_id => {
-                        // This deployment is the latest for this service, so we should update the service schema
                         info!(
                             rpc.service = %name,
-                            "Overwriting existing service schemas"
+                            "Overwriting existing service schemas for latest service"
                         );
-                        self.schema
-                            .active_service_revisions
-                            .insert(name.clone().into_inner(), ActiveServiceRevision {
-                                deployment_id,
-                                service_revision: Arc::clone(&schema),
-                            });
+                        // We let SchemaUpdater::into_inner do the index update
                     },
                     Some(_) => {
                         debug!(
@@ -530,13 +538,7 @@ impl SchemaUpdater {
                         );
                     },
                     None => {
-                        // we have a new service, it deserves a schema as normal
-                        self.schema
-                            .active_service_revisions
-                            .insert(name.clone().into_inner(), ActiveServiceRevision {
-                                deployment_id,
-                                service_revision: Arc::clone(&schema),
-                            });
+                        // We let SchemaUpdater::into_inner do the index update
                     }
                 }
 
@@ -557,7 +559,7 @@ impl SchemaUpdater {
             },
         );
 
-        self.modified = true;
+        self.mark_updated();
 
         Ok(())
     }
@@ -569,17 +571,11 @@ impl SchemaUpdater {
         deployment_ty: &DeploymentType,
         service_name: &ServiceName,
         service: &endpoint_manifest::Service,
+        previous_revision_revision: Option<&ServiceRevision>,
         removed_handler_behavior: RemovedHandlerBehavior,
         service_type_mismatch_behavior: ServiceTypeMismatchBehavior,
     ) -> Result<(), SchemaError> {
-        let Some(ActiveServiceRevision {
-            service_revision: existing_service,
-            ..
-        }) = self
-            .schema
-            .active_service_revisions
-            .get(service_name.as_ref())
-        else {
+        let Some(existing_service) = previous_revision_revision else {
             // New service, nothing to validate
             return Ok(());
         };
@@ -644,24 +640,21 @@ impl SchemaUpdater {
         deployment_ty: &DeploymentType,
         service_name: &ServiceName,
         service: endpoint_manifest::Service,
+        previous_service_revision: Option<&ServiceRevision>,
         removed_handler_behavior: RemovedHandlerBehavior,
         service_type_mismatch_behavior: ServiceTypeMismatchBehavior,
         service_level_settings_behavior: ServiceLevelSettingsBehavior,
+        service_revision_behavior: ServiceRevisionBehavior,
     ) -> Result<ServiceRevision, SchemaError> {
         self.validate_existing_service_revision_constraints(
             deployment_id,
             deployment_ty,
             service_name,
             &service,
+            previous_service_revision,
             removed_handler_behavior,
             service_type_mismatch_behavior,
         )?;
-
-        let active_revision = self
-            .schema
-            .active_service_revisions
-            .get(service_name.as_ref())
-            .map(|revision| revision.service_revision.as_ref());
 
         let service_type = ServiceType::from(service.ty);
 
@@ -670,7 +663,7 @@ impl SchemaUpdater {
         macro_rules! resolve_optional_config_option {
             ($get_from_current:expr, $name_from_previous:ident) => {
                 $get_from_current.or(if service_level_settings_behavior.preserve() {
-                    active_revision.and_then(|old_svc| old_svc.$name_from_previous)
+                    previous_service_revision.and_then(|old_svc| old_svc.$name_from_previous)
                 } else {
                     None
                 })
@@ -681,14 +674,14 @@ impl SchemaUpdater {
             .ingress_private
             .map(bool::not)
             .or(if service_level_settings_behavior.preserve() {
-                active_revision.map(|old_svc| old_svc.public)
+                previous_service_revision.map(|old_svc| old_svc.public)
             } else {
                 None
             })
             .unwrap_or(true);
         let idempotency_retention = service.idempotency_retention_duration().or(
             if service_level_settings_behavior.preserve() {
-                active_revision.and_then(|old_svc| old_svc.idempotency_retention)
+                previous_service_revision.and_then(|old_svc| old_svc.idempotency_retention)
             } else {
                 // TODO(slinydeveloper) Remove this in Restate 1.6, no need for this defaulting anymore!
                 Some(DEFAULT_IDEMPOTENCY_RETENTION)
@@ -701,9 +694,9 @@ impl SchemaUpdater {
         let workflow_completion_retention = if service_level_settings_behavior.preserve()
             // Retain previous value only if new service and old one are both workflows
             && service_type == ServiceType::Workflow
-            && active_revision.map(|old_svc| old_svc.ty == ServiceType::Workflow).unwrap_or(false)
+            && previous_service_revision.map(|old_svc| old_svc.ty == ServiceType::Workflow).unwrap_or(false)
         {
-            active_revision.and_then(|old_svc| old_svc.workflow_completion_retention)
+            previous_service_revision.and_then(|old_svc| old_svc.workflow_completion_retention)
         } else if service_type == ServiceType::Workflow {
             // TODO(slinydeveloper) Remove this in Restate 1.6, no need for this defaulting anymore!
             Some(DEFAULT_WORKFLOW_COMPLETION_RETENTION)
@@ -775,8 +768,14 @@ impl SchemaUpdater {
             ty: service_type,
             documentation: service.documentation,
             metadata: service.metadata,
-            revision: active_revision
-                .map(|old_svc| old_svc.revision.wrapping_add(1))
+            revision: previous_service_revision
+                .map(|old_svc| {
+                    if service_revision_behavior.bump() {
+                        old_svc.revision.wrapping_add(1)
+                    } else {
+                        old_svc.revision
+                    }
+                })
                 .unwrap_or(1),
             public,
             idempotency_retention,
@@ -812,7 +811,7 @@ impl SchemaUpdater {
                     _ => {}
                 }
             }
-            self.modified = true;
+            self.mark_updated();
         }
     }
 
@@ -933,14 +932,14 @@ impl SchemaUpdater {
             .map_err(|e| SchemaError::Subscription(SubscriptionError::Validation(e.into())))?;
 
         self.schema.subscriptions.insert(id, subscription);
-        self.modified = true;
+        self.mark_updated();
 
         Ok(id)
     }
 
     pub fn remove_subscription(&mut self, subscription_id: SubscriptionId) {
         if self.schema.subscriptions.remove(&subscription_id).is_some() {
-            self.modified = true;
+            self.mark_updated();
         }
     }
 
@@ -985,7 +984,7 @@ impl SchemaUpdater {
             Ok(())
         })?;
 
-        self.modified = true;
+        self.mark_updated();
 
         Ok(())
     }
@@ -1018,8 +1017,7 @@ impl SchemaUpdater {
             .services
             .insert(svc_name.to_owned(), Arc::clone(&new_svc_arc));
 
-        // Update index
-        active_service_revision.service_revision = Arc::clone(&new_svc_arc);
+        // Index gets updated by SchemaUpdate::into_inner
 
         Ok(())
     }
