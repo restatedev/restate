@@ -18,7 +18,7 @@ use futures::Stream;
 use futures_util::stream;
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_events::{
-    EventView, JournalEventsTable, ReadOnlyJournalEventsTable, ScanJournalEventsTable,
+    EventView, ReadJournalEventsTable, ScanJournalEventsTable, WriteJournalEventsTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::protobuf_types::v1::Event as PbEvent;
@@ -156,7 +156,7 @@ fn delete_journal_events<S: StorageAccess>(
     Ok(())
 }
 
-impl ReadOnlyJournalEventsTable for PartitionStore {
+impl ReadJournalEventsTable for PartitionStore {
     fn get_journal_events(
         &mut self,
         invocation_id: InvocationId,
@@ -201,7 +201,7 @@ impl ScanJournalEventsTable for PartitionStore {
     }
 }
 
-impl ReadOnlyJournalEventsTable for PartitionStoreTransaction<'_> {
+impl ReadJournalEventsTable for PartitionStoreTransaction<'_> {
     fn get_journal_events(
         &mut self,
         invocation_id: InvocationId,
@@ -210,8 +210,8 @@ impl ReadOnlyJournalEventsTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl JournalEventsTable for PartitionStoreTransaction<'_> {
-    async fn put_journal_event(
+impl WriteJournalEventsTable for PartitionStoreTransaction<'_> {
+    fn put_journal_event(
         &mut self,
         invocation_id: InvocationId,
         event: EventView,
@@ -221,7 +221,7 @@ impl JournalEventsTable for PartitionStoreTransaction<'_> {
         put_journal_event(self, &invocation_id, event, lsn)
     }
 
-    async fn delete_journal_events(&mut self, invocation_id: InvocationId) -> Result<()> {
+    fn delete_journal_events(&mut self, invocation_id: InvocationId) -> Result<()> {
         self.assert_partition_key(&invocation_id)?;
         delete_journal_events(self, &invocation_id)
     }

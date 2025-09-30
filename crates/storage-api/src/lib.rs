@@ -97,7 +97,7 @@ pub trait Transaction:
     + idempotency_table::IdempotencyTable
     + promise_table::ReadPromiseTable
     + promise_table::WritePromiseTable
-    + journal_events::JournalEventsTable
+    + journal_events::WriteJournalEventsTable
     + Send
 {
     fn commit(self) -> impl Future<Output = Result<()>> + Send;
