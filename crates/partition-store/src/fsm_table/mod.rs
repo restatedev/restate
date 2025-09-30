@@ -10,7 +10,7 @@
 
 use restate_storage_api::Result;
 use restate_storage_api::fsm_table::{
-    FsmTable, PartitionDurability, ReadOnlyFsmTable, SequenceNumber,
+    PartitionDurability, ReadFsmTable, SequenceNumber, WriteFsmTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::SemanticRestateVersion;
@@ -111,7 +111,7 @@ pub(crate) async fn put_schema_version<S: StorageAccess>(
     )
 }
 
-impl ReadOnlyFsmTable for PartitionStore {
+impl ReadFsmTable for PartitionStore {
     async fn get_inbox_seq_number(&mut self) -> Result<MessageIndex> {
         get::<SequenceNumber, _>(self, self.partition_id(), fsm_variable::INBOX_SEQ_NUMBER)
             .map(|opt| opt.map(Into::into).unwrap_or_default())
@@ -145,8 +145,8 @@ impl ReadOnlyFsmTable for PartitionStore {
     }
 }
 
-impl FsmTable for PartitionStoreTransaction<'_> {
-    async fn put_applied_lsn(&mut self, lsn: Lsn) -> Result<()> {
+impl WriteFsmTable for PartitionStoreTransaction<'_> {
+    fn put_applied_lsn(&mut self, lsn: Lsn) -> Result<()> {
         put(
             self,
             self.partition_id(),
@@ -155,7 +155,7 @@ impl FsmTable for PartitionStoreTransaction<'_> {
         )
     }
 
-    async fn put_inbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()> {
+    fn put_inbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()> {
         put(
             self,
             self.partition_id(),
@@ -164,7 +164,7 @@ impl FsmTable for PartitionStoreTransaction<'_> {
         )
     }
 
-    async fn put_outbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()> {
+    fn put_outbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()> {
         put(
             self,
             self.partition_id(),
@@ -173,7 +173,7 @@ impl FsmTable for PartitionStoreTransaction<'_> {
         )
     }
 
-    async fn put_min_restate_version(&mut self, version: &SemanticRestateVersion) -> Result<()> {
+    fn put_min_restate_version(&mut self, version: &SemanticRestateVersion) -> Result<()> {
         put(
             self,
             self.partition_id(),
@@ -182,7 +182,7 @@ impl FsmTable for PartitionStoreTransaction<'_> {
         )
     }
 
-    async fn put_partition_durability(&mut self, durability: &PartitionDurability) -> Result<()> {
+    fn put_partition_durability(&mut self, durability: &PartitionDurability) -> Result<()> {
         put(
             self,
             self.partition_id(),

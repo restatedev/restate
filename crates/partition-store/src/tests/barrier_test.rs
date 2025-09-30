@@ -3,7 +3,7 @@ use googletest::prelude::*;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::{
     Transaction,
-    fsm_table::{FsmTable, ReadOnlyFsmTable},
+    fsm_table::{ReadFsmTable, WriteFsmTable},
 };
 use restate_types::{
     SemanticRestateVersion,
@@ -40,8 +40,7 @@ async fn barrier_fsm() -> googletest::Result<()> {
 
     let mut txn = partition_store.transaction();
     // lets update it to current.
-    txn.put_min_restate_version(SemanticRestateVersion::current())
-        .await?;
+    txn.put_min_restate_version(SemanticRestateVersion::current())?;
 
     // commit.
     txn.commit().await?;

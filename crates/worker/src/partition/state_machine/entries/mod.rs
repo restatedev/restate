@@ -30,7 +30,7 @@ use metrics::counter;
 use tracing::debug;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -111,7 +111,7 @@ where
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + WriteTimerTable
-        + FsmTable
+        + WriteFsmTable
         + WriteOutboxTable
         + ReadPromiseTable
         + WritePromiseTable

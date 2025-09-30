@@ -11,7 +11,7 @@
 use crate::debug_if_leader;
 use crate::partition::state_machine::invocation_status_ext::InvocationStatusExt;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext, entries};
-use restate_storage_api::fsm_table::FsmTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::{
     ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -36,7 +36,7 @@ where
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + WriteTimerTable
-        + FsmTable
+        + WriteFsmTable
         + ReadPromiseTable
         + WritePromiseTable
         + ReadStateTable
