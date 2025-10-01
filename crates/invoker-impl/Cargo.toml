@@ -36,7 +36,7 @@ http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 tokio-stream = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
