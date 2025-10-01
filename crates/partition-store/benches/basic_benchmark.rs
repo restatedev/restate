@@ -18,7 +18,7 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::deduplication_table::{
-    DedupSequenceNumber, DeduplicationTable, ProducerId,
+    DedupSequenceNumber, ProducerId, WriteDeduplicationTable,
 };
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::partitions::Partition;
@@ -33,7 +33,6 @@ async fn writing_to_rocksdb(mut rocksdb: PartitionStore) {
             ProducerId::Partition(PartitionId::from(j)),
             &DedupSequenceNumber::Sn(0),
         )
-        .await
         .unwrap();
     }
     txn.commit().await.unwrap();
