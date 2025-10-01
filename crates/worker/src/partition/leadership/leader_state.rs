@@ -246,8 +246,6 @@ impl LeaderState {
                 ActionEffect::PartitionMaintenance(partition_durability) => {
                     // based on configuration, whether to consider partition-local durability in
                     // the replica-set as a sufficient source of durability, or only snapshots.
-                    //
-                    // todo: check config if this feature is enabled
                     self.self_proposer
                         .propose(
                             self.own_partition_key,

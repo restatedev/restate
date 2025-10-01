@@ -217,26 +217,12 @@ impl Stream for DurabilityTracker {
         // We don't want to keep reporting the same durable Lsn over and over.
         self.last_reported_durable_lsn = suggested;
 
-        if Configuration::pinned()
-            .worker
-            .experimental_partition_driven_log_trimming
-        {
-            debug!(
-                partition_id = %self.partition_id,
-                durability_mode = %durability_mode,
-                "Reporting {suggested:?} as a durable point for partition"
-            );
+        debug!(
+            partition_id = %self.partition_id,
+            durability_mode = %durability_mode,
+            "Reporting {suggested:?} as a durable point for partition"
+        );
 
-            Poll::Ready(Some(partition_durability))
-        } else {
-            debug!(
-                partition_id = %self.partition_id,
-                durability_mode = %durability_mode,
-                "Would have reported {suggested:?} as a durable point for partition \
-                    but 'experimental-partition-driven-log-trimming' feature is set to 'false'"
-            );
-            cx.waker().wake_by_ref();
-            Poll::Pending
-        }
+        Poll::Ready(Some(partition_durability))
     }
 }
