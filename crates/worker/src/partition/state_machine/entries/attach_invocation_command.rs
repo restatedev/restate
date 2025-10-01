@@ -36,8 +36,7 @@ where
                     .expect("Should be present when handling new command")
                     .current_invocation_epoch,
             ),
-        }))
-        .await?;
+        }))?;
 
         Ok(())
     }

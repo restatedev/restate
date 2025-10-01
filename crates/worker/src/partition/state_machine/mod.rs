@@ -307,7 +307,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(status)
     }
 
-    async fn register_timer(
+    fn register_timer(
         &mut self,
         timer_value: TimerKeyValue,
         span_context: ServiceInvocationSpanContext,
@@ -516,8 +516,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .await
             }
             Command::ProxyThrough(service_invocation) => {
-                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
-                    .await?;
+                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))?;
                 Ok(())
             }
             Command::AttachInvocation(attach_invocation_request) => {
@@ -586,7 +585,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 Ok(())
             }
             Command::ScheduleTimer(timer) => {
-                self.register_timer(timer, Default::default()).await?;
+                self.register_timer(timer, Default::default())?;
                 Ok(())
             }
             Command::NotifySignal(notify_signal_request) => {
@@ -689,9 +688,10 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // 1. Check if we need to schedule it
         let execution_time = pre_flight_invocation_metadata.execution_time;
-        let Some(pre_flight_invocation_metadata) = self
-            .handle_service_invocation_execution_time(invocation_id, pre_flight_invocation_metadata)
-            .await?
+        let Some(pre_flight_invocation_metadata) = self.handle_service_invocation_execution_time(
+            invocation_id,
+            pre_flight_invocation_metadata,
+        )?
         else {
             // Invocation was scheduled, send back the ingress attach notification and return
             self.send_submit_notification_if_needed(
@@ -888,7 +888,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     }
 
     /// Returns the invocation in case the invocation should run immediately
-    async fn handle_service_invocation_execution_time(
+    fn handle_service_invocation_execution_time(
         &mut self,
         invocation_id: InvocationId,
         metadata: PreFlightInvocationMetadata,
@@ -903,8 +903,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.register_timer(
                 TimerKeyValue::neo_invoke(execution_time, invocation_id),
                 span_context,
-            )
-            .await?;
+            )?;
 
             self.storage
                 .put_invocation_status(
@@ -1716,8 +1715,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     flavor: TerminationFlavor::Kill,
                     response_sink: None,
                 },
-            ))
-            .await?;
+            ))?;
         }
 
         Ok(())
@@ -1771,8 +1769,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                             flavor: TerminationFlavor::Cancel,
                             response_sink: None,
                         },
-                    ))
-                    .await?;
+                    ))?;
                 }
                 EnrichedEntryHeader::Sleep { is_completed } if !is_completed => {
                     resume_invocation |= self
@@ -2339,15 +2336,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         let result = res.into();
         for response_sink in response_sinks {
             match response_sink {
-                ServiceInvocationResponseSink::PartitionProcessor(target) => {
-                    self.handle_outgoing_message(OutboxMessage::ServiceResponse(
+                ServiceInvocationResponseSink::PartitionProcessor(target) => self
+                    .handle_outgoing_message(OutboxMessage::ServiceResponse(
                         InvocationResponse {
                             target,
                             result: result.clone(),
                         },
-                    ))
-                    .await?
-                }
+                    ))?,
                 ServiceInvocationResponseSink::Ingress { request_id } => self
                     .send_ingress_response(
                     request_id,
@@ -2790,8 +2785,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                             target: listener,
                                             result: completion.clone().into(),
                                         },
-                                    ))
-                                    .await?;
+                                    ))?;
                                 }
 
                                 // Now register the promise completion
@@ -2862,8 +2856,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         0,
                     ),
                     invocation_metadata.journal_metadata.span_context.clone(),
-                )
-                .await?;
+                )?;
             }
             EnrichedEntryHeader::Call {
                 enrichment_result, ..
@@ -2907,8 +2900,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                     self.handle_outgoing_message(OutboxMessage::ServiceInvocation(
                         service_invocation,
-                    ))
-                    .await?;
+                    ))?;
                 } else {
                     // no action needed for an invoke entry that has been completed by the deployment
                 }
@@ -2972,8 +2964,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     restate_version: RestateVersion::current(),
                 });
 
-                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))
-                    .await?;
+                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))?;
             }
             EnrichedEntryHeader::Awakeable { is_completed, .. } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
@@ -3019,8 +3010,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         *invocation_id,
                         *entry_index,
                         entry.result.into(),
-                    ))
-                    .await?;
+                    ))?;
                 } else if let Ok(new_awk_id) = ExternalSignalIdentifier::from_str(&entry.id) {
                     let (invocation_id, signal_id) = new_awk_id.into_inner();
                     self.handle_outgoing_message(OutboxMessage::NotifySignal(
@@ -3040,8 +3030,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 },
                             ),
                         },
-                    ))
-                    .await?;
+                    ))?;
                 } else {
                     warn!(
                         "Invalid awakeable identifier {}. The identifier doesn't start with `awk_1`, neither with `sign_1`",
@@ -3142,8 +3131,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                     0,
                                 ),
                             },
-                        ))
-                        .await?;
+                        ))?;
                     }
                 }
             }
@@ -3172,8 +3160,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                     0,
                                 ),
                             },
-                        ))
-                        .await?;
+                        ))?;
                     }
                 }
             }
@@ -3232,8 +3219,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     flavor: TerminationFlavor::Cancel,
                     response_sink: None,
                 },
-            ))
-            .await?;
+            ))?;
         }
         Ok(())
     }
@@ -3503,7 +3489,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    async fn handle_outgoing_message(&mut self, message: OutboxMessage) -> Result<(), Error>
+    fn handle_outgoing_message(&mut self, message: OutboxMessage) -> Result<(), Error>
     where
         S: WriteOutboxTable + WriteFsmTable,
     {
@@ -3520,8 +3506,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         //             ).await
         //         }
 
-        self.do_enqueue_into_outbox(*self.outbox_seq_number, message)
-            .await?;
+        self.do_enqueue_into_outbox(*self.outbox_seq_number, message)?;
         *self.outbox_seq_number += 1;
         Ok(())
     }
@@ -3922,7 +3907,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    async fn do_enqueue_into_outbox(
+    fn do_enqueue_into_outbox(
         &mut self,
         seq_number: MessageIndex,
         message: OutboxMessage,

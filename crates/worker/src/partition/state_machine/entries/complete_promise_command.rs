@@ -86,8 +86,7 @@ where
                                     }
                                 },
                             },
-                        ))
-                        .await?;
+                        ))?;
                     }
 
                     debug_if_leader!(

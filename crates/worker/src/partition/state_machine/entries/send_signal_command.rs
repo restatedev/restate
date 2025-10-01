@@ -27,8 +27,7 @@ where
         ctx.handle_outgoing_message(OutboxMessage::NotifySignal(NotifySignalRequest {
             invocation_id: self.entry.target_invocation_id,
             signal: Signal::new(self.entry.signal_id, self.entry.result),
-        }))
-        .await?;
+        }))?;
         Ok(())
     }
 }

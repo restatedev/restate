@@ -35,8 +35,7 @@ where
                 invocation_metadata.current_invocation_epoch,
             ),
             invocation_metadata.journal_metadata.span_context.clone(),
-        )
-        .await?;
+        )?;
 
         Ok(())
     }
