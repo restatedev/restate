@@ -35,8 +35,8 @@ use restate_core::network::{Oneshot, Reciprocal, ServiceMessage, Verdict};
 use restate_core::{Metadata, ShutdownError, cancellation_watcher, my_node_id};
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
-    DedupInformation, DedupSequenceNumber, DeduplicationTable, ProducerId,
-    ReadOnlyDeduplicationTable,
+    DedupInformation, DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
+    WriteDeduplicationTable,
 };
 use restate_storage_api::fsm_table::{PartitionDurability, ReadFsmTable, WriteFsmTable};
 use restate_storage_api::outbox_table::ReadOutboxTable;
@@ -701,7 +701,6 @@ where
                         dedup_information.producer_id.clone(),
                         &dedup_information.sequence_number,
                     )
-                    .await
                     .map_err(state_machine::Error::Storage)?;
             }
 
