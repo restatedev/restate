@@ -9,17 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::deduplication_table::DedupInformation;
-use restate_types::GenerationalNodeId;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
     AttachInvocationRequest, GetInvocationOutputResponse, InvocationResponse,
     InvocationTermination, NotifySignalRequest, PurgeInvocationRequest,
     RestartAsNewInvocationRequest, ResumeInvocationRequest, ServiceInvocation,
 };
+use restate_types::logs;
 use restate_types::logs::{HasRecordKeys, Keys, MatchKeyQuery};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::{PlainNodeId, Version, logs};
 
 use crate::control::{AnnounceLeader, VersionBarrier};
 use crate::timer::TimerKeyValue;
@@ -58,8 +57,10 @@ pub enum Source {
     /// Message is sent from another partition processor
     Processor {
         /// if possible, this is used to reroute responses in case of splits/merges
-        /// Marked as `Option` in v1.5. Note that v1.4 requires this to be set but as of v1.6
-        /// this can be safely set to `None`.
+        /// v1.4 requires this to be set.
+        /// v1.5 Marked as `Option`.
+        /// v1.6 always set to `None`.
+        /// Will be removed in v1.7.
         #[cfg_attr(feature = "serde", serde(default))]
         partition_id: Option<PartitionId>,
         #[cfg_attr(feature = "serde", serde(default))]
@@ -68,37 +69,42 @@ pub enum Source {
         /// messages to accept. Readers should ignore messages coming from
         /// epochs lower than the max observed for a given partition id.
         leader_epoch: LeaderEpoch,
-        /// Which node is this message from?
-        /// First deprecation in v1.1, but since v1.5 we switched to Option<PlainNodeId> and it's
-        /// still being set to Some(v) to maintain compatibility with v1.4.
-        ///
-        /// In v1.6 this field will be removed.
-        #[cfg_attr(feature = "serde", serde(default))]
-        node_id: Option<PlainNodeId>,
-        /// From v1.1 this is always set, but maintained to support rollback to v1.0.
-        /// Deprecated(v1.5): It's set to Some(v) to maintain support for v1.4 but
-        /// will be removed in v1.6. Commands that need the node-id of the sender should
-        /// include the node-id in the command payload itself (e.g. in the [`AnnounceLeader`])
-        #[cfg_attr(feature = "serde", serde(default))]
-        generational_node_id: Option<GenerationalNodeId>,
+        // Which node is this message from?
+        // First deprecation in v1.1, but since v1.5 we switched to Option<PlainNodeId> and it's
+        // still being set to Some(v) to maintain compatibility with v1.4.
+        //
+        // v1.6 field is removed. -- Kept here for reference only.
+        // #[cfg_attr(feature = "serde", serde(default))]
+        // node_id: Option<PlainNodeId>,
+
+        // From v1.1 this is always set, but maintained to support rollback to v1.0.
+        // Deprecated(v1.5): It's set to Some(v) to maintain support for v1.4 but
+        // will be removed in v1.6. Commands that need the node-id of the sender should
+        // include the node-id in the command payload itself (e.g. in the [`AnnounceLeader`])
+        // v1.6 field is removed. -- Kept here for reference only.
+        // #[cfg_attr(feature = "serde", serde(default))]
+        // generational_node_id: Option<GenerationalNodeId>,
     },
     /// Message is sent from an ingress node
     Ingress {
-        /// The identity of the sender node. Generational for fencing. Ingress is
-        /// stateless, so we shouldn't respond to requests from older generation
-        /// if a new generation is alive.
-        ///
-        /// Deprecated(v1.5): This field is set to Some(v) to maintain compatibility with v1.4.
-        /// but will be removed in v1.6.
-        #[cfg_attr(feature = "serde", serde(default))]
-        node_id: Option<GenerationalNodeId>,
-        /// Last config version observed by sender. If this is a newer generation
-        /// or an unknown ID, we might need to update our config.
-        ///
-        /// Deprecated(v1.5): This field is set to Some(v) to maintain compatibility with v1.4.
-        /// but will be removed in v1.6.
-        #[cfg_attr(feature = "serde", serde(default))]
-        nodes_config_version: Option<Version>,
+        // The identity of the sender node. Generational for fencing. Ingress is
+        // stateless, so we shouldn't respond to requests from older generation
+        // if a new generation is alive.
+        //
+        // Deprecated(v1.5): This field is set to Some(v) to maintain compatibility with v1.4.
+        // but will be removed in v1.6.
+        // v1.6 field is removed. -- Kept here for reference only.
+        // #[cfg_attr(feature = "serde", serde(default))]
+        // node_id: Option<GenerationalNodeId>,
+
+        // Last config version observed by sender. If this is a newer generation
+        // or an unknown ID, we might need to update our config.
+        //
+        // Deprecated(v1.5): This field is set to Some(v) to maintain compatibility with v1.4.
+        // but will be removed in v1.6.
+        // v1.6 field is removed. -- Kept here for reference only.
+        // #[cfg_attr(feature = "serde", serde(default))]
+        // nodes_config_version: Option<Version>,
     },
     /// Message is sent from some control plane component (controller, cli, etc.)
     ControlPlane {

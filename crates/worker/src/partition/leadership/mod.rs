@@ -221,7 +221,7 @@ where
         }));
 
         let mut self_proposer = SelfProposer::new(
-            self.partition.partition_id,
+            self.partition.log_id(),
             EpochSequenceNumber::new(leader_epoch),
             &self.bifrost,
         )?;
@@ -378,7 +378,6 @@ where
                 TaskCenter::spawn_unmanaged(TaskKind::Shuffle, "shuffle", shuffle.run())?;
 
             let cleaner = Cleaner::new(
-                self.partition.partition_id,
                 *leader_epoch,
                 partition_store.clone(),
                 self.bifrost.clone(),
