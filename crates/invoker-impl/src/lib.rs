@@ -465,7 +465,7 @@ where
                         self.handle_invocation_task_closed(partition, invocation_id, invocation_epoch).await
                     },
                     InvocationTaskOutputInner::Failed(e) => {
-                        self.handle_invocation_task_failed(options, partition, invocation_id, invocation_epoch, e).await
+                        self.handle_invocation_task_failed(partition, invocation_id, invocation_epoch, e).await
                     },
                     InvocationTaskOutputInner::Suspended(indexes) => {
                         self.handle_invocation_task_suspended(partition, invocation_id, invocation_epoch, indexes).await
@@ -1112,7 +1112,6 @@ where
     )]
     async fn handle_invocation_task_failed(
         &mut self,
-        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
@@ -1123,7 +1122,7 @@ where
             .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
-            self.handle_error_event(options, partition, invocation_id, error, ism)
+            self.handle_error_event(partition, invocation_id, error, ism)
                 .await;
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -1226,7 +1225,6 @@ where
 
     async fn handle_error_event(
         &mut self,
-        options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         error: InvokerError,
@@ -1277,41 +1275,39 @@ where
                         None
                     };
                 let invocation_error_report = error.into_invocation_error_report();
-                if options.experimental_features_propose_events() {
-                    let event = TransientErrorEvent {
-                        error_code: invocation_error_report.err.code(),
-                        error_message: invocation_error_report.err.message().to_owned(),
-                        // Note from the review:
-                        //  The stacktrace might be very long, but trimming it is not a piece of cake.
-                        //  That's because some languages (Python!) have the stacktrace in reverse,
-                        //  so it's hard here to decide whether to just drop the suffix or the prefix.
-                        error_stacktrace: invocation_error_report
-                            .err
-                            .stacktrace()
-                            .map(|s| s.to_owned()),
-                        restate_doc_error_code: invocation_error_report
-                            .doc_error_code
-                            .map(|c| c.code().to_owned()),
-                        related_command_index: invocation_error_report.related_entry_index,
-                        related_command_name: invocation_error_report.related_entry_name.clone(),
-                        related_command_type: journal_v2_related_command_type,
-                    };
+                let event = TransientErrorEvent {
+                    error_code: invocation_error_report.err.code(),
+                    error_message: invocation_error_report.err.message().to_owned(),
+                    // Note from the review:
+                    //  The stacktrace might be very long, but trimming it is not a piece of cake.
+                    //  That's because some languages (Python!) have the stacktrace in reverse,
+                    //  so it's hard here to decide whether to just drop the suffix or the prefix.
+                    error_stacktrace: invocation_error_report
+                        .err
+                        .stacktrace()
+                        .map(|s| s.to_owned()),
+                    restate_doc_error_code: invocation_error_report
+                        .doc_error_code
+                        .map(|c| c.code().to_owned()),
+                    related_command_index: invocation_error_report.related_entry_index,
+                    related_command_name: invocation_error_report.related_entry_name.clone(),
+                    related_command_type: journal_v2_related_command_type,
+                };
 
-                    // Some trivial deduplication here: if we already sent this transient error in the previous retry, don't send it again
-                    if ism.should_emit_transient_error_event(&event) {
-                        let _ = self
-                            .invocation_state_machine_manager
-                            .resolve_partition_sender(partition)
-                            .expect("Partition should be registered")
-                            .send(Box::new(Effect {
-                                invocation_id,
-                                invocation_epoch: ism.invocation_epoch,
-                                kind: EffectKind::JournalEvent {
-                                    event: RawEvent::from(Event::TransientError(event)),
-                                },
-                            }))
-                            .await;
-                    }
+                // Some trivial deduplication here: if we already sent this transient error in the previous retry, don't send it again
+                if ism.should_emit_transient_error_event(&event) {
+                    let _ = self
+                        .invocation_state_machine_manager
+                        .resolve_partition_sender(partition)
+                        .expect("Partition should be registered")
+                        .send(Box::new(Effect {
+                            invocation_id,
+                            invocation_epoch: ism.invocation_epoch,
+                            kind: EffectKind::JournalEvent {
+                                event: RawEvent::from(Event::TransientError(event)),
+                            },
+                        }))
+                        .await;
                 }
 
                 self.status_store.on_failure(
@@ -2020,7 +2016,6 @@ mod tests {
         // Handle error coming after the abort (this should be noop)
         service_inner
             .handle_invocation_task_failed(
-                &invoker_options,
                 MOCK_PARTITION,
                 invocation_id,
                 0,
@@ -2075,7 +2070,6 @@ mod tests {
         // Also handle error on epoch 0 should have no effect
         service_inner
             .handle_invocation_task_failed(
-                &InvokerOptions::default(),
                 MOCK_PARTITION,
                 invocation_id,
                 0,
@@ -2336,7 +2330,6 @@ mod tests {
         // Simulate a transient failure to populate last_retry_attempt_failure
         service_inner
             .handle_invocation_task_failed(
-                &InvokerOptions::default(),
                 MOCK_PARTITION,
                 invocation_id,
                 0,
@@ -2402,7 +2395,6 @@ mod tests {
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
-            .experimental_features_propose_events(true)
             .build()
             .unwrap();
 
@@ -2439,13 +2431,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(
-                &invoker_options,
-                MOCK_PARTITION,
-                invocation_id,
-                0,
-                error_a,
-            )
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_a)
             .await;
         assert_that!(
             *effects_rx
@@ -2470,13 +2456,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(
-                &invoker_options,
-                MOCK_PARTITION,
-                invocation_id,
-                0,
-                error_a_same,
-            )
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_a_same)
             .await;
         assert!(
             effects_rx.try_recv().is_err(),
@@ -2493,13 +2473,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom-2").into(),
         });
         service_inner
-            .handle_invocation_task_failed(
-                &invoker_options,
-                MOCK_PARTITION,
-                invocation_id,
-                0,
-                error_b,
-            )
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_b)
             .await;
         assert_that!(
             *effects_rx
@@ -2538,7 +2512,6 @@ mod tests {
         // Abort error
         service_inner
             .handle_invocation_task_failed(
-                &InvokerOptions::default(),
                 MOCK_PARTITION,
                 invocation_id,
                 0,
@@ -2592,13 +2565,7 @@ mod tests {
         // First transient error -> schedules retry (because 1 attempt available)
         let error_a = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(
-                &invoker_options,
-                MOCK_PARTITION,
-                invocation_id,
-                0,
-                error_a,
-            )
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_a)
             .await;
         // There might be an extra transient error event proposed; drain if present
         let _ = effects_rx.try_recv();
@@ -2609,13 +2576,7 @@ mod tests {
         // Second transient error -> retries exhausted and Pause behavior -> expect Paused effect
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(
-                &invoker_options,
-                MOCK_PARTITION,
-                invocation_id,
-                0,
-                error_b,
-            )
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_b)
             .await;
 
         let effect = effects_rx
@@ -2705,16 +2666,16 @@ mod tests {
         // First transient failure after pin -> schedules retry
         let err1 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(&invoker_options, MOCK_PARTITION, invocation_id, 0, err1)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, err1)
             .await;
         // Drain any proposed event
-        effects_rx.try_recv().unwrap_err();
+        effects_rx.try_recv().unwrap();
         service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
 
         // Second transient failure after pin -> schedules retry (attempts now exhausted)
         let err2 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(&invoker_options, MOCK_PARTITION, invocation_id, 0, err2)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, err2)
             .await;
         effects_rx.try_recv().unwrap_err();
         service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
@@ -2726,7 +2687,7 @@ mod tests {
         // Next failure should hit OnMaxAttempts::Kill immediately (no more retries)
         let err3 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(&invoker_options, MOCK_PARTITION, invocation_id, 0, err3)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, err3)
             .await;
 
         let effect = effects_rx

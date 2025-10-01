@@ -124,23 +124,6 @@ jobs:
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
 
-  sdk-java-journal-events:
-    name: Run SDK-Java integration tests with Journal retention and journal events
-    permissions:
-      contents: read
-      issues: read
-      checks: write
-      pull-requests: write
-      actions: read
-    secrets: inherit
-    needs: docker
-    uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
-    with:
-      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-      envVars: |
-        RESTATE_WORKER__INVOKER__experimental_features_propose_events=true
-      testArtifactOutput: sdk-java-journal-retention-and-events-integration-test-report
-
   sdk-python:
     name: Run SDK-Python integration tests
     permissions:
