@@ -227,7 +227,6 @@ impl<'a> BifrostAdmin<'a> {
 
         if let Some(seal_metadata) = seal_metadata
             && tail.is_sealed()
-            && Configuration::pinned().bifrost.experimental_chain_sealing
         {
             let tail_lsn = self
                 .inner

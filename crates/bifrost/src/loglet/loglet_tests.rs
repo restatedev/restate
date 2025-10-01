@@ -595,6 +595,10 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
 
     // All (acknowledged) appends must have offsets less than the tail observed at the first
     // Sealed() response of find_tail()
+    println!(
+        "last_acked={}, first observed seal at={first_observed_seal}",
+        all_committed.last().unwrap()
+    );
     assert!(first_observed_seal > *all_committed.last().unwrap());
 
     let reader = loglet
