@@ -447,7 +447,6 @@ where
                 InvokerStorageReader::new(partition_store.clone()),
                 invoker_tx,
             )
-            .await
             .map_err(Error::Invoker)?;
 
         {
@@ -472,7 +471,6 @@ where
                         invocation_target,
                         InvokeInputJournal::NoCachedJournal,
                     )
-                    .await
                     .map_err(Error::Invoker)?;
                 count += 1;
             }
@@ -502,18 +500,13 @@ where
         }
     }
 
-    pub async fn handle_actions(
-        &mut self,
-        actions: impl Iterator<Item = Action>,
-    ) -> Result<(), Error> {
+    pub fn handle_actions(&mut self, actions: impl Iterator<Item = Action>) -> Result<(), Error> {
         match &mut self.state {
             State::Follower | State::Candidate { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state
-                    .handle_actions(&mut self.invoker_tx, actions)
-                    .await?;
+                leader_state.handle_actions(&mut self.invoker_tx, actions)?;
             }
         }
 

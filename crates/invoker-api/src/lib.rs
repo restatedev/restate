@@ -100,7 +100,7 @@ pub mod test_util {
     }
 
     impl<SR: Send> InvokerHandle<SR> for MockInvokerHandle<SR> {
-        async fn invoke(
+        fn invoke(
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
@@ -111,7 +111,7 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn notify_completion(
+        fn notify_completion(
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
@@ -120,7 +120,7 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn notify_notification(
+        fn notify_notification(
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
@@ -130,7 +130,7 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn notify_stored_command_ack(
+        fn notify_stored_command_ack(
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
@@ -140,14 +140,14 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn abort_all_partition(
+        fn abort_all_partition(
             &mut self,
             _partition: PartitionLeaderEpoch,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }
 
-        async fn abort_invocation(
+        fn abort_invocation(
             &mut self,
             _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
@@ -156,7 +156,7 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn retry_invocation_now(
+        fn retry_invocation_now(
             &mut self,
             _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
@@ -165,7 +165,7 @@ pub mod test_util {
             Ok(())
         }
 
-        async fn register_partition(
+        fn register_partition(
             &mut self,
             _partition: PartitionLeaderEpoch,
             _partition_key_range: RangeInclusive<PartitionKey>,

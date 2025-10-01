@@ -559,7 +559,7 @@ where
 
                     // Commit our changes and notify actuators about actions if we are the leader
                     transaction.commit().await?;
-                    self.leadership_state.handle_actions(action_collector.drain(..)).await?;
+                    self.leadership_state.handle_actions(action_collector.drain(..))?;
                 },
                 result = self.leadership_state.run() => {
                     let action_effects = result?;

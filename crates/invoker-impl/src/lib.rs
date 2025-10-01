@@ -1811,7 +1811,6 @@ mod tests {
                 EmptyStorageReader,
                 output_tx,
             )
-            .await
             .unwrap();
         handle
             .invoke(
@@ -1821,7 +1820,6 @@ mod tests {
                 invocation_target,
                 InvokeInputJournal::NoCachedJournal,
             )
-            .await
             .unwrap();
 
         // If input order between 'register partition' and 'invoke' is not maintained, then it can happen
