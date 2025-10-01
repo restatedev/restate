@@ -12,6 +12,7 @@ on:
   push:
     branches:
       - main
+      - release-*
 
 jobs:
   workspace-hack-check:
