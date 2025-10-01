@@ -18,7 +18,7 @@ use restate_types::time::MillisSinceEpoch;
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 
-pub trait ReadOnlyFsmTable {
+pub trait ReadFsmTable {
     fn get_inbox_seq_number(&mut self) -> impl Future<Output = Result<MessageIndex>> + Send + '_;
 
     fn get_outbox_seq_number(&mut self) -> impl Future<Output = Result<MessageIndex>> + Send + '_;
@@ -34,28 +34,16 @@ pub trait ReadOnlyFsmTable {
     ) -> impl Future<Output = Result<Option<PartitionDurability>>> + Send + '_;
 }
 
-pub trait FsmTable {
-    fn put_applied_lsn(&mut self, lsn: Lsn) -> impl Future<Output = Result<()>> + Send;
+pub trait WriteFsmTable {
+    fn put_applied_lsn(&mut self, lsn: Lsn) -> Result<()>;
 
-    fn put_inbox_seq_number(
-        &mut self,
-        seq_number: MessageIndex,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn put_inbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()>;
 
-    fn put_outbox_seq_number(
-        &mut self,
-        seq_number: MessageIndex,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn put_outbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()>;
 
-    fn put_min_restate_version(
-        &mut self,
-        version: &SemanticRestateVersion,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn put_min_restate_version(&mut self, version: &SemanticRestateVersion) -> Result<()>;
 
-    fn put_partition_durability(
-        &mut self,
-        durability: &PartitionDurability,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn put_partition_durability(&mut self, durability: &PartitionDurability) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]

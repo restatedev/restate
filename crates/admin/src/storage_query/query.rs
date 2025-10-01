@@ -8,22 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::query_utils::{JsonWriter, WriteRecordBatchStream};
+use crate::query_utils::{RecordBatchWriter, WriteRecordBatchStream};
 
 use super::QueryServiceState;
 use super::error::StorageQueryError;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, http};
+use bytes::Bytes;
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::ipc::writer::StreamWriter;
+use datafusion::arrow::json::writer::JsonArray;
+use datafusion::common::DataFusionError;
 use futures::{StreamExt, TryStreamExt};
 use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use okapi_operation::*;
+use parking_lot::Mutex;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_with::serde_as;
@@ -84,4 +91,65 @@ pub async fn query(
         .header(http::header::CONTENT_TYPE, content_type)
         .body(StreamBody::new(result_stream))
         .expect("content-type header is correct"))
+}
+
+#[derive(Clone)]
+// unfortunately the json writer doesnt give a way to get a mutable reference to the underlying writer, so we need another pointer in to its buffer
+// we use a lock here to help make the writer send/sync, despite it being totally uncontended :(
+struct LockWriter(Arc<Mutex<Vec<u8>>>);
+
+impl LockWriter {
+    fn new() -> Self {
+        Self(Arc::new(Mutex::new(Vec::new())))
+    }
+
+    fn take(&self) -> Vec<u8> {
+        let mut vec = self.0.lock();
+        let new_vec = Vec::with_capacity(vec.capacity());
+        std::mem::replace(&mut vec, new_vec)
+    }
+}
+
+impl Write for LockWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().flush()
+    }
+}
+
+pub struct JsonWriter {
+    json_writer: datafusion::arrow::json::Writer<LockWriter, JsonArray>,
+    lock_writer: LockWriter,
+    finished: bool,
+}
+
+impl RecordBatchWriter for JsonWriter {
+    fn new(_schema: &Schema) -> Result<Self, DataFusionError> {
+        let mut lock_writer = LockWriter::new();
+        // we write out under 'rows' key so that we may add extra keys later (eg 'schema')
+        lock_writer.write_all(br#"{"rows":"#)?;
+        Ok(Self {
+            json_writer: datafusion::arrow::json::Writer::new(lock_writer.clone()),
+            lock_writer,
+            finished: false,
+        })
+    }
+
+    fn write(&mut self, batch: &RecordBatch) -> Result<Bytes, DataFusionError> {
+        self.json_writer.write(batch)?;
+        Ok(Bytes::from(self.lock_writer.take()))
+    }
+
+    fn finish(&mut self) -> Result<Bytes, DataFusionError> {
+        if !self.finished {
+            self.finished = true;
+
+            self.json_writer.finish()?;
+            self.lock_writer.write_all(b"}")?;
+        }
+        Ok(Bytes::from(self.lock_writer.take()))
+    }
 }

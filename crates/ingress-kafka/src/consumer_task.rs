@@ -13,10 +13,10 @@ use std::fmt;
 use std::sync::{Arc, OnceLock, Weak};
 
 use crate::dispatcher::{DispatchKafkaEvent, KafkaIngressDispatcher, KafkaIngressEvent};
-use crate::metric_definitions::KAFKA_INGRESS_REQUESTS;
+use crate::metric_definitions::{KAFKA_INGRESS_CONSUMER_LAG, KAFKA_INGRESS_REQUESTS};
 use base64::Engine;
 use bytes::Bytes;
-use metrics::counter;
+use metrics::{counter, gauge};
 use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{
     BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer,
@@ -25,7 +25,7 @@ use rdkafka::error::KafkaError;
 use rdkafka::message::BorrowedMessage;
 use rdkafka::topic_partition_list::TopicPartitionListElem;
 use rdkafka::types::RDKafkaErrorCode;
-use rdkafka::{ClientConfig, ClientContext, Message};
+use rdkafka::{ClientConfig, ClientContext, Message, Statistics};
 use restate_core::{TaskCenter, TaskHandle, TaskKind, task_center};
 use restate_types::invocation::Header;
 use restate_types::live::Live;
@@ -210,6 +210,21 @@ impl MessageSender {
             msg.offset() as u64,
         )
     }
+
+    fn update_consumer_stats(&self, stats: Statistics) {
+        for topic in stats.topics {
+            for partition in topic.1.partitions {
+                let lag = partition.1.consumer_lag as f64;
+                gauge!(
+                    KAFKA_INGRESS_CONSUMER_LAG,
+                     "subscription" => self.subscription.id().to_string(),
+                     "topic" => topic.0.to_string(),
+                     "partition" =>  partition.0.to_string()
+                )
+                .set(lag);
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -326,7 +341,11 @@ struct RebalanceContext {
     consumer_group_id: String,
 }
 
-impl ClientContext for RebalanceContext {}
+impl ClientContext for RebalanceContext {
+    fn stats(&self, statistics: Statistics) {
+        self.sender.update_consumer_stats(statistics);
+    }
+}
 
 // This callback is called synchronously with the poll of the main queue, so we don't want to block here.
 // Once the pre balance steps finish assign() will be called. If we have not split at this point,

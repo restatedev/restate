@@ -16,6 +16,9 @@ pub mod entry_codec;
 pub mod message_codec;
 
 #[allow(clippy::enum_variant_names)]
+// We need to allow dead code because the entry-codec feature only uses a subset of the defined
+// service protocol messages. Otherwise, crates depending only on this feature fail clippy.
+#[allow(dead_code)]
 mod proto {
     include!(concat!(env!("OUT_DIR"), "/dev.restate.service.protocol.rs"));
 }

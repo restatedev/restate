@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
+use std::convert::Infallible;
 
 use http::HeaderName;
 use restate_test_util::{assert, assert_eq};
@@ -401,30 +402,25 @@ mod change_service_type {
 
 #[test]
 fn override_existing_deployment_removing_a_service() {
-    let mut updater = SchemaUpdater::default();
-
     let mut deployment = Deployment::mock();
-    deployment.id = updater
-        .add_deployment(
+    let (deployment_id, schemas) = SchemaUpdater::update_and_return(Schema::default(), |updater| {
+        updater.add_deployment(
             deployment.metadata.clone(),
             vec![greeter_service(), another_greeter_service()],
             false,
         )
-        .unwrap();
+    })
+    .unwrap();
+    deployment.id = deployment_id;
 
-    let schemas = updater.into_inner();
     schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
     schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment.id);
 
-    updater = SchemaUpdater::new(schemas);
-    assert_eq!(
-        updater
-            .add_deployment(deployment.metadata.clone(), vec![greeter_service()], true,)
-            .unwrap(),
-        deployment.id
-    );
-
-    let schemas = updater.into_inner();
+    let (deployment_id, schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
+        updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], true)
+    })
+    .unwrap();
+    assert_eq!(deployment_id, deployment.id);
 
     schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment.id);
     assert!(
@@ -452,26 +448,29 @@ fn cannot_override_existing_deployment_endpoint_conflict() {
 
 #[test]
 fn register_two_deployments_then_remove_first() {
-    let mut updater = SchemaUpdater::default();
-
     let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
     let mut deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
-    deployment_1.id = updater
-        .add_deployment(
-            deployment_1.metadata.clone(),
-            vec![greeter_service(), another_greeter_service()],
-            false,
-        )
+    let (deployment_id_1, schemas) =
+        SchemaUpdater::update_and_return(Schema::default(), |updater| {
+            updater.add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_service(), another_greeter_service()],
+                false,
+            )
+        })
         .unwrap();
-    deployment_2.id = updater
-        .add_deployment(
+    deployment_1.id = deployment_id_1;
+
+    let (deployment_id_2, schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
+        updater.add_deployment(
             deployment_2.metadata.clone(),
             vec![greeter_service()],
             false,
         )
-        .unwrap();
-    let schemas = updater.into_inner();
+    })
+    .unwrap();
+    deployment_2.id = deployment_id_2;
 
     schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
     schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
@@ -479,9 +478,11 @@ fn register_two_deployments_then_remove_first() {
     schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
 
     let version_before_removal = schemas.version();
-    updater = SchemaUpdater::new(schemas);
-    updater.remove_deployment(deployment_1.id);
-    let schemas = updater.into_inner();
+    let schemas = SchemaUpdater::update(schemas, |updater| {
+        let _: () = updater.remove_deployment(deployment_1.id);
+        Ok::<(), Infallible>(())
+    })
+    .unwrap();
 
     schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
     schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
@@ -492,6 +493,52 @@ fn register_two_deployments_then_remove_first() {
             .is_none()
     );
     assert!(schemas.get_deployment(&deployment_1.id).is_none());
+}
+
+#[test]
+fn register_two_deployments_then_remove_second() {
+    let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
+    let mut deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
+
+    let (deployment_id_1, schemas) =
+        SchemaUpdater::update_and_return(Schema::default(), |updater| {
+            updater.add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_service(), another_greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+    deployment_1.id = deployment_id_1;
+
+    let (deployment_id_2, schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
+        updater.add_deployment(
+            deployment_2.metadata.clone(),
+            vec![greeter_service()],
+            false,
+        )
+    })
+    .unwrap();
+    deployment_2.id = deployment_id_2;
+
+    schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
+    schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
+    schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id);
+    schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
+
+    let version_before_removal = schemas.version();
+    let schemas = SchemaUpdater::update(schemas, |updater| {
+        let _: () = updater.remove_deployment(deployment_2.id);
+        Ok::<(), Infallible>(())
+    })
+    .unwrap();
+
+    schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
+    schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
+    assert!(version_before_removal < schemas.version());
+    schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id);
+    schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
+    assert!(schemas.get_deployment(&deployment_2.id).is_none());
 }
 
 mod remove_handler {
@@ -704,7 +751,7 @@ fn update_latest_deployment() {
     let schemas = updater.into_inner();
 
     schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
-    schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
+    schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
 
     let updated_deployment = schemas.get_deployment(&deployment_1.id).unwrap();
 
@@ -775,66 +822,66 @@ fn update_draining_deployment() {
 
 #[test]
 fn update_deployment_same_uri() {
-    let mut updater = SchemaUpdater::default();
-
     let mut deployment_1 = Deployment::mock_with_uri("http://localhost:9080");
     let mut deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
-    deployment_1.id = updater
-        .add_deployment(
-            deployment_1.metadata.clone(),
-            vec![greeter_service()],
-            false,
-        )
+    let (deployment_id_1, schemas) =
+        SchemaUpdater::update_and_return(Schema::default(), |updater| {
+            updater.add_deployment(
+                deployment_1.metadata.clone(),
+                vec![greeter_service()],
+                false,
+            )
+        })
         .unwrap();
+    deployment_1.id = deployment_id_1;
 
     // patching new invocations
-    deployment_2.id = updater
-        .add_deployment(
+    let (deployment_id_2, schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
+        updater.add_deployment(
             deployment_2.metadata.clone(),
             vec![greeter_service()],
             false,
         )
-        .unwrap();
+    })
+    .unwrap();
+    deployment_2.id = deployment_id_2;
 
-    // oh, i have some old failing invocations, wish those were on the patched version too
+    // oh, I have some old failing invocations, wish those were on the patched version too
 
     deployment_1.metadata.ty = deployment_2.metadata.ty.clone();
-    updater
-        .update_deployment(
+    let schemas = SchemaUpdater::update(schemas, |updater| {
+        updater.update_deployment(
             deployment_1.id,
             deployment_1.metadata.clone(),
             vec![greeter_service()],
         )
-        .unwrap();
+    })
+    .unwrap();
 
     // there are now two deployment IDs pointing to :9081, so we shouldn't be able to force either of them
     assert!(let &SchemaError::Deployment(
             DeploymentError::MultipleExistingDeployments(_)
-        ) = updater.add_deployment(
+        ) = SchemaUpdater::update(schemas.clone(), |updater| updater.add_deployment(
             deployment_1.metadata.clone(),
             vec![greeter_service(), greeter_virtual_object()],
             true,
-        ).unwrap_err());
+        ).map(|_| ())).unwrap_err());
 
     assert!(let &SchemaError::Deployment(
             DeploymentError::MultipleExistingDeployments(_)
-        ) = updater.add_deployment(
+        ) = SchemaUpdater::update(schemas.clone(), |updater| updater.add_deployment(
             deployment_2.metadata.clone(),
             vec![greeter_service(), greeter_virtual_object()],
             true,
-        ).unwrap_err());
+   ).map(|_| ())).unwrap_err());
 
-    updater
-        .schema
-        .assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
-    updater
-        .schema
-        .assert_service_revision(GREETER_SERVICE_NAME, 2);
+    // Latest should remain deployment_2
+    schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
+    schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
 
-    let updated_deployment_1 = updater.schema.get_deployment(&deployment_1.id).unwrap();
-
-    let updated_deployment_2 = updater.schema.get_deployment(&deployment_2.id).unwrap();
+    let updated_deployment_1 = schemas.get_deployment(&deployment_1.id).unwrap();
+    let updated_deployment_2 = schemas.get_deployment(&deployment_2.id).unwrap();
 
     assert_eq!(
         updated_deployment_1.metadata.ty,
@@ -842,17 +889,21 @@ fn update_deployment_same_uri() {
     );
 
     // the failing invocations have drained so I can safely delete the original deployment
-    updater.remove_deployment(deployment_1.id);
+    let schemas = SchemaUpdater::update(schemas, |updater| {
+        let _: () = updater.remove_deployment(deployment_1.id);
+        Ok::<(), Infallible>(())
+    })
+    .unwrap();
 
     assert_eq!(
         deployment_2.id,
-        updater
-            .add_deployment(
-                deployment_2.metadata.clone(),
-                vec![greeter_service(), greeter_virtual_object()],
-                true,
-            )
-            .unwrap()
+        SchemaUpdater::update_and_return(schemas, |updater| updater.add_deployment(
+            deployment_2.metadata.clone(),
+            vec![greeter_service(), greeter_virtual_object()],
+            true,
+        ))
+        .unwrap()
+        .0
     );
 }
 
@@ -907,7 +958,7 @@ fn update_latest_deployment_add_handler() {
         .assert_service_deployment(GREETER_SERVICE_NAME, deployment_1.id);
     updater
         .schema
-        .assert_service_revision(GREETER_SERVICE_NAME, 2);
+        .assert_service_revision(GREETER_SERVICE_NAME, 1);
 
     let (_, services) = updater
         .schema
@@ -1048,7 +1099,7 @@ fn update_latest_deployment_add_service() {
         .assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_1.id);
     updater
         .schema
-        .assert_service_revision(GREETER_SERVICE_NAME, 2);
+        .assert_service_revision(GREETER_SERVICE_NAME, 1);
     updater
         .schema
         .assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);

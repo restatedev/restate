@@ -86,12 +86,6 @@ pub struct BifrostOptions {
     /// of replicas, or for other reasons.
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub disable_auto_improvement: bool,
-
-    // Should be enabled by default in v1.5 or v1.6 depending on whether we'll
-    // allow rolling back to a release prior to <v1.4.3 or not.
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    pub experimental_chain_sealing: bool,
 }
 
 impl BifrostOptions {
@@ -128,7 +122,6 @@ impl Default for BifrostOptions {
             seal_retry_interval: NonZeroFriendlyDuration::from_secs_unchecked(2),
             record_cache_memory_size: ByteCount::from(250u64 * 1024 * 1024), // 250 MiB
             disable_auto_improvement: false,
-            experimental_chain_sealing: false,
         }
     }
 }

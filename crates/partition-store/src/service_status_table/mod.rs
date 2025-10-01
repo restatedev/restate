@@ -15,8 +15,8 @@ use bytestring::ByteString;
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::service_status_table::{
-    ReadOnlyVirtualObjectStatusTable, ScanVirtualObjectStatusTable, VirtualObjectStatus,
-    VirtualObjectStatusTable,
+    ReadVirtualObjectStatusTable, ScanVirtualObjectStatusTable, VirtualObjectStatus,
+    WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
@@ -81,7 +81,7 @@ fn delete_virtual_object_status<S: StorageAccess>(
     storage.delete_key(&key)
 }
 
-impl ReadOnlyVirtualObjectStatusTable for PartitionStore {
+impl ReadVirtualObjectStatusTable for PartitionStore {
     async fn get_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
@@ -122,7 +122,7 @@ impl ScanVirtualObjectStatusTable for PartitionStore {
     }
 }
 
-impl ReadOnlyVirtualObjectStatusTable for PartitionStoreTransaction<'_> {
+impl ReadVirtualObjectStatusTable for PartitionStoreTransaction<'_> {
     async fn get_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
@@ -132,8 +132,8 @@ impl ReadOnlyVirtualObjectStatusTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl VirtualObjectStatusTable for PartitionStoreTransaction<'_> {
-    async fn put_virtual_object_status(
+impl WriteVirtualObjectStatusTable for PartitionStoreTransaction<'_> {
+    fn put_virtual_object_status(
         &mut self,
         service_id: &ServiceId,
         status: &VirtualObjectStatus,
@@ -142,7 +142,7 @@ impl VirtualObjectStatusTable for PartitionStoreTransaction<'_> {
         put_virtual_object_status(self, service_id, status)
     }
 
-    async fn delete_virtual_object_status(&mut self, service_id: &ServiceId) -> Result<()> {
+    fn delete_virtual_object_status(&mut self, service_id: &ServiceId) -> Result<()> {
         self.assert_partition_key(service_id)?;
         delete_virtual_object_status(self, service_id)
     }

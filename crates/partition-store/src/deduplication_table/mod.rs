@@ -11,7 +11,7 @@
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::Result;
 use restate_storage_api::deduplication_table::{
-    DedupSequenceNumber, DeduplicationTable, ProducerId, ReadOnlyDeduplicationTable,
+    DedupSequenceNumber, ProducerId, ReadDeduplicationTable, WriteDeduplicationTable,
 };
 use restate_types::identifiers::PartitionId;
 
@@ -38,7 +38,7 @@ fn get_dedup_sequence_number<S: StorageAccess>(
     storage.get_value(key)
 }
 
-impl ReadOnlyDeduplicationTable for PartitionStore {
+impl ReadDeduplicationTable for PartitionStore {
     async fn get_dedup_sequence_number(
         &mut self,
         producer_id: &ProducerId,
@@ -47,7 +47,7 @@ impl ReadOnlyDeduplicationTable for PartitionStore {
     }
 }
 
-impl ReadOnlyDeduplicationTable for PartitionStoreTransaction<'_> {
+impl ReadDeduplicationTable for PartitionStoreTransaction<'_> {
     async fn get_dedup_sequence_number(
         &mut self,
         producer_id: &ProducerId,
@@ -56,8 +56,8 @@ impl ReadOnlyDeduplicationTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl DeduplicationTable for PartitionStoreTransaction<'_> {
-    async fn put_dedup_seq_number(
+impl WriteDeduplicationTable for PartitionStoreTransaction<'_> {
+    fn put_dedup_seq_number(
         &mut self,
         producer_id: ProducerId,
         dedup_sequence_number: &DedupSequenceNumber,

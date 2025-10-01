@@ -12,7 +12,7 @@ use super::*;
 use opentelemetry::trace::Span;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_storage_api::journal_table_v2::ReadOnlyJournalTable;
+use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_types::identifiers::{EntryIndex, InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
@@ -48,7 +48,7 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
 where
     TActuator: Actuator,
     TSchemas: DeploymentResolver,
-    TStorage: ReadInvocationStatusTable + ReadOnlyJournalTable,
+    TStorage: ReadInvocationStatusTable + ReadJournalTable,
 {
     type Output = RestartAsNewInvocationRpcResponse;
     type Error = ();
@@ -444,7 +444,7 @@ mod tests {
         }
     }
 
-    impl ReadOnlyJournalTable for MockStorage {
+    impl ReadJournalTable for MockStorage {
         fn get_journal_entry(
             &mut self,
             invocation_id: InvocationId,

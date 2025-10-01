@@ -79,20 +79,25 @@ pub trait Storage {
 }
 
 pub trait Transaction:
-    state_table::StateTable
+    state_table::WriteStateTable
+    + state_table::ReadStateTable
     + invocation_status_table::ReadInvocationStatusTable
     + invocation_status_table::WriteInvocationStatusTable
-    + service_status_table::VirtualObjectStatusTable
-    + inbox_table::InboxTable
-    + outbox_table::OutboxTable
-    + deduplication_table::DeduplicationTable
-    + journal_table::JournalTable
-    + journal_table_v2::JournalTable
-    + fsm_table::FsmTable
-    + timer_table::TimerTable
+    + service_status_table::ReadVirtualObjectStatusTable
+    + service_status_table::WriteVirtualObjectStatusTable
+    + inbox_table::WriteInboxTable
+    + outbox_table::WriteOutboxTable
+    + deduplication_table::WriteDeduplicationTable
+    + journal_table::WriteJournalTable
+    + journal_table::ReadJournalTable
+    + journal_table_v2::WriteJournalTable
+    + journal_table_v2::ReadJournalTable
+    + fsm_table::WriteFsmTable
+    + timer_table::WriteTimerTable
     + idempotency_table::IdempotencyTable
-    + promise_table::PromiseTable
-    + journal_events::JournalEventsTable
+    + promise_table::ReadPromiseTable
+    + promise_table::WritePromiseTable
+    + journal_events::WriteJournalEventsTable
     + Send
 {
     fn commit(self) -> impl Future<Output = Result<()>> + Send;

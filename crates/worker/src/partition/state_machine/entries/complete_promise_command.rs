@@ -11,10 +11,12 @@
 use crate::debug_if_leader;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::promise_table::{Promise, PromiseState, PromiseTable};
-use restate_storage_api::state_table::ReadOnlyStateTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
+use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::promise_table::{
+    Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
+};
+use restate_storage_api::state_table::ReadStateTable;
 use restate_types::errors::ALREADY_COMPLETED_INVOCATION_ERROR;
 use restate_types::invocation::{InvocationResponse, ResponseResult};
 use restate_types::journal_v2::{
@@ -29,7 +31,7 @@ pub(super) type ApplyCompletePromiseCommand<'e> =
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyCompletePromiseCommand<'e>
 where
-    S: ReadOnlyStateTable + PromiseTable + FsmTable + OutboxTable,
+    S: ReadStateTable + ReadPromiseTable + WritePromiseTable + WriteFsmTable + WriteOutboxTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self
@@ -63,7 +65,6 @@ where
                                 state: PromiseState::Completed(self.entry.value.clone().into()),
                             },
                         )
-                        .await
                         .map_err(Error::Storage)?;
                     CompletePromiseResult::Void
                 }
@@ -104,7 +105,6 @@ where
                                 state: PromiseState::Completed(self.entry.value.clone().into()),
                             },
                         )
-                        .await
                         .map_err(Error::Storage)?;
                     CompletePromiseResult::Void
                 }

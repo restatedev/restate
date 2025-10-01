@@ -12,7 +12,7 @@ use super::*;
 
 use crate::partition::state_machine::tests::matchers::actions::forward_purge_invocation_response;
 use restate_storage_api::invocation_status_table::CompletedInvocation;
-use restate_storage_api::service_status_table::ReadOnlyVirtualObjectStatusTable;
+use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationQuery, InvocationTarget,
@@ -331,7 +331,6 @@ async fn purge_completed_workflow() {
         &invocation_target.as_keyed_service_id().unwrap(),
         &VirtualObjectStatus::Locked(invocation_id),
     )
-    .await
     .unwrap();
     txn.commit().await.unwrap();
 

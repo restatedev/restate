@@ -16,7 +16,7 @@ use futures::Stream;
 use futures_util::stream;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
-use restate_storage_api::state_table::{ReadOnlyStateTable, ScanStateTable, StateTable};
+use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
@@ -119,7 +119,7 @@ fn get_all_user_states_for_service<S: StorageAccess>(
     )
 }
 
-impl ReadOnlyStateTable for PartitionStore {
+impl ReadStateTable for PartitionStore {
     async fn get_user_state(
         &mut self,
         service_id: &ServiceId,
@@ -166,7 +166,7 @@ impl ScanStateTable for PartitionStore {
     }
 }
 
-impl ReadOnlyStateTable for PartitionStoreTransaction<'_> {
+impl ReadStateTable for PartitionStoreTransaction<'_> {
     async fn get_user_state(
         &mut self,
         service_id: &ServiceId,
@@ -187,8 +187,8 @@ impl ReadOnlyStateTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl StateTable for PartitionStoreTransaction<'_> {
-    async fn put_user_state(
+impl WriteStateTable for PartitionStoreTransaction<'_> {
+    fn put_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
@@ -198,7 +198,7 @@ impl StateTable for PartitionStoreTransaction<'_> {
         put_user_state(self, service_id, state_key, state_value)
     }
 
-    async fn delete_user_state(
+    fn delete_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]>,
@@ -207,7 +207,7 @@ impl StateTable for PartitionStoreTransaction<'_> {
         delete_user_state(self, service_id, state_key)
     }
 
-    async fn delete_all_user_state(&mut self, service_id: &ServiceId) -> Result<()> {
+    fn delete_all_user_state(&mut self, service_id: &ServiceId) -> Result<()> {
         self.assert_partition_key(service_id)?;
         delete_all_user_state(self, service_id)
     }

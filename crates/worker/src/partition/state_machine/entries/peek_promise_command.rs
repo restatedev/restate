@@ -10,7 +10,7 @@
 
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::promise_table::{Promise, PromiseState, ReadOnlyPromiseTable};
+use restate_storage_api::promise_table::{Promise, PromiseState, ReadPromiseTable};
 use restate_types::journal_v2::{
     EntryMetadata, PeekPromiseCommand, PeekPromiseCompletion, PeekPromiseResult,
 };
@@ -21,7 +21,7 @@ pub(super) type ApplyPeekPromiseCommand<'e> = ApplyJournalCommandEffect<'e, Peek
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyPeekPromiseCommand<'e>
 where
-    S: ReadOnlyPromiseTable,
+    S: ReadPromiseTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let invocation_metadata = self

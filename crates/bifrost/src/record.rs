@@ -91,6 +91,8 @@ impl<S: Copy> LogEntry<S> {
     }
 
     /// `to` is inclusive
+    // Only used if the feature-gated replicated loglet provider is activated
+    #[allow(dead_code)]
     pub(crate) fn new_filtered_gap(offset: S, to: S) -> Self {
         LogEntry {
             offset,

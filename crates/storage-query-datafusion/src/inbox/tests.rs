@@ -16,7 +16,7 @@ use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
 use restate_storage_api::Transaction;
-use restate_storage_api::inbox_table::{InboxEntry, InboxTable};
+use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTarget;
 
@@ -32,14 +32,12 @@ async fn get_inbox() {
         0,
         &InboxEntry::Invocation(service_id.clone(), invocation_id_1),
     )
-    .await
     .unwrap();
     let invocation_id_2 = InvocationId::mock_generate(&invocation_target);
     tx.put_inbox_entry(
         1,
         &InboxEntry::Invocation(service_id.clone(), invocation_id_2),
     )
-    .await
     .unwrap();
     tx.commit().await.unwrap();
 

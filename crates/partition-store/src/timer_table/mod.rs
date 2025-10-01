@@ -13,7 +13,9 @@ use futures_util::stream;
 
 use restate_rocksdb::RocksDbPerfGuard;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind, TimerTable};
+use restate_storage_api::timer_table::{
+    ReadTimerTable, Timer, TimerKey, TimerKeyKind, WriteTimerTable,
+};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationUuid, PartitionId};
 
@@ -174,15 +176,7 @@ fn next_timers_greater_than<S: StorageAccess>(
     })
 }
 
-impl TimerTable for PartitionStore {
-    async fn put_timer(&mut self, key: &TimerKey, timer: &Timer) -> Result<()> {
-        add_timer(self, self.partition_id(), key, timer)
-    }
-
-    async fn delete_timer(&mut self, key: &TimerKey) -> Result<()> {
-        delete_timer(self, self.partition_id(), key)
-    }
-
+impl ReadTimerTable for PartitionStore {
     fn next_timers_greater_than(
         &mut self,
         exclusive_start: Option<&TimerKey>,
@@ -197,15 +191,7 @@ impl TimerTable for PartitionStore {
     }
 }
 
-impl TimerTable for PartitionStoreTransaction<'_> {
-    async fn put_timer(&mut self, key: &TimerKey, timer: &Timer) -> Result<()> {
-        add_timer(self, self.partition_id(), key, timer)
-    }
-
-    async fn delete_timer(&mut self, key: &TimerKey) -> Result<()> {
-        delete_timer(self, self.partition_id(), key)
-    }
-
+impl ReadTimerTable for PartitionStoreTransaction<'_> {
     fn next_timers_greater_than(
         &mut self,
         exclusive_start: Option<&TimerKey>,
@@ -217,6 +203,16 @@ impl TimerTable for PartitionStoreTransaction<'_> {
             exclusive_start,
             limit,
         )?))
+    }
+}
+
+impl WriteTimerTable for PartitionStoreTransaction<'_> {
+    fn put_timer(&mut self, key: &TimerKey, timer: &Timer) -> Result<()> {
+        add_timer(self, self.partition_id(), key, timer)
+    }
+
+    fn delete_timer(&mut self, key: &TimerKey) -> Result<()> {
+        delete_timer(self, self.partition_id(), key)
     }
 }
 

@@ -303,10 +303,6 @@ pub struct InvokerOptions {
 
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    experimental_features_propose_events: bool,
-
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     experimental_features_allow_protocol_v6: bool,
 
     /// # Invocation throttling
@@ -355,10 +351,6 @@ impl InvokerOptions {
         self.message_size_limit.map(Into::into)
     }
 
-    pub fn experimental_features_propose_events(&self) -> bool {
-        self.experimental_features_propose_events
-    }
-
     pub fn experimental_features_allow_protocol_v6(&self) -> bool {
         self.experimental_features_allow_protocol_v6
     }
@@ -388,7 +380,6 @@ impl Default for InvokerOptions {
             tmp_dir: None,
             concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
             disable_eager_state: false,
-            experimental_features_propose_events: false,
             experimental_features_allow_protocol_v6: false,
             invocation_throttling: None,
             action_throttling: None,

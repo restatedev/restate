@@ -28,7 +28,6 @@ use restate_core::ShutdownError;
 use restate_core::my_node_id;
 use restate_types::Version;
 use restate_types::Versioned;
-use restate_types::config::Configuration;
 use restate_types::live::Live;
 use restate_types::logs::KeyFilter;
 use restate_types::logs::MatchKeyQuery;
@@ -414,14 +413,7 @@ impl Stream for LogReadStream {
                                         // reconfiguration might bring us back to Reading on the
                                         // same substream, we don't want to lose the resources
                                         // allocated by underlying the stream.
-                                        if Configuration::pinned()
-                                            .bifrost
-                                            .experimental_chain_sealing
-                                        {
-                                            this.state.set(State::awaiting_or_seal_chain());
-                                        } else {
-                                            this.state.set(State::AwaitingReconfiguration);
-                                        }
+                                        this.state.set(State::awaiting_or_seal_chain());
                                         continue;
                                     }
                                 }
@@ -975,6 +967,8 @@ mod tests {
             pat!(Poll::Pending)
         );
 
+        // this will automatically seal the chain since it detects that the tail segment is
+        // actually sealed.
         let tail = bifrost
             .find_tail(LOG_ID, FindTailOptions::default())
             .await?;
@@ -987,7 +981,7 @@ mod tests {
         let old_version = metadata.logs_version();
         let mut builder = metadata.logs_ref().clone().into_builder();
         let mut chain_builder = builder.chain(LOG_ID).unwrap();
-        assert_eq!(1, chain_builder.num_segments());
+        assert_eq!(2, chain_builder.num_segments());
         let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
         chain_builder.append_segment(Lsn::new(11), ProviderKind::InMemory, new_segment_params)?;
 
@@ -1160,10 +1154,6 @@ mod tests {
 
     #[restate_core::test(start_paused = true)]
     async fn test_readstream_chain_sealing() -> anyhow::Result<()> {
-        let mut config = Configuration::pinned().clone();
-        config.bifrost.experimental_chain_sealing = true;
-        Configuration::set(config);
-
         const LOG_ID: LogId = LogId::new(0);
 
         let node_env = TestCoreEnvBuilder::with_incoming_only_connector()

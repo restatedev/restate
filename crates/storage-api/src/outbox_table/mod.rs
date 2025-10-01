@@ -54,16 +54,8 @@ impl WithPartitionKey for OutboxMessage {
     }
 }
 
-pub trait ReadOnlyOutboxTable {
+pub trait ReadOutboxTable {
     fn get_outbox_head_seq_number(&mut self) -> impl Future<Output = Result<Option<u64>>> + Send;
-}
-
-pub trait OutboxTable: ReadOnlyOutboxTable {
-    fn put_outbox_message(
-        &mut self,
-        message_index: u64,
-        outbox_message: &OutboxMessage,
-    ) -> impl Future<Output = Result<()>> + Send;
 
     fn get_next_outbox_message(
         &mut self,
@@ -74,9 +66,14 @@ pub trait OutboxTable: ReadOnlyOutboxTable {
         &mut self,
         sequence_number: u64,
     ) -> impl Future<Output = Result<Option<OutboxMessage>>> + Send;
+}
 
-    fn truncate_outbox(
+pub trait WriteOutboxTable {
+    fn put_outbox_message(
         &mut self,
-        range: RangeInclusive<u64>,
-    ) -> impl Future<Output = Result<()>> + Send;
+        message_index: u64,
+        outbox_message: &OutboxMessage,
+    ) -> Result<()>;
+
+    fn truncate_outbox(&mut self, range: RangeInclusive<u64>) -> Result<()>;
 }

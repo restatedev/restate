@@ -17,7 +17,7 @@ use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::Result;
 
-pub trait ReadOnlyStateTable {
+pub trait ReadStateTable {
     fn get_user_state(
         &mut self,
         service_id: &ServiceId,
@@ -40,22 +40,19 @@ pub trait ScanStateTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait StateTable: ReadOnlyStateTable {
+pub trait WriteStateTable {
     fn put_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]> + Send,
         state_value: impl AsRef<[u8]> + Send,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
     fn delete_user_state(
         &mut self,
         service_id: &ServiceId,
         state_key: impl AsRef<[u8]> + Send,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
-    fn delete_all_user_state(
-        &mut self,
-        service_id: &ServiceId,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn delete_all_user_state(&mut self, service_id: &ServiceId) -> Result<()>;
 }

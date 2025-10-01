@@ -14,43 +14,40 @@ use crate::PartitionStore;
 use bytes::Bytes;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
-use restate_storage_api::state_table::{ReadOnlyStateTable, StateTable};
+use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_types::identifiers::ServiceId;
 
-async fn populate_data<T: StateTable>(table: &mut T) {
+fn populate_data<T: WriteStateTable>(table: &mut T) {
     table
         .put_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            &Bytes::from_static(b"k1"),
-            &Bytes::from_static(b"v1"),
+            Bytes::from_static(b"k1"),
+            Bytes::from_static(b"v1"),
         )
-        .await
         .expect("");
 
     table
         .put_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            &Bytes::from_static(b"k2"),
-            &Bytes::from_static(b"v2"),
+            Bytes::from_static(b"k2"),
+            Bytes::from_static(b"v2"),
         )
-        .await
         .unwrap();
 
     table
         .put_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-2"),
-            &Bytes::from_static(b"k2"),
-            &Bytes::from_static(b"v2"),
+            Bytes::from_static(b"k2"),
+            Bytes::from_static(b"v2"),
         )
-        .await
         .unwrap();
 }
 
-async fn point_lookup<T: StateTable>(table: &mut T) {
+async fn point_lookup<T: ReadStateTable>(table: &mut T) {
     let result = table
         .get_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            &Bytes::from_static(b"k1"),
+            Bytes::from_static(b"k1"),
         )
         .await
         .expect("should not fail");
@@ -58,7 +55,7 @@ async fn point_lookup<T: StateTable>(table: &mut T) {
     assert_eq!(result, Some(Bytes::from_static(b"v1")));
 }
 
-async fn prefix_scans<T: StateTable>(table: &mut T) {
+async fn prefix_scans<T: ReadStateTable>(table: &mut T) {
     let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
     let result = table.get_all_user_states_for_service(service_id).unwrap();
 
@@ -70,17 +67,16 @@ async fn prefix_scans<T: StateTable>(table: &mut T) {
     assert_stream_eq(result, expected).await;
 }
 
-async fn deletes<T: StateTable>(table: &mut T) {
+fn deletes<T: WriteStateTable>(table: &mut T) {
     table
         .delete_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
-            &Bytes::from_static(b"k2"),
+            Bytes::from_static(b"k2"),
         )
-        .await
         .unwrap();
 }
 
-async fn verify_delete<T: StateTable>(table: &mut T) {
+async fn verify_delete<T: ReadStateTable>(table: &mut T) {
     let result = table
         .get_user_state(
             &ServiceId::with_partition_key(1337, "svc-1", "key-1"),
@@ -92,7 +88,7 @@ async fn verify_delete<T: StateTable>(table: &mut T) {
     assert!(result.is_none());
 }
 
-async fn verify_prefix_scan_after_delete<T: StateTable>(table: &mut T) {
+async fn verify_prefix_scan_after_delete<T: ReadStateTable>(table: &mut T) {
     let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
     let result = table.get_all_user_states_for_service(service_id).unwrap();
 
@@ -104,10 +100,10 @@ async fn verify_prefix_scan_after_delete<T: StateTable>(table: &mut T) {
 pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     let mut txn = rocksdb.transaction();
 
-    populate_data(&mut txn).await;
+    populate_data(&mut txn);
     point_lookup(&mut txn).await;
     prefix_scans(&mut txn).await;
-    deletes(&mut txn).await;
+    deletes(&mut txn);
 
     txn.commit().await.expect("should not fail");
 
@@ -122,13 +118,12 @@ async fn test_delete_all() {
 
     let mut txn = rocksdb.transaction();
 
-    populate_data(&mut txn).await;
+    populate_data(&mut txn);
     txn.commit().await.expect("should not fail");
 
     // Do delete all
     let mut txn = rocksdb.transaction();
     txn.delete_all_user_state(&ServiceId::with_partition_key(1337, "svc-1", "key-1"))
-        .await
         .unwrap();
     txn.commit().await.expect("should not fail");
 

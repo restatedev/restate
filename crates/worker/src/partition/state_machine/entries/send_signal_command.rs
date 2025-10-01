@@ -10,9 +10,9 @@
 
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use restate_storage_api::fsm_table::FsmTable;
-use restate_storage_api::outbox_table::{OutboxMessage, OutboxTable};
-use restate_storage_api::state_table::StateTable;
+use restate_storage_api::fsm_table::WriteFsmTable;
+use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::state_table::WriteStateTable;
 use restate_types::invocation::NotifySignalRequest;
 use restate_types::journal_v2::{SendSignalCommand, Signal};
 
@@ -21,7 +21,7 @@ pub(super) type ApplySendSignalCommand<'e> = ApplyJournalCommandEffect<'e, SendS
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplySendSignalCommand<'e>
 where
-    S: StateTable + OutboxTable + FsmTable,
+    S: WriteStateTable + WriteOutboxTable + WriteFsmTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         ctx.handle_outgoing_message(OutboxMessage::NotifySignal(NotifySignalRequest {

@@ -16,7 +16,7 @@ use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::time::MillisSinceEpoch;
 
-pub trait ReadOnlyJournalEventsTable {
+pub trait ReadJournalEventsTable {
     fn get_journal_events(
         &mut self,
         invocation_id: InvocationId,
@@ -33,18 +33,15 @@ pub trait ScanJournalEventsTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait JournalEventsTable: ReadOnlyJournalEventsTable {
+pub trait WriteJournalEventsTable {
     fn put_journal_event(
         &mut self,
         invocation_id: InvocationId,
         event: EventView,
         lsn: u64,
-    ) -> impl Future<Output = Result<()>> + Send;
+    ) -> Result<()>;
 
-    fn delete_journal_events(
-        &mut self,
-        invocation_id: InvocationId,
-    ) -> impl Future<Output = Result<()>> + Send;
+    fn delete_journal_events(&mut self, invocation_id: InvocationId) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

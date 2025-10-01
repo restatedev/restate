@@ -15,7 +15,7 @@ use restate_invoker_api::Effect;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
 };
-use restate_storage_api::inbox_table::{InboxEntry, ReadOnlyInboxTable, SequenceNumberInboxEntry};
+use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, JournalMetadata, StatusTimestamps,
 };
@@ -514,7 +514,6 @@ async fn attach_inboxed_with_send_service_invocation() {
             &invocation_target.as_keyed_service_id().unwrap(),
             &VirtualObjectStatus::Locked(InvocationId::mock_generate(&invocation_target)),
         )
-        .await
         .unwrap();
         tx.commit().await.unwrap();
     }
