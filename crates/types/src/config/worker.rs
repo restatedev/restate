@@ -301,10 +301,6 @@ pub struct InvokerOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub disable_eager_state: bool,
 
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    experimental_features_allow_protocol_v6: bool,
-
     /// # Invocation throttling
     ///
     /// Configures throttling for service invocations at the node level.
@@ -351,10 +347,6 @@ impl InvokerOptions {
         self.message_size_limit.map(Into::into)
     }
 
-    pub fn experimental_features_allow_protocol_v6(&self) -> bool {
-        self.experimental_features_allow_protocol_v6
-    }
-
     #[allow(deprecated)]
     pub fn print_deprecation_warnings(&self) {
         if self.retry_policy.is_some() {
@@ -380,7 +372,6 @@ impl Default for InvokerOptions {
             tmp_dir: None,
             concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
             disable_eager_state: false,
-            experimental_features_allow_protocol_v6: false,
             invocation_throttling: None,
             action_throttling: None,
         }
