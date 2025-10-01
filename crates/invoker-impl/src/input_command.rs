@@ -88,7 +88,7 @@ pub struct InvokerHandle<SR> {
 }
 
 impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
-    async fn invoke(
+    fn invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -107,7 +107,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .map_err(|_| NotRunningError)
     }
 
-    async fn notify_completion(
+    fn notify_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -122,7 +122,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .map_err(|_| NotRunningError)
     }
 
-    async fn notify_notification(
+    fn notify_notification(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -139,7 +139,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .map_err(|_| NotRunningError)
     }
 
-    async fn notify_stored_command_ack(
+    fn notify_stored_command_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -156,7 +156,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .map_err(|_| NotRunningError)
     }
 
-    async fn abort_all_partition(
+    fn abort_all_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
     ) -> Result<(), NotRunningError> {
@@ -165,7 +165,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .map_err(|_| NotRunningError)
     }
 
-    async fn abort_invocation(
+    fn abort_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -180,7 +180,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .map_err(|_| NotRunningError)
     }
 
-    async fn retry_invocation_now(
+    fn retry_invocation_now(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -195,7 +195,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
             .map_err(|_| NotRunningError)
     }
 
-    async fn register_partition(
+    fn register_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
