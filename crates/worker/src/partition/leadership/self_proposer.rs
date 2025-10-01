@@ -13,12 +13,8 @@ use std::sync::Arc;
 use futures::never::Never;
 
 use restate_bifrost::{Bifrost, CommitToken, ErrorRecoveryStrategy};
-use restate_core::{Metadata, my_node_id};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
-use restate_types::{
-    identifiers::{PartitionId, PartitionKey},
-    partitions::Partition,
-};
+use restate_types::{identifiers::PartitionKey, logs::LogId};
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::partition::leadership::Error;
@@ -35,24 +31,16 @@ const MAX_BIFROST_APPEND_BATCH: usize = 5000;
 static BIFROST_APPENDER_TASK: &str = "bifrost-appender";
 
 pub struct SelfProposer {
-    partition_id: PartitionId,
     epoch_sequence_number: EpochSequenceNumber,
     bifrost_appender: restate_bifrost::AppenderHandle<Envelope>,
 }
 
 impl SelfProposer {
     pub fn new(
-        partition_id: PartitionId,
+        log_id: LogId,
         epoch_sequence_number: EpochSequenceNumber,
         bifrost: &Bifrost,
     ) -> Result<Self, Error> {
-        let log_id = Metadata::with_current(|m| {
-            m.partition_table_ref()
-                .get(&partition_id)
-                .map(Partition::log_id)
-        })
-        .expect("partition is in partition table");
-
         let bifrost_appender = bifrost
             .create_background_appender(
                 log_id,
@@ -63,7 +51,6 @@ impl SelfProposer {
             .start("self-appender")?;
 
         Ok(Self {
-            partition_id,
             epoch_sequence_number,
             bifrost_appender,
         })
@@ -117,18 +104,15 @@ impl SelfProposer {
         let esn = self.epoch_sequence_number;
         self.epoch_sequence_number = self.epoch_sequence_number.next();
 
-        let my_node_id = my_node_id();
         Header {
             dest: Destination::Processor {
                 partition_key,
                 dedup: Some(DedupInformation::self_proposal(esn)),
             },
             source: Source::Processor {
-                partition_id: Some(self.partition_id),
+                partition_id: None,
                 partition_key: Some(partition_key),
                 leader_epoch: self.epoch_sequence_number.leader_epoch,
-                node_id: Some(my_node_id.as_plain()),
-                generational_node_id: Some(my_node_id),
             },
         }
     }

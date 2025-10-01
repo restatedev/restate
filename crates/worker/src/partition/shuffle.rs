@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use restate_bifrost::Bifrost;
-use restate_core::{Metadata, cancellation_watcher};
+use restate_core::cancellation_watcher;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
@@ -70,14 +70,11 @@ fn create_header(
     seq_number: MessageIndex,
     shuffle_metadata: &ShuffleMetadata,
 ) -> Header {
-    let my_node_id = Metadata::with_current(|m| m.my_node_id());
     Header {
         source: Source::Processor {
-            partition_id: Some(shuffle_metadata.partition_id),
+            partition_id: None,
             partition_key: None,
             leader_epoch: shuffle_metadata.leader_epoch,
-            node_id: Some(my_node_id.as_plain()),
-            generational_node_id: Some(my_node_id),
         },
         dest: Destination::Processor {
             partition_key: dest_partition_key,
@@ -217,8 +214,7 @@ where
             ..
         } = self;
 
-        let node_id = Metadata::with_current(|m| m.my_node_id());
-        debug!(restate.node = %node_id, restate.partition.id = %metadata.partition_id, "Running shuffle");
+        debug!(restate.partition.id = %metadata.partition_id, "Running shuffle");
 
         let state_machine = StateMachine::new(
             metadata,
@@ -249,7 +245,7 @@ where
             }
         }
 
-        debug!(restate.node = %node_id, "Stopping shuffle");
+        debug!("Stopping shuffle");
 
         Ok(())
     }
