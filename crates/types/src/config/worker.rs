@@ -77,7 +77,6 @@ pub struct WorkerOptions {
     /// and including the "durability point".
     ///
     /// Since v1.4.2 (not compatible with earlier versions)
-    // todo: auto enable in v1.6
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub durability_mode: Option<DurabilityMode>,
@@ -94,20 +93,9 @@ pub struct WorkerOptions {
     /// cover the time needed for the snapshot repository (i.e. S3) to replicate the snapshot
     /// across regions (typically a few seconds, but can be longer. Check S3's guidelines and
     /// cross-region replication SLA for more information).
-    ///
-    /// This setting is only effective if `worker.experimental-partition-driven-log-trimming` is
-    /// set to `true`.
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(default, skip_serializing_if = "FriendlyDuration::is_zero")]
     trim_delay_interval: FriendlyDuration,
-
-    // todo: remove and auto-enable in v1.6
-    //
-    // Underlying dependency `PartitionDurability` wal-protocol message is
-    // supported since v1.4.2
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    pub experimental_partition_driven_log_trimming: bool,
 }
 
 impl WorkerOptions {
@@ -144,7 +132,6 @@ impl Default for WorkerOptions {
             snapshots: SnapshotsOptions::default(),
             trim_delay_interval: FriendlyDuration::ZERO,
             durability_mode: None,
-            experimental_partition_driven_log_trimming: false,
         }
     }
 }
