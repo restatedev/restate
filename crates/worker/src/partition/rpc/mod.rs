@@ -60,7 +60,7 @@ pub(super) trait Actuator {
         &mut self,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
-    ) -> impl Future<Output = ()>;
+    );
 }
 
 impl<
@@ -105,7 +105,7 @@ impl<
         .await
     }
 
-    async fn notify_invoker_to_retry_now(
+    fn notify_invoker_to_retry_now(
         &mut self,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
@@ -114,9 +114,11 @@ impl<
         else {
             return;
         };
-        let _ = invoker_handle
-            .retry_invocation_now(partition_leader_epoch, invocation_id, invocation_epoch)
-            .await;
+        let _ = invoker_handle.retry_invocation_now(
+            partition_leader_epoch,
+            invocation_id,
+            invocation_epoch,
+        );
     }
 }
 

@@ -55,8 +55,7 @@ where
 
                 // Let's poke the invoker to retry now, if possible
                 self.proposer
-                    .notify_invoker_to_retry_now(invocation_id, metadata.current_invocation_epoch)
-                    .await;
+                    .notify_invoker_to_retry_now(invocation_id, metadata.current_invocation_epoch);
                 replier.send(ResumeInvocationRpcResponse::Ok);
             }
             Ok(InvocationStatus::Suspended {
@@ -226,7 +225,6 @@ mod tests {
             .expect_notify_invoker_to_retry_now()
             .return_once_st(move |got_invocation_id, _| {
                 assert_eq!(got_invocation_id, invocation_id);
-                ready(()).boxed()
             });
 
         let mut storage = MockStorage {
