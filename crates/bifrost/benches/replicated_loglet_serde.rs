@@ -127,18 +127,14 @@ pub fn generate_envelope<G>(generator: G) -> Arc<Envelope>
 where
     G: FnOnce() -> Command,
 {
-    let source_partition_id = random::<u16>().into();
     let partition_key = random();
     let leader_epoch = LeaderEpoch::from(random::<u64>());
-    let node_id = GenerationalNodeId::new(random(), random());
 
     let header = restate_wal_protocol::Header {
         source: restate_wal_protocol::Source::Processor {
-            partition_id: Some(source_partition_id),
+            partition_id: None,
             partition_key: Some(partition_key),
             leader_epoch,
-            node_id: Some(node_id.as_plain()),
-            generational_node_id: Some(node_id),
         },
         dest: Destination::Processor {
             partition_key,

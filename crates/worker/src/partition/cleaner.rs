@@ -14,20 +14,19 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use futures::StreamExt;
-use restate_types::retries::with_jitter;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::{Metadata, cancellation_watcher};
+use restate_core::cancellation_watcher;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScanInvocationStatusTable};
 use restate_types::identifiers::WithPartitionKey;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::identifiers::{LeaderEpoch, PartitionKey};
 use restate_types::invocation::PurgeInvocationRequest;
+use restate_types::retries::with_jitter;
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 pub(super) struct Cleaner<Storage> {
-    partition_id: PartitionId,
     leader_epoch: LeaderEpoch,
     partition_key_range: RangeInclusive<PartitionKey>,
     storage: Storage,
@@ -40,7 +39,6 @@ where
     Storage: ScanInvocationStatusTable + Send + Sync + 'static,
 {
     pub(super) fn new(
-        partition_id: PartitionId,
         leader_epoch: LeaderEpoch,
         storage: Storage,
         bifrost: Bifrost,
@@ -48,7 +46,6 @@ where
         cleanup_interval: Duration,
     ) -> Self {
         Self {
-            partition_id,
             leader_epoch,
             partition_key_range,
             storage,
@@ -57,10 +54,9 @@ where
         }
     }
 
-    #[instrument(skip_all, fields(restate.partition.id = %self.partition_id))]
+    #[instrument(skip_all)]
     pub(super) async fn run(self) -> anyhow::Result<()> {
         let Self {
-            partition_id,
             leader_epoch,
             partition_key_range,
             storage,
@@ -70,13 +66,10 @@ where
 
         debug!(?cleanup_interval, "Running cleaner");
 
-        let my_node_id = Metadata::with_current(|m| m.my_node_id());
         let bifrost_envelope_source = Source::Processor {
-            partition_id: Some(partition_id),
+            partition_id: None,
             partition_key: None,
             leader_epoch,
-            node_id: Some(my_node_id.as_plain()),
-            generational_node_id: Some(my_node_id),
         };
 
         // the cleaner is currently quite an expensive scan and we don't strictly need to do it on startup, so we will wait
@@ -326,7 +319,6 @@ mod tests {
             TaskKind::Cleaner,
             "cleaner",
             Cleaner::new(
-                PartitionId::MIN,
                 LeaderEpoch::INITIAL,
                 mock_storage,
                 bifrost.clone(),

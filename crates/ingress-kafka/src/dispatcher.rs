@@ -8,26 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::consumer_task::KafkaDeduplicationId;
+use std::borrow::Borrow;
+use std::sync::Arc;
+
 use bytes::Bytes;
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::{Span, SpanContext, TraceContextExt};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
+use tracing::debug;
+
 use restate_bifrost::Bifrost;
-use restate_core::{Metadata, my_node_id};
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, SpanRelation};
+use restate_types::live;
 use restate_types::message::MessageIndex;
 use restate_types::partition_table::PartitionTableError;
 use restate_types::schema::Schema;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
-use restate_types::{GenerationalNodeId, live};
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
-use std::borrow::Borrow;
-use std::sync::Arc;
-use tracing::debug;
+
+use crate::consumer_task::KafkaDeduplicationId;
 
 #[derive(Debug)]
 pub struct KafkaIngressEvent {
@@ -186,7 +188,6 @@ impl DispatchKafkaEvent for KafkaIngressDispatcher {
         let envelope = wrap_service_invocation_in_envelope(
             partition_key,
             inner,
-            my_node_id(),
             deduplication_id.to_string(),
             deduplication_index,
         );
@@ -205,15 +206,11 @@ impl DispatchKafkaEvent for KafkaIngressDispatcher {
 fn wrap_service_invocation_in_envelope(
     partition_key: PartitionKey,
     service_invocation: Box<ServiceInvocation>,
-    from_node_id: GenerationalNodeId,
     deduplication_source: String,
     deduplication_index: MessageIndex,
 ) -> Envelope {
     let header = Header {
-        source: Source::Ingress {
-            node_id: Some(from_node_id),
-            nodes_config_version: Some(Metadata::with_current(|m| m.nodes_config_version())),
-        },
+        source: Source::Ingress {},
         dest: Destination::Processor {
             partition_key,
             dedup: Some(DedupInformation::ingress(
