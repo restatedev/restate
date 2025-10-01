@@ -11,14 +11,13 @@
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use http::Uri;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
-use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_time_util::NonZeroFriendlyDuration;
 
 use super::QueryEngineOptions;
 
@@ -53,18 +52,6 @@ pub struct AdminOptions {
     /// Controls the interval at which cluster controller polls nodes of the cluster.
     pub heartbeat_interval: NonZeroFriendlyDuration,
 
-    /// # Log trim check interval
-    ///
-    /// Controls the interval at which cluster controller tries to trim the logs. Log trimming
-    /// can be disabled by setting it to "0".
-    ///
-    /// Note that this is only the interval at which logs are checked, and does not guarantee that
-    /// trim will be performed. The conditions for safely trim the log vary depending on the
-    /// deployment. For single nodes, the log records must be durably persisted to disk. In
-    /// distributed deployments, automatic trimming requires an external snapshot destination - see
-    /// `worker.snapshots` for more.
-    log_trim_check_interval: FriendlyDuration,
-
     /// Disable serving the Restate Web UI on the admin port. Default is `false`.
     pub disable_web_ui: bool,
 
@@ -98,10 +85,6 @@ impl AdminOptions {
         return !self.disable_cluster_controller;
     }
 
-    pub fn log_trim_check_interval(&self) -> Option<Duration> {
-        self.log_trim_check_interval.to_non_zero_std()
-    }
-
     /// set derived values if they are not configured to reduce verbose configurations
     pub fn set_derived_values(&mut self) {
         // Only derive bind_address if it is not explicitly set
@@ -133,8 +116,6 @@ impl Default for AdminOptions {
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: NonZeroFriendlyDuration::from_millis_unchecked(1500),
-            // check whether we can trim logs every hour
-            log_trim_check_interval: FriendlyDuration::from_secs(60 * 60),
             #[cfg(any(test, feature = "test-util"))]
             disable_cluster_controller: false,
             disable_web_ui: false,
