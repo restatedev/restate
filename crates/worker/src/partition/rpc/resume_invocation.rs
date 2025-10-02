@@ -167,11 +167,10 @@ mod tests {
         PreFlightInvocationMetadata, ScheduledInvocation,
     };
     use restate_types::deployment::PinnedDeployment;
-    use restate_types::identifiers::{DeploymentId, ServiceRevision};
+    use restate_types::identifiers::DeploymentId;
     use restate_types::invocation::InvocationTarget;
     use restate_types::schema::deployment::Deployment;
     use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
-    use restate_types::schema::service::ServiceMetadata;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use rstest::rstest;
     use std::collections::HashSet;
@@ -193,29 +192,6 @@ mod tests {
         }
     }
 
-    struct NoopDeploymentResolver;
-
-    impl DeploymentResolver for NoopDeploymentResolver {
-        fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
-            todo!()
-        }
-
-        fn get_deployment(&self, _: &DeploymentId) -> Option<Deployment> {
-            todo!()
-        }
-
-        fn get_deployment_and_services(
-            &self,
-            _: &DeploymentId,
-        ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
-            todo!()
-        }
-
-        fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
-            todo!()
-        }
-    }
-
     #[test(restate_core::test)]
     async fn reply_ok_when_invoked() {
         let invocation_id = InvocationId::mock_random();
@@ -234,7 +210,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &NoopDeploymentResolver, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,
@@ -293,7 +269,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &NoopDeploymentResolver, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,
@@ -326,7 +302,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &NoopDeploymentResolver, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,
@@ -359,7 +335,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &NoopDeploymentResolver, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,
@@ -404,7 +380,7 @@ mod tests {
 
         let (tx, rx) = Reciprocal::mock();
         RpcHandler::handle(
-            RpcContext::new(&mut proposer, &NoopDeploymentResolver, &mut storage),
+            RpcContext::new(&mut proposer, &(), &mut storage),
             Request {
                 request_id: Default::default(),
                 invocation_id,

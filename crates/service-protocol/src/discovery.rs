@@ -15,12 +15,11 @@ use std::ops::{Deref, RangeInclusive};
 use std::sync::LazyLock;
 
 use bytes::Bytes;
-use bytestring::ByteString;
 use codederror::CodedError;
 use http::header::{ACCEPT, CONTENT_TYPE};
 use http::response::Parts as ResponseParts;
-use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version};
+use http::uri::{PathAndQuery, Scheme};
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Version};
 use http_body_util::BodyExt;
 use http_body_util::Empty;
 use itertools::Itertools;
@@ -29,11 +28,11 @@ use tracing::{debug, warn};
 
 use restate_errors::{META0003, META0012, META0013, META0014, META0015};
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
+use restate_types::deployment::DeploymentAddress;
 use restate_types::endpoint_manifest;
 use restate_types::errors::GenericError;
-use restate_types::identifiers::LambdaARN;
 use restate_types::retries::{RetryIter, RetryPolicy};
-use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType};
+use restate_types::schema::deployment::{DeploymentType, EndpointLambdaCompression, ProtocolType};
 use restate_types::service_discovery::{
     MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION, MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,
     ServiceDiscoveryProtocolVersion,
@@ -95,11 +94,37 @@ fn parse_service_discovery_protocol_version_from_content_type(
 }
 
 #[derive(Clone)]
-pub struct DiscoverEndpoint(Endpoint, HashMap<HeaderName, HeaderValue>);
+pub struct DiscoveryRequest(Endpoint, HashMap<HeaderName, HeaderValue>);
 
-impl DiscoverEndpoint {
-    pub fn new(address: Endpoint, additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
-        Self(address, additional_headers)
+impl DiscoveryRequest {
+    pub fn new(
+        address: DeploymentAddress,
+        use_http_11: bool,
+        additional_headers: HashMap<HeaderName, HeaderValue>,
+    ) -> Self {
+        Self(
+            match address {
+                DeploymentAddress::Http(http) => {
+                    let is_using_https = http.uri.scheme().unwrap() == &Scheme::HTTPS;
+                    // Decide which HTTP version we should try
+                    let version = if use_http_11 {
+                        Some(http::Version::HTTP_11)
+                    } else if is_using_https {
+                        // ALPN will sort this out
+                        None
+                    } else {
+                        // By default, we use h2c on HTTP
+                        Some(http::Version::HTTP_2)
+                    };
+
+                    Endpoint::Http(http.uri, version)
+                }
+                DeploymentAddress::Lambda(lambda) => {
+                    Endpoint::Lambda(lambda.arn, lambda.assume_role_arn.map(Into::into), None)
+                }
+            },
+            additional_headers,
+        )
     }
 
     pub fn into_inner(self) -> (Endpoint, HashMap<HeaderName, HeaderValue>) {
@@ -126,21 +151,10 @@ impl DiscoverEndpoint {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum DiscoveredEndpoint {
-    Http(Uri, Version),
-    Lambda(
-        LambdaARN,
-        Option<ByteString>,
-        Option<EndpointLambdaCompression>,
-    ),
-}
-
 #[derive(Debug)]
-pub struct DiscoveredMetadata {
-    pub endpoint: DiscoveredEndpoint,
+pub struct DiscoveryResponse {
+    pub deployment_type: DeploymentType,
     pub headers: HashMap<HeaderName, HeaderValue>,
-    pub protocol_type: ProtocolType,
     pub services: Vec<endpoint_manifest::Service>,
     // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
     // and we need to represent unknown later versions
@@ -240,8 +254,8 @@ impl ServiceDiscovery {
 impl ServiceDiscovery {
     pub async fn discover(
         &self,
-        endpoint: DiscoverEndpoint,
-    ) -> Result<DiscoveredMetadata, DiscoveryError> {
+        endpoint: DiscoveryRequest,
+    ) -> Result<DiscoveryResponse, DiscoveryError> {
         let retry_policy = self.retry_policy.iter();
         let (mut parts, body) = Self::invoke_discovery_endpoint(
             &self.client,
@@ -340,7 +354,7 @@ impl ServiceDiscovery {
         response_http_version: Version,
         endpoint_response: endpoint_manifest::Endpoint,
         x_restate_server: Option<HeaderValue>,
-    ) -> Result<DiscoveredMetadata, DiscoveryError> {
+    ) -> Result<DiscoveryResponse, DiscoveryError> {
         let protocol_type = match endpoint_response.protocol_mode {
             Some(endpoint_manifest::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
             Some(endpoint_manifest::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
@@ -419,23 +433,26 @@ impl ServiceDiscovery {
             });
         }
 
-        Ok(DiscoveredMetadata {
-            endpoint: match endpoint {
-                Endpoint::Http(uri, _) => DiscoveredEndpoint::Http(uri, response_http_version),
-                Endpoint::Lambda(arn, assume_role_arn, _) => DiscoveredEndpoint::Lambda(
+        Ok(DiscoveryResponse {
+            deployment_type: match endpoint {
+                Endpoint::Http(uri, _) => DeploymentType::Http {
+                    address: uri,
+                    protocol_type,
+                    http_version: response_http_version,
+                },
+                Endpoint::Lambda(arn, assume_role_arn, _) => DeploymentType::Lambda {
                     arn,
                     assume_role_arn,
-                    endpoint_response
-                        .lambda_compression
-                        .map(|compression| match compression {
+                    compression: endpoint_response.lambda_compression.map(|compression| {
+                        match compression {
                             endpoint_manifest::EndpointLambdaCompression::Zstd => {
                                 EndpointLambdaCompression::Zstd
                             }
-                        }),
-                ),
+                        }
+                    }),
+                },
             },
             headers,
-            protocol_type,
             services: endpoint_response.services,
             // we need to store the raw representation since the runtime might not know the latest
             // version yet.

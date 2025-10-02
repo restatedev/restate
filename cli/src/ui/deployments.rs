@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-
 use comfy_table::{Cell, Color, Table};
+use std::collections::HashMap;
 
 use crate::clients::Deployment;
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
 use restate_cli_util::ui::console::StyledTable;
+use restate_types::deployment;
 use restate_types::identifiers::DeploymentId;
 use restate_types::schema::deployment::ProtocolType;
 use restate_types::schema::service::ServiceMetadata;
@@ -100,7 +100,7 @@ pub fn render_active_invocations(active_inv: i64) -> Cell {
 }
 
 pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
-    let (additional_headers, created_at, min_protocol_version, max_protocol_version) =
+    let (additional_headers, metadata, created_at, min_protocol_version, max_protocol_version) =
         match &deployment {
             Deployment::Http {
                 uri,
@@ -110,6 +110,7 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                metadata,
                 ..
             } => {
                 table.add_kv_row("Transport:", render_transport_protocol(deployment));
@@ -117,6 +118,7 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 table.add_kv_row("Endpoint:", uri);
                 (
                     additional_headers.clone(),
+                    metadata.clone(),
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
@@ -129,6 +131,7 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
+                metadata,
                 ..
             } => {
                 table.add_kv_row("Transport:", "AWS Lambda");
@@ -145,6 +148,7 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
                 table.add_kv_row("Endpoint:", arn);
                 (
                     additional_headers.clone(),
+                    metadata.clone(),
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
@@ -170,5 +174,17 @@ pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
             "Protocol:",
             format!("[{min_protocol_version}, {max_protocol_version}]"),
         );
+    }
+
+    // Additional metadata is printed nicely when possible
+    for (key, value) in metadata.iter() {
+        match deployment::metadata::MetadataKey::try_from(key.as_str()) {
+            Ok(k) => {
+                table.add_kv_row(&format!("{k}:"), value);
+            }
+            Err(k) => {
+                table.add_kv_row(&format!("{k}:"), value);
+            }
+        }
     }
 }
