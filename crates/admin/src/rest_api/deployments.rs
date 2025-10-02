@@ -55,11 +55,12 @@ pub async fn create_deployment<V, IC>(
     Extension(version): Extension<AdminApiVersion>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
-    let (deployment_address, additional_headers, use_http_11, breaking, force, dry_run) =
+    let (deployment_address, additional_headers, metadata, use_http_11, breaking, force, dry_run) =
         match payload {
             RegisterDeploymentRequest::Http {
                 uri,
                 additional_headers,
+                metadata,
                 use_http_11,
                 breaking,
                 force,
@@ -78,6 +79,7 @@ pub async fn create_deployment<V, IC>(
                 (
                     HttpDeploymentAddress::new(uri).into(),
                     additional_headers.unwrap_or_default().into(),
+                    metadata,
                     use_http_11,
                     breaking,
                     force,
@@ -88,6 +90,7 @@ pub async fn create_deployment<V, IC>(
                 arn,
                 assume_role_arn,
                 additional_headers,
+                metadata,
                 force,
                 breaking,
                 dry_run,
@@ -100,6 +103,7 @@ pub async fn create_deployment<V, IC>(
                 )
                 .into(),
                 additional_headers.unwrap_or_default().into(),
+                metadata,
                 false,
                 breaking,
                 force,
@@ -127,6 +131,7 @@ pub async fn create_deployment<V, IC>(
         .register_deployment(
             deployment_address,
             additional_headers,
+            metadata,
             use_http_11,
             allow_breaking,
             overwrite,
@@ -378,6 +383,7 @@ fn to_deployment_response(
                 supported_protocol_versions,
                 sdk_version,
                 created_at,
+                metadata,
                 ..
             },
     }: Deployment,
@@ -394,6 +400,7 @@ fn to_deployment_response(
             protocol_type,
             http_version,
             additional_headers: delivery_options.additional_headers.into(),
+            metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
             max_protocol_version: *supported_protocol_versions.end(),
@@ -413,6 +420,7 @@ fn to_deployment_response(
             assume_role_arn: assume_role_arn.map(Into::into),
             compression,
             additional_headers: delivery_options.additional_headers.into(),
+            metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
             max_protocol_version: *supported_protocol_versions.end(),
@@ -435,6 +443,7 @@ fn to_detailed_deployment_response(
                 supported_protocol_versions,
                 sdk_version,
                 created_at,
+                metadata,
                 ..
             },
     }: Deployment,
@@ -451,6 +460,7 @@ fn to_detailed_deployment_response(
             protocol_type,
             http_version,
             additional_headers: delivery_options.additional_headers.into(),
+            metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
             max_protocol_version: *supported_protocol_versions.end(),
@@ -467,6 +477,7 @@ fn to_detailed_deployment_response(
             assume_role_arn: assume_role_arn.map(Into::into),
             compression,
             additional_headers: delivery_options.additional_headers.into(),
+            metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
             max_protocol_version: *supported_protocol_versions.end(),

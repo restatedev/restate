@@ -141,6 +141,9 @@ struct Deployment {
     sdk_version: Option<String>,
     created_at: MillisSinceEpoch,
 
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    metadata: HashMap<String, String>,
+
     #[serde_as(as = "restate_serde_util::MapAsVec")]
     services: HashMap<String, Arc<ServiceRevision>>,
 }
@@ -163,6 +166,7 @@ impl Deployment {
                 supported_protocol_versions: self.supported_protocol_versions.clone(),
                 sdk_version: self.sdk_version.clone(),
                 created_at: self.created_at,
+                metadata: self.metadata.clone(),
             },
         }
     }

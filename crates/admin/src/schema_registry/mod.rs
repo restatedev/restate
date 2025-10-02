@@ -21,7 +21,8 @@ use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind
 use restate_metadata_store::ReadModifyWriteError;
 use restate_service_client::HttpClient;
 use restate_service_protocol::discovery::{DiscoveryRequest, ServiceDiscovery};
-use restate_types::deployment::DeploymentAddress;
+use restate_types::deployment;
+use restate_types::deployment::{DeploymentAddress, Headers};
 use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
 use restate_types::schema::deployment::{
     DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
@@ -103,10 +104,12 @@ impl<V> SchemaRegistry<V> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn register_deployment(
         &self,
         deployment_address: DeploymentAddress,
-        additional_headers: HashMap<HeaderName, HeaderValue>,
+        additional_headers: Headers,
+        metadata: deployment::Metadata,
         use_http_11: bool,
         allow_breaking: updater::AllowBreakingChanges,
         overwrite: updater::Overwrite,
@@ -138,6 +141,7 @@ impl<V> SchemaRegistry<V> {
             DeliveryOptions::new(discovery_response.headers),
             discovery_response.supported_protocol_versions,
             discovery_response.sdk_version,
+            metadata,
         );
 
         let (register_deployment_result, deployment, services) = if !apply_mode.should_apply() {
@@ -285,6 +289,7 @@ impl<V> SchemaRegistry<V> {
             DeliveryOptions::new(discovery_response.headers),
             discovery_response.supported_protocol_versions,
             discovery_response.sdk_version,
+            Default::default(),
         );
 
         if !apply_mode.should_apply() {

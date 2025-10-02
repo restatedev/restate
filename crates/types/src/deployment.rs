@@ -50,6 +50,55 @@ pub enum DeploymentAddress {
 
 pub type Headers = HashMap<HeaderName, HeaderValue>;
 
+pub type Metadata = HashMap<String, String>;
+
+pub mod metadata {
+    use std::fmt;
+
+    #[non_exhaustive]
+    #[derive(Debug, Clone, PartialEq, derive_more::From)]
+    pub struct MetadataKey {
+        key: &'static str,
+        display: &'static str,
+    }
+
+    impl fmt::Display for MetadataKey {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "{}", self.display)
+        }
+    }
+
+    macro_rules! define_metadata {
+        ($($const_name:ident($key:literal): $display:literal),* $(,)?) => {
+            $(
+                pub const $const_name: MetadataKey = MetadataKey {
+                    key: $key,
+                    display: $display,
+                };
+            )*
+
+            impl<'a> TryFrom<&'a str> for MetadataKey {
+                type Error = &'a str;
+
+                fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+                    match value {
+                        $(
+                            $key => Ok($const_name),
+                        )*
+                        v => Err(v)
+                    }
+                }
+            }
+        };
+    }
+
+    define_metadata!(
+        GIT_COMMIT("git.commit.sha"): "Git commit SHA",
+        GITHUB_REPOSITORY("github.repository"): "Github Repository",
+        GITHUB_ACTIONS_RUN_ID("github.actions.run.id"): "Github Actions Run id",
+    );
+}
+
 /// Deployment which was chosen to run an invocation on.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PinnedDeployment {

@@ -404,6 +404,7 @@ impl SchemaUpdater {
                 supported_protocol_versions: deployment_metadata.supported_protocol_versions,
                 sdk_version: deployment_metadata.sdk_version,
                 created_at: deployment_metadata.created_at,
+                metadata: deployment_metadata.metadata,
                 services: computed_services,
             },
         );
@@ -526,6 +527,7 @@ impl SchemaUpdater {
                 supported_protocol_versions: deployment_metadata.supported_protocol_versions,
                 sdk_version: deployment_metadata.sdk_version,
                 created_at: deployment_metadata.created_at,
+                metadata: existing_deployment.metadata.clone(),
                 services: computed_services,
             },
         );

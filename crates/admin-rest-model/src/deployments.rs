@@ -17,6 +17,7 @@ use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType}
 use restate_types::schema::service::ServiceMetadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::collections::HashMap;
 
 // This enum could be a struct with a nested enum to avoid repeating some fields, but serde(flatten) unfortunately breaks the openapi code generation
 #[serde_as]
@@ -41,9 +42,16 @@ pub enum RegisterDeploymentRequest {
 
         /// # Additional headers
         ///
-        /// Additional headers added to the discover/invoke requests to the deployment.
+        /// Additional headers added to every discover/invoke request to the deployment.
         ///
+        /// Fill this field with API Tokens and other authorization headers needed to send requests to the deployment.
         additional_headers: Option<SerdeableHeaderHashMap>,
+
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
 
         /// # Use http1.1
         ///
@@ -103,9 +111,14 @@ pub enum RegisterDeploymentRequest {
 
         /// # Additional headers
         ///
-        /// Additional headers added to the discover/invoke requests to the deployment.
-        ///
+        /// Additional headers added to every discover/invoke request to the deployment.
         additional_headers: Option<SerdeableHeaderHashMap>,
+
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
 
         /// # Breaking
         ///
@@ -217,6 +230,12 @@ pub enum DeploymentResponse {
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
 
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
+
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
@@ -276,6 +295,12 @@ pub enum DeploymentResponse {
         /// Additional headers used to invoke this service deployment.
         #[serde(default, skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
+
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
@@ -353,6 +378,12 @@ pub enum DetailedDeploymentResponse {
         #[serde(default, skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
 
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
+
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
@@ -411,6 +442,12 @@ pub enum DetailedDeploymentResponse {
         /// Additional headers used to invoke this service deployment.
         #[serde(default, skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
+
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]

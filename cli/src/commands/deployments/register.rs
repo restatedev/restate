@@ -60,6 +60,12 @@ pub struct Register {
     #[clap(long="extra-header", value_parser = parse_header, action = clap::ArgAction::Append)]
     extra_headers: Option<Vec<HeaderKeyValue>>,
 
+    /// Metadata registered together with the discovery request.
+    ///
+    /// Use `--metadata name=value` format and repeat --metadata for each metadata.
+    #[clap(long="metadata", value_parser = parse_metadata, action = clap::ArgAction::Append)]
+    metadata: Option<Vec<Metadata>>,
+
     /// Attempt discovery using a client that defaults to HTTP1.1 instead of a prior-knowledge HTTP2 client.
     /// This may be necessary if you see `META0014` discovering local dev servers like `wrangler dev`.
     #[clap(long = "use-http1.1")]
@@ -77,6 +83,12 @@ pub struct Register {
 struct HeaderKeyValue {
     key: HeaderName,
     value: HeaderValue,
+}
+
+#[derive(Clone)]
+struct Metadata {
+    key: String,
+    value: String,
 }
 
 #[derive(Clone, Debug)]
@@ -119,6 +131,22 @@ fn parse_header(
     })
 }
 
+fn parse_metadata(
+    raw: &str,
+) -> Result<Metadata, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    // key=value
+    let pos = raw
+        .find('=')
+        .ok_or_else(|| format!("invalid name=value: no `=` found in `{raw}`"))?;
+    let key = &raw[..pos];
+    let value = &raw[pos + 1..];
+
+    Ok(Metadata {
+        key: key.to_string(),
+        value: value.to_string(),
+    })
+}
+
 // Needed as a function to allow clap to parse to [`Deployment`]
 fn parse_deployment(
     raw: &str,
@@ -147,12 +175,25 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     let headers = discover_opts.extra_headers.as_ref().map(|headers| {
         HashMap::from_iter(headers.iter().map(|kv| (kv.key.clone(), kv.value.clone())))
     });
+    let mut metadata: HashMap<_, _> = discover_opts
+        .metadata
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| (m.key, m.value))
+        .collect();
 
     // Preparing the discovery request
     let client = AdminClient::new(&env).await?;
 
     if discover_opts.breaking && client.admin_api_version < AdminApiVersion::V3 {
         bail!("--breaking is only supported when interacting with Restate >= 1.6");
+    }
+    if !metadata.is_empty() && client.admin_api_version < AdminApiVersion::V3 {
+        bail!("--metadata is only supported when interacting with Restate >= 1.6");
+    }
+    if client.admin_api_version >= AdminApiVersion::V3 {
+        infer_deployment_metadata_from_environment(&mut metadata);
     }
 
     let deployment = match &discover_opts.deployment {
@@ -210,6 +251,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
             uri: uri.clone(),
             additional_headers: headers.clone().map(Into::into),
+            metadata: metadata.clone(),
             use_http_11: discover_opts.use_http_11,
             breaking,
             force: Some(force),
@@ -219,6 +261,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
             arn: arn.to_string(),
             assume_role_arn: discover_opts.assume_role_arn.clone(),
             additional_headers: headers.clone().map(Into::into),
+            metadata: metadata.clone(),
             breaking,
             force: Some(force),
             dry_run,
@@ -660,4 +703,26 @@ async fn resolve_deployment(
     progress.finish_and_clear();
 
     deployment
+}
+
+fn infer_deployment_metadata_from_environment(metadata: &mut HashMap<String, String>) {
+    use restate_types::deployment::metadata::*;
+
+    macro_rules! add_envs {
+        ($($env_name:literal => $metadata:expr),* $(,)?) => {
+            $({
+                if let Ok(env_value) = std::env::var($env_name) && !env_value.is_empty() {
+                    // Write it only if missing.
+                    // This lets users overwrite these values if they want to.
+                    metadata.entry($metadata.to_string()).or_insert(env_value);
+                }
+            })*
+        };
+    }
+
+    add_envs!(
+        "GITHUB_REPOSITORY" => GITHUB_REPOSITORY,
+        "GITHUB_RUN_ID" => GITHUB_ACTIONS_RUN_ID,
+        "GITHUB_SHA" => GIT_COMMIT,
+    );
 }

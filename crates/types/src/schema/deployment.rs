@@ -56,10 +56,7 @@ pub struct Deployment {
     pub metadata: DeploymentMetadata,
 }
 
-// TODO this type is serde because it represents how data is stored in the schema registry
-//  re-evaluate whether we should use another ad-hoc data structure for storage representation after schema v2 migration.
-#[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct DeploymentMetadata {
     pub ty: DeploymentType,
@@ -68,6 +65,7 @@ pub struct DeploymentMetadata {
     /// Declared SDK during discovery
     pub sdk_version: Option<String>,
     pub created_at: MillisSinceEpoch,
+    pub metadata: HashMap<String, String>,
 }
 
 impl DeploymentMetadata {
@@ -76,6 +74,7 @@ impl DeploymentMetadata {
         delivery_options: DeliveryOptions,
         supported_protocol_versions: RangeInclusive<i32>,
         sdk_version: Option<String>,
+        metadata: HashMap<String, String>,
     ) -> Self {
         Self {
             ty,
@@ -83,6 +82,7 @@ impl DeploymentMetadata {
             created_at: MillisSinceEpoch::now(),
             supported_protocol_versions,
             sdk_version,
+            metadata,
         }
     }
 
@@ -93,6 +93,7 @@ impl DeploymentMetadata {
         delivery_options: DeliveryOptions,
         supported_protocol_versions: RangeInclusive<i32>,
         sdk_version: Option<String>,
+        metadata: HashMap<String, String>,
     ) -> Self {
         Self {
             ty: DeploymentType::Http {
@@ -104,6 +105,7 @@ impl DeploymentMetadata {
             created_at: MillisSinceEpoch::now(),
             supported_protocol_versions,
             sdk_version,
+            metadata,
         }
     }
 
@@ -114,6 +116,7 @@ impl DeploymentMetadata {
         delivery_options: DeliveryOptions,
         supported_protocol_versions: RangeInclusive<i32>,
         sdk_version: Option<String>,
+        metadata: HashMap<String, String>,
     ) -> Self {
         Self {
             ty: DeploymentType::Lambda {
@@ -125,6 +128,7 @@ impl DeploymentMetadata {
             created_at: MillisSinceEpoch::now(),
             supported_protocol_versions,
             sdk_version,
+            metadata,
         }
     }
 
@@ -397,6 +401,7 @@ pub mod test_util {
                 Default::default(),
                 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 None,
+                Default::default(),
             );
 
             Deployment { id, metadata }
@@ -411,6 +416,7 @@ pub mod test_util {
                 Default::default(),
                 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
                 None,
+                Default::default(),
             );
             Deployment { id, metadata }
         }
