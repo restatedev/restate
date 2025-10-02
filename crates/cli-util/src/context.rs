@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::env;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -136,7 +137,7 @@ impl CliContext {
     }
 
     pub fn auto_confirm(&self) -> bool {
-        self.confirm_mode.yes
+        self.confirm_mode.yes || env::var("CI").is_ok()
     }
 
     pub fn table_style(&self) -> TableStyle {
