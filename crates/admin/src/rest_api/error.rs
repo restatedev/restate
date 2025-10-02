@@ -297,13 +297,15 @@ pub enum MetaApiError {
     Discovery(#[from] restate_service_protocol::discovery::DiscoveryError),
     #[error("Internal server error: {0}")]
     Internal(String),
+    #[error("Conflict: {0}")]
+    Conflict(String),
 }
 
 /// # Error description response
 ///
 /// Error details of the response
 #[derive(Debug, Serialize, JsonSchema)]
-struct ErrorDescriptionResponse {
+pub(crate) struct ErrorDescriptionResponse {
     message: String,
     /// # Restate code
     ///
@@ -323,14 +325,14 @@ impl IntoResponse for MetaApiError {
             }
             MetaApiError::Schema(schema_error) => match schema_error {
                 updater::SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
-                updater::SchemaError::Override(_)
-                | updater::SchemaError::Service(updater::ServiceError::DifferentType { .. })
+                updater::SchemaError::Service(updater::ServiceError::DifferentType { .. })
                 | updater::SchemaError::Service(updater::ServiceError::RemovedHandlers {
                     ..
                 }) => StatusCode::CONFLICT,
                 updater::SchemaError::Service(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::BAD_REQUEST,
             },
+            MetaApiError::Conflict(_) => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(match &self {

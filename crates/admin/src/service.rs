@@ -179,7 +179,11 @@ where
             .nest("/v1", unsupported_api_version(AdminApiVersion::V1))
             .nest(
                 "/v2",
-                with_api_version_middleware(router, AdminApiVersion::V2),
+                with_api_version_middleware(router.clone(), AdminApiVersion::V2),
+            )
+            .nest(
+                "/v3",
+                with_api_version_middleware(router, AdminApiVersion::V3),
             )
             .layer(
                 ServiceBuilder::new()

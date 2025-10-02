@@ -8,8 +8,47 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::identifiers::DeploymentId;
+use crate::identifiers::{DeploymentId, LambdaARN};
 use crate::service_protocol::ServiceProtocolVersion;
+use http::{HeaderName, HeaderValue, Uri};
+use std::collections::HashMap;
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct HttpDeploymentAddress {
+    pub uri: Uri,
+}
+
+impl HttpDeploymentAddress {
+    pub fn new(uri: Uri) -> Self {
+        Self { uri }
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambdaDeploymentAddress {
+    pub arn: LambdaARN,
+    pub assume_role_arn: Option<String>,
+}
+
+impl LambdaDeploymentAddress {
+    pub fn new(arn: LambdaARN, assume_role_arn: Option<String>) -> Self {
+        Self {
+            arn,
+            assume_role_arn,
+        }
+    }
+}
+
+/// This is the representation of a deployment address
+#[derive(Debug, Clone, PartialEq, derive_more::From)]
+pub enum DeploymentAddress {
+    Http(HttpDeploymentAddress),
+    Lambda(LambdaDeploymentAddress),
+}
+
+pub type Headers = HashMap<HeaderName, HeaderValue>;
 
 /// Deployment which was chosen to run an invocation on.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

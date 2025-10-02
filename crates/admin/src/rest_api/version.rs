@@ -15,7 +15,7 @@ use restate_types::config::Configuration;
 
 /// Min/max supported admin api versions by the server
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
-pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
+pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V3;
 
 /// Version information endpoint
 #[openapi(

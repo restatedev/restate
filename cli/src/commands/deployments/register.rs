@@ -12,13 +12,16 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use cling::prelude::*;
 use comfy_table::Table;
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
-
-use restate_admin_rest_model::deployments::RegisterDeploymentRequest;
+use indoc::indoc;
+use restate_admin_rest_model::deployments::{
+    DetailedDeploymentResponse, RegisterDeploymentRequest, RegisterDeploymentResponse,
+};
+use restate_admin_rest_model::version::AdminApiVersion;
 use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
@@ -37,8 +40,12 @@ use crate::ui::service_handlers::{
 #[clap(visible_alias = "discover", visible_alias = "add")]
 #[cling(run = "run_register")]
 pub struct Register {
+    /// Allow performing incompatible changes to services, detected during discovery.
+    #[clap(long)]
+    breaking: bool,
+
     /// Force overwriting the deployment if it already exists or if incompatible changes were
-    /// detected during discovery.
+    /// detected during discovery. When set, implies `--breaking`.
     #[clap(long)]
     force: bool,
 
@@ -76,6 +83,15 @@ struct HeaderKeyValue {
 enum DeploymentEndpoint {
     Uri(Uri),
     Lambda(LambdaARN),
+}
+
+impl DeploymentEndpoint {
+    fn cli_parameter_display(&self) -> String {
+        match self {
+            DeploymentEndpoint::Uri(uri) => uri.to_string(),
+            DeploymentEndpoint::Lambda(arn) => arn.to_string(),
+        }
+    }
 }
 
 impl Display for DeploymentEndpoint {
@@ -135,6 +151,10 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     // Preparing the discovery request
     let client = AdminClient::new(&env).await?;
 
+    if discover_opts.breaking && client.admin_api_version < AdminApiVersion::V3 {
+        bail!("--breaking is only supported when interacting with Restate >= 1.6");
+    }
+
     let deployment = match &discover_opts.deployment {
         #[cfg(feature = "cloud")]
         DeploymentEndpoint::Uri(uri) if uri.scheme_str() == Some("tunnel") => {
@@ -186,23 +206,39 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         other => other.clone(),
     };
 
-    let mk_request_body = |force, dry_run| match &deployment {
+    let mk_request_body = |breaking, force, dry_run| match &deployment {
         DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
             uri: uri.clone(),
             additional_headers: headers.clone().map(Into::into),
             use_http_11: discover_opts.use_http_11,
-            force,
+            breaking,
+            force: Some(force),
             dry_run,
         },
         DeploymentEndpoint::Lambda(arn) => RegisterDeploymentRequest::Lambda {
             arn: arn.to_string(),
             assume_role_arn: discover_opts.assume_role_arn.clone(),
             additional_headers: headers.clone().map(Into::into),
-            force,
+            breaking,
+            force: Some(force),
             dry_run,
         },
     };
 
+    if client.admin_api_version >= AdminApiVersion::V3 {
+        register_v3_admin_api(discover_opts, client, mk_request_body).await?;
+    } else {
+        register_v2_admin_api(discover_opts, client, mk_request_body).await?;
+    }
+
+    Ok(())
+}
+
+async fn register_v3_admin_api(
+    discover_opts: &Register,
+    client: AdminClient,
+    mk_request_body: impl Fn(bool, bool, bool) -> RegisterDeploymentRequest,
+) -> Result<()> {
     let progress = ProgressBar::new_spinner();
     progress
         .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
@@ -218,7 +254,143 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         // We use force in the dry-run to make sure we get the result of the discovery
         // even if there is it's an existing endpoint
         .discover_deployment(mk_request_body(
-            /* force = */ true, /* dry_run = */ true,
+            discover_opts.breaking,
+            discover_opts.force, /* dry_run = */
+            true,
+        ))
+        .await?;
+
+    if dry_run_result.status_code() == StatusCode::CONFLICT {
+        progress.finish_and_clear();
+        let api_error = dry_run_result.into_api_error().await?;
+        c_println!(
+            indoc! {
+                "{}
+                {}
+
+            ❯ To register a deployment containing breaking changes for a service, use:
+                restate deployment register {} --breaking"
+            },
+            Styled(Style::Danger, "❯ Breaking changes detected:"),
+            Styled(Style::Warn, api_error.body),
+            discover_opts.deployment.cli_parameter_display()
+        );
+        bail!("Registration failed");
+    }
+    if dry_run_result.status_code() == StatusCode::OK && !discover_opts.force {
+        progress.finish_and_clear();
+        // Admin API V3 returns OK if the deployment already exists and force = false.
+        let dry_run_result = dry_run_result.into_body().await?;
+        c_println!(
+            indoc! {
+                "❯ Deployment already exists with id {}
+                   No changes will be made.
+
+            ❯ To overwrite this deployment during development, use:
+                restate deployment register {} --force
+
+            ❯ To modify connection parameters, use:
+                restate deployment edit {}"
+            },
+            Styled(Style::Info, &dry_run_result.id),
+            discover_opts.deployment.cli_parameter_display(),
+            dry_run_result.id
+        );
+        return Ok(());
+    }
+    // At this point, if the deployment exists, StatusCode == OK and force = true
+    let deployment_exists = dry_run_result.status_code() == StatusCode::OK;
+
+    let dry_run_response = dry_run_result.into_body().await?;
+
+    progress.finish_and_clear();
+
+    let existing_deployment = if deployment_exists {
+        Some(
+            client
+                .get_deployment(&dry_run_response.id.to_string())
+                .await?
+                .into_body()
+                .await
+                .with_context(|| format!("Failed to get deployment {}", dry_run_response.id))?,
+        )
+    } else {
+        None
+    };
+
+    if let Some(ref existing_deployment) = existing_deployment {
+        c_eprintln!();
+        c_warn!(
+            "This deployment is already known to the server under the ID \"{}\". \
+            Confirming this operation will overwrite services defined by the existing \
+            deployment. Inflight invocations to this deployment might move to an unrecoverable \
+            failure state afterwards!.\
+            \n\nThis is a DANGEROUS operation! \n
+            In production, we recommend creating a new deployment with a unique endpoint while \
+            keeping the old one active until the old deployment is drained.",
+            existing_deployment.id()
+        );
+        c_eprintln!();
+    }
+
+    print_registration_changes(&client, dry_run_response, existing_deployment).await?;
+
+    confirm_or_exit("Are you sure you want to apply those changes?")?;
+
+    let progress = ProgressBar::new_spinner();
+    progress
+        .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
+    progress.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    progress.set_message(format!(
+        "Asking restate server {} to confirm this deployment (at {})",
+        &client.base_url, discover_opts.deployment
+    ));
+
+    let registration_result = client
+        .discover_deployment(mk_request_body(
+            discover_opts.breaking,
+            discover_opts.force,
+            /* dry_run = */ false,
+        ))
+        .await?
+        .into_body()
+        .await?;
+
+    progress.finish_and_clear();
+    // print the result of the discovery
+    c_success!("DEPLOYMENT:");
+    let mut table = Table::new_styled();
+    table.set_styled_header(vec!["SERVICE", "REV"]);
+    for svc in registration_result.services {
+        table.add_row(vec![svc.name, svc.revision.to_string()]);
+    }
+    c_println!("{}", table);
+
+    Ok(())
+}
+
+async fn register_v2_admin_api(
+    discover_opts: &Register,
+    client: AdminClient,
+    mk_request_body: impl Fn(bool, bool, bool) -> RegisterDeploymentRequest,
+) -> Result<()> {
+    let progress = ProgressBar::new_spinner();
+    progress
+        .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
+    progress.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    progress.set_message(format!(
+        "Asking restate server at {} for a dry-run discovery of {}",
+        &client.base_url, discover_opts.deployment
+    ));
+
+    // This fails if the endpoint exists and --force is not set.
+    let dry_run_result = client
+        // We use force in the dry-run to make sure we get the result of the discovery
+        // even if there is it's an existing endpoint
+        .discover_deployment(mk_request_body(
+            /* breaking */ true, /* force = */ true, /* dry_run = */ true,
         ))
         .await?
         .into_body()
@@ -244,11 +416,10 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     if let Some(ref existing_deployment) = existing_deployment {
         if !discover_opts.force {
-            c_error!(
+            bail!(
                 "A deployment already exists that uses this endpoint (ID: {}). Use --force to overwrite it.",
                 existing_deployment.id(),
-            );
-            return Ok(());
+            )
         } else {
             c_eprintln!();
             c_warn!(
@@ -265,6 +436,48 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         }
     }
 
+    print_registration_changes(&client, dry_run_result, existing_deployment).await?;
+
+    confirm_or_exit("Are you sure you want to apply those changes?")?;
+
+    let progress = ProgressBar::new_spinner();
+    progress
+        .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
+    progress.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    progress.set_message(format!(
+        "Asking restate server {} to confirm this deployment (at {})",
+        &client.base_url, discover_opts.deployment
+    ));
+
+    let registration_result = client
+        .discover_deployment(mk_request_body(
+            discover_opts.breaking,
+            discover_opts.force,
+            /* dry_run = */ false,
+        ))
+        .await?
+        .into_body()
+        .await?;
+
+    progress.finish_and_clear();
+    // print the result of the discovery
+    c_success!("DEPLOYMENT:");
+    let mut table = Table::new_styled();
+    table.set_styled_header(vec!["SERVICE", "REV"]);
+    for svc in registration_result.services {
+        table.add_row(vec![svc.name, svc.revision.to_string()]);
+    }
+    c_println!("{}", table);
+
+    Ok(())
+}
+
+async fn print_registration_changes(
+    client: &AdminClient,
+    dry_run_result: RegisterDeploymentResponse,
+    existing_deployment: Option<DetailedDeploymentResponse>,
+) -> Result<()> {
     let discovered_service_names = dry_run_result
         .services
         .iter()
@@ -358,7 +571,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 );
                 if existing_svc.deployment_id != dry_run_result.id {
                     let maybe_old_deployment = resolve_deployment(
-                        &client,
+                        client,
                         &mut deployment_cache,
                         &existing_svc.deployment_id.to_string(),
                     )
@@ -411,38 +624,6 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
             c_println!();
         }
     }
-
-    confirm_or_exit("Are you sure you want to apply those changes?")?;
-
-    let progress = ProgressBar::new_spinner();
-    progress
-        .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
-    progress.enable_steady_tick(std::time::Duration::from_millis(120));
-
-    progress.set_message(format!(
-        "Asking restate server {} to confirm this deployment (at {})",
-        &client.base_url, discover_opts.deployment
-    ));
-
-    let dry_run_result = client
-        .discover_deployment(mk_request_body(
-            /* force = */ discover_opts.force,
-            /* dry_run = */ false,
-        ))
-        .await?
-        .into_body()
-        .await?;
-
-    progress.finish_and_clear();
-    // print the result of the discovery
-    c_success!("DEPLOYMENT:");
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["SERVICE", "REV"]);
-    for svc in dry_run_result.services {
-        table.add_row(vec![svc.name, svc.revision.to_string()]);
-    }
-    c_println!("{}", table);
-
     Ok(())
 }
 

@@ -13,15 +13,17 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 
+use crate::deployment::{
+    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+};
+use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
+use crate::schema::service::ServiceMetadata;
+use crate::time::MillisSinceEpoch;
 use bytestring::ByteString;
 use http::Uri;
 use http::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-
-use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
-use crate::schema::service::ServiceMetadata;
-use crate::time::MillisSinceEpoch;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -58,6 +60,7 @@ pub struct Deployment {
 //  re-evaluate whether we should use another ad-hoc data structure for storage representation after schema v2 migration.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DeploymentMetadata {
     pub ty: DeploymentType,
     pub delivery_options: DeliveryOptions,
@@ -65,6 +68,106 @@ pub struct DeploymentMetadata {
     /// Declared SDK during discovery
     pub sdk_version: Option<String>,
     pub created_at: MillisSinceEpoch,
+}
+
+impl DeploymentMetadata {
+    pub fn new(
+        ty: DeploymentType,
+        delivery_options: DeliveryOptions,
+        supported_protocol_versions: RangeInclusive<i32>,
+        sdk_version: Option<String>,
+    ) -> Self {
+        Self {
+            ty,
+            delivery_options,
+            created_at: MillisSinceEpoch::now(),
+            supported_protocol_versions,
+            sdk_version,
+        }
+    }
+
+    pub fn new_http(
+        address: Uri,
+        protocol_type: ProtocolType,
+        http_version: http::Version,
+        delivery_options: DeliveryOptions,
+        supported_protocol_versions: RangeInclusive<i32>,
+        sdk_version: Option<String>,
+    ) -> Self {
+        Self {
+            ty: DeploymentType::Http {
+                address,
+                protocol_type,
+                http_version,
+            },
+            delivery_options,
+            created_at: MillisSinceEpoch::now(),
+            supported_protocol_versions,
+            sdk_version,
+        }
+    }
+
+    pub fn new_lambda(
+        arn: LambdaARN,
+        assume_role_arn: Option<ByteString>,
+        compression: Option<EndpointLambdaCompression>,
+        delivery_options: DeliveryOptions,
+        supported_protocol_versions: RangeInclusive<i32>,
+        sdk_version: Option<String>,
+    ) -> Self {
+        Self {
+            ty: DeploymentType::Lambda {
+                arn,
+                assume_role_arn,
+                compression,
+            },
+            delivery_options,
+            created_at: MillisSinceEpoch::now(),
+            supported_protocol_versions,
+            sdk_version,
+        }
+    }
+
+    // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
+    // and for Lambda deployments its the ARN
+    pub fn address_display(&self) -> impl Display + '_ {
+        self.ty.address_display()
+    }
+
+    pub fn created_at(&self) -> MillisSinceEpoch {
+        self.created_at
+    }
+
+    pub fn semantic_eq_with_address_and_headers(
+        &self,
+        other_addess: &DeploymentAddress,
+        _other_headers: &HashMap<HeaderName, HeaderValue>,
+    ) -> bool {
+        match (&self.ty, other_addess) {
+            (
+                DeploymentType::Http {
+                    address: this_address,
+                    ..
+                },
+                DeploymentAddress::Http(HttpDeploymentAddress { uri: other_address }),
+            ) => Self::semantic_eq_http(this_address, other_address),
+            (
+                DeploymentType::Lambda { arn: this_arn, .. },
+                DeploymentAddress::Lambda(LambdaDeploymentAddress { arn: other_arn, .. }),
+            ) => Self::semantic_eq_lambda(this_arn, other_arn),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn semantic_eq_lambda(this_arn: &LambdaARN, other_arn: &LambdaARN) -> bool {
+        this_arn == other_arn
+    }
+
+    pub(crate) fn semantic_eq_http(this_address: &Uri, other_address: &Uri) -> bool {
+        this_address.authority().expect("Must have authority")
+            == other_address.authority().expect("Must have authority")
+            && this_address.path() == other_address.path()
+    }
 }
 
 /// Lambda compression
@@ -118,6 +221,42 @@ impl DeploymentType {
         }
         Wrapper(self)
     }
+
+    pub fn backfill_http_version(protocol_type: ProtocolType) -> http::Version {
+        match protocol_type {
+            ProtocolType::BidiStream => http::Version::HTTP_2,
+            ProtocolType::RequestResponse => http::Version::HTTP_11,
+        }
+    }
+
+    pub fn protocol_type(&self) -> ProtocolType {
+        match self {
+            DeploymentType::Http { protocol_type, .. } => *protocol_type,
+            DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
+        }
+    }
+}
+
+pub trait DeploymentResolver {
+    fn resolve_latest_deployment_for_service(
+        &self,
+        service_name: impl AsRef<str>,
+    ) -> Option<Deployment>;
+
+    fn find_deployment(
+        &self,
+        deployment_type: &DeploymentAddress,
+        headers: &Headers,
+    ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
+
+    fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
+
+    fn get_deployment_and_services(
+        &self,
+        deployment_id: &DeploymentId,
+    ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
+
+    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)>;
 }
 
 mod serde_hacks {
@@ -239,106 +378,6 @@ mod serde_tests {
     }
 }
 
-impl DeploymentType {
-    pub fn backfill_http_version(protocol_type: ProtocolType) -> http::Version {
-        match protocol_type {
-            ProtocolType::BidiStream => http::Version::HTTP_2,
-            ProtocolType::RequestResponse => http::Version::HTTP_11,
-        }
-    }
-
-    pub fn protocol_type(&self) -> ProtocolType {
-        match self {
-            DeploymentType::Http { protocol_type, .. } => *protocol_type,
-            DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
-        }
-    }
-
-    pub fn normalized_address(&self) -> String {
-        match self {
-            DeploymentType::Http { address, .. } => {
-                // We use only authority and path, as those uniquely identify the deployment.
-                format!(
-                    "{}{}",
-                    address.authority().expect("Must have authority"),
-                    address.path()
-                )
-            }
-            DeploymentType::Lambda { arn, .. } => arn.to_string(),
-        }
-    }
-}
-
-impl DeploymentMetadata {
-    pub fn new_http(
-        address: Uri,
-        protocol_type: ProtocolType,
-        http_version: http::Version,
-        delivery_options: DeliveryOptions,
-        supported_protocol_versions: RangeInclusive<i32>,
-        sdk_version: Option<String>,
-    ) -> Self {
-        Self {
-            ty: DeploymentType::Http {
-                address,
-                protocol_type,
-                http_version,
-            },
-            delivery_options,
-            created_at: MillisSinceEpoch::now(),
-            supported_protocol_versions,
-            sdk_version,
-        }
-    }
-
-    pub fn new_lambda(
-        arn: LambdaARN,
-        assume_role_arn: Option<ByteString>,
-        compression: Option<EndpointLambdaCompression>,
-        delivery_options: DeliveryOptions,
-        supported_protocol_versions: RangeInclusive<i32>,
-        sdk_version: Option<String>,
-    ) -> Self {
-        Self {
-            ty: DeploymentType::Lambda {
-                arn,
-                assume_role_arn,
-                compression,
-            },
-            delivery_options,
-            created_at: MillisSinceEpoch::now(),
-            supported_protocol_versions,
-            sdk_version,
-        }
-    }
-
-    // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
-    // and for Lambda deployments its the ARN
-    pub fn address_display(&self) -> impl Display + '_ {
-        self.ty.address_display()
-    }
-
-    pub fn created_at(&self) -> MillisSinceEpoch {
-        self.created_at
-    }
-}
-
-pub trait DeploymentResolver {
-    fn resolve_latest_deployment_for_service(
-        &self,
-        service_name: impl AsRef<str>,
-    ) -> Option<Deployment>;
-
-    fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
-
-    fn get_deployment_and_services(
-        &self,
-        deployment_id: &DeploymentId,
-    ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
-
-    fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)>;
-}
-
 #[cfg(feature = "test-util")]
 pub mod test_util {
     use super::*;
@@ -403,6 +442,17 @@ pub mod test_util {
                 .and_then(|deployment_id| self.get_deployment(deployment_id))
         }
 
+        fn find_deployment(
+            &self,
+            deployment_type: &DeploymentAddress,
+            headers: &HashMap<HeaderName, HeaderValue>,
+        ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+            self.deployments
+                .iter()
+                .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_type, headers))
+                .and_then(|(dp_id, _)| self.get_deployment_and_services(dp_id))
+        }
+
         fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
             self.deployments
                 .get(deployment_id)
@@ -449,6 +499,14 @@ pub mod test_util {
 
     impl DeploymentResolver for () {
         fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
+            None
+        }
+
+        fn find_deployment(
+            &self,
+            _: &DeploymentAddress,
+            _: &HashMap<HeaderName, HeaderValue>,
+        ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
             None
         }
 

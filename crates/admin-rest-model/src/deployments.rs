@@ -55,21 +55,31 @@ pub enum RegisterDeploymentRequest {
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         use_http_11: bool,
 
-        /// # Force
+        /// # Breaking
         ///
-        /// If `true`, it will override, if existing, any deployment using the same `uri`.
-        /// Beware that this can lead in-flight invocations to an unrecoverable error state.
-        ///
-        /// By default, this is `true` but it might change in future to `false`.
+        /// If `true`, it allows registering new service revisions with
+        /// schemas incompatible with previous service revisions, such as changing service type, removing a handler, etc.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
-        #[serde(default = "restate_serde_util::default::bool::<true>")]
-        force: bool,
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        breaking: bool,
+
+        /// # Force
+        ///
+        /// If `true`, it overrides, if existing, any deployment using the same `uri`.
+        /// Beware that this can lead inflight invocations to an unrecoverable error state.
+        ///
+        /// When set to `true`, it implies `breaking = true`.
+        ///
+        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
+        #[schemars(default = "restate_serde_util::default::bool::<true>")]
+        force: Option<bool>,
 
         /// # Dry-run mode
         ///
         /// If `true`, discovery will run but the deployment will not be registered.
         /// This is useful to see the impact of a new deployment before registering it.
+        /// `force` and `breaking` will be respected.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
@@ -96,21 +106,32 @@ pub enum RegisterDeploymentRequest {
         /// Additional headers added to the discover/invoke requests to the deployment.
         ///
         additional_headers: Option<SerdeableHeaderHashMap>,
-        /// # Force
+
+        /// # Breaking
         ///
-        /// If `true`, it will override, if existing, any deployment using the same `uri`.
-        /// Beware that this can lead in-flight invocations to an unrecoverable error state.
-        ///
-        /// By default, this is `true` but it might change in future to `false`.
+        /// If `true`, it allows registering new service revisions with
+        /// schemas incompatible with previous service revisions, such as changing service type, removing a handler, etc.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
-        #[serde(default = "restate_serde_util::default::bool::<true>")]
-        force: bool,
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        breaking: bool,
+
+        /// # Force
+        ///
+        /// If `true`, it overrides, if existing, any deployment using the same `uri`.
+        /// Beware that this can lead inflight invocations to an unrecoverable error state.
+        ///
+        /// This implies `breaking = true`.
+        ///
+        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
+        #[schemars(default = "restate_serde_util::default::bool::<true>")]
+        force: Option<bool>,
 
         /// # Dry-run mode
         ///
         /// If `true`, discovery will run but the deployment will not be registered.
         /// This is useful to see the impact of a new deployment before registering it.
+        /// `force` and `breaking` will be respected.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },

@@ -17,13 +17,18 @@ use restate_serde_util::MapAsVecItem;
 use restate_time_util::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
+use crate::deployment::{
+    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+};
 use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::live::Pinned;
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
-use crate::schema::deployment::{DeliveryOptions, DeploymentResolver, DeploymentType};
+use crate::schema::deployment::{
+    DeliveryOptions, DeploymentMetadata, DeploymentResolver, DeploymentType,
+};
 use crate::schema::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InputRules,
     InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver, OnMaxAttempts,
@@ -159,6 +164,49 @@ impl Deployment {
                 sdk_version: self.sdk_version.clone(),
                 created_at: self.created_at,
             },
+        }
+    }
+
+    /// This returns true if the two deployments are to be considered the "same".
+    pub fn semantic_eq_with_deployment(&self, other: &DeploymentMetadata) -> bool {
+        match (&self.ty, &other.ty) {
+            (
+                DeploymentType::Http {
+                    address: this_address,
+                    ..
+                },
+                DeploymentType::Http {
+                    address: other_address,
+                    ..
+                },
+            ) => DeploymentMetadata::semantic_eq_http(this_address, other_address),
+            (
+                DeploymentType::Lambda { arn: this_arn, .. },
+                DeploymentType::Lambda { arn: other_arn, .. },
+            ) => DeploymentMetadata::semantic_eq_lambda(this_arn, other_arn),
+            _ => false,
+        }
+    }
+
+    /// This returns true if the two deployments are to be considered the "same".
+    pub fn semantic_eq_with_address_and_headers(
+        &self,
+        other_addess: &DeploymentAddress,
+        _other_headers: &Headers,
+    ) -> bool {
+        match (&self.ty, other_addess) {
+            (
+                DeploymentType::Http {
+                    address: this_address,
+                    ..
+                },
+                DeploymentAddress::Http(HttpDeploymentAddress { uri: other_address }),
+            ) => DeploymentMetadata::semantic_eq_http(this_address, other_address),
+            (
+                DeploymentType::Lambda { arn: this_arn, .. },
+                DeploymentAddress::Lambda(LambdaDeploymentAddress { arn: other_arn, .. }),
+            ) => DeploymentMetadata::semantic_eq_lambda(this_arn, other_arn),
+            _ => false,
         }
     }
 }
@@ -469,6 +517,17 @@ impl DeploymentResolver for Schema {
         self.deployments
             .get(&active_service_revision.deployment_id)
             .map(|dp| dp.to_deployment())
+    }
+
+    fn find_deployment(
+        &self,
+        deployment_type: &DeploymentAddress,
+        headers: &Headers,
+    ) -> Option<(deployment::Deployment, Vec<service::ServiceMetadata>)> {
+        self.deployments
+            .iter()
+            .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_type, headers))
+            .and_then(|(dp_id, _)| self.get_deployment_and_services(dp_id))
     }
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<deployment::Deployment> {
