@@ -155,7 +155,6 @@ where
                     self.schemas.clone(),
                     invoker_tx,
                     invoker_rx,
-                    opts.experimental_features_allow_protocol_v6(),
                     self.action_token_bucket.clone(),
                 )
                 .run(input_journal),
