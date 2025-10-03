@@ -19,7 +19,10 @@ use crate::identifiers::{
 };
 use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::time::MillisSinceEpoch;
-use crate::{GenerationalNodeId, RestateVersion};
+use crate::{
+    GenerationalNodeId, RestateVersion, bilrost_storage_encode_decode,
+    flexbuffers_storage_encode_decode,
+};
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -435,6 +438,8 @@ pub struct ServiceInvocation {
     pub restate_version: RestateVersion,
 }
 
+flexbuffers_storage_encode_decode!(ServiceInvocation);
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     from = "serde_hacks::SubmitNotificationSink",
@@ -577,6 +582,8 @@ pub struct InvocationResponse {
     pub result: ResponseResult,
 }
 
+flexbuffers_storage_encode_decode!(InvocationResponse);
+
 impl WithInvocationId for InvocationResponse {
     fn invocation_id(&self) -> InvocationId {
         self.target.invocation_id()
@@ -622,6 +629,8 @@ pub struct GetInvocationOutputResponse {
     #[bilrost(oneof(2, 3))]
     pub result: GetInvocationOutputResult,
 }
+
+bilrost_storage_encode_decode!(GetInvocationOutputResponse);
 
 impl WithInvocationId for GetInvocationOutputResponse {
     fn invocation_id(&self) -> InvocationId {
@@ -944,6 +953,8 @@ pub struct InvocationTermination {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
+flexbuffers_storage_encode_decode!(InvocationTermination);
+
 /// Flavor of the termination. Can be kill (hard stop) or graceful cancel.
 #[derive(
     Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Enumeration,
@@ -963,6 +974,8 @@ pub struct PurgeInvocationRequest {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
+flexbuffers_storage_encode_decode!(PurgeInvocationRequest);
+
 impl WithInvocationId for PurgeInvocationRequest {
     fn invocation_id(&self) -> InvocationId {
         self.invocation_id
@@ -978,6 +991,8 @@ pub struct ResumeInvocationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
+
+flexbuffers_storage_encode_decode!(ResumeInvocationRequest);
 
 impl WithInvocationId for ResumeInvocationRequest {
     fn invocation_id(&self) -> InvocationId {
@@ -1000,6 +1015,8 @@ pub struct RestartAsNewInvocationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
+
+flexbuffers_storage_encode_decode!(RestartAsNewInvocationRequest);
 
 impl WithInvocationId for RestartAsNewInvocationRequest {
     fn invocation_id(&self) -> InvocationId {
@@ -1320,6 +1337,8 @@ pub struct AttachInvocationRequest {
     pub response_sink: ServiceInvocationResponseSink,
 }
 
+flexbuffers_storage_encode_decode!(AttachInvocationRequest);
+
 impl WithPartitionKey for AttachInvocationRequest {
     fn partition_key(&self) -> PartitionKey {
         self.invocation_query.partition_key()
@@ -1332,6 +1351,8 @@ pub struct NotifySignalRequest {
     pub invocation_id: InvocationId,
     pub signal: Signal,
 }
+
+flexbuffers_storage_encode_decode!(NotifySignalRequest);
 
 impl WithInvocationId for NotifySignalRequest {
     fn invocation_id(&self) -> InvocationId {
