@@ -12,6 +12,7 @@
 
 mod arc_encodings;
 mod nonzero;
+mod phantom_data;
 mod range;
 
 pub mod display_from_str;

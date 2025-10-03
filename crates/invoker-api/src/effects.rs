@@ -16,11 +16,11 @@ use restate_types::invocation::InvocationEpoch;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
-use restate_types::journal_v2;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{flexbuffers_storage_encode_decode, journal_v2};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +34,8 @@ pub struct Effect {
     pub invocation_epoch: InvocationEpoch,
     pub kind: EffectKind,
 }
+
+flexbuffers_storage_encode_decode!(Effect);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

@@ -13,22 +13,26 @@ use std::ops::RangeInclusive;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::logs::{Keys, Lsn};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{GenerationalNodeId, SemanticRestateVersion};
+use restate_types::{GenerationalNodeId, SemanticRestateVersion, bilrost_storage_encode_decode};
 
 /// Announcing a new leader. This message can be written by any component to make the specified
 /// partition processor the leader.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnnounceLeader {
     /// Sender of the announce leader message.
     ///
     /// This became non-optional in v1.5. Noting that it has always been set in previous versions,
     /// it's safe to assume that it's always set.
+    #[bilrost(1)]
     pub node_id: GenerationalNodeId,
+    #[bilrost(2)]
     pub leader_epoch: LeaderEpoch,
+    #[bilrost(3)]
     pub partition_key_range: RangeInclusive<PartitionKey>,
 }
 
+bilrost_storage_encode_decode!(AnnounceLeader);
 /// A version barrier to fence off state machine changes that require a certain minimum
 /// version of restate server.
 ///
@@ -39,11 +43,16 @@ pub struct AnnounceLeader {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct VersionBarrier {
     /// The minimum version required (inclusive) to progress after this barrier.
+    #[bilrost(1)]
     pub version: SemanticRestateVersion,
     /// A human-readable reason for why this barrier exists.
+    #[bilrost(2)]
     pub human_reason: Option<String>,
+    #[bilrost(3)]
     pub partition_key_range: Keys,
 }
+
+bilrost_storage_encode_decode!(VersionBarrier);
 
 /// Updates the `PARTITION_DURABILITY` FSM variable to the given value. Note that durability
 /// only applies to partitions with the same `partition_id`. At replay time, the partition will
@@ -55,10 +64,15 @@ pub struct VersionBarrier {
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PartitionDurability {
+    #[bilrost(1)]
     pub partition_id: PartitionId,
     /// The partition has applied this LSN durably to the replica-set and/or has been
     /// persisted in a snapshot in the snapshot repository.
+    #[bilrost(2)]
     pub durable_point: Lsn,
     /// Timestamp which the durability point was updated
+    #[bilrost(3)]
     pub modification_time: MillisSinceEpoch,
 }
+
+bilrost_storage_encode_decode!(PartitionDurability);

@@ -10,7 +10,7 @@
 
 //! This module defines types used for the internal messaging between Restate components.
 
-use crate::identifiers::PartitionId;
+use crate::{bilrost_storage_encode_decode, identifiers::PartitionId};
 
 /// Wrapper that extends a message with its target peer to which the message should be sent.
 pub type PartitionTarget<Msg> = (PartitionId, Msg);
@@ -29,3 +29,11 @@ pub enum AckKind {
         last_known_seq_number: MessageIndex,
     },
 }
+
+#[derive(Debug, Clone, Copy, bilrost::Message)]
+pub struct MessageIndexRecrod {
+    #[bilrost(1)]
+    pub index: MessageIndex,
+}
+
+bilrost_storage_encode_decode!(MessageIndexRecrod);
