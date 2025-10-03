@@ -10,40 +10,103 @@
 
 use std::marker::PhantomData;
 
-use bytes::{Bytes, BytesMut};
+use bilrost::encoding::encoded_len_varint;
+use bilrost::{Message, OwnedMessage};
+use bytes::{BufMut, Bytes, BytesMut};
 
-use restate_encoding::RestateEncoding;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::logs::{HasRecordKeys, Keys};
 use restate_types::storage::{
     StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
 };
 
-/// The primary envelope for all messages in the system.
+const ENCODING_VERSION: u8 = 1;
+
 #[derive(Debug, Clone, bilrost::Message)]
-pub struct Envelope<M> {
+struct EnvelopeInner {
     #[bilrost(1)]
-    pub header: Header,
-
+    header: Header,
     #[bilrost(2)]
-    record_keys: Keys,
-
+    keys: Keys,
     #[bilrost(3)]
-    record: RawRecord,
+    kind: RecordKind,
+    #[bilrost(4)]
+    encoding: Option<StorageCodecKind>,
+}
 
-    #[bilrost(tag(4), encoding(RestateEncoding))]
+/// The primary envelope for all messages in the system.
+#[derive(Debug, Clone)]
+pub struct Envelope<M> {
+    inner: EnvelopeInner,
+    payload: Bytes,
     phantom: PhantomData<M>,
+}
+
+impl<M: Send + Sync + 'static> StorageEncode for Envelope<M> {
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageCodecKind::Custom
+    }
+
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
+        buf.put_u8(ENCODING_VERSION);
+
+        let len = self.inner.encoded_len();
+        buf.reserve(encoded_len_varint(len as u64) + len + self.payload.len());
+
+        self.inner
+            .encode_length_delimited(buf)
+            .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+
+        buf.put(&self.payload[..]);
+        Ok(())
+    }
+}
+
+impl StorageDecode for Envelope<Raw> {
+    fn decode<B: bytes::Buf>(
+        buf: &mut B,
+        kind: StorageCodecKind,
+    ) -> Result<Self, StorageDecodeError>
+    where
+        Self: Sized,
+    {
+        match kind {
+            StorageCodecKind::FlexbuffersSerde => {
+                todo!("implement loading from envelop V1")
+            }
+            StorageCodecKind::Custom => {
+                let version = buf.get_u8();
+                if version != ENCODING_VERSION {
+                    return Err(StorageDecodeError::DecodeValue(
+                        anyhow::anyhow!("Unknown envelope encoding version {version}").into(),
+                    ));
+                }
+
+                let inner = EnvelopeInner::decode_length_delimited(&mut *buf)
+                    .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+                Ok(Self {
+                    inner,
+                    payload: buf.copy_to_bytes(buf.remaining()),
+                    phantom: PhantomData,
+                })
+            }
+            _ => {
+                panic!("unsupported encoding");
+            }
+        }
+    }
 }
 
 impl<M: Send + Sync> HasRecordKeys for Envelope<M> {
     fn record_keys(&self) -> Keys {
-        self.record_keys.clone()
+        self.inner.keys.clone()
     }
 }
 
 impl<M> WithPartitionKey for Envelope<M> {
     fn partition_key(&self) -> PartitionKey {
-        match self.header.dest {
+        match self.header().dest {
             Destination::None => unimplemented!("expect destinationt to be set"),
             Destination::Processor { partition_key, .. } => partition_key,
         }
@@ -51,8 +114,18 @@ impl<M> WithPartitionKey for Envelope<M> {
 }
 
 impl<M> Envelope<M> {
+    #[inline]
     pub fn record_type(&self) -> RecordKind {
-        self.record.kind
+        self.inner.kind
+    }
+
+    #[inline]
+    pub fn header(&self) -> &Header {
+        &self.inner.header
+    }
+
+    pub fn kind(&self) -> RecordKind {
+        self.inner.kind
     }
 }
 
@@ -64,19 +137,17 @@ impl Envelope<Raw> {
     /// Convers Raw Envelope into a Typed envelope. Panics
     /// if the record kind does not match the M::KIND
     pub fn into_typed<M: Record>(self) -> Envelope<M> {
-        assert_eq!(self.record.kind, M::KIND);
+        assert_eq!(self.inner.kind, M::KIND);
 
         let Self {
-            header,
-            record_keys,
-            record,
-            ..
+            inner,
+            payload,
+            phantom: _,
         } = self;
 
         Envelope {
-            header,
-            record_keys,
-            record,
+            inner,
+            payload,
             phantom: PhantomData,
         }
     }
@@ -94,16 +165,17 @@ impl<M: Record> Envelope<M> {
     {
         let mut buf = BytesMut::new();
         payload.encode(&mut buf)?;
-        let record = RawRecord {
-            data: buf.freeze(),
-            encoding: Some(payload.default_codec()),
+
+        let inner = EnvelopeInner {
+            header,
+            keys: record_keys,
             kind: M::KIND,
+            encoding: payload.default_codec().into(),
         };
 
         Ok(Self {
-            header,
-            record_keys,
-            record,
+            inner,
+            payload: buf.freeze(),
             phantom: PhantomData,
         })
     }
@@ -111,8 +183,8 @@ impl<M: Record> Envelope<M> {
     /// return the envelope payload
     pub fn payload(&mut self) -> Result<M::Payload, StorageDecodeError> {
         M::Payload::decode(
-            &mut self.record.data,
-            self.record.encoding.expect("encoding to be set"),
+            &mut self.payload,
+            self.inner.encoding.expect("encoding to be set"),
         )
     }
 
@@ -124,17 +196,11 @@ impl<M: Record> Envelope<M> {
 /// It's always safe to go back to Raw Envelope
 impl<M: Record> From<Envelope<M>> for Envelope<Raw> {
     fn from(value: Envelope<M>) -> Self {
-        let Envelope {
-            header,
-            record_keys,
-            record,
-            ..
-        } = value;
+        let Envelope { inner, payload, .. } = value;
 
         Self {
-            header,
-            record_keys,
-            record,
+            inner,
+            payload,
             phantom: PhantomData,
         }
     }
@@ -261,10 +327,7 @@ pub enum Destination {
 
     /// Message is sent to partition processor
     #[bilrost(tag = 1, message)]
-    Processor {
-        partition_key: PartitionKey,
-        // dedup: Option<DedupInformation>,
-    },
+    Processor { partition_key: PartitionKey },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, bilrost::Oneof, bilrost::Message)]
@@ -315,6 +378,10 @@ pub trait Record: sealed::Sealed + Sized {
     {
         Envelope::create(header, record_keys, payload)
     }
+}
+
+mod sealed {
+    pub trait Sealed {}
 }
 
 pub mod records {
@@ -393,7 +460,7 @@ pub mod records {
     }
 
     record! {
-        @name=TruncateInbox,
+        @name=TruncateOutbox,
         @kind=RecordKind::TruncateOutbox,
         @payload=MessageIndexRecrod
     }
@@ -459,17 +526,216 @@ pub mod records {
     }
 }
 
-mod sealed {
-    pub trait Sealed {}
+mod compatibility {
+    /// Compatibility module with v1. We probably can never drop this
+    /// code unless we are absolutely sure there is no more records
+    /// ever exited that are still using v1
+    use anyhow::Context;
+    use bytes::Buf;
+
+    use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
+    use restate_types::storage::{StorageCodecKind, StorageDecode, StorageDecodeError};
+
+    use super::{
+        Dedup, Destination, Envelope, EnvelopeInner, Header, Raw, Record, RecordKind, Source,
+        records,
+    };
+    use crate::v1;
+
+    fn decode_payload<R: Record, B: Buf>(
+        buf: &mut B,
+        kind: StorageCodecKind,
+    ) -> Result<R::Payload, StorageDecodeError> {
+        <R::Payload as StorageDecode>::decode(buf, kind)
+    }
+
+    impl TryFrom<Header> for v1::Header {
+        type Error = anyhow::Error;
+
+        fn try_from(value: Header) -> Result<Self, Self::Error> {
+            let Header {
+                source,
+                dest,
+                dedup,
+            } = value;
+
+            let source = match source {
+                Source::None => anyhow::bail!("Missing envelope header source"),
+                Source::Ingress => v1::Source::Ingress {},
+                Source::ControlPlane => v1::Source::ControlPlane {},
+                Source::Processor {
+                    partition_id,
+                    partition_key,
+                    leader_epoch,
+                } => v1::Source::Processor {
+                    partition_id,
+                    partition_key,
+                    leader_epoch,
+                },
+            };
+
+            let dedup = match dedup {
+                Dedup::None => None,
+                Dedup::SelfProposal { leader_epoch, seq } => {
+                    Some(DedupInformation::self_proposal(EpochSequenceNumber {
+                        leader_epoch,
+                        sequence_number: seq,
+                    }))
+                }
+                Dedup::ForeignPartition { partition, seq } => {
+                    Some(DedupInformation::cross_partition(partition, seq))
+                }
+                Dedup::Arbitrary { prefix, seq } => Some(DedupInformation::ingress(prefix, seq)),
+            };
+
+            let dest = match dest {
+                Destination::None => anyhow::bail!("Missing envelope header destination"),
+                Destination::Processor { partition_key } => v1::Destination::Processor {
+                    partition_key,
+                    dedup,
+                },
+            };
+
+            Ok(v1::Header { source, dest })
+        }
+    }
+
+    impl TryFrom<super::Envelope<Raw>> for v1::Envelope {
+        type Error = anyhow::Error;
+
+        fn try_from(value: Envelope<Raw>) -> Result<Self, Self::Error> {
+            let Envelope {
+                inner:
+                    EnvelopeInner {
+                        encoding,
+                        header,
+                        keys: _,
+                        kind,
+                    },
+                mut payload,
+                ..
+            } = value;
+
+            // todo: create a bilrost helpder for required fields so it failes
+            // during decoding.
+            let encoding = encoding.context("missing encoding")?;
+
+            let command = match kind {
+                RecordKind::Unknown => anyhow::bail!("Unknown record kind"),
+                RecordKind::AnnounceLeader => {
+                    let value =
+                        decode_payload::<records::AnnounceLeader, _>(&mut payload, encoding)?;
+                    v1::Command::AnnounceLeader(value.into())
+                }
+                RecordKind::VersionBarrier => {
+                    let value =
+                        decode_payload::<records::VersionBarrier, _>(&mut payload, encoding)?;
+                    v1::Command::VersionBarrier(value)
+                }
+                RecordKind::UpdatePartitionDurability => {
+                    let value = decode_payload::<records::UpdatePartitionDurability, _>(
+                        &mut payload,
+                        encoding,
+                    )?;
+                    v1::Command::UpdatePartitionDurability(value)
+                }
+                RecordKind::PatchState => {
+                    let value = decode_payload::<records::PatchState, _>(&mut payload, encoding)?;
+                    v1::Command::PatchState(value)
+                }
+                RecordKind::TerminateInvocation => {
+                    let value =
+                        decode_payload::<records::TerminateInvocation, _>(&mut payload, encoding)?;
+                    v1::Command::TerminateInvocation(value)
+                }
+                RecordKind::PurgeInvocation => {
+                    let value =
+                        decode_payload::<records::PurgeInvocation, _>(&mut payload, encoding)?;
+                    v1::Command::PurgeInvocation(value)
+                }
+                RecordKind::PurgeJournal => {
+                    let value = decode_payload::<records::PurgeJournal, _>(&mut payload, encoding)?;
+                    v1::Command::PurgeJournal(value)
+                }
+                RecordKind::Invoke => {
+                    let value = decode_payload::<records::Invoke, _>(&mut payload, encoding)?;
+                    v1::Command::Invoke(value.into())
+                }
+                RecordKind::TruncateOutbox => {
+                    let value =
+                        decode_payload::<records::TruncateOutbox, _>(&mut payload, encoding)?;
+                    v1::Command::TruncateOutbox(value.index)
+                }
+                RecordKind::ProxyThrough => {
+                    let value = decode_payload::<records::ProxyThrough, _>(&mut payload, encoding)?;
+                    v1::Command::ProxyThrough(value.into())
+                }
+                RecordKind::AttachInvocation => {
+                    let value =
+                        decode_payload::<records::AttachInvocation, _>(&mut payload, encoding)?;
+                    v1::Command::AttachInvocation(value)
+                }
+                RecordKind::ResumeInvocation => {
+                    let value =
+                        decode_payload::<records::ResumeInvocation, _>(&mut payload, encoding)?;
+                    v1::Command::ResumeInvocation(value)
+                }
+                RecordKind::RestartAsNewInvocation => {
+                    let value = decode_payload::<records::RestartAsNewInvocation, _>(
+                        &mut payload,
+                        encoding,
+                    )?;
+                    v1::Command::RestartAsNewInvocation(value)
+                }
+                RecordKind::InvokerEffect => {
+                    let value =
+                        decode_payload::<records::InvokerEffect, _>(&mut payload, encoding)?;
+                    v1::Command::InvokerEffect(value.into())
+                }
+                RecordKind::Timer => {
+                    let value = decode_payload::<records::Timer, _>(&mut payload, encoding)?;
+                    v1::Command::Timer(value)
+                }
+                RecordKind::ScheduleTimer => {
+                    let value =
+                        decode_payload::<records::ScheduleTimer, _>(&mut payload, encoding)?;
+                    v1::Command::ScheduleTimer(value)
+                }
+                RecordKind::InvocationResponse => {
+                    let value =
+                        decode_payload::<records::InvocationResponse, _>(&mut payload, encoding)?;
+                    v1::Command::InvocationResponse(value)
+                }
+
+                RecordKind::NotifyGetInvocationOutputResponse => {
+                    let value = decode_payload::<records::NotifyGetInvocationOutputResponse, _>(
+                        &mut payload,
+                        encoding,
+                    )?;
+                    v1::Command::NotifyGetInvocationOutputResponse(value)
+                }
+
+                RecordKind::NotifySignal => {
+                    let value = decode_payload::<records::NotifySignal, _>(&mut payload, encoding)?;
+                    v1::Command::NotifySignal(value)
+                }
+            };
+
+            Ok(v1::Envelope::new(header.try_into()?, command))
+        }
+    }
 }
 
 #[cfg(test)]
 mod test {
 
-    use bilrost::{Message, OwnedMessage};
-    use bytes::Bytes;
+    use bytes::BytesMut;
 
-    use restate_types::{GenerationalNodeId, logs::Keys};
+    use restate_types::{
+        GenerationalNodeId,
+        logs::Keys,
+        storage::{StorageCodecKind, StorageDecode, StorageEncode},
+    };
 
     use super::{Dedup, Destination, Envelope, Header, Source, records};
     use crate::{
@@ -500,9 +766,11 @@ mod test {
             records::AnnounceLeader::envelope(header, Keys::Single(1000), payload.clone())
                 .expect("to work");
 
-        let data = envelope.encode_contiguous().into_vec();
+        let mut buf = BytesMut::new();
+        envelope.encode(&mut buf).expect("to encode");
 
-        let envelope = Envelope::<Raw>::decode(Bytes::from(data)).expect("to decode");
+        let envelope =
+            Envelope::<Raw>::decode(&mut buf, StorageCodecKind::Custom).expect("to decode");
 
         let mut typed = envelope.into_typed::<records::AnnounceLeader>();
 
