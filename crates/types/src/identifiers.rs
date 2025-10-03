@@ -349,15 +349,26 @@ impl From<InvocationUuid> for opentelemetry::trace::SpanId {
 /// Services are isolated by key. This means that there cannot be two concurrent
 /// invocations for the same service instance (service name, key).
 #[derive(
-    Eq, Hash, PartialEq, PartialOrd, Ord, Clone, Debug, serde::Serialize, serde::Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Message,
 )]
 pub struct ServiceId {
     // TODO rename this to KeyedServiceId. This type can be used only by keyed service types (virtual objects and workflows)
     /// Identifies the grpc service
+    #[bilrost(1)]
     pub service_name: ByteString,
     /// Identifies the service instance for the given service name
+    #[bilrost(2)]
     pub key: ByteString,
-
+    #[bilrost(3)]
     partition_key: PartitionKey,
 }
 

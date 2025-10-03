@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::timer_table::{Timer, TimerKey, TimerKeyKind};
+use restate_types::flexbuffers_storage_encode_decode;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{InvocationEpoch, ServiceInvocation};
 use restate_types::time::MillisSinceEpoch;
@@ -22,6 +23,8 @@ pub struct TimerKeyValue {
     timer_key: TimerKey,
     value: Timer,
 }
+
+flexbuffers_storage_encode_decode!(TimerKeyValue);
 
 impl TimerKeyValue {
     pub fn new(timer_key: TimerKey, value: Timer) -> Self {
