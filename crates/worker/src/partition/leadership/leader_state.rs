@@ -20,12 +20,12 @@ use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use metrics::counter;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, trace};
 
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
-use restate_core::{TaskCenter, TaskHandle, TaskId};
+use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_partition_store::PartitionStore;
 use restate_types::identifiers::{
     InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
@@ -36,6 +36,7 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{Version, Versioned};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyValue;
 
@@ -45,7 +46,7 @@ use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
 use crate::partition::shuffle;
 use crate::partition::shuffle::HintSender;
-use crate::partition::state_machine::Action;
+use crate::partition::state_machine::{Action, StateMachineRef};
 
 use super::durability_tracker::DurabilityTracker;
 
@@ -73,6 +74,7 @@ pub struct LeaderState {
 
     invoker_stream: InvokerStream,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
+    schema_stream: WatchStream<Version>,
     pub pending_cleanup_timers_to_schedule: VecDeque<(InvocationId, Duration)>,
     cleaner_task_id: TaskId,
     trimmer_task_id: TaskId,
@@ -103,6 +105,9 @@ impl LeaderState {
             cleaner_task_id,
             trimmer_task_id,
             shuffle_hint_tx,
+            schema_stream: Metadata::with_current(|m| {
+                WatchStream::new(m.watch(MetadataKind::Schema))
+            }),
             timer_service: Box::pin(timer_service),
             self_proposer,
             awaiting_rpc_actions: Default::default(),
@@ -119,7 +124,10 @@ impl LeaderState {
     ///
     /// Important: The future needs to be cancellation safe since it is polled as a tokio::select
     /// arm!
-    pub async fn run(&mut self) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(
+        &mut self,
+        state_machine: StateMachineRef<'_>,
+    ) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
             |timer_service| async {
@@ -128,6 +136,21 @@ impl LeaderState {
             }
         ));
 
+        let schema_stream = (&mut self.schema_stream)
+            .filter(|version| {
+                // only upsert schema iff version is newer that
+                futures::future::ready(
+                    state_machine
+                        .schema
+                        .as_ref()
+                        .map(|schema| schema.version() < *version)
+                        .unwrap_or(true),
+                )
+            })
+            .map(|_| {
+                let schema = Metadata::with_current(|m| m.schema().clone());
+                ActionEffect::UpsertSchema(schema)
+            });
         let invoker_stream = (&mut self.invoker_stream).map(ActionEffect::Invoker);
         let shuffle_stream = (&mut self.shuffle_stream).map(ActionEffect::Shuffle);
         let dur_tracker_stream =
@@ -155,7 +178,8 @@ impl LeaderState {
             timer_stream,
             action_effects_stream,
             awaiting_rpc_self_propose_stream,
-            dur_tracker_stream
+            dur_tracker_stream,
+            schema_stream
         );
         let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
 
@@ -282,6 +306,11 @@ impl LeaderState {
                                 invocation_id,
                             )),
                         )
+                        .await?;
+                }
+                ActionEffect::UpsertSchema(schema) => {
+                    self.self_proposer
+                        .propose(self.own_partition_key, Command::UpsertSchema(schema))
                         .await?;
                 }
                 ActionEffect::AwaitingRpcSelfProposeDone => {

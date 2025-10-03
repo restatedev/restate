@@ -17,6 +17,7 @@ use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::schema::Schema;
 
 use crate::TableKind::PartitionStateMachine;
 use crate::keys::{KeyKind, define_table_key};
@@ -37,7 +38,10 @@ pub(crate) mod fsm_variable {
     pub(crate) const PARTITION_DURABILITY: u64 = 4;
 
     /// Schema versions are represented as a strictly monotonically increasing number.
+    /// This represent the partition storage schema version, not the user services schema.
     pub(crate) const SCHEMA_VERSION: u64 = 5;
+
+    pub(crate) const SERVICES_SCHEMA_METADATA: u64 = 6;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -143,6 +147,13 @@ impl ReadFsmTable for PartitionStore {
             fsm_variable::PARTITION_DURABILITY,
         )
     }
+
+    async fn get_schema(&mut self) -> Result<Option<Schema>> {
+        let key = PartitionStateMachineKey::default()
+            .partition_id(self.partition_id().into())
+            .state_id(fsm_variable::SERVICES_SCHEMA_METADATA);
+        self.get_value_storage_codec(key)
+    }
 }
 
 impl WriteFsmTable for PartitionStoreTransaction<'_> {
@@ -189,5 +200,12 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
             fsm_variable::PARTITION_DURABILITY,
             durability,
         )
+    }
+
+    fn put_schema(&mut self, schema: &Schema) -> Result<()> {
+        let key = PartitionStateMachineKey::default()
+            .partition_id(self.partition_id().into())
+            .state_id(fsm_variable::SERVICES_SCHEMA_METADATA);
+        self.put_kv_storage_codec(key, schema)
     }
 }

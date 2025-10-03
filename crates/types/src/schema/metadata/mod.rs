@@ -38,8 +38,9 @@ use crate::schema::{deployment, service};
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
+#[debug("Schema(version: {version})")]
 pub struct Schema {
     /// This gets bumped on each update.
     version: Version,

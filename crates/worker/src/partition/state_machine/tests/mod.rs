@@ -99,6 +99,7 @@ impl TestEnv {
             PartitionKey::MIN..=PartitionKey::MAX,
             SemanticRestateVersion::unknown().clone(),
             experimental_features,
+            None,
         ))
         .await
     }
@@ -1099,6 +1100,7 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         PartitionKey::MIN..=PartitionKey::MAX,
         SemanticRestateVersion::unknown().clone(),
         EnumSet::empty(),
+        None,
     ))
     .await;
 
