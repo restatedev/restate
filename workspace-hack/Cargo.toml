@@ -86,7 +86,7 @@ nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
-object_store = { version = "0.12", features = ["aws"] }
+object_store = { version = "0.12", features = ["aws", "azure", "gcp"] }
 opentelemetry_sdk = { version = "0.30", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 phf_shared = { version = "0.11" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
@@ -215,7 +215,7 @@ nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
-object_store = { version = "0.12", features = ["aws"] }
+object_store = { version = "0.12", features = ["aws", "azure", "gcp"] }
 opentelemetry_sdk = { version = "0.30", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 phf_shared = { version = "0.11" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
