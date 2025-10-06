@@ -18,7 +18,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
-use http::Uri;
+use http::{Method, Uri};
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::version::AdminApiVersion;
@@ -288,9 +288,17 @@ pub async fn delete_deployment<V, IC>(
 )]
 pub async fn update_deployment<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
+    Extension(version): Extension<AdminApiVersion>,
+    method: Method,
     Path(deployment_id): Path<DeploymentId>,
     #[request_body(required = true)] Json(payload): Json<UpdateDeploymentRequest>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
+    if (version >= AdminApiVersion::V3 || version == AdminApiVersion::Unknown)
+        && method == Method::PUT
+    {
+        return Err(MetaApiError::DeprecatedPutDeployment);
+    }
+
     // -- Bunch of data structures mapping back and forth
     let (overwrite, dry_run) = match &payload {
         UpdateDeploymentRequest::Http {

@@ -299,6 +299,8 @@ pub enum MetaApiError {
     Internal(String),
     #[error("Conflict: {0}")]
     Conflict(String),
+    #[error("PUT deployment is deprecated, use PATCH instead")]
+    DeprecatedPutDeployment,
 }
 
 /// # Error description response
@@ -333,6 +335,7 @@ impl IntoResponse for MetaApiError {
                 _ => StatusCode::BAD_REQUEST,
             },
             MetaApiError::Conflict(_) => StatusCode::CONFLICT,
+            MetaApiError::DeprecatedPutDeployment => StatusCode::METHOD_NOT_ALLOWED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let body = Json(match &self {
