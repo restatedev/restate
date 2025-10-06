@@ -166,23 +166,6 @@ jobs:
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
 
-  sdk-typescript-protocol-v6:
-    name: Run SDK-Typescript integration tests with Protocol V6
-    permissions:
-      contents: read
-      issues: read
-      checks: write
-      pull-requests: write
-      actions: read
-    secrets: inherit
-    needs: docker
-    uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
-    with:
-      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
-      envVars: |
-        RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
-      testArtifactOutput: sdk-typescript-protocol-v6
-
   sdk-rust:
     name: Run SDK-Rust integration tests
     permissions:
@@ -236,6 +219,9 @@ jobs:
         with:
           testArtifactOutput: e2e-test-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
+          # Needed for backward compatibility tests 1.6 -> 1.5
+          envVars: |
+            RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
 
   jepsen:
     if: github.event.repository.fork == false && github.event.pull_request.head.repo.full_name == 'restatedev/restate' && github.ref == 'refs/heads/main'
