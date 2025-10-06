@@ -332,7 +332,7 @@ pub async fn update_deployment<V, IC>(
             }
 
             (
-                if uri.is_none() || use_http_11.is_none() {
+                if uri.is_none() && use_http_11.is_none() {
                     None
                 } else {
                     Some(schema_registry::UpdateDeploymentAddress::Http { uri, use_http_11 })
