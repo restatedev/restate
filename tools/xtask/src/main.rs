@@ -39,7 +39,6 @@ use restate_types::journal_v2::{EntryIndex, Signal};
 use restate_types::live::Constant;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::Subscription;
-use restate_types::schema::subscriptions::SubscriptionValidator;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::SubscriptionController;
 use restate_worker::WorkerHandle;
@@ -93,14 +92,6 @@ impl SubscriptionController for Mock {
 
     async fn update_subscriptions(&self, _: Vec<Subscription>) -> Result<(), WorkerHandleError> {
         Ok(())
-    }
-}
-
-impl SubscriptionValidator for Mock {
-    type Error = WorkerHandleError;
-
-    fn validate(&self, _: Subscription) -> Result<Subscription, Self::Error> {
-        unimplemented!()
     }
 }
 
@@ -223,7 +214,6 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let admin_service = AdminService::new(
         node_env.metadata_writer.clone(),
         bifrost,
-        Mock,
         Mock,
         ServiceDiscovery::new(
             RetryPolicy::default(),

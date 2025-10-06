@@ -24,7 +24,6 @@ use restate_types::config::AdminOptions;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
 use restate_types::net::BindAddress;
-use restate_types::schema::subscriptions::SubscriptionValidator;
 use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
@@ -35,9 +34,9 @@ use tracing::{Span, debug, error, info, info_span};
 #[error("could not create the service client: {0}")]
 pub struct BuildError(#[from] restate_service_client::BuildError);
 
-pub struct AdminService<V, IC> {
+pub struct AdminService<IC> {
     bifrost: Bifrost,
-    schema_registry: SchemaRegistry<V>,
+    schema_registry: SchemaRegistry,
     invocation_client: IC,
     #[cfg(feature = "storage-query")]
     query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
@@ -45,16 +44,14 @@ pub struct AdminService<V, IC> {
     metadata_writer: MetadataWriter,
 }
 
-impl<V, IC> AdminService<V, IC>
+impl<IC> AdminService<IC>
 where
-    V: SubscriptionValidator + Send + Sync + Clone + 'static,
     IC: InvocationClient + Send + Sync + Clone + 'static,
 {
     pub fn new(
         metadata_writer: MetadataWriter,
         bifrost: Bifrost,
         invocation_client: IC,
-        subscription_validator: V,
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
     ) -> Self {
@@ -66,7 +63,6 @@ where
                 metadata_writer,
                 service_discovery,
                 telemetry_http_client,
-                subscription_validator,
             ),
             invocation_client,
             #[cfg(feature = "storage-query")]

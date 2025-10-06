@@ -80,8 +80,8 @@ pub struct DeleteInvocationParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn delete_invocation<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError> {
@@ -139,8 +139,8 @@ generate_meta_api_error!(KillInvocationError: [InvocationNotFoundError, Invocati
         schema = "std::string::String"
     ))
 )]
-pub async fn kill_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn kill_invocation<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(invocation_id): Path<String>,
 ) -> Result<(), KillInvocationError>
 where
@@ -199,8 +199,8 @@ generate_meta_api_error!(CancelInvocationError: [InvocationNotFoundError, Invoca
         from_type = "CancelInvocationError",
     )
 )]
-pub async fn cancel_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn cancel_invocation<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(invocation_id): Path<String>,
 ) -> Result<StatusCode, CancelInvocationError>
 where
@@ -241,8 +241,8 @@ generate_meta_api_error!(PurgeInvocationError: [InvocationNotFoundError, Invocat
         schema = "std::string::String"
     ))
 )]
-pub async fn purge_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn purge_invocation<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(invocation_id): Path<String>,
 ) -> Result<(), PurgeInvocationError>
 where
@@ -284,8 +284,8 @@ generate_meta_api_error!(PurgeJournalError: [InvocationNotFoundError, Invocation
         schema = "std::string::String"
     ))
 )]
-pub async fn purge_journal<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn purge_journal<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(invocation_id): Path<String>,
 ) -> Result<(), PurgeJournalError>
 where
@@ -398,8 +398,8 @@ generate_meta_api_error!(RestartInvocationError: [
         ),
     )
 )]
-pub async fn restart_as_new_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn restart_as_new_invocation<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(invocation_id): Path<String>,
     Query(RestartAsNewInvocationQueryParams { from, deployment }): Query<
         RestartAsNewInvocationQueryParams,
@@ -510,8 +510,8 @@ generate_meta_api_error!(ResumeInvocationError: [
         )
     )
 )]
-pub async fn resume_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn resume_invocation<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(invocation_id): Path<String>,
     Query(ResumeInvocationQueryParams { deployment }): Query<ResumeInvocationQueryParams>,
 ) -> Result<(), ResumeInvocationError>

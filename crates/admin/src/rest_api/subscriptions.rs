@@ -12,7 +12,7 @@ use super::error::*;
 use crate::state::AdminServiceState;
 
 use restate_admin_rest_model::subscriptions::*;
-use restate_types::schema::subscriptions::{ListSubscriptionFilter, SubscriptionValidator};
+use restate_types::schema::subscriptions::ListSubscriptionFilter;
 
 use axum::extract::Query;
 use axum::extract::{Path, State};
@@ -41,8 +41,8 @@ use restate_types::identifiers::SubscriptionId;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_subscription<V: SubscriptionValidator, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn create_subscription<IC>(
+    State(state): State<AdminServiceState<IC>>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
 ) -> Result<impl axum::response::IntoResponse, MetaApiError> {
     let subscription = state
@@ -73,8 +73,8 @@ pub async fn create_subscription<V: SubscriptionValidator, IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_subscription<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn get_subscription<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<Json<SubscriptionResponse>, MetaApiError> {
     let subscription = state
@@ -110,8 +110,8 @@ pub async fn get_subscription<V, IC>(
         )
     )
 )]
-pub async fn list_subscriptions<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn list_subscriptions<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Query(ListSubscriptionsParams { sink, source }): Query<ListSubscriptionsParams>,
 ) -> Json<ListSubscriptionsResponse> {
     let filters = match (sink, source) {
@@ -158,8 +158,8 @@ pub async fn list_subscriptions<V, IC>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_subscription<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn delete_subscription<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<StatusCode, MetaApiError> {
     state
