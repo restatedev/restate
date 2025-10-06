@@ -153,7 +153,6 @@ impl From<PartitionProcessorRpcError> for RpcErrorKind {
         match value {
             PartitionProcessorRpcError::NotLeader(_) => RpcErrorKind::NotLeader,
             PartitionProcessorRpcError::LostLeadership(_) => RpcErrorKind::LostLeadership,
-            PartitionProcessorRpcError::Busy => RpcErrorKind::Busy,
             PartitionProcessorRpcError::Internal(msg) => RpcErrorKind::Internal(msg),
             PartitionProcessorRpcError::Starting => RpcErrorKind::Starting,
             PartitionProcessorRpcError::Stopping => RpcErrorKind::Stopping,
