@@ -20,7 +20,7 @@ mod services;
 mod subscriptions;
 mod version;
 
-use okapi_operation::axum_integration::{HandlerExt, delete, get, patch, post};
+use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::okapi::openapi3::{ExternalDocs, Tag};
 use okapi_operation::*;
 use restate_types::identifiers::PartitionKey;
