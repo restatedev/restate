@@ -17,9 +17,7 @@ use restate_serde_util::MapAsVecItem;
 use restate_time_util::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
-use crate::deployment::{
-    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
-};
+use crate::deployment::{DeploymentAddress, HttpDeploymentAddress, LambdaDeploymentAddress};
 use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::live::Pinned;
@@ -193,11 +191,7 @@ impl Deployment {
     }
 
     /// This returns true if the two deployments are to be considered the "same".
-    pub fn semantic_eq_with_address_and_headers(
-        &self,
-        other_addess: &DeploymentAddress,
-        _other_headers: &Headers,
-    ) -> bool {
+    pub fn semantic_eq_with_address_and_headers(&self, other_addess: &DeploymentAddress) -> bool {
         match (&self.ty, other_addess) {
             (
                 DeploymentType::Http {
@@ -526,11 +520,10 @@ impl DeploymentResolver for Schema {
     fn find_deployment(
         &self,
         deployment_type: &DeploymentAddress,
-        headers: &Headers,
     ) -> Option<(deployment::Deployment, Vec<service::ServiceMetadata>)> {
         self.deployments
             .iter()
-            .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_type, headers))
+            .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_type))
             .and_then(|(dp_id, _)| self.get_deployment_and_services(dp_id))
     }
 

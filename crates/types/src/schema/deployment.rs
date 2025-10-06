@@ -13,9 +13,7 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 
-use crate::deployment::{
-    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
-};
+use crate::deployment::{DeploymentAddress, HttpDeploymentAddress, LambdaDeploymentAddress};
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
 use crate::schema::service::ServiceMetadata;
 use crate::time::MillisSinceEpoch;
@@ -142,11 +140,7 @@ impl DeploymentMetadata {
         self.created_at
     }
 
-    pub fn semantic_eq_with_address_and_headers(
-        &self,
-        other_addess: &DeploymentAddress,
-        _other_headers: &HashMap<HeaderName, HeaderValue>,
-    ) -> bool {
+    pub fn semantic_eq_with_address_and_headers(&self, other_addess: &DeploymentAddress) -> bool {
         match (&self.ty, other_addess) {
             (
                 DeploymentType::Http {
@@ -250,7 +244,6 @@ pub trait DeploymentResolver {
     fn find_deployment(
         &self,
         deployment_type: &DeploymentAddress,
-        headers: &Headers,
     ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
@@ -451,11 +444,10 @@ pub mod test_util {
         fn find_deployment(
             &self,
             deployment_type: &DeploymentAddress,
-            headers: &HashMap<HeaderName, HeaderValue>,
         ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
             self.deployments
                 .iter()
-                .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_type, headers))
+                .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_type))
                 .and_then(|(dp_id, _)| self.get_deployment_and_services(dp_id))
         }
 
@@ -511,7 +503,6 @@ pub mod test_util {
         fn find_deployment(
             &self,
             _: &DeploymentAddress,
-            _: &HashMap<HeaderName, HeaderValue>,
         ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
             None
         }
