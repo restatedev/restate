@@ -100,7 +100,7 @@ pub(crate) struct RegisterDeploymentRequest {
 }
 
 pub(crate) struct UpdateDeploymentRequest {
-    pub(crate) update_deployment_address: UpdateDeploymentAddress,
+    pub(crate) update_deployment_address: Option<UpdateDeploymentAddress>,
     pub(crate) additional_headers: Option<Headers>,
     pub(crate) overwrite: updater::Overwrite,
     pub(crate) apply_mode: ApplyMode,
@@ -323,27 +323,27 @@ impl<V> SchemaRegistry<V> {
         let (deployment_address, use_http_11) =
             match (update_deployment_address, existing_deployment.metadata.ty) {
                 (
-                    UpdateDeploymentAddress::Http {
+                    Some(UpdateDeploymentAddress::Http {
                         uri: Some(uri),
                         use_http_11,
-                    },
+                    }),
                     _,
                 ) => (
                     DeploymentAddress::Http(HttpDeploymentAddress::new(uri)),
                     use_http_11.unwrap_or(false),
                 ),
                 (
-                    UpdateDeploymentAddress::Lambda {
+                    Some(UpdateDeploymentAddress::Lambda {
                         arn: Some(arn),
                         assume_role_arn,
-                    },
+                    }),
                     _,
                 ) => (
                     DeploymentAddress::Lambda(LambdaDeploymentAddress::new(arn, assume_role_arn)),
                     false,
                 ),
                 (
-                    UpdateDeploymentAddress::Http { uri, use_http_11 },
+                    Some(UpdateDeploymentAddress::Http { uri, use_http_11 }),
                     DeploymentType::Http {
                         address,
                         http_version,
@@ -353,17 +353,17 @@ impl<V> SchemaRegistry<V> {
                     DeploymentAddress::Http(HttpDeploymentAddress::new(uri.unwrap_or(address))),
                     use_http_11.unwrap_or(http_version == http::Version::HTTP_11),
                 ),
-                (UpdateDeploymentAddress::Http { .. }, DeploymentType::Lambda { .. }) => {
+                (Some(UpdateDeploymentAddress::Http { .. }), DeploymentType::Lambda { .. }) => {
                     return Err(SchemaRegistryError::UpdateDeployment {
                         actual_deployment_type: "lambda",
                         expected_deployment_type: "http",
                     });
                 }
                 (
-                    UpdateDeploymentAddress::Lambda {
+                    Some(UpdateDeploymentAddress::Lambda {
                         arn: update_arn,
                         assume_role_arn: update_assume_role_arn,
-                    },
+                    }),
                     DeploymentType::Lambda {
                         arn,
                         assume_role_arn,
@@ -376,12 +376,37 @@ impl<V> SchemaRegistry<V> {
                     )),
                     false,
                 ),
-                (UpdateDeploymentAddress::Lambda { .. }, DeploymentType::Http { .. }) => {
+                (Some(UpdateDeploymentAddress::Lambda { .. }), DeploymentType::Http { .. }) => {
                     return Err(SchemaRegistryError::UpdateDeployment {
                         actual_deployment_type: "http",
                         expected_deployment_type: "lambda",
                     });
                 }
+                (
+                    None,
+                    DeploymentType::Http {
+                        address,
+                        http_version,
+                        ..
+                    },
+                ) => (
+                    DeploymentAddress::Http(HttpDeploymentAddress::new(address)),
+                    http_version == http::Version::HTTP_11,
+                ),
+                (
+                    None,
+                    DeploymentType::Lambda {
+                        arn,
+                        assume_role_arn,
+                        ..
+                    },
+                ) => (
+                    DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
+                        arn,
+                        assume_role_arn.map(Into::into),
+                    )),
+                    false,
+                ),
             };
         let additional_headers = additional_headers.unwrap_or(
             existing_deployment

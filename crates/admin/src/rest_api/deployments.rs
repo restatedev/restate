@@ -332,7 +332,11 @@ pub async fn update_deployment<V, IC>(
             }
 
             (
-                schema_registry::UpdateDeploymentAddress::Http { uri, use_http_11 },
+                if uri.is_none() || use_http_11.is_none() {
+                    None
+                } else {
+                    Some(schema_registry::UpdateDeploymentAddress::Http { uri, use_http_11 })
+                },
                 additional_headers,
             )
         }
@@ -353,15 +357,19 @@ pub async fn update_deployment<V, IC>(
             }
 
             (
-                schema_registry::UpdateDeploymentAddress::Lambda {
-                    arn: arn
-                        .map(|a| {
-                            a.parse().map_err(|e: InvalidLambdaARN| {
-                                MetaApiError::InvalidField("arn", e.to_string())
+                if arn.is_none() && assume_role_arn.is_none() {
+                    None
+                } else {
+                    Some(schema_registry::UpdateDeploymentAddress::Lambda {
+                        arn: arn
+                            .map(|a| {
+                                a.parse().map_err(|e: InvalidLambdaARN| {
+                                    MetaApiError::InvalidField("arn", e.to_string())
+                                })
                             })
-                        })
-                        .transpose()?,
-                    assume_role_arn,
+                            .transpose()?,
+                        assume_role_arn,
+                    })
                 },
                 additional_headers,
             )
