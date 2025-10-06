@@ -15,6 +15,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use okapi_operation::*;
 use restate_admin_rest_model::handlers::*;
+use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::HandlerMetadata;
 
 /// List discovered handlers for service
@@ -29,10 +30,13 @@ use restate_types::schema::service::HandlerMetadata;
         schema = "std::string::String"
     ))
 )]
-pub async fn list_service_handlers<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn list_service_handlers<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(service_name): Path<String>,
-) -> Result<Json<ListServiceHandlersResponse>, MetaApiError> {
+) -> Result<Json<ListServiceHandlersResponse>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     match state.schema_registry.list_service_handlers(&service_name) {
         Some(handlers) => Ok(ListServiceHandlersResponse { handlers }.into()),
         None => Err(MetaApiError::ServiceNotFound(service_name)),
@@ -58,10 +62,13 @@ pub async fn list_service_handlers<IC>(
         )
     )
 )]
-pub async fn get_service_handler<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn get_service_handler<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path((service_name, handler_name)): Path<(String, String)>,
-) -> Result<Json<HandlerMetadata>, MetaApiError> {
+) -> Result<Json<HandlerMetadata>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     match state
         .schema_registry
         .get_service_handler(&service_name, &handler_name)

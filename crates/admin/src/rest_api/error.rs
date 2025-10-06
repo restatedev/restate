@@ -8,23 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schema_registry::SchemaRegistryError;
 use assert2::let_assert;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use codederror::{Code, CodedError};
+use codederror::{BoxedCodedError, Code, CodedError};
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::{RefOr, Responses};
 use okapi_operation::{Components, ToMediaTypes, ToResponses, okapi};
 use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;
+use restate_types::schema::registry::SchemaRegistryError;
 use restate_types::schema::updater;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::ops::RangeInclusive;
-
 // --- Few helpers to define Admin API errors.
 
 /// Macro to generate an Admin API Error enum with the given variants.
@@ -293,8 +292,8 @@ pub enum MetaApiError {
     UnsupportedOperation(&'static str, ServiceType),
     #[error(transparent)]
     Schema(#[from] updater::SchemaError),
-    #[error(transparent)]
-    Discovery(#[from] restate_service_protocol::discovery::DiscoveryError),
+    #[error("{0}")]
+    Discovery(#[from] BoxedCodedError),
     #[error("Internal server error: {0}")]
     Internal(String),
     #[error("Conflict: {0}")]
@@ -344,7 +343,7 @@ impl IntoResponse for MetaApiError {
                 restate_code: m.code().map(Code::code),
             },
             MetaApiError::Discovery(err) => ErrorDescriptionResponse {
-                message: err.decorate().to_string(),
+                message: err.to_string(),
                 restate_code: err.code().map(Code::code),
             },
             e => ErrorDescriptionResponse {
@@ -392,8 +391,7 @@ impl From<SchemaRegistryError> for MetaApiError {
         match value {
             SchemaRegistryError::Schema(err) => MetaApiError::Schema(err),
             SchemaRegistryError::Internal(msg) => MetaApiError::Internal(msg),
-            SchemaRegistryError::Shutdown(err) => MetaApiError::Internal(err.to_string()),
-            SchemaRegistryError::Discovery(err) => MetaApiError::Discovery(err),
+            SchemaRegistryError::Discovery(e) => MetaApiError::Discovery(e),
             e @ SchemaRegistryError::UpdateDeployment { .. } => {
                 MetaApiError::Conflict(e.to_string())
             }

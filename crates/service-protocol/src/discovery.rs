@@ -11,7 +11,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::ops::{Deref, RangeInclusive};
+use std::ops::Deref;
 use std::sync::LazyLock;
 
 use bytes::Bytes;
@@ -33,6 +33,7 @@ use restate_types::endpoint_manifest;
 use restate_types::errors::GenericError;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::schema::deployment::{DeploymentType, EndpointLambdaCompression, ProtocolType};
+use restate_types::schema::registry::{DiscoveryClient, DiscoveryRequest, DiscoveryResponse};
 use restate_types::service_discovery::{
     MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION, MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,
     ServiceDiscoveryProtocolVersion,
@@ -91,75 +92,6 @@ fn parse_service_discovery_protocol_version_from_content_type(
         SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V4),
         _ => None,
     }
-}
-
-#[derive(Clone)]
-pub struct DiscoveryRequest(Endpoint, HashMap<HeaderName, HeaderValue>);
-
-impl DiscoveryRequest {
-    pub fn new(
-        address: DeploymentAddress,
-        use_http_11: bool,
-        additional_headers: HashMap<HeaderName, HeaderValue>,
-    ) -> Self {
-        Self(
-            match address {
-                DeploymentAddress::Http(http) => {
-                    let is_using_https = http.uri.scheme().unwrap() == &Scheme::HTTPS;
-                    // Decide which HTTP version we should try
-                    let version = if use_http_11 {
-                        Some(http::Version::HTTP_11)
-                    } else if is_using_https {
-                        // ALPN will sort this out
-                        None
-                    } else {
-                        // By default, we use h2c on HTTP
-                        Some(http::Version::HTTP_2)
-                    };
-
-                    Endpoint::Http(http.uri, version)
-                }
-                DeploymentAddress::Lambda(lambda) => {
-                    Endpoint::Lambda(lambda.arn, lambda.assume_role_arn.map(Into::into), None)
-                }
-            },
-            additional_headers,
-        )
-    }
-
-    pub fn into_inner(self) -> (Endpoint, HashMap<HeaderName, HeaderValue>) {
-        (self.0, self.1)
-    }
-
-    pub fn address(&self) -> &Endpoint {
-        &self.0
-    }
-
-    fn request(&self) -> Request<Empty<Bytes>> {
-        let mut headers = HeaderMap::from_iter([(
-            ACCEPT,
-            SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS
-                .deref()
-                .clone(),
-        )]);
-        headers.extend(self.1.clone());
-        let path = PathAndQuery::from_static(DISCOVER_PATH);
-        Request::new(
-            Parts::new(Method::GET, self.0.clone(), path, headers),
-            Empty::default(),
-        )
-    }
-}
-
-#[derive(Debug)]
-pub struct DiscoveryResponse {
-    pub deployment_type: DeploymentType,
-    pub headers: HashMap<HeaderName, HeaderValue>,
-    pub services: Vec<endpoint_manifest::Service>,
-    // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
-    // and we need to represent unknown later versions
-    pub supported_protocol_versions: RangeInclusive<i32>,
-    pub sdk_version: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -251,16 +183,59 @@ impl ServiceDiscovery {
     }
 }
 
-impl ServiceDiscovery {
-    pub async fn discover(
+impl DiscoveryClient for ServiceDiscovery {
+    type Error = DiscoveryError;
+
+    async fn discover(
         &self,
-        endpoint: DiscoveryRequest,
-    ) -> Result<DiscoveryResponse, DiscoveryError> {
+        DiscoveryRequest {
+            address,
+            use_http_11,
+            additional_headers,
+        }: DiscoveryRequest,
+    ) -> Result<DiscoveryResponse, Self::Error> {
+        let endpoint = match address {
+            DeploymentAddress::Http(http) => {
+                let is_using_https = http.uri.scheme().unwrap() == &Scheme::HTTPS;
+                // Decide which HTTP version we should try
+                let version = if use_http_11 {
+                    Some(http::Version::HTTP_11)
+                } else if is_using_https {
+                    // ALPN will sort this out
+                    None
+                } else {
+                    // By default, we use h2c on HTTP
+                    Some(http::Version::HTTP_2)
+                };
+
+                Endpoint::Http(http.uri, version)
+            }
+            DeploymentAddress::Lambda(lambda) => {
+                Endpoint::Lambda(lambda.arn, lambda.assume_role_arn.map(Into::into), None)
+            }
+        };
+
+        let cloned_endpoint = endpoint.clone();
+        let build_request = || {
+            let mut headers = HeaderMap::from_iter([(
+                ACCEPT,
+                SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS
+                    .deref()
+                    .clone(),
+            )]);
+            headers.extend(additional_headers.clone());
+            let path = PathAndQuery::from_static(DISCOVER_PATH);
+            Request::new(
+                Parts::new(Method::GET, cloned_endpoint.clone(), path, headers),
+                Empty::default(),
+            )
+        };
+
         let retry_policy = self.retry_policy.iter();
         let (mut parts, body) = Self::invoke_discovery_endpoint(
             &self.client,
-            endpoint.address(),
-            || endpoint.request(),
+            endpoint.clone(),
+            build_request,
             retry_policy,
         )
         .await?;
@@ -285,11 +260,9 @@ impl ServiceDiscovery {
             }
         };
 
-        let (address, headers) = endpoint.into_inner();
-
         let discovery_response = Self::create_discovered_metadata_from_endpoint_response(
-            address,
-            headers,
+            endpoint,
+            additional_headers,
             parts.version,
             response,
             x_restate_server,
@@ -298,14 +271,16 @@ impl ServiceDiscovery {
         if discovery_response.supported_protocol_versions.end() < &4i32 {
             warn!(
                 "The registered endpoint is using a service protocol version that will be removed in the future releases. \
-                Please update the SDK to the latest release and re-register the deployment. \
-                For more info, check https://docs.restate.dev/operate/versioning#deploying-new-service-versions",
+                     Please update the SDK to the latest release and re-register the deployment. \
+                     For more info, check https://docs.restate.dev/operate/versioning#deploying-new-service-versions",
             );
         }
 
         Ok(discovery_response)
     }
+}
 
+impl ServiceDiscovery {
     #[allow(clippy::result_large_err)]
     fn retrieve_service_discovery_protocol_version(
         content_type: Option<HeaderValue>,

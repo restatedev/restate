@@ -22,6 +22,7 @@ use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
 use restate_errors::warn_it;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
+use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::schema::updater::ModifyServiceChange;
 use restate_types::state_mut::ExternalStateMutation;
@@ -35,9 +36,12 @@ use tracing::{debug, warn};
     operation_id = "list_services",
     tags = "service"
 )]
-pub async fn list_services<IC>(
-    State(state): State<AdminServiceState<IC>>,
-) -> Result<Json<ListServicesResponse>, MetaApiError> {
+pub async fn list_services<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+) -> Result<Json<ListServicesResponse>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     let services = state.schema_registry.list_services();
 
     Ok(ListServicesResponse { services }.into())
@@ -55,10 +59,13 @@ pub async fn list_services<IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn get_service<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(service_name): Path<String>,
-) -> Result<Json<ServiceMetadata>, MetaApiError> {
+) -> Result<Json<ServiceMetadata>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     state
         .schema_registry
         .get_service(&service_name)
@@ -87,10 +94,13 @@ pub async fn get_service<IC>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn get_service_openapi<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn get_service_openapi<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(service_name): Path<String>,
-) -> Result<Json<serde_json::Value>, MetaApiError> {
+) -> Result<Json<serde_json::Value>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     // TODO return correct vnd type
     // TODO accept content negotiation for yaml
     state
@@ -112,8 +122,8 @@ pub async fn get_service_openapi<IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn modify_service<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn modify_service<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceRequest {
         public,
@@ -123,7 +133,10 @@ pub async fn modify_service<IC>(
         inactivity_timeout,
         abort_timeout,
     }): Json<ModifyServiceRequest>,
-) -> Result<Json<ServiceMetadata>, MetaApiError> {
+) -> Result<Json<ServiceMetadata>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     let mut modify_request = vec![];
     if let Some(new_public_value) = public {
         modify_request.push(ModifyServiceChange::Public(new_public_value));
@@ -183,15 +196,18 @@ pub async fn modify_service<IC>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn modify_service_state<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn modify_service_state<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceStateRequest {
         version,
         object_key,
         new_state,
     }): Json<ModifyServiceStateRequest>,
-) -> Result<StatusCode, MetaApiError> {
+) -> Result<StatusCode, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     if let Some(svc) = state.schema_registry.get_service(&service_name) {
         if !svc.ty.has_state() {
             return Err(MetaApiError::UnsupportedOperation("modify state", svc.ty));

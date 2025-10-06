@@ -20,6 +20,7 @@
 pub mod deployment;
 pub mod invocation_target;
 mod metadata;
+pub mod registry;
 pub mod service;
 pub mod subscriptions;
 

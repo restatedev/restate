@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
-use crate::schema_registry::SchemaRegistry;
+use crate::schema_registry_integration::{MetadataService, TelemetryClient};
 use crate::{rest_api, state};
 use axum::error_handling::HandleErrorLayer;
 use http::{Request, Response, StatusCode};
@@ -24,6 +24,7 @@ use restate_types::config::AdminOptions;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
 use restate_types::net::BindAddress;
+use restate_types::schema::registry::SchemaRegistry;
 use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
@@ -34,24 +35,24 @@ use tracing::{Span, debug, error, info, info_span};
 #[error("could not create the service client: {0}")]
 pub struct BuildError(#[from] restate_service_client::BuildError);
 
-pub struct AdminService<IC> {
+pub struct AdminService<Metadata, Discovery, Telemetry, Invocations> {
     bifrost: Bifrost,
-    schema_registry: SchemaRegistry,
-    invocation_client: IC,
+    schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
+    invocation_client: Invocations,
     #[cfg(feature = "storage-query")]
     query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
     #[cfg(feature = "metadata-api")]
     metadata_writer: MetadataWriter,
 }
 
-impl<IC> AdminService<IC>
+impl<Invocations> AdminService<MetadataService, ServiceDiscovery, TelemetryClient, Invocations>
 where
-    IC: InvocationClient + Send + Sync + Clone + 'static,
+    Invocations: InvocationClient + Send + Sync + Clone + 'static,
 {
     pub fn new(
         metadata_writer: MetadataWriter,
         bifrost: Bifrost,
-        invocation_client: IC,
+        invocation_client: Invocations,
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
     ) -> Self {
@@ -60,9 +61,9 @@ where
             #[cfg(feature = "metadata-api")]
             metadata_writer: metadata_writer.clone(),
             schema_registry: SchemaRegistry::new(
-                metadata_writer,
+                MetadataService(metadata_writer),
                 service_discovery,
-                telemetry_http_client,
+                TelemetryClient(telemetry_http_client),
             ),
             invocation_client,
             #[cfg(feature = "storage-query")]

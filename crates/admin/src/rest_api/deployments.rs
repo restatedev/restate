@@ -12,8 +12,6 @@ use super::error::*;
 use crate::state::AdminServiceState;
 use std::time::SystemTime;
 
-use crate::schema_registry;
-use crate::schema_registry::{ApplyMode, RegisterDeploymentResult};
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
@@ -25,9 +23,14 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
 use restate_types::deployment::{HttpDeploymentAddress, LambdaDeploymentAddress};
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
+use restate_types::schema;
 use restate_types::schema::deployment::{Deployment, DeploymentMetadata, DeploymentType};
+use restate_types::schema::registry::{
+    ApplyMode, DiscoveryClient, MetadataService, TelemetryClient,
+};
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::schema::updater;
+use restate_types::schema::updater::RegisterDeploymentResult;
 use serde::Deserialize;
 
 /// Create deployment and return discovered services.
@@ -56,11 +59,16 @@ use serde::Deserialize;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_deployment<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn create_deployment<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Extension(version): Extension<AdminApiVersion>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
-) -> Result<impl IntoResponse, MetaApiError> {
+) -> Result<impl IntoResponse, MetaApiError>
+where
+    Metadata: MetadataService,
+    Discovery: DiscoveryClient,
+    Telemetry: TelemetryClient,
+{
     // -- Bunch of data structures mapping back and forth
     let (force, breaking, dry_run) = match &payload {
         RegisterDeploymentRequest::Http {
@@ -100,7 +108,7 @@ pub async fn create_deployment<IC>(
         } => {
             validate_uri(&uri)?;
 
-            schema_registry::RegisterDeploymentRequest {
+            schema::registry::RegisterDeploymentRequest {
                 deployment_address: HttpDeploymentAddress::new(uri).into(),
                 additional_headers: additional_headers.unwrap_or_default().into(),
                 metadata,
@@ -116,7 +124,7 @@ pub async fn create_deployment<IC>(
             additional_headers,
             metadata,
             ..
-        } => schema_registry::RegisterDeploymentRequest {
+        } => schema::registry::RegisterDeploymentRequest {
             deployment_address: LambdaDeploymentAddress::new(
                 arn.parse().map_err(|e: InvalidLambdaARN| {
                     MetaApiError::InvalidField("arn", e.to_string())
@@ -181,10 +189,13 @@ pub async fn create_deployment<IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn get_deployment<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(deployment_id): Path<DeploymentId>,
-) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
+) -> Result<Json<DetailedDeploymentResponse>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     let (deployment, services) = state
         .schema_registry
         .get_deployment(deployment_id)
@@ -200,9 +211,12 @@ pub async fn get_deployment<IC>(
     operation_id = "list_deployments",
     tags = "deployment"
 )]
-pub async fn list_deployments<IC>(
-    State(state): State<AdminServiceState<IC>>,
-) -> Json<ListDeploymentsResponse> {
+pub async fn list_deployments<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+) -> Json<ListDeploymentsResponse>
+where
+    Metadata: MetadataService,
+{
     let deployments = state
         .schema_registry
         .list_deployments()
@@ -254,11 +268,14 @@ pub struct DeleteDeploymentParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_deployment<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn delete_deployment<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(deployment_id): Path<DeploymentId>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
-) -> Result<StatusCode, MetaApiError> {
+) -> Result<StatusCode, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     if let Some(true) = force {
         state
             .schema_registry
@@ -286,13 +303,17 @@ pub async fn delete_deployment<IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn update_deployment<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn update_deployment<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Extension(version): Extension<AdminApiVersion>,
     method: Method,
     Path(deployment_id): Path<DeploymentId>,
     #[request_body(required = true)] Json(payload): Json<UpdateDeploymentRequest>,
-) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
+) -> Result<Json<DetailedDeploymentResponse>, MetaApiError>
+where
+    Metadata: MetadataService,
+    Discovery: DiscoveryClient,
+{
     if (version >= AdminApiVersion::V3 || version == AdminApiVersion::Unknown)
         && method == Method::PUT
     {
@@ -343,7 +364,7 @@ pub async fn update_deployment<IC>(
                 if uri.is_none() && use_http_11.is_none() {
                     None
                 } else {
-                    Some(schema_registry::UpdateDeploymentAddress::Http { uri, use_http_11 })
+                    Some(schema::registry::UpdateDeploymentAddress::Http { uri, use_http_11 })
                 },
                 additional_headers,
             )
@@ -368,7 +389,7 @@ pub async fn update_deployment<IC>(
                 if arn.is_none() && assume_role_arn.is_none() {
                     None
                 } else {
-                    Some(schema_registry::UpdateDeploymentAddress::Lambda {
+                    Some(schema::registry::UpdateDeploymentAddress::Lambda {
                         arn: arn
                             .map(|a| {
                                 a.parse().map_err(|e: InvalidLambdaARN| {
@@ -388,7 +409,7 @@ pub async fn update_deployment<IC>(
         .schema_registry
         .update_deployment(
             deployment_id,
-            schema_registry::UpdateDeploymentRequest {
+            schema::registry::UpdateDeploymentRequest {
                 update_deployment_address,
                 additional_headers: additional_headers.map(Into::into),
                 overwrite,

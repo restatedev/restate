@@ -156,6 +156,16 @@ pub trait CodedError: std::error::Error + Sized {
             this: DecoratedErrorInner::Owned(self),
         }
     }
+
+    fn into_boxed(self) -> BoxedCodedError
+    where
+        Self: Send + Sync + 'static,
+    {
+        BoxedCodedError {
+            code: self.code(),
+            inner: Box::new(self),
+        }
+    }
 }
 
 /// This struct implements [`Display`] and [`Debug`] for a [CodedError],
@@ -281,5 +291,57 @@ impl Code {
 impl Display for Code {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.code)
+    }
+}
+
+/// Boxed coded error
+pub struct BoxedCodedError {
+    code: Option<&'static Code>,
+    inner: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl CodedError for BoxedCodedError {
+    fn code(&self) -> Option<&'static Code> {
+        self.code
+    }
+}
+
+impl Display for BoxedCodedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(code) = self.code() {
+            write!(f, "[{}] ", code.code)?;
+        }
+        write!(f, "{}", self.inner)?;
+        if f.alternate()
+            && let Some(description) = self.code().and_then(|c| c.description)
+        {
+            write!(f, "\n\n{description}")?;
+        }
+
+        if let Some(help) = self.code().and_then(|c| c.help) {
+            if f.alternate() {
+                // Add new lines after description
+                write!(f, "\n\n{help}")?;
+            } else {
+                write!(f, ". {help}")?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Debug for BoxedCodedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CodedError")
+            .field("code", &self.code())
+            .field("inner", &format_args!("{}", self.inner))
+            .finish()
+    }
+}
+
+impl std::error::Error for BoxedCodedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.source()
     }
 }
