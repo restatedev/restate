@@ -490,6 +490,13 @@ impl DetailedDeploymentResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum UpdateDeploymentRequest {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "UpdateHttpDeploymentRequest",
+            description = "Update HTTP deployment request"
+        )
+    )]
     Http {
         /// # Uri
         ///
@@ -529,6 +536,13 @@ pub enum UpdateDeploymentRequest {
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "UpdateLambdaDeploymentRequest",
+            description = "Update Lambda deployment request"
+        )
+    )]
     Lambda {
         /// # ARN
         ///
