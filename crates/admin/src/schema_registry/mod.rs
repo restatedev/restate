@@ -13,7 +13,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use anyhow::Context;
-use http::{HeaderMap, HeaderValue, Uri, uri::PathAndQuery};
+use http::{HeaderMap, HeaderName, HeaderValue, Uri, uri::PathAndQuery};
 use tracing::subscriber::NoSubscriber;
 use tracing::trace;
 
@@ -90,6 +90,7 @@ impl<V> SchemaRegistry<V> {
     pub async fn register_deployment(
         &self,
         discover_endpoint: DiscoverEndpoint,
+        routing_header: Option<(HeaderName, HeaderValue)>,
         force: updater::Force,
         apply_mode: updater::ApplyMode,
     ) -> Result<(Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
@@ -128,6 +129,7 @@ impl<V> SchemaRegistry<V> {
             let id = tracing::subscriber::with_default(NoSubscriber::new(), || {
                 updater.add_deployment(
                     deployment_metadata,
+                    routing_header,
                     discovered_metadata.services,
                     force.force_enabled(),
                 )
@@ -153,6 +155,7 @@ impl<V> SchemaRegistry<V> {
 
                     new_deployment_id = Some(updater.add_deployment(
                         deployment_metadata.clone(),
+                        routing_header.clone(),
                         discovered_metadata.services.clone(),
                         force.force_enabled(),
                     )?);

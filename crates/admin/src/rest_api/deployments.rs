@@ -10,6 +10,7 @@
 
 use super::error::*;
 use crate::state::AdminServiceState;
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use axum::Json;
@@ -30,7 +31,7 @@ use serde::Deserialize;
 
 /// Create deployment and return discovered services.
 #[openapi(
-    summary = "Create deployment",
+    summary = " pubCreate deployment",
     description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
     operation_id = "create_deployment",
     tags = "deployment",
@@ -49,10 +50,11 @@ pub async fn create_deployment<V, IC>(
     State(state): State<AdminServiceState<V, IC>>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
-    let (discover_endpoint, force, dry_run) = match payload {
+    let (discover_endpoint, routing_header, force, dry_run) = match payload {
         RegisterDeploymentRequest::Http {
             uri,
             additional_headers,
+            routing_header,
             use_http_11,
             force,
             dry_run,
@@ -69,6 +71,13 @@ pub async fn create_deployment<V, IC>(
 
             let is_using_https = uri.scheme().unwrap() == &Scheme::HTTPS;
 
+            // Add it as part of the additional headers
+            let mut additional_headers: HashMap<_, _> =
+                additional_headers.unwrap_or_default().into();
+            if let Some(routing_header) = &routing_header {
+                additional_headers.insert(routing_header.key.clone(), routing_header.value.clone());
+            }
+
             (
                 DiscoverEndpoint::new(
                     Endpoint::Http(
@@ -83,8 +92,9 @@ pub async fn create_deployment<V, IC>(
                             Some(http::Version::HTTP_2)
                         },
                     ),
-                    additional_headers.unwrap_or_default().into(),
+                    additional_headers,
                 ),
+                routing_header.map(|h| (h.key, h.value)),
                 force,
                 dry_run,
             )
@@ -106,6 +116,7 @@ pub async fn create_deployment<V, IC>(
                 ),
                 additional_headers.unwrap_or_default().into(),
             ),
+            None,
             force,
             dry_run,
         ),
@@ -125,7 +136,7 @@ pub async fn create_deployment<V, IC>(
 
     let (deployment, services) = state
         .schema_registry
-        .register_deployment(discover_endpoint, force, apply_mode)
+        .register_deployment(discover_endpoint, routing_header, force, apply_mode)
         .await
         .inspect_err(|e| warn_it!(e))?;
 

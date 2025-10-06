@@ -27,7 +27,7 @@ use crate::schema::invocation_target::{
 use crate::schema::subscriptions::{
     EventInvocationTargetTemplate, Sink, Source, Subscription, SubscriptionValidator,
 };
-use http::{HeaderValue, Uri};
+use http::{HeaderName, HeaderValue, Uri};
 use serde_json::Value;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -344,7 +344,8 @@ impl SchemaUpdater {
 
     pub fn add_deployment(
         &mut self,
-        deployment_metadata: DeploymentMetadata,
+        mut deployment_metadata: DeploymentMetadata,
+        routing_header: Option<(HeaderName, HeaderValue)>,
         services: Vec<endpoint_manifest::Service>,
         force: bool,
     ) -> Result<DeploymentId, SchemaError> {
@@ -357,6 +358,15 @@ impl SchemaUpdater {
         let mut existing_deployments = self.schema.deployments.iter().filter(|(_, schemas)| {
             schemas.ty.protocol_type() == deployment_metadata.ty.protocol_type()
                 && schemas.ty.normalized_address() == deployment_metadata.ty.normalized_address()
+                && routing_header.as_ref().is_none_or(
+                    |(routing_header_key, routing_header_value)| {
+                        schemas
+                            .delivery_options
+                            .additional_headers
+                            .get(routing_header_key)
+                            .is_some_and(|v| v == routing_header_value)
+                    },
+                )
         });
 
         let mut services_to_remove = Vec::default();
@@ -433,6 +443,12 @@ impl SchemaUpdater {
 
         drop(existing_deployments);
 
+        if let Some((key, value)) = routing_header {
+            deployment_metadata
+                .delivery_options
+                .additional_headers
+                .insert(key, value);
+        }
         self.schema.deployments.insert(
             deployment_id,
             Deployment {
