@@ -63,6 +63,7 @@ pub struct DeploymentMetadata {
     /// Declared SDK during discovery
     pub sdk_version: Option<String>,
     pub created_at: MillisSinceEpoch,
+    /// User provided metadata during registration
     pub metadata: HashMap<String, String>,
 }
 
@@ -243,7 +244,7 @@ pub trait DeploymentResolver {
 
     fn find_deployment(
         &self,
-        deployment_type: &DeploymentAddress,
+        deployment_address: &DeploymentAddress,
     ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
@@ -443,11 +444,11 @@ pub mod test_util {
 
         fn find_deployment(
             &self,
-            deployment_type: &DeploymentAddress,
+            deployment_address: &DeploymentAddress,
         ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
             self.deployments
                 .iter()
-                .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_type))
+                .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_address))
                 .and_then(|(dp_id, _)| self.get_deployment_and_services(dp_id))
         }
 

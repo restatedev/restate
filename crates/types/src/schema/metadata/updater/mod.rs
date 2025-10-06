@@ -199,6 +199,7 @@ pub enum DeploymentError {
 }
 
 /// Behavior when a handler is removed during service update
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RemovedHandlerBehavior {
     /// Fail with an error when a handler is removed
     Fail,
@@ -207,6 +208,7 @@ enum RemovedHandlerBehavior {
 }
 
 /// Behavior when service type changes during update
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ServiceTypeMismatchBehavior {
     /// Fail with an error when service type changes
     Fail,
@@ -314,7 +316,7 @@ impl SchemaUpdater {
         let deployment_id = if let Some((existing_deployment_id, existing_deployment)) =
             existing_deployments.next()
         {
-            if matches!(overwrite, Overwrite::Yes) {
+            if overwrite == Overwrite::Yes {
                 // Even under force we will only accept exactly one existing deployment with this endpoint
                 if let Some((another_existing_deployment_id, _)) = existing_deployments.next() {
                     let mut existing_deployment_ids =
@@ -368,12 +370,12 @@ impl SchemaUpdater {
                     &service_name,
                     &new_service,
                     previous_service_revision,
-                    if matches!(allow_breaking_changes, AllowBreakingChanges::Yes) {
+                    if allow_breaking_changes == AllowBreakingChanges::Yes {
                         RemovedHandlerBehavior::Warn
                     } else {
                         RemovedHandlerBehavior::Fail
                     },
-                    if matches!(allow_breaking_changes, AllowBreakingChanges::Yes) {
+                    if allow_breaking_changes == AllowBreakingChanges::Yes {
                         ServiceTypeMismatchBehavior::Warn
                     } else {
                         ServiceTypeMismatchBehavior::Fail
@@ -428,10 +430,7 @@ impl SchemaUpdater {
     ) -> Result<(), SchemaError> {
         let service_type = ServiceType::from(new_service_manifest.ty);
         if existing_service.ty != service_type {
-            if matches!(
-                service_type_mismatch_behavior,
-                ServiceTypeMismatchBehavior::Fail
-            ) {
+            if service_type_mismatch_behavior == ServiceTypeMismatchBehavior::Fail {
                 return Err(SchemaError::Service(ServiceError::DifferentType(
                     service_name.clone(),
                 )));
@@ -461,7 +460,7 @@ impl SchemaUpdater {
             .collect();
 
         if !removed_handlers.is_empty() {
-            if matches!(removed_handler_behavior, RemovedHandlerBehavior::Fail) {
+            if removed_handler_behavior == RemovedHandlerBehavior::Fail {
                 return Err(SchemaError::Service(ServiceError::RemovedHandlers(
                     service_name.clone(),
                     removed_handlers,
@@ -570,7 +569,7 @@ impl SchemaUpdater {
         let configuration = Configuration::pinned();
         if !configuration.is_pause_behavior_enabled()
             && retry_policy_on_max_attempts
-                .is_some_and(|on_max_attempts| matches!(on_max_attempts, OnMaxAttempts::Pause))
+                .is_some_and(|on_max_attempts| on_max_attempts == OnMaxAttempts::Pause)
         {
             return Err(SchemaError::Service(ServiceError::PauseBehaviorDisabled(
                 service_name.clone(),
@@ -646,7 +645,7 @@ impl SchemaUpdater {
         // At this point there are two ways to go about this:
         // * The user didn't ask for overwriting, and in this case we simply update the type and delivery options as requested
         // * The user asked for the overwriting, just allow everything, and it's their business to not break things
-        if matches!(overwrite, Overwrite::No) {
+        if overwrite == Overwrite::No {
             self.schema.deployments.insert(
                 deployment_id,
                 Deployment {
@@ -1209,9 +1208,8 @@ impl Handler {
 }
 
 fn validate_service_name(name: &str) -> Result<(), ServiceError> {
-    if name.to_lowercase().starts_with("restate")
-        || name.to_lowercase().eq_ignore_ascii_case("openapi")
-    {
+    let lower_name = name.to_lowercase();
+    if lower_name.starts_with("restate") || lower_name.eq_ignore_ascii_case("openapi") {
         Err(ServiceError::ReservedName(name.to_string()))
     } else {
         Ok(())

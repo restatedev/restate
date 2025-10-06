@@ -139,6 +139,7 @@ struct Deployment {
     sdk_version: Option<String>,
     created_at: MillisSinceEpoch,
 
+    /// User provided metadata during registration
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     metadata: HashMap<String, String>,
 
@@ -519,12 +520,20 @@ impl DeploymentResolver for Schema {
 
     fn find_deployment(
         &self,
-        deployment_type: &DeploymentAddress,
+        deployment_address: &DeploymentAddress,
     ) -> Option<(deployment::Deployment, Vec<service::ServiceMetadata>)> {
         self.deployments
             .iter()
-            .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_type))
-            .and_then(|(dp_id, _)| self.get_deployment_and_services(dp_id))
+            .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_address))
+            .map(|(dp_id, dp)| {
+                (
+                    dp.to_deployment(),
+                    dp.services
+                        .values()
+                        .map(|s| s.to_service_metadata(*dp_id))
+                        .collect(),
+                )
+            })
     }
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<deployment::Deployment> {

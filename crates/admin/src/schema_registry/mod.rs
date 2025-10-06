@@ -155,7 +155,7 @@ impl<V> SchemaRegistry<V> {
     ) -> Result<(RegisterDeploymentResult, Deployment, Vec<ServiceMetadata>), SchemaRegistryError>
     {
         // Verify first if we have the service. If we do, no need to do anything here.
-        if matches!(overwrite, updater::Overwrite::No) {
+        if overwrite == updater::Overwrite::No {
             // Verify if we have a service for this endpoint already or not
             if let Some((deployment, services)) =
                 Metadata::with_current(|m| m.schema_ref()).find_deployment(&deployment_address)
@@ -343,25 +343,22 @@ impl<V> SchemaRegistry<V> {
                     false,
                 ),
                 (
-                    Some(UpdateDeploymentAddress::Http { uri, use_http_11 }),
+                    Some(UpdateDeploymentAddress::Http {
+                        uri: None,
+                        use_http_11,
+                    }),
                     DeploymentType::Http {
                         address,
                         http_version,
                         ..
                     },
                 ) => (
-                    DeploymentAddress::Http(HttpDeploymentAddress::new(uri.unwrap_or(address))),
+                    DeploymentAddress::Http(HttpDeploymentAddress::new(address)),
                     use_http_11.unwrap_or(http_version == http::Version::HTTP_11),
                 ),
-                (Some(UpdateDeploymentAddress::Http { .. }), DeploymentType::Lambda { .. }) => {
-                    return Err(SchemaRegistryError::UpdateDeployment {
-                        actual_deployment_type: "lambda",
-                        expected_deployment_type: "http",
-                    });
-                }
                 (
                     Some(UpdateDeploymentAddress::Lambda {
-                        arn: update_arn,
+                        arn: None,
                         assume_role_arn: update_assume_role_arn,
                     }),
                     DeploymentType::Lambda {
@@ -371,7 +368,7 @@ impl<V> SchemaRegistry<V> {
                     },
                 ) => (
                     DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
-                        update_arn.unwrap_or(arn),
+                        arn,
                         update_assume_role_arn.or(assume_role_arn.map(Into::into)),
                     )),
                     false,
@@ -380,6 +377,12 @@ impl<V> SchemaRegistry<V> {
                     return Err(SchemaRegistryError::UpdateDeployment {
                         actual_deployment_type: "http",
                         expected_deployment_type: "lambda",
+                    });
+                }
+                (Some(UpdateDeploymentAddress::Http { .. }), DeploymentType::Lambda { .. }) => {
+                    return Err(SchemaRegistryError::UpdateDeployment {
+                        actual_deployment_type: "lambda",
+                        expected_deployment_type: "http",
                     });
                 }
                 (
