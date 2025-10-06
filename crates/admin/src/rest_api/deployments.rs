@@ -33,7 +33,11 @@ use serde::Deserialize;
 /// Create deployment and return discovered services.
 #[openapi(
     summary = "Create deployment",
-    description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
+    description = "Create and register a new deployment. \
+    Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment. \
+    If the deployment is already registered, this method will return 200 and no changes will be made. \
+    If the deployment updates some already existing services, schema breaking changes checks will run. If you want to bypass them, use `breaking: true`. \
+    To overwrite an already existing deployment, use `force: true`",
     operation_id = "create_deployment",
     tags = "deployment",
     external_docs(url = "https://docs.restate.dev/operate/registration"),
@@ -270,7 +274,9 @@ pub async fn delete_deployment<V, IC>(
 /// Update a deployment
 #[openapi(
     summary = "Update deployment",
-    description = "Update deployment. Invokes the endpoint and replaces the existing deployment metadata with the discovered information. This is a dangerous operation that should be used only when there are failing invocations on the deployment that cannot be resolved any other way. Sense checks are applied to test that the new deployment is sufficiently similar to the old one.",
+    description = "Update an already existing deployment. \
+    This lets you update the address and options when invoking the deployment, such as the additional headers for HTTP or the assume role for Lambda. \
+    The registered services and handlers won't be overwritten, unless `overwrite: true`.",
     operation_id = "update_deployment",
     tags = "deployment",
     external_docs(url = "https://docs.restate.dev/operate/versioning"),
