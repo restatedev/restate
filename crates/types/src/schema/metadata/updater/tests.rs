@@ -822,39 +822,7 @@ fn update_latest_deployment() {
     assert!(let &SchemaError::NotFound(_) = updater.update_deployment(
             DeploymentId::new(),
             deployment_1.metadata.clone(),
-            vec![],
-        ).unwrap_err());
-
-    assert!(let &SchemaError::Deployment(
-            DeploymentError::RemovedServices(_)
-        ) = updater.update_deployment(
-            deployment_1.id,
-            deployment_1.metadata.clone(),
-            vec![],
-        ).unwrap_err());
-
-    {
-        let mut greeter_virtual_object = greeter_virtual_object();
-        greeter_virtual_object.ty = endpoint_manifest::ServiceType::Service;
-
-        assert!(let &SchemaError::Service(
-                ServiceError::DifferentType(_)
-            ) = updater.update_deployment(
-                deployment_1.id,
-                deployment_1.metadata.clone(),
-                vec![greeter_virtual_object],
-            ).unwrap_err());
-    }
-
-    assert!(let &SchemaError::Service(
-            ServiceError::RemovedHandlers(_, _)
-        ) = updater.update_deployment(
-            deployment_1.id,
-            deployment_1.metadata.clone(),
-            vec![endpoint_manifest::Service {
-                handlers: Default::default(),
-                ..greeter_virtual_object()
-            }],
+            vec![],Overwrite::Yes
         ).unwrap_err());
 
     deployment_1
@@ -871,6 +839,7 @@ fn update_latest_deployment() {
             deployment_1.id,
             deployment_1.metadata.clone(),
             vec![greeter_virtual_object()],
+            Overwrite::No,
         )
         .unwrap();
 
@@ -931,6 +900,7 @@ fn update_draining_deployment() {
             deployment_1.id,
             deployment_1.metadata.clone(),
             vec![greeter_service()],
+            Overwrite::Yes,
         )
         .unwrap();
 
@@ -987,6 +957,7 @@ fn update_deployment_same_uri() {
             deployment_1.id,
             deployment_1.metadata.clone(),
             vec![greeter_service()],
+            Overwrite::No,
         )
     })
     .unwrap();
@@ -1088,6 +1059,7 @@ fn update_latest_deployment_add_handler() {
             deployment_1.id,
             deployment_1.metadata.clone(),
             vec![updated_greeter_service],
+            Overwrite::Yes,
         )
         .unwrap();
 
@@ -1170,6 +1142,7 @@ fn update_draining_deployment_add_handler() {
             deployment_1.id,
             deployment_1.metadata.clone(),
             vec![updated_greeter_service],
+            Overwrite::Yes,
         )
         .unwrap();
 
@@ -1232,6 +1205,7 @@ fn update_latest_deployment_add_service() {
             deployment_1.id,
             deployment_1.metadata.clone(),
             vec![greeter_service(), another_greeter_service()],
+            Overwrite::Yes,
         )
         .unwrap();
 
@@ -1281,6 +1255,7 @@ fn update_draining_deployment_add_service() {
             deployment_1.id,
             deployment_1.metadata.clone(),
             vec![greeter_service(), another_greeter_service()],
+            Overwrite::Yes,
         )
         .unwrap();
 
@@ -1343,6 +1318,7 @@ fn update_deployment_with_private_service() -> Result<(), SchemaError> {
         deployment.id,
         deployment.metadata.clone(),
         vec![greeter_service()],
+        Overwrite::No,
     )?;
 
     let schemas = updater.into_inner();

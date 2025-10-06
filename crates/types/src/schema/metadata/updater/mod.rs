@@ -217,6 +217,7 @@ enum ServiceTypeMismatchBehavior {
 /// Behavior for service level settings during update
 enum ServiceLevelSettingsBehavior {
     /// Preserve existing service level settings
+    #[allow(dead_code)]
     Preserve,
     /// Reset to defaults
     UseDefaults,
@@ -412,129 +413,6 @@ impl SchemaUpdater {
         self.mark_updated();
 
         Ok((register_deployment_result, deployment_id))
-    }
-
-    pub fn update_deployment(
-        &mut self,
-        deployment_id: DeploymentId,
-        deployment_metadata: DeploymentMetadata,
-        services: Vec<endpoint_manifest::Service>,
-    ) -> Result<(), SchemaError> {
-        let proposed_services: HashMap<_, _> = services
-            .into_iter()
-            .map(|svc| {
-                let service_name = svc.name.to_string();
-                validate_service_name(&service_name)?;
-                Ok::<_, ServiceError>((service_name, svc))
-            })
-            .collect::<Result<HashMap<_, _>, _>>()?;
-
-        // Look for an existing deployment with this ID
-        let Some(existing_deployment) = self.schema.deployments.get(&deployment_id) else {
-            return Err(SchemaError::NotFound(format!(
-                "deployment with id '{deployment_id}'"
-            )));
-        };
-
-        // Check protocol versions are equals
-        if existing_deployment.supported_protocol_versions
-            != deployment_metadata.supported_protocol_versions
-        {
-            return Err(SchemaError::Deployment(
-                DeploymentError::DifferentSupportedProtocolVersions(
-                    existing_deployment.supported_protocol_versions.clone(),
-                    deployment_metadata.supported_protocol_versions.clone(),
-                ),
-            ));
-        };
-
-        // Check we don't remove services
-        let mut services_to_remove = Vec::default();
-        for service in existing_deployment.services.values() {
-            if !proposed_services.contains_key(&service.name) {
-                services_to_remove.push(service.name.clone());
-            }
-        }
-        if !services_to_remove.is_empty() {
-            // we don't allow removing services as part of update deployment
-            return Err(SchemaError::Deployment(DeploymentError::RemovedServices(
-                services_to_remove,
-            )));
-        }
-
-        // Compute service schemas
-        let mut computed_services = HashMap::with_capacity(proposed_services.len());
-        for (service_name, new_service) in proposed_services {
-            let previous_service_revision = existing_deployment
-                .services
-                .get(&service_name)
-                .map(|arc| arc.deref());
-
-            // Validate changes with previous revision, if any
-            if let Some(previous_service_revision) = previous_service_revision {
-                self.validate_existing_service_revision_constraints(
-                    deployment_id,
-                    &deployment_metadata.ty,
-                    &service_name,
-                    &new_service,
-                    previous_service_revision,
-                    RemovedHandlerBehavior::Fail,
-                    ServiceTypeMismatchBehavior::Fail,
-                )?;
-            }
-
-            let service_revision = self.create_service_revision(
-                &service_name,
-                new_service,
-                previous_service_revision
-                    .map(|old_svc| old_svc.revision)
-                    .unwrap_or(1),
-                previous_service_revision,
-                ServiceLevelSettingsBehavior::Preserve,
-            )?;
-
-            match self.schema.active_service_revisions.get(&service_name) {
-                Some(ActiveServiceRevision {
-                    deployment_id: latest_deployment,
-                    ..
-                }) if latest_deployment == &deployment_id => {
-                    info!(
-                        rpc.service = %service_name,
-                        "Overwriting existing service schemas for latest service"
-                    );
-                    // We let SchemaUpdater::into_inner do the index update
-                }
-                Some(_) => {
-                    debug!(
-                        rpc.service = %service_name,
-                        "Keeping existing service schema as this update operation affected a draining deployment"
-                    );
-                }
-                None => {
-                    // We let SchemaUpdater::into_inner do the index update
-                }
-            }
-
-            computed_services.insert(service_name, Arc::new(service_revision));
-        }
-
-        self.schema.deployments.insert(
-            deployment_id,
-            Deployment {
-                id: deployment_id,
-                ty: deployment_metadata.ty,
-                delivery_options: deployment_metadata.delivery_options,
-                supported_protocol_versions: deployment_metadata.supported_protocol_versions,
-                sdk_version: deployment_metadata.sdk_version,
-                created_at: deployment_metadata.created_at,
-                metadata: existing_deployment.metadata.clone(),
-                services: computed_services,
-            },
-        );
-
-        self.mark_updated();
-
-        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -737,6 +615,160 @@ impl SchemaUpdater {
             retry_policy_on_max_attempts,
             service_openapi_cache: Default::default(),
         })
+    }
+
+    pub fn update_deployment(
+        &mut self,
+        deployment_id: DeploymentId,
+        new_deployment_metadata: DeploymentMetadata,
+        services: Vec<endpoint_manifest::Service>,
+        overwrite: Overwrite,
+    ) -> Result<(), SchemaError> {
+        // Look for an existing deployment with this ID
+        let Some(existing_deployment) = self.schema.deployments.get(&deployment_id) else {
+            return Err(SchemaError::NotFound(format!(
+                "deployment with id '{deployment_id}'"
+            )));
+        };
+
+        // Check protocol versions are equals
+        if existing_deployment.supported_protocol_versions
+            != new_deployment_metadata.supported_protocol_versions
+        {
+            return Err(SchemaError::Deployment(
+                DeploymentError::DifferentSupportedProtocolVersions(
+                    existing_deployment.supported_protocol_versions.clone(),
+                    new_deployment_metadata.supported_protocol_versions.clone(),
+                ),
+            ));
+        };
+
+        // At this point there are two ways to go about this:
+        // * The user didn't ask for overwriting, and in this case we simply update the type and delivery options as requested
+        // * The user asked for the overwriting, just allow everything, and it's their business to not break things
+        if matches!(overwrite, Overwrite::No) {
+            self.schema.deployments.insert(
+                deployment_id,
+                Deployment {
+                    // We update only these 3 fields
+                    ty: new_deployment_metadata.ty,
+                    delivery_options: new_deployment_metadata.delivery_options,
+                    sdk_version: new_deployment_metadata.sdk_version,
+
+                    // We keep these the same
+                    id: deployment_id,
+                    supported_protocol_versions: existing_deployment
+                        .supported_protocol_versions
+                        .clone(),
+                    created_at: existing_deployment.created_at,
+                    metadata: existing_deployment.metadata.clone(),
+                    services: existing_deployment.services.clone(),
+                },
+            );
+
+            self.mark_updated();
+
+            Ok(())
+        } else {
+            let proposed_services: HashMap<_, _> = services
+                .into_iter()
+                .map(|svc| {
+                    let service_name = svc.name.to_string();
+                    validate_service_name(&service_name)?;
+                    Ok::<_, ServiceError>((service_name, svc))
+                })
+                .collect::<Result<HashMap<_, _>, _>>()?;
+
+            for service in existing_deployment.services.values() {
+                // If a service is not available anymore in the new deployment, we need to remove it
+                if !proposed_services.contains_key(&service.name) {
+                    warn!(
+                        restate.deployment.id = %deployment_id,
+                        restate.deployment.address = %existing_deployment.ty.address_display(),
+                        "Going to remove service {} due to a forced deployment update",
+                        service.name
+                    );
+                }
+            }
+
+            // Compute service schemas
+            let mut computed_services = HashMap::with_capacity(proposed_services.len());
+            for (service_name, new_service) in proposed_services {
+                let previous_service_revision = existing_deployment
+                    .services
+                    .get(&service_name)
+                    .map(|arc| arc.deref());
+
+                // Validate changes with previous revision, if any
+                if let Some(previous_service_revision) = previous_service_revision {
+                    self.validate_existing_service_revision_constraints(
+                        deployment_id,
+                        &new_deployment_metadata.ty,
+                        &service_name,
+                        &new_service,
+                        previous_service_revision,
+                        RemovedHandlerBehavior::Warn,
+                        ServiceTypeMismatchBehavior::Warn,
+                    )?;
+                }
+
+                let service_revision = self.create_service_revision(
+                    &service_name,
+                    new_service,
+                    previous_service_revision
+                        .map(|old_svc| old_svc.revision)
+                        .unwrap_or(1),
+                    previous_service_revision,
+                    ServiceLevelSettingsBehavior::UseDefaults,
+                )?;
+
+                match self.schema.active_service_revisions.get(&service_name) {
+                    Some(ActiveServiceRevision {
+                        deployment_id: latest_deployment,
+                        ..
+                    }) if latest_deployment == &deployment_id => {
+                        info!(
+                            rpc.service = %service_name,
+                            "Overwriting existing service schemas for latest service"
+                        );
+                        // We let SchemaUpdater::into_inner do the index update
+                    }
+                    Some(_) => {
+                        debug!(
+                            rpc.service = %service_name,
+                            "Keeping existing service schema as this update operation affected a draining deployment"
+                        );
+                    }
+                    None => {
+                        // We let SchemaUpdater::into_inner do the index update
+                    }
+                }
+
+                computed_services.insert(service_name, Arc::new(service_revision));
+            }
+
+            self.schema.deployments.insert(
+                deployment_id,
+                Deployment {
+                    // We update all these fields
+                    ty: new_deployment_metadata.ty,
+                    delivery_options: new_deployment_metadata.delivery_options,
+                    supported_protocol_versions: new_deployment_metadata
+                        .supported_protocol_versions,
+                    sdk_version: new_deployment_metadata.sdk_version,
+                    services: computed_services,
+
+                    // We keep only these same as before
+                    id: deployment_id,
+                    created_at: existing_deployment.created_at,
+                    metadata: existing_deployment.metadata.clone(),
+                },
+            );
+
+            self.mark_updated();
+
+            Ok(())
+        }
     }
 
     /// Returns true if it was removed

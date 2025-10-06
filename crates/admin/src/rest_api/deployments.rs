@@ -12,11 +12,13 @@ use super::error::*;
 use crate::state::AdminServiceState;
 use std::time::SystemTime;
 
+use crate::schema_registry;
 use crate::schema_registry::{ApplyMode, RegisterDeploymentResult};
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
+use http::Uri;
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::version::AdminApiVersion;
@@ -55,62 +57,21 @@ pub async fn create_deployment<V, IC>(
     Extension(version): Extension<AdminApiVersion>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
-    let (deployment_address, additional_headers, metadata, use_http_11, breaking, force, dry_run) =
-        match payload {
-            RegisterDeploymentRequest::Http {
-                uri,
-                additional_headers,
-                metadata,
-                use_http_11,
-                breaking,
-                force,
-                dry_run,
-            } => {
-                // Verify URI is absolute!
-                if uri.scheme().is_none() || uri.authority().is_none() {
-                    return Err(MetaApiError::InvalidField(
-                        "uri",
-                        format!(
-                            "The provided uri {uri} is not absolute, only absolute URIs can be used."
-                        ),
-                    ));
-                }
-
-                (
-                    HttpDeploymentAddress::new(uri).into(),
-                    additional_headers.unwrap_or_default().into(),
-                    metadata,
-                    use_http_11,
-                    breaking,
-                    force,
-                    dry_run,
-                )
-            }
-            RegisterDeploymentRequest::Lambda {
-                arn,
-                assume_role_arn,
-                additional_headers,
-                metadata,
-                force,
-                breaking,
-                dry_run,
-            } => (
-                LambdaDeploymentAddress::new(
-                    arn.parse().map_err(|e: InvalidLambdaARN| {
-                        MetaApiError::InvalidField("arn", e.to_string())
-                    })?,
-                    assume_role_arn,
-                )
-                .into(),
-                additional_headers.unwrap_or_default().into(),
-                metadata,
-                false,
-                breaking,
-                force,
-                dry_run,
-            ),
-        };
-
+    // -- Bunch of data structures mapping back and forth
+    let (force, breaking, dry_run) = match &payload {
+        RegisterDeploymentRequest::Http {
+            breaking,
+            dry_run,
+            force,
+            ..
+        } => (*force, *breaking, *dry_run),
+        RegisterDeploymentRequest::Lambda {
+            breaking,
+            dry_run,
+            force,
+            ..
+        } => (*force, *breaking, *dry_run),
+    };
     let (allow_breaking, overwrite) =
         // Force defaults to true only in admin api version 1 or 2
         if force.unwrap_or(version == AdminApiVersion::V1 || version == AdminApiVersion::V2) {
@@ -125,21 +86,57 @@ pub async fn create_deployment<V, IC>(
     } else {
         ApplyMode::Apply
     };
-
-    let (result, deployment, services) = state
-        .schema_registry
-        .register_deployment(
-            deployment_address,
+    let request = match payload {
+        RegisterDeploymentRequest::Http {
+            uri,
             additional_headers,
             metadata,
             use_http_11,
+            ..
+        } => {
+            validate_uri(&uri)?;
+
+            schema_registry::RegisterDeploymentRequest {
+                deployment_address: HttpDeploymentAddress::new(uri).into(),
+                additional_headers: additional_headers.unwrap_or_default().into(),
+                metadata,
+                use_http_11,
+                allow_breaking,
+                overwrite,
+                apply_mode,
+            }
+        }
+        RegisterDeploymentRequest::Lambda {
+            arn,
+            assume_role_arn,
+            additional_headers,
+            metadata,
+            ..
+        } => schema_registry::RegisterDeploymentRequest {
+            deployment_address: LambdaDeploymentAddress::new(
+                arn.parse().map_err(|e: InvalidLambdaARN| {
+                    MetaApiError::InvalidField("arn", e.to_string())
+                })?,
+                assume_role_arn,
+            )
+            .into(),
+            additional_headers: additional_headers.unwrap_or_default().into(),
+            metadata,
+            use_http_11: false,
             allow_breaking,
             overwrite,
             apply_mode,
-        )
+        },
+    };
+
+    // -- Perform the registration with the schema registry
+    let (result, deployment, services) = state
+        .schema_registry
+        .register_deployment(request)
         .await
         .inspect_err(|e| warn_it!(e))?;
 
+    // -- Map response
     let status_code = match result {
         RegisterDeploymentResult::Created => StatusCode::CREATED,
         RegisterDeploymentResult::Unchanged => {
@@ -288,63 +285,93 @@ pub async fn update_deployment<V, IC>(
     Path(deployment_id): Path<DeploymentId>,
     #[request_body(required = true)] Json(payload): Json<UpdateDeploymentRequest>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
-    let (deployment_address, additional_headers, use_http_11, dry_run) = match payload {
+    // -- Bunch of data structures mapping back and forth
+    let (overwrite, dry_run) = match &payload {
+        UpdateDeploymentRequest::Http {
+            overwrite, dry_run, ..
+        } => (*overwrite, *dry_run),
+        UpdateDeploymentRequest::Lambda {
+            overwrite, dry_run, ..
+        } => (*overwrite, *dry_run),
+    };
+    let overwrite = if overwrite {
+        updater::Overwrite::Yes
+    } else {
+        updater::Overwrite::No
+    };
+    let apply_mode = if dry_run {
+        ApplyMode::DryRun
+    } else {
+        ApplyMode::Apply
+    };
+    let (update_deployment_address, additional_headers) = match payload {
         UpdateDeploymentRequest::Http {
             uri,
             additional_headers,
             use_http_11,
-            dry_run,
+            ..
         } => {
-            // Verify URI is absolute!
-            if uri.scheme().is_none() || uri.authority().is_none() {
-                return Err(MetaApiError::InvalidField(
-                    "uri",
-                    format!(
-                        "The provided uri {uri} is not absolute, only absolute URIs can be used."
-                    ),
-                ));
+            if uri.is_none() && additional_headers.is_none() && use_http_11.is_none() {
+                // No changes to do, just return 200
+                let (deployment, services) = state
+                    .schema_registry
+                    .get_deployment(deployment_id)
+                    .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
+
+                return Ok(to_detailed_deployment_response(deployment, services).into());
+            }
+
+            if let Some(uri) = &uri {
+                validate_uri(uri)?;
             }
 
             (
-                HttpDeploymentAddress::new(uri).into(),
-                additional_headers.unwrap_or_default().into(),
-                use_http_11,
-                dry_run,
+                schema_registry::UpdateDeploymentAddress::Http { uri, use_http_11 },
+                additional_headers,
             )
         }
         UpdateDeploymentRequest::Lambda {
             arn,
             assume_role_arn,
             additional_headers,
-            dry_run,
-        } => (
-            LambdaDeploymentAddress::new(
-                arn.parse().map_err(|e: InvalidLambdaARN| {
-                    MetaApiError::InvalidField("arn", e.to_string())
-                })?,
-                assume_role_arn,
-            )
-            .into(),
-            additional_headers.unwrap_or_default().into(),
-            false,
-            dry_run,
-        ),
-    };
+            ..
+        } => {
+            if arn.is_none() && additional_headers.is_none() && assume_role_arn.is_none() {
+                // No changes to do, just return 200
+                let (deployment, services) = state
+                    .schema_registry
+                    .get_deployment(deployment_id)
+                    .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
-    let apply_mode = if dry_run {
-        ApplyMode::DryRun
-    } else {
-        ApplyMode::Apply
+                return Ok(to_detailed_deployment_response(deployment, services).into());
+            }
+
+            (
+                schema_registry::UpdateDeploymentAddress::Lambda {
+                    arn: arn
+                        .map(|a| {
+                            a.parse().map_err(|e: InvalidLambdaARN| {
+                                MetaApiError::InvalidField("arn", e.to_string())
+                            })
+                        })
+                        .transpose()?,
+                    assume_role_arn,
+                },
+                additional_headers,
+            )
+        }
     };
 
     let (deployment, services) = state
         .schema_registry
         .update_deployment(
             deployment_id,
-            deployment_address,
-            additional_headers,
-            use_http_11,
-            apply_mode,
+            schema_registry::UpdateDeploymentRequest {
+                update_deployment_address,
+                additional_headers: additional_headers.map(Into::into),
+                overwrite,
+                apply_mode,
+            },
         )
         .await
         .inspect_err(|e| warn_it!(e))?;
@@ -485,4 +512,16 @@ fn to_detailed_deployment_response(
             services,
         },
     }
+}
+
+#[inline]
+#[allow(clippy::result_large_err)]
+fn validate_uri(uri: &Uri) -> Result<(), MetaApiError> {
+    if uri.scheme().is_none() || uri.authority().is_none() {
+        return Err(MetaApiError::InvalidField(
+            "uri",
+            format!("The provided uri {uri} is not absolute, only absolute URIs can be used."),
+        ));
+    }
+    Ok(())
 }

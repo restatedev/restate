@@ -391,6 +391,9 @@ impl From<SchemaRegistryError> for MetaApiError {
             SchemaRegistryError::Internal(msg) => MetaApiError::Internal(msg),
             SchemaRegistryError::Shutdown(err) => MetaApiError::Internal(err.to_string()),
             SchemaRegistryError::Discovery(err) => MetaApiError::Discovery(err),
+            e @ SchemaRegistryError::UpdateDeployment { .. } => {
+                MetaApiError::Conflict(e.to_string())
+            }
         }
     }
 }

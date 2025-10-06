@@ -486,8 +486,6 @@ impl DetailedDeploymentResponse {
     }
 }
 
-// RegisterDeploymentRequest except without `force`
-#[serde_as]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -496,14 +494,18 @@ pub enum UpdateDeploymentRequest {
         /// # Uri
         ///
         /// Uri to use to discover/invoke the http deployment.
-        #[serde_as(as = "serde_with::DisplayFromStr")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
-        uri: Uri,
+        #[serde(
+            with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+        uri: Option<Uri>,
 
         /// # Additional headers
         ///
         /// Additional headers added to the discover/invoke requests to the deployment.
-        ///
+        /// When provided, this will overwrite all the headers previously configured for this deployment.
+        #[serde(skip_serializing_if = "Option::is_none")]
         additional_headers: Option<SerdeableHeaderHashMap>,
 
         /// # Use http1.1
@@ -512,9 +514,13 @@ pub enum UpdateDeploymentRequest {
         /// instead of a prior-knowledge HTTP2 client. HTTP2 may still be used for TLS servers
         /// that advertise HTTP2 support via ALPN. HTTP1.1 deployments will only work in
         /// request-response mode.
+        use_http_11: Option<bool>,
+
+        /// # Overwrite
         ///
+        /// If `true`, the update will overwrite the schema information, including the exposed service and handlers and service configuration, allowing **breaking changes** too. Use with caution.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
-        use_http_11: bool,
+        overwrite: bool,
 
         /// # Dry-run mode
         ///
@@ -527,18 +533,27 @@ pub enum UpdateDeploymentRequest {
         /// # ARN
         ///
         /// ARN to use to discover/invoke the lambda deployment.
-        arn: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arn: Option<String>,
 
         /// # Assume role ARN
         ///
-        /// Optional ARN of a role to assume when invoking the addressed Lambda, to support role chaining
+        /// Optional ARN of a role to assume when invoking the addressed Lambda, to support role chaining.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         assume_role_arn: Option<String>,
 
         /// # Additional headers
         ///
         /// Additional headers added to the discover/invoke requests to the deployment.
-        ///
+        /// When provided, this will overwrite all the headers previously configured for this deployment.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         additional_headers: Option<SerdeableHeaderHashMap>,
+
+        /// # Overwrite
+        ///
+        /// If `true`, the update will overwrite the schema information, including the exposed service and handlers and service configuration, allowing **breaking changes** too. Use with caution.
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        overwrite: bool,
 
         /// # Dry-run mode
         ///

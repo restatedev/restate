@@ -13,7 +13,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use anyhow::Context;
-use http::{HeaderMap, HeaderName, HeaderValue, Uri, uri::PathAndQuery};
+use http::{HeaderMap, HeaderValue, Uri, uri::PathAndQuery};
 use tracing::subscriber::NoSubscriber;
 use tracing::trace;
 
@@ -22,10 +22,12 @@ use restate_metadata_store::ReadModifyWriteError;
 use restate_service_client::HttpClient;
 use restate_service_protocol::discovery::{DiscoveryRequest, ServiceDiscovery};
 use restate_types::deployment;
-use restate_types::deployment::{DeploymentAddress, Headers};
-use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
+use restate_types::deployment::{
+    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+};
+use restate_types::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use restate_types::schema::deployment::{
-    DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
+    DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver, DeploymentType,
 };
 use restate_types::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use restate_types::schema::subscriptions::{
@@ -42,6 +44,14 @@ pub enum SchemaRegistryError {
         #[code]
         updater::SchemaError,
     ),
+    #[error(
+        "cannot update the deployment, as the deployment type is {actual_deployment_type} while the update options are for type {expected_deployment_type}"
+    )]
+    #[code(unknown)]
+    UpdateDeployment {
+        actual_deployment_type: &'static str,
+        expected_deployment_type: &'static str,
+    },
     #[error(transparent)]
     Discovery(
         #[from]
@@ -79,8 +89,35 @@ impl ApplyMode {
     }
 }
 
-/// Responsible for updating the registered schema information. This includes the discovery of
-/// new deployments.
+pub(crate) struct RegisterDeploymentRequest {
+    pub(crate) deployment_address: DeploymentAddress,
+    pub(crate) additional_headers: Headers,
+    pub(crate) metadata: deployment::Metadata,
+    pub(crate) use_http_11: bool,
+    pub(crate) allow_breaking: updater::AllowBreakingChanges,
+    pub(crate) overwrite: updater::Overwrite,
+    pub(crate) apply_mode: ApplyMode,
+}
+
+pub(crate) struct UpdateDeploymentRequest {
+    pub(crate) update_deployment_address: UpdateDeploymentAddress,
+    pub(crate) additional_headers: Option<Headers>,
+    pub(crate) overwrite: updater::Overwrite,
+    pub(crate) apply_mode: ApplyMode,
+}
+
+pub(crate) enum UpdateDeploymentAddress {
+    Lambda {
+        arn: Option<LambdaARN>,
+        assume_role_arn: Option<String>,
+    },
+    Http {
+        uri: Option<Uri>,
+        use_http_11: Option<bool>,
+    },
+}
+
+/// This is the business logic driving the Admin API schema related endpoints.
 #[derive(Clone)]
 pub struct SchemaRegistry<V> {
     metadata_writer: MetadataWriter,
@@ -104,16 +141,17 @@ impl<V> SchemaRegistry<V> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn register_deployment(
         &self,
-        deployment_address: DeploymentAddress,
-        additional_headers: Headers,
-        metadata: deployment::Metadata,
-        use_http_11: bool,
-        allow_breaking: updater::AllowBreakingChanges,
-        overwrite: updater::Overwrite,
-        apply_mode: ApplyMode,
+        RegisterDeploymentRequest {
+            deployment_address,
+            additional_headers,
+            metadata,
+            use_http_11,
+            allow_breaking,
+            overwrite,
+            apply_mode,
+        }: RegisterDeploymentRequest,
     ) -> Result<(RegisterDeploymentResult, Deployment, Vec<ServiceMetadata>), SchemaRegistryError>
     {
         // Verify first if we have the service. If we do, no need to do anything here.
@@ -268,12 +306,90 @@ impl<V> SchemaRegistry<V> {
     pub async fn update_deployment(
         &self,
         deployment_id: DeploymentId,
-        // TODO to reorganize this, need to allow more than that!
-        deployment_address: DeploymentAddress,
-        additional_headers: HashMap<HeaderName, HeaderValue>,
-        use_http_11: bool,
-        apply_mode: ApplyMode,
+        UpdateDeploymentRequest {
+            update_deployment_address,
+            additional_headers,
+            overwrite,
+            apply_mode,
+        }: UpdateDeploymentRequest,
     ) -> Result<(Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
+        let Some(existing_deployment) =
+            Metadata::with_current(|m| m.schema()).get_deployment(&deployment_id)
+        else {
+            return Err(updater::SchemaError::NotFound(deployment_id.to_string()).into());
+        };
+
+        // Merge with update changes requested
+        let (deployment_address, use_http_11) =
+            match (update_deployment_address, existing_deployment.metadata.ty) {
+                (
+                    UpdateDeploymentAddress::Http {
+                        uri: Some(uri),
+                        use_http_11,
+                    },
+                    _,
+                ) => (
+                    DeploymentAddress::Http(HttpDeploymentAddress::new(uri)),
+                    use_http_11.unwrap_or(false),
+                ),
+                (
+                    UpdateDeploymentAddress::Lambda {
+                        arn: Some(arn),
+                        assume_role_arn,
+                    },
+                    _,
+                ) => (
+                    DeploymentAddress::Lambda(LambdaDeploymentAddress::new(arn, assume_role_arn)),
+                    false,
+                ),
+                (
+                    UpdateDeploymentAddress::Http { uri, use_http_11 },
+                    DeploymentType::Http {
+                        address,
+                        http_version,
+                        ..
+                    },
+                ) => (
+                    DeploymentAddress::Http(HttpDeploymentAddress::new(uri.unwrap_or(address))),
+                    use_http_11.unwrap_or(http_version == http::Version::HTTP_11),
+                ),
+                (UpdateDeploymentAddress::Http { .. }, DeploymentType::Lambda { .. }) => {
+                    return Err(SchemaRegistryError::UpdateDeployment {
+                        actual_deployment_type: "lambda",
+                        expected_deployment_type: "http",
+                    });
+                }
+                (
+                    UpdateDeploymentAddress::Lambda {
+                        arn: update_arn,
+                        assume_role_arn: update_assume_role_arn,
+                    },
+                    DeploymentType::Lambda {
+                        arn,
+                        assume_role_arn,
+                        ..
+                    },
+                ) => (
+                    DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
+                        update_arn.unwrap_or(arn),
+                        update_assume_role_arn.or(assume_role_arn.map(Into::into)),
+                    )),
+                    false,
+                ),
+                (UpdateDeploymentAddress::Lambda { .. }, DeploymentType::Http { .. }) => {
+                    return Err(SchemaRegistryError::UpdateDeployment {
+                        actual_deployment_type: "http",
+                        expected_deployment_type: "lambda",
+                    });
+                }
+            };
+        let additional_headers = additional_headers.unwrap_or(
+            existing_deployment
+                .metadata
+                .delivery_options
+                .additional_headers,
+        );
+
         let discovery_request =
             DiscoveryRequest::new(deployment_address, use_http_11, additional_headers);
 
@@ -289,7 +405,7 @@ impl<V> SchemaRegistry<V> {
             DeliveryOptions::new(discovery_response.headers),
             discovery_response.supported_protocol_versions,
             discovery_response.sdk_version,
-            Default::default(),
+            existing_deployment.metadata.metadata,
         );
 
         if !apply_mode.should_apply() {
@@ -303,6 +419,7 @@ impl<V> SchemaRegistry<V> {
                             deployment_id,
                             deployment_metadata,
                             discovery_response.services,
+                            overwrite,
                         )
                     },
                 )
@@ -324,6 +441,7 @@ impl<V> SchemaRegistry<V> {
                                 deployment_id,
                                 deployment_metadata.clone(),
                                 discovery_response.services.clone(),
+                                overwrite,
                             )
                         },
                     )
