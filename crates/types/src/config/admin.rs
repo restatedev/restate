@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use http::Uri;
+use http::{HeaderName, Uri};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
@@ -40,6 +40,19 @@ pub struct AdminOptions {
     #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String", url))]
     pub advertised_admin_endpoint: Option<Uri>,
+
+    /// # Deployment routing headers
+    ///
+    /// List of header names considered routing headers.
+    ///
+    /// These will be used during deployment creation to distinguish between an already existing deployment and a new deployment.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "serde_with::As::<Vec<restate_serde_util::HeaderNameSerde>>"
+    )]
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
+    pub deployment_routing_headers: Vec<HeaderName>,
 
     /// # Concurrency limit
     ///
@@ -113,6 +126,7 @@ impl Default for AdminOptions {
             bind_address: "0.0.0.0:9070".parse().unwrap(),
             advertised_admin_endpoint: None,
             // max is limited by Tower's LoadShedLayer.
+            deployment_routing_headers: vec![],
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: NonZeroFriendlyDuration::from_millis_unchecked(1500),

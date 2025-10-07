@@ -18,6 +18,7 @@ use comfy_table::Table;
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
 use indoc::indoc;
+
 use restate_admin_rest_model::deployments::{
     DetailedDeploymentResponse, RegisterDeploymentRequest, RegisterDeploymentResponse,
 };

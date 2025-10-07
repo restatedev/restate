@@ -17,7 +17,9 @@ use restate_serde_util::MapAsVecItem;
 use restate_time_util::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
-use crate::deployment::{DeploymentAddress, HttpDeploymentAddress, LambdaDeploymentAddress};
+use crate::deployment::{
+    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+};
 use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::live::Pinned;
@@ -182,7 +184,12 @@ impl Deployment {
                     address: other_address,
                     ..
                 },
-            ) => DeploymentMetadata::semantic_eq_http(this_address, other_address),
+            ) => DeploymentMetadata::semantic_eq_http(
+                this_address,
+                other_address,
+                &self.delivery_options.additional_headers,
+                &other.delivery_options.additional_headers,
+            ),
             (
                 DeploymentType::Lambda { arn: this_arn, .. },
                 DeploymentType::Lambda { arn: other_arn, .. },
@@ -192,7 +199,11 @@ impl Deployment {
     }
 
     /// This returns true if the two deployments are to be considered the "same".
-    pub fn semantic_eq_with_address_and_headers(&self, other_addess: &DeploymentAddress) -> bool {
+    pub fn semantic_eq_with_address_and_headers(
+        &self,
+        other_addess: &DeploymentAddress,
+        other_additional_headers: &Headers,
+    ) -> bool {
         match (&self.ty, other_addess) {
             (
                 DeploymentType::Http {
@@ -200,7 +211,12 @@ impl Deployment {
                     ..
                 },
                 DeploymentAddress::Http(HttpDeploymentAddress { uri: other_address }),
-            ) => DeploymentMetadata::semantic_eq_http(this_address, other_address),
+            ) => DeploymentMetadata::semantic_eq_http(
+                this_address,
+                other_address,
+                &self.delivery_options.additional_headers,
+                other_additional_headers,
+            ),
             (
                 DeploymentType::Lambda { arn: this_arn, .. },
                 DeploymentAddress::Lambda(LambdaDeploymentAddress { arn: other_arn, .. }),
@@ -521,10 +537,13 @@ impl DeploymentResolver for Schema {
     fn find_deployment(
         &self,
         deployment_address: &DeploymentAddress,
+        additional_headers: &Headers,
     ) -> Option<(deployment::Deployment, Vec<service::ServiceMetadata>)> {
         self.deployments
             .iter()
-            .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_address))
+            .find(|(_, d)| {
+                d.semantic_eq_with_address_and_headers(deployment_address, additional_headers)
+            })
             .map(|(dp_id, dp)| {
                 (
                     dp.to_deployment(),

@@ -13,7 +13,10 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 
-use crate::deployment::{DeploymentAddress, HttpDeploymentAddress, LambdaDeploymentAddress};
+use crate::config::Configuration;
+use crate::deployment::{
+    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+};
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
 use crate::schema::service::ServiceMetadata;
 use crate::time::MillisSinceEpoch;
@@ -141,7 +144,11 @@ impl DeploymentMetadata {
         self.created_at
     }
 
-    pub fn semantic_eq_with_address_and_headers(&self, other_addess: &DeploymentAddress) -> bool {
+    pub fn semantic_eq_with_address_and_headers(
+        &self,
+        other_addess: &DeploymentAddress,
+        other_additional_headers: &Headers,
+    ) -> bool {
         match (&self.ty, other_addess) {
             (
                 DeploymentType::Http {
@@ -149,7 +156,12 @@ impl DeploymentMetadata {
                     ..
                 },
                 DeploymentAddress::Http(HttpDeploymentAddress { uri: other_address }),
-            ) => Self::semantic_eq_http(this_address, other_address),
+            ) => Self::semantic_eq_http(
+                this_address,
+                other_address,
+                &self.delivery_options.additional_headers,
+                other_additional_headers,
+            ),
             (
                 DeploymentType::Lambda { arn: this_arn, .. },
                 DeploymentAddress::Lambda(LambdaDeploymentAddress { arn: other_arn, .. }),
@@ -162,10 +174,21 @@ impl DeploymentMetadata {
         this_arn == other_arn
     }
 
-    pub(crate) fn semantic_eq_http(this_address: &Uri, other_address: &Uri) -> bool {
+    pub(crate) fn semantic_eq_http(
+        this_address: &Uri,
+        other_address: &Uri,
+        this_additional_headers: &Headers,
+        other_additional_headers: &Headers,
+    ) -> bool {
+        let deployment_routing_headers = &Configuration::pinned().admin.deployment_routing_headers;
+
         this_address.authority().expect("Must have authority")
             == other_address.authority().expect("Must have authority")
             && this_address.path() == other_address.path()
+            && deployment_routing_headers.iter().all(|routing_header_key| {
+                this_additional_headers.get(routing_header_key)
+                    == other_additional_headers.get(routing_header_key)
+            })
     }
 }
 
@@ -245,6 +268,7 @@ pub trait DeploymentResolver {
     fn find_deployment(
         &self,
         deployment_address: &DeploymentAddress,
+        additional_headers: &Headers,
     ) -> Option<(Deployment, Vec<ServiceMetadata>)>;
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment>;
@@ -445,10 +469,13 @@ pub mod test_util {
         fn find_deployment(
             &self,
             deployment_address: &DeploymentAddress,
+            additional_headers: &Headers,
         ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
             self.deployments
                 .iter()
-                .find(|(_, d)| d.semantic_eq_with_address_and_headers(deployment_address))
+                .find(|(_, d)| {
+                    d.semantic_eq_with_address_and_headers(deployment_address, additional_headers)
+                })
                 .and_then(|(dp_id, _)| self.get_deployment_and_services(dp_id))
         }
 
@@ -504,6 +531,7 @@ pub mod test_util {
         fn find_deployment(
             &self,
             _: &DeploymentAddress,
+            _: &Headers,
         ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
             None
         }
