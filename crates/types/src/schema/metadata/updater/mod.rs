@@ -355,38 +355,39 @@ impl SchemaUpdater {
             .collect::<Result<HashMap<_, _>, _>>()?;
 
         // Did we find an existing deployment with a conflicting endpoint url?
-        let mut existing_deployments = self.schema.deployments.iter().filter(|(_, schemas)| {
-            schemas.ty.protocol_type() == deployment_metadata.ty.protocol_type()
-                && schemas.ty.normalized_address() == deployment_metadata.ty.normalized_address()
-                && routing_header.as_ref().is_none_or(
-                    |(routing_header_key, routing_header_value)| {
-                        schemas
-                            .delivery_options
-                            .additional_headers
-                            .get(routing_header_key)
-                            .is_some_and(|v| v == routing_header_value)
-                    },
-                )
-        });
+        let existing_deployment = self
+            .schema
+            .deployments
+            .iter()
+            .filter(|(_, schemas)| {
+                schemas.ty.protocol_type() == deployment_metadata.ty.protocol_type()
+                    && schemas.ty.normalized_address()
+                        == deployment_metadata.ty.normalized_address()
+                    && routing_header.as_ref().is_none_or(
+                        |(routing_header_key, routing_header_value)| {
+                            schemas
+                                .delivery_options
+                                .additional_headers
+                                .get(routing_header_key)
+                                .is_some_and(|v| v == routing_header_value)
+                        },
+                    )
+            })
+            // There are few situations where we might have multiple deployments for the same endpoint:
+            // * If the user specified in the at least two previous registrations the routing-header,
+            //   but then it didn't specify it in this one. In this case, multiple deployments will match the above filter
+            // * If update_deployment was used on at least one deployment, pointing to the same address of another deployment,
+            //   resulting in having two deployments pointing at the same address.
+            //
+            // We pick max_by created_at, because with force the user wants to override the last deployment version, and not old ones.
+            .max_by(|(_, x), (_, y)| x.created_at.cmp(&y.created_at));
 
         let mut services_to_remove = Vec::default();
 
         let deployment_id = if let Some((existing_deployment_id, existing_deployment)) =
-            existing_deployments.next()
+            existing_deployment
         {
             if force {
-                // Even under force we will only accept exactly one existing deployment with this endpoint
-                if let Some((another_existing_deployment_id, _)) = existing_deployments.next() {
-                    let mut existing_deployment_ids =
-                        vec![*existing_deployment_id, *another_existing_deployment_id];
-                    existing_deployment_ids
-                        .extend(existing_deployments.map(|(deployment_id, _)| *deployment_id));
-
-                    return Err(SchemaError::Deployment(
-                        DeploymentError::MultipleExistingDeployments(existing_deployment_ids),
-                    ));
-                }
-
                 for service in existing_deployment.services.values() {
                     // If a service is not available anymore in the new deployment, we need to remove it
                     if !proposed_services.contains_key(&service.name) {
@@ -440,8 +441,6 @@ impl SchemaUpdater {
             )?;
             computed_services.insert(service_name.to_string(), Arc::new(new_service_revision));
         }
-
-        drop(existing_deployments);
 
         if let Some((key, value)) = routing_header {
             deployment_metadata

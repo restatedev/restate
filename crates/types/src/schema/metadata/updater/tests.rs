@@ -307,7 +307,7 @@ fn register_new_deployment_discriminate_on_routing_header() {
     assert!(let SchemaError::Override(_) = update_result.unwrap_err());
 
     // Update providing the same routing header-> conflict
-    let update_result = SchemaUpdater::update_and_return(schema, |updater| {
+    let update_result = SchemaUpdater::update_and_return(schema.clone(), |updater| {
         updater.add_deployment(
             deployment.metadata.clone(),
             Some((
@@ -319,6 +319,26 @@ fn register_new_deployment_discriminate_on_routing_header() {
         )
     });
     assert!(let SchemaError::Override(_) = update_result.unwrap_err());
+
+    // Force with same routing header -> all good
+    let (expected_dp_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+        updater.add_deployment(
+            deployment.metadata.clone(),
+            Some((
+                HeaderName::from_static("x-routing"),
+                HeaderValue::from_static("2"),
+            )),
+            vec![greeter_virtual_object()],
+            true,
+        )
+    })
+    .unwrap();
+    assert_eq!(expected_dp_id_2, deployment_id_2);
+    schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
+    assert_eq!(
+        schema.assert_service(GREETER_SERVICE_NAME).ty,
+        ServiceType::VirtualObject
+    );
 }
 
 /// This test case ensures that https://github.com/restatedev/restate/issues/1205 works
@@ -974,23 +994,6 @@ fn update_deployment_same_uri() {
         )
     })
     .unwrap();
-
-    // there are now two deployment IDs pointing to :9081, so we shouldn't be able to force either of them
-    assert!(let &SchemaError::Deployment(
-            DeploymentError::MultipleExistingDeployments(_)
-        ) = SchemaUpdater::update(schemas.clone(), |updater| updater.add_deployment(
-            deployment_1.metadata.clone(),None,
-            vec![greeter_service(), greeter_virtual_object()],
-            true,
-        ).map(|_| ())).unwrap_err());
-
-    assert!(let &SchemaError::Deployment(
-            DeploymentError::MultipleExistingDeployments(_)
-        ) = SchemaUpdater::update(schemas.clone(), |updater| updater.add_deployment(
-            deployment_2.metadata.clone(),None,
-            vec![greeter_service(), greeter_virtual_object()],
-            true,
-   ).map(|_| ())).unwrap_err());
 
     // Latest should remain deployment_2
     schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
