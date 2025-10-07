@@ -376,8 +376,8 @@ impl SchemaUpdater {
                     })
             })
             // There are few situations where we might have multiple deployments for the same endpoint:
-            // * If the user specified in the at least two previous registrations the routing-header,
-            //   but then it didn't specify it in this one. In this case, multiple deployments will match the above filter
+            // * If there is some different configuration of the Configuration.admin.deployment_routing_headers between nodes,
+            //   and some registration was previously accepted.
             // * If update_deployment was used on at least one deployment, pointing to the same address of another deployment,
             //   resulting in having two deployments pointing at the same address.
             //
