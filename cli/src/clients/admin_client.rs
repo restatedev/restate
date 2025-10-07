@@ -29,7 +29,7 @@ use super::errors::ApiError;
 
 /// Min/max supported admin API versions
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
-pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
+pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V3;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -80,6 +80,20 @@ where
         let body = self.inner.text().await?;
         debug!("  {}", body);
         Ok(serde_json::from_str(&body)?)
+    }
+
+    pub async fn into_api_error(self) -> Result<ApiError, Error> {
+        let http_status_code = self.inner.status();
+        let url = self.inner.url().clone();
+
+        debug!("Response from {} ({})", url, http_status_code);
+        let body = self.inner.text().await?;
+        debug!("  {}", body);
+        Ok(ApiError {
+            http_status_code,
+            url,
+            body: serde_json::from_str(&body)?,
+        })
     }
 
     pub async fn into_text(self) -> Result<String, Error> {
@@ -188,6 +202,7 @@ impl AdminClient {
                 // v1 clusters didn't support versioned urls
                 AdminApiVersion::V1 => segments.extend(path),
                 AdminApiVersion::V2 => segments.push("v2").extend(path),
+                AdminApiVersion::V3 => segments.push("v3").extend(path),
             };
         }
 

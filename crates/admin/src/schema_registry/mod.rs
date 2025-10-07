@@ -20,15 +20,20 @@ use tracing::trace;
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_service_client::HttpClient;
-use restate_service_protocol::discovery::{DiscoverEndpoint, DiscoveredEndpoint, ServiceDiscovery};
-use restate_types::identifiers::{DeploymentId, ServiceRevision, SubscriptionId};
+use restate_service_protocol::discovery::{DiscoveryRequest, ServiceDiscovery};
+use restate_types::deployment;
+use restate_types::deployment::{
+    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+};
+use restate_types::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use restate_types::schema::deployment::{
-    DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver,
+    DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver, DeploymentType,
 };
 use restate_types::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use restate_types::schema::subscriptions::{
     ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
 };
+pub(crate) use restate_types::schema::updater::RegisterDeploymentResult;
 use restate_types::schema::{Schema, updater};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -39,6 +44,14 @@ pub enum SchemaRegistryError {
         #[code]
         updater::SchemaError,
     ),
+    #[error(
+        "cannot update the deployment, as the deployment type is {actual_deployment_type} while the update options are for type {expected_deployment_type}"
+    )]
+    #[code(unknown)]
+    UpdateDeployment {
+        actual_deployment_type: &'static str,
+        expected_deployment_type: &'static str,
+    },
     #[error(transparent)]
     Discovery(
         #[from]
@@ -62,8 +75,49 @@ impl From<ReadModifyWriteError<updater::SchemaError>> for SchemaRegistryError {
     }
 }
 
-/// Responsible for updating the registered schema information. This includes the discovery of
-/// new deployments.
+/// Whether to apply the changes or not
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub(crate) enum ApplyMode {
+    DryRun,
+    #[default]
+    Apply,
+}
+
+impl ApplyMode {
+    pub(crate) fn should_apply(&self) -> bool {
+        *self == Self::Apply
+    }
+}
+
+pub(crate) struct RegisterDeploymentRequest {
+    pub(crate) deployment_address: DeploymentAddress,
+    pub(crate) additional_headers: Headers,
+    pub(crate) metadata: deployment::Metadata,
+    pub(crate) use_http_11: bool,
+    pub(crate) allow_breaking: updater::AllowBreakingChanges,
+    pub(crate) overwrite: updater::Overwrite,
+    pub(crate) apply_mode: ApplyMode,
+}
+
+pub(crate) struct UpdateDeploymentRequest {
+    pub(crate) update_deployment_address: Option<UpdateDeploymentAddress>,
+    pub(crate) additional_headers: Option<Headers>,
+    pub(crate) overwrite: updater::Overwrite,
+    pub(crate) apply_mode: ApplyMode,
+}
+
+pub(crate) enum UpdateDeploymentAddress {
+    Lambda {
+        arn: Option<LambdaARN>,
+        assume_role_arn: Option<String>,
+    },
+    Http {
+        uri: Option<Uri>,
+        use_http_11: Option<bool>,
+    },
+}
+
+/// This is the business logic driving the Admin API schema related endpoints.
 #[derive(Clone)]
 pub struct SchemaRegistry<V> {
     metadata_writer: MetadataWriter,
@@ -89,90 +143,111 @@ impl<V> SchemaRegistry<V> {
 
     pub async fn register_deployment(
         &self,
-        discover_endpoint: DiscoverEndpoint,
-        force: updater::Force,
-        apply_mode: updater::ApplyMode,
-    ) -> Result<(Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
+        RegisterDeploymentRequest {
+            deployment_address,
+            additional_headers,
+            metadata,
+            use_http_11,
+            allow_breaking,
+            overwrite,
+            apply_mode,
+        }: RegisterDeploymentRequest,
+    ) -> Result<(RegisterDeploymentResult, Deployment, Vec<ServiceMetadata>), SchemaRegistryError>
+    {
+        // Verify first if we have the service. If we do, no need to do anything here.
+        if overwrite == updater::Overwrite::No {
+            // Verify if we have a service for this endpoint already or not
+            if let Some((deployment, services)) =
+                Metadata::with_current(|m| m.schema_ref()).find_deployment(&deployment_address)
+            {
+                return Ok((RegisterDeploymentResult::Unchanged, deployment, services));
+            }
+        }
+
+        let discovery_request =
+            DiscoveryRequest::new(deployment_address, use_http_11, additional_headers);
+
         // The number of concurrent discovery calls is bound by the number of concurrent
         // {register,update}_deployment calls. If it should become a problem that a user tries to register
         // the same endpoint too often, then we need to add a synchronization mechanism which
         // ensures that only a limited number of discover calls per endpoint are running.
-        let discovered_metadata = self.service_discovery.discover(discover_endpoint).await?;
+        let discovery_response = self.service_discovery.discover(discovery_request).await?;
 
-        let deployment_metadata = match discovered_metadata.endpoint {
-            DiscoveredEndpoint::Http(uri, http_version) => DeploymentMetadata::new_http(
-                uri.clone(),
-                discovered_metadata.protocol_type,
-                http_version,
-                DeliveryOptions::new(discovered_metadata.headers),
-                discovered_metadata.supported_protocol_versions,
-                discovered_metadata.sdk_version,
-            ),
-            DiscoveredEndpoint::Lambda(arn, assume_role_arn, compression) => {
-                DeploymentMetadata::new_lambda(
-                    arn,
-                    assume_role_arn,
-                    compression,
-                    DeliveryOptions::new(discovered_metadata.headers),
-                    discovered_metadata.supported_protocol_versions,
-                    discovered_metadata.sdk_version,
-                )
-            }
-        };
+        // Construct deployment metadata from discovery response
+        let deployment_metadata = DeploymentMetadata::new(
+            discovery_response.deployment_type,
+            DeliveryOptions::new(discovery_response.headers),
+            discovery_response.supported_protocol_versions,
+            discovery_response.sdk_version,
+            metadata,
+        );
 
-        let (deployment, services) = if !apply_mode.should_apply() {
-            let mut updater =
-                updater::SchemaUpdater::new(Metadata::with_current(|m| m.schema()).deref().clone());
+        let (register_deployment_result, deployment, services) = if !apply_mode.should_apply() {
+            // --- Dry run
+            // Suppress logging output in case of a dry run
+            let ((deployment_result, deployment_id), schemas) =
+                tracing::subscriber::with_default(NoSubscriber::new(), || {
+                    updater::SchemaUpdater::update_and_return(
+                        Metadata::with_current(|m| m.schema()).deref().clone(),
+                        |updater| {
+                            updater.add_deployment(
+                                deployment_metadata,
+                                discovery_response.services,
+                                allow_breaking,
+                                overwrite,
+                            )
+                        },
+                    )
+                })?;
 
-            // suppress logging output in case of a dry run
-            let id = tracing::subscriber::with_default(NoSubscriber::new(), || {
-                updater.add_deployment(
-                    deployment_metadata,
-                    discovered_metadata.services,
-                    force.force_enabled(),
-                )
-            })?;
-
-            let schema_information = updater.into_inner();
-            let (deployment, services) = schema_information
-                .get_deployment_and_services(&id)
+            let (deployment, services) = schemas
+                .get_deployment_and_services(&deployment_id)
                 .expect("deployment was just added");
 
-            (deployment, services)
+            (deployment_result, deployment, services)
         } else {
+            // --- Apply the deployment registration
             let mut new_deployment_id = None;
-            let schema_information = self
+            let mut new_deployment_result = None;
+            let schemas = self
                 .metadata_writer
                 .global_metadata()
                 .read_modify_write(|schema_information: Option<Arc<Schema>>| {
-                    let mut updater = updater::SchemaUpdater::new(
-                        schema_information
-                            .map(|s| s.as_ref().clone())
-                            .unwrap_or_default(),
-                    );
+                    let ((deployment_result, deployment_id), schemas) =
+                        updater::SchemaUpdater::update_and_return(
+                            schema_information
+                                .map(|s| s.as_ref().clone())
+                                .unwrap_or_default(),
+                            |updater| {
+                                updater.add_deployment(
+                                    deployment_metadata.clone(),
+                                    discovery_response.services.clone(),
+                                    allow_breaking,
+                                    overwrite,
+                                )
+                            },
+                        )?;
 
-                    new_deployment_id = Some(updater.add_deployment(
-                        deployment_metadata.clone(),
-                        discovered_metadata.services.clone(),
-                        force.force_enabled(),
-                    )?);
-                    Ok(updater.into_inner())
+                    new_deployment_result = Some(deployment_result);
+                    new_deployment_id = Some(deployment_id);
+
+                    Ok(schemas)
                 })
                 .await?;
 
             let new_deployment_id = new_deployment_id.expect("deployment was just added");
-            let (deployment, services) = schema_information
+            let (deployment, services) = schemas
                 .get_deployment_and_services(&new_deployment_id)
                 .expect("deployment was just added");
 
-            (deployment, services)
+            (new_deployment_result.unwrap(), deployment, services)
         };
 
         if apply_mode.should_apply() {
             self.send_register_deployment_telemetry(deployment.metadata.sdk_version.clone());
         }
 
-        Ok((deployment, services))
+        Ok((register_deployment_result, deployment, services))
     }
 
     fn send_register_deployment_telemetry(&self, sdk_version: Option<String>) {
@@ -231,74 +306,177 @@ impl<V> SchemaRegistry<V> {
     pub async fn update_deployment(
         &self,
         deployment_id: DeploymentId,
-        discover_endpoint: DiscoverEndpoint,
-        apply_mode: updater::ApplyMode,
+        UpdateDeploymentRequest {
+            update_deployment_address,
+            additional_headers,
+            overwrite,
+            apply_mode,
+        }: UpdateDeploymentRequest,
     ) -> Result<(Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
+        let Some(existing_deployment) =
+            Metadata::with_current(|m| m.schema()).get_deployment(&deployment_id)
+        else {
+            return Err(updater::SchemaError::NotFound(deployment_id.to_string()).into());
+        };
+
+        // Merge with update changes requested
+        let (deployment_address, use_http_11) =
+            match (update_deployment_address, existing_deployment.metadata.ty) {
+                (
+                    Some(UpdateDeploymentAddress::Http {
+                        uri: Some(uri),
+                        use_http_11,
+                    }),
+                    _,
+                ) => (
+                    DeploymentAddress::Http(HttpDeploymentAddress::new(uri)),
+                    use_http_11.unwrap_or(false),
+                ),
+                (
+                    Some(UpdateDeploymentAddress::Lambda {
+                        arn: Some(arn),
+                        assume_role_arn,
+                    }),
+                    _,
+                ) => (
+                    DeploymentAddress::Lambda(LambdaDeploymentAddress::new(arn, assume_role_arn)),
+                    false,
+                ),
+                (
+                    Some(UpdateDeploymentAddress::Http {
+                        uri: None,
+                        use_http_11,
+                    }),
+                    DeploymentType::Http {
+                        address,
+                        http_version,
+                        ..
+                    },
+                ) => (
+                    DeploymentAddress::Http(HttpDeploymentAddress::new(address)),
+                    use_http_11.unwrap_or(http_version == http::Version::HTTP_11),
+                ),
+                (
+                    Some(UpdateDeploymentAddress::Lambda {
+                        arn: None,
+                        assume_role_arn: update_assume_role_arn,
+                    }),
+                    DeploymentType::Lambda {
+                        arn,
+                        assume_role_arn,
+                        ..
+                    },
+                ) => (
+                    DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
+                        arn,
+                        update_assume_role_arn.or(assume_role_arn.map(Into::into)),
+                    )),
+                    false,
+                ),
+                (Some(UpdateDeploymentAddress::Lambda { .. }), DeploymentType::Http { .. }) => {
+                    return Err(SchemaRegistryError::UpdateDeployment {
+                        actual_deployment_type: "http",
+                        expected_deployment_type: "lambda",
+                    });
+                }
+                (Some(UpdateDeploymentAddress::Http { .. }), DeploymentType::Lambda { .. }) => {
+                    return Err(SchemaRegistryError::UpdateDeployment {
+                        actual_deployment_type: "lambda",
+                        expected_deployment_type: "http",
+                    });
+                }
+                (
+                    None,
+                    DeploymentType::Http {
+                        address,
+                        http_version,
+                        ..
+                    },
+                ) => (
+                    DeploymentAddress::Http(HttpDeploymentAddress::new(address)),
+                    http_version == http::Version::HTTP_11,
+                ),
+                (
+                    None,
+                    DeploymentType::Lambda {
+                        arn,
+                        assume_role_arn,
+                        ..
+                    },
+                ) => (
+                    DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
+                        arn,
+                        assume_role_arn.map(Into::into),
+                    )),
+                    false,
+                ),
+            };
+        let additional_headers = additional_headers.unwrap_or(
+            existing_deployment
+                .metadata
+                .delivery_options
+                .additional_headers,
+        );
+
+        let discovery_request =
+            DiscoveryRequest::new(deployment_address, use_http_11, additional_headers);
+
         // The number of concurrent discovery calls is bound by the number of concurrent
         // {register,update}_deployment calls. If it should become a problem that a user tries to register
         // the same endpoint too often, then we need to add a synchronization mechanism which
         // ensures that only a limited number of discover calls per endpoint are running.
-        let discovered_metadata = self.service_discovery.discover(discover_endpoint).await?;
+        let discovery_response = self.service_discovery.discover(discovery_request).await?;
 
-        let deployment_metadata = match discovered_metadata.endpoint {
-            DiscoveredEndpoint::Http(uri, http_version) => DeploymentMetadata::new_http(
-                uri.clone(),
-                discovered_metadata.protocol_type,
-                http_version,
-                DeliveryOptions::new(discovered_metadata.headers),
-                discovered_metadata.supported_protocol_versions,
-                discovered_metadata.sdk_version,
-            ),
-            DiscoveredEndpoint::Lambda(arn, assume_role_arn, compression) => {
-                DeploymentMetadata::new_lambda(
-                    arn,
-                    assume_role_arn,
-                    compression,
-                    DeliveryOptions::new(discovered_metadata.headers),
-                    discovered_metadata.supported_protocol_versions,
-                    discovered_metadata.sdk_version,
-                )
-            }
-        };
+        // Construct deployment metadata from discovery response
+        let deployment_metadata = DeploymentMetadata::new(
+            discovery_response.deployment_type,
+            DeliveryOptions::new(discovery_response.headers),
+            discovery_response.supported_protocol_versions,
+            discovery_response.sdk_version,
+            existing_deployment.metadata.metadata,
+        );
 
         if !apply_mode.should_apply() {
-            let mut updater =
-                updater::SchemaUpdater::new(Metadata::with_current(|m| m.schema()).deref().clone());
-
-            // suppress logging output in case of a dry run
-            tracing::subscriber::with_default(NoSubscriber::new(), || {
-                updater.update_deployment(
-                    deployment_id,
-                    deployment_metadata,
-                    discovered_metadata.services,
+            // --- Dry run
+            // Suppress logging output in case of a dry run
+            let schemas = tracing::subscriber::with_default(NoSubscriber::new(), || {
+                updater::SchemaUpdater::update(
+                    Metadata::with_current(|m| m.schema()).deref().clone(),
+                    |updater| {
+                        updater.update_deployment(
+                            deployment_id,
+                            deployment_metadata,
+                            discovery_response.services,
+                            overwrite,
+                        )
+                    },
                 )
             })?;
 
-            let schema_information = updater.into_inner();
-            Ok(schema_information
+            Ok(schemas
                 .get_deployment_and_services(&deployment_id)
                 .expect("deployment was just added"))
         } else {
-            let schema_information = self
+            // --- Apply the deployment update
+            let schemas = self
                 .metadata_writer
                 .global_metadata()
-                .read_modify_write(|schema_information: Option<Arc<Schema>>| {
-                    let mut updater = updater::SchemaUpdater::new(
-                        schema_information
-                            .map(|s| s.as_ref().clone())
-                            .unwrap_or_default(),
-                    );
-
-                    updater.update_deployment(
-                        deployment_id,
-                        deployment_metadata.clone(),
-                        discovered_metadata.services.clone(),
-                    )?;
-                    Ok(updater.into_inner())
+                .read_modify_write(|schemas: Option<Arc<Schema>>| {
+                    updater::SchemaUpdater::update(
+                        schemas.map(|s| s.as_ref().clone()).unwrap_or_default(),
+                        |updater| {
+                            updater.update_deployment(
+                                deployment_id,
+                                deployment_metadata.clone(),
+                                discovery_response.services.clone(),
+                                overwrite,
+                            )
+                        },
+                    )
                 })
                 .await?;
 
-            let (deployment, services) = schema_information
+            let (deployment, services) = schemas
                 .get_deployment_and_services(&deployment_id)
                 .expect("deployment was just updated");
 
@@ -312,20 +490,19 @@ impl<V> SchemaRegistry<V> {
     ) -> Result<(), SchemaRegistryError> {
         self.metadata_writer
             .global_metadata()
-            .read_modify_write(|schema_registry: Option<Arc<Schema>>| {
-                let schema_information: Schema = schema_registry
-                    .map(|s| s.as_ref().clone())
-                    .unwrap_or_default();
-
-                if schema_information.get_deployment(&deployment_id).is_some() {
-                    let mut updater = updater::SchemaUpdater::new(schema_information);
-                    updater.remove_deployment(deployment_id);
-                    Ok(updater.into_inner())
-                } else {
-                    Err(updater::SchemaError::NotFound(format!(
-                        "deployment with id '{deployment_id}'"
-                    )))
-                }
+            .read_modify_write(|schemas: Option<Arc<Schema>>| {
+                updater::SchemaUpdater::update(
+                    schemas.map(|s| s.as_ref().clone()).unwrap_or_default(),
+                    |updater| {
+                        if updater.remove_deployment(deployment_id) {
+                            Ok(())
+                        } else {
+                            Err(updater::SchemaError::NotFound(format!(
+                                "deployment with id '{deployment_id}'"
+                            )))
+                        }
+                    },
+                )
             })
             .await?;
 
@@ -340,18 +517,13 @@ impl<V> SchemaRegistry<V> {
         let schema_information = self
             .metadata_writer
             .global_metadata()
-            .read_modify_write(|schema_information: Option<Arc<Schema>>| {
-                let schema_information = schema_information
-                    .map(|s| s.as_ref().clone())
-                    .unwrap_or_default();
+            .read_modify_write(|schemas: Option<Arc<Schema>>| {
+                let schemas = schemas.map(|s| s.as_ref().clone()).unwrap_or_default();
 
-                if schema_information
-                    .resolve_latest_service(&service_name)
-                    .is_some()
-                {
-                    let mut updater = updater::SchemaUpdater::new(schema_information);
-                    updater.modify_service(&service_name, changes.clone())?;
-                    Ok(updater.into_inner())
+                if schemas.resolve_latest_service(&service_name).is_some() {
+                    updater::SchemaUpdater::update(schemas, |updater| {
+                        updater.modify_service(&service_name, changes.clone())
+                    })
                 } else {
                     Err(updater::SchemaError::NotFound(format!(
                         "service with name '{service_name}'"
@@ -373,23 +545,19 @@ impl<V> SchemaRegistry<V> {
     ) -> Result<(), SchemaRegistryError> {
         self.metadata_writer
             .global_metadata()
-            .read_modify_write(|schema_information: Option<Arc<Schema>>| {
-                let schema_information = schema_information
-                    .map(|s| s.as_ref().clone())
-                    .unwrap_or_default();
-
-                if schema_information
-                    .get_subscription(subscription_id)
-                    .is_some()
-                {
-                    let mut updater = updater::SchemaUpdater::new(schema_information);
-                    updater.remove_subscription(subscription_id);
-                    Ok(updater.into_inner())
-                } else {
-                    Err(updater::SchemaError::NotFound(format!(
-                        "subscription with id '{subscription_id}'"
-                    )))
-                }
+            .read_modify_write(|schemas: Option<Arc<Schema>>| {
+                updater::SchemaUpdater::update(
+                    schemas.map(|s| s.as_ref().clone()).unwrap_or_default(),
+                    |updater| {
+                        if updater.remove_subscription(subscription_id) {
+                            Ok(())
+                        } else {
+                            Err(updater::SchemaError::NotFound(format!(
+                                "subscription with id '{subscription_id}'"
+                            )))
+                        }
+                    },
+                )
             })
             .await?;
 
@@ -463,20 +631,23 @@ where
             .metadata_writer
             .global_metadata()
             .read_modify_write(|schema_information: Option<Arc<Schema>>| {
-                let mut updater = updater::SchemaUpdater::new(
+                let (sub, schemas) = updater::SchemaUpdater::update_and_return(
                     schema_information
                         .map(|s| s.as_ref().clone())
                         .unwrap_or_default(),
-                );
-                subscription_id = Some(updater.add_subscription(
-                    None,
-                    source.clone(),
-                    sink.clone(),
-                    options.clone(),
-                    &self.subscription_validator,
-                )?);
+                    |updater| {
+                        updater.add_subscription(
+                            None,
+                            source.clone(),
+                            sink.clone(),
+                            options.clone(),
+                            &self.subscription_validator,
+                        )
+                    },
+                )?;
+                subscription_id = Some(sub);
 
-                Ok::<_, updater::SchemaError>(updater.into_inner())
+                Ok::<_, updater::SchemaError>(schemas)
             })
             .await?;
 

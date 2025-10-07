@@ -17,8 +17,8 @@ use crate::console::Styled;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct ApiErrorBody {
-    restate_code: Option<String>,
-    message: String,
+    pub restate_code: Option<String>,
+    pub message: String,
 }
 
 impl From<String> for ApiErrorBody {

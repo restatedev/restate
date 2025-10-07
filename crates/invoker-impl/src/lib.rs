@@ -1525,6 +1525,7 @@ mod tests {
     use restate_test_util::{check, let_assert};
     use restate_time_util::FriendlyDuration;
     use restate_types::config::InvokerOptionsBuilder;
+    use restate_types::deployment::DeploymentAddress;
     use restate_types::errors::{InvocationError, codes};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
     use restate_types::invocation::ServiceType;
@@ -1700,6 +1701,13 @@ mod tests {
 
     impl DeploymentResolver for MockSchemas {
         fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
+            None
+        }
+
+        fn find_deployment(
+            &self,
+            _: &DeploymentAddress,
+        ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
             None
         }
 

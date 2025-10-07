@@ -17,6 +17,7 @@ use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType}
 use restate_types::schema::service::ServiceMetadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use std::collections::HashMap;
 
 // This enum could be a struct with a nested enum to avoid repeating some fields, but serde(flatten) unfortunately breaks the openapi code generation
 #[serde_as]
@@ -41,9 +42,16 @@ pub enum RegisterDeploymentRequest {
 
         /// # Additional headers
         ///
-        /// Additional headers added to the discover/invoke requests to the deployment.
+        /// Additional headers added to every discover/invoke request to the deployment.
         ///
+        /// Fill this field with API Tokens and other authorization headers needed to send requests to the deployment.
         additional_headers: Option<SerdeableHeaderHashMap>,
+
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
 
         /// # Use http1.1
         ///
@@ -55,21 +63,31 @@ pub enum RegisterDeploymentRequest {
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         use_http_11: bool,
 
-        /// # Force
+        /// # Breaking
         ///
-        /// If `true`, it will override, if existing, any deployment using the same `uri`.
-        /// Beware that this can lead in-flight invocations to an unrecoverable error state.
-        ///
-        /// By default, this is `true` but it might change in future to `false`.
+        /// If `true`, it allows registering new service revisions with
+        /// schemas incompatible with previous service revisions, such as changing service type, removing a handler, etc.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
-        #[serde(default = "restate_serde_util::default::bool::<true>")]
-        force: bool,
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        breaking: bool,
+
+        /// # Force
+        ///
+        /// If `true`, it overrides, if existing, any deployment using the same `uri`.
+        /// Beware that this can lead inflight invocations to an unrecoverable error state.
+        ///
+        /// When set to `true`, it implies `breaking = true`.
+        ///
+        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
+        #[schemars(default = "restate_serde_util::default::bool::<true>")]
+        force: Option<bool>,
 
         /// # Dry-run mode
         ///
         /// If `true`, discovery will run but the deployment will not be registered.
         /// This is useful to see the impact of a new deployment before registering it.
+        /// `force` and `breaking` will be respected.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
@@ -93,24 +111,40 @@ pub enum RegisterDeploymentRequest {
 
         /// # Additional headers
         ///
-        /// Additional headers added to the discover/invoke requests to the deployment.
-        ///
+        /// Additional headers added to every discover/invoke request to the deployment.
         additional_headers: Option<SerdeableHeaderHashMap>,
-        /// # Force
+
+        /// # Metadata
         ///
-        /// If `true`, it will override, if existing, any deployment using the same `uri`.
-        /// Beware that this can lead in-flight invocations to an unrecoverable error state.
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
+
+        /// # Breaking
         ///
-        /// By default, this is `true` but it might change in future to `false`.
+        /// If `true`, it allows registering new service revisions with
+        /// schemas incompatible with previous service revisions, such as changing service type, removing a handler, etc.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
-        #[serde(default = "restate_serde_util::default::bool::<true>")]
-        force: bool,
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        breaking: bool,
+
+        /// # Force
+        ///
+        /// If `true`, it overrides, if existing, any deployment using the same `uri`.
+        /// Beware that this can lead inflight invocations to an unrecoverable error state.
+        ///
+        /// This implies `breaking = true`.
+        ///
+        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
+        #[schemars(default = "restate_serde_util::default::bool::<true>")]
+        force: Option<bool>,
 
         /// # Dry-run mode
         ///
         /// If `true`, discovery will run but the deployment will not be registered.
         /// This is useful to see the impact of a new deployment before registering it.
+        /// `force` and `breaking` will be respected.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
@@ -196,6 +230,12 @@ pub enum DeploymentResponse {
         #[serde(default)]
         additional_headers: SerdeableHeaderHashMap,
 
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
+
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
@@ -255,6 +295,12 @@ pub enum DeploymentResponse {
         /// Additional headers used to invoke this service deployment.
         #[serde(default, skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
+
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
@@ -332,6 +378,12 @@ pub enum DetailedDeploymentResponse {
         #[serde(default, skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
 
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
+
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
@@ -391,6 +443,12 @@ pub enum DetailedDeploymentResponse {
         #[serde(default, skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
         additional_headers: SerdeableHeaderHashMap,
 
+        /// # Metadata
+        ///
+        /// Deployment metadata.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+        metadata: HashMap<String, String>,
+
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         created_at: humantime::Timestamp,
@@ -428,24 +486,33 @@ impl DetailedDeploymentResponse {
     }
 }
 
-// RegisterDeploymentRequest except without `force`
-#[serde_as]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum UpdateDeploymentRequest {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "UpdateHttpDeploymentRequest",
+            description = "Update HTTP deployment request"
+        )
+    )]
     Http {
         /// # Uri
         ///
         /// Uri to use to discover/invoke the http deployment.
-        #[serde_as(as = "serde_with::DisplayFromStr")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
-        uri: Uri,
+        #[serde(
+            with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
+            skip_serializing_if = "Option::is_none"
+        )]
+        #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+        uri: Option<Uri>,
 
         /// # Additional headers
         ///
         /// Additional headers added to the discover/invoke requests to the deployment.
-        ///
+        /// When provided, this will overwrite all the headers previously configured for this deployment.
+        #[serde(skip_serializing_if = "Option::is_none")]
         additional_headers: Option<SerdeableHeaderHashMap>,
 
         /// # Use http1.1
@@ -454,9 +521,13 @@ pub enum UpdateDeploymentRequest {
         /// instead of a prior-knowledge HTTP2 client. HTTP2 may still be used for TLS servers
         /// that advertise HTTP2 support via ALPN. HTTP1.1 deployments will only work in
         /// request-response mode.
+        use_http_11: Option<bool>,
+
+        /// # Overwrite
         ///
+        /// If `true`, the update will overwrite the schema information, including the exposed service and handlers and service configuration, allowing **breaking changes** too. Use with caution.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
-        use_http_11: bool,
+        overwrite: bool,
 
         /// # Dry-run mode
         ///
@@ -465,22 +536,38 @@ pub enum UpdateDeploymentRequest {
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            title = "UpdateLambdaDeploymentRequest",
+            description = "Update Lambda deployment request"
+        )
+    )]
     Lambda {
         /// # ARN
         ///
         /// ARN to use to discover/invoke the lambda deployment.
-        arn: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        arn: Option<String>,
 
         /// # Assume role ARN
         ///
-        /// Optional ARN of a role to assume when invoking the addressed Lambda, to support role chaining
+        /// Optional ARN of a role to assume when invoking the addressed Lambda, to support role chaining.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         assume_role_arn: Option<String>,
 
         /// # Additional headers
         ///
         /// Additional headers added to the discover/invoke requests to the deployment.
-        ///
+        /// When provided, this will overwrite all the headers previously configured for this deployment.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         additional_headers: Option<SerdeableHeaderHashMap>,
+
+        /// # Overwrite
+        ///
+        /// If `true`, the update will overwrite the schema information, including the exposed service and handlers and service configuration, allowing **breaking changes** too. Use with caution.
+        #[serde(default = "restate_serde_util::default::bool::<false>")]
+        overwrite: bool,
 
         /// # Dry-run mode
         ///

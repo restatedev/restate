@@ -12,7 +12,6 @@ use super::*;
 
 use crate::identifiers::DeploymentId;
 use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
-use crate::schema::deployment::DeploymentMetadata;
 use restate_time_util::FriendlyDuration;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -185,6 +184,16 @@ mod v1_data_model {
         fn key(&self) -> Self::Key {
             self.name.clone()
         }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DeploymentMetadata {
+        pub ty: DeploymentType,
+        pub delivery_options: DeliveryOptions,
+        pub supported_protocol_versions: RangeInclusive<i32>,
+        /// Declared SDK during discovery
+        pub sdk_version: Option<String>,
+        pub created_at: MillisSinceEpoch,
     }
 
     #[serde_as]
@@ -446,7 +455,6 @@ mod conversions {
     use crate::invocation::{
         InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
     };
-    use crate::schema::deployment::DeploymentMetadata;
     use crate::schema::invocation_target::{
         DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
     };
@@ -537,6 +545,7 @@ mod conversions {
                     supported_protocol_versions: deployment.metadata.supported_protocol_versions,
                     sdk_version: deployment.metadata.sdk_version,
                     created_at: deployment.metadata.created_at,
+                    metadata: Default::default(),
                     services: v2_services,
                 };
                 v2_deployments.push(v2_deployment);
@@ -648,7 +657,7 @@ mod conversions {
                 v1_deployments.insert(
                     deployment_id,
                     v1_data_model::DeploymentSchemas {
-                        metadata: DeploymentMetadata {
+                        metadata: v1_data_model::DeploymentMetadata {
                             ty: deployment.ty.clone(),
                             delivery_options: deployment.delivery_options.clone(),
                             supported_protocol_versions: deployment
@@ -812,6 +821,7 @@ mod conversions {
                         supported_protocol_versions: 5..=5,
                         sdk_version: None,
                         created_at: MillisSinceEpoch::now(),
+                        metadata: Default::default(),
                         services: HashMap::from([
                             (
                                 "Greeter".to_owned(),
@@ -947,6 +957,7 @@ mod conversions {
                         supported_protocol_versions: 5..=5,
                         sdk_version: None,
                         created_at: MillisSinceEpoch::now(),
+                        metadata: Default::default(),
                         services: HashMap::from([(
                             "Greeter".to_owned(),
                             Arc::new(ServiceRevision {
@@ -1077,7 +1088,7 @@ mod conversions {
                     (
                         dp_1,
                         DeploymentSchemas {
-                            metadata: DeploymentMetadata {
+                            metadata: v1_data_model::DeploymentMetadata {
                                 ty: DeploymentType::Http {
                                     address: "http://localhost:9080/".parse().unwrap(),
                                     protocol_type: ProtocolType::BidiStream,
@@ -1195,7 +1206,7 @@ mod conversions {
                     (
                         dp_2,
                         DeploymentSchemas {
-                            metadata: DeploymentMetadata {
+                            metadata: v1_data_model::DeploymentMetadata {
                                 ty: DeploymentType::Http {
                                     address: "http://localhost:9081/".parse().unwrap(),
                                     protocol_type: ProtocolType::RequestResponse,

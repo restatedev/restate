@@ -30,6 +30,7 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_types::NodeId;
 use restate_types::config::QueryEngineOptions;
+use restate_types::deployment::DeploymentAddress;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
 use restate_types::live::Live;
@@ -71,6 +72,10 @@ impl DeploymentResolver for MockSchemas {
         service_name: impl AsRef<str>,
     ) -> Option<Deployment> {
         self.1.resolve_latest_deployment_for_service(service_name)
+    }
+
+    fn find_deployment(&self, _: &DeploymentAddress) -> Option<(Deployment, Vec<ServiceMetadata>)> {
+        None
     }
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
