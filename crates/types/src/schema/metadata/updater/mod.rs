@@ -27,7 +27,7 @@ use crate::schema::invocation_target::{
 use crate::schema::subscriptions::{
     EventInvocationTargetTemplate, Sink, Source, Subscription, SubscriptionValidator,
 };
-use http::{HeaderName, HeaderValue, Uri};
+use http::{HeaderValue, Uri};
 use serde_json::Value;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -344,8 +344,7 @@ impl SchemaUpdater {
 
     pub fn add_deployment(
         &mut self,
-        mut deployment_metadata: DeploymentMetadata,
-        routing_header: Option<(HeaderName, HeaderValue)>,
+        deployment_metadata: DeploymentMetadata,
         services: Vec<endpoint_manifest::Service>,
         force: bool,
     ) -> Result<DeploymentId, SchemaError> {
@@ -353,6 +352,8 @@ impl SchemaUpdater {
             .into_iter()
             .map(|c| ServiceName::try_from(c.name.to_string()).map(|name| (name, c)))
             .collect::<Result<HashMap<_, _>, _>>()?;
+
+        let deployment_routing_headers = &Configuration::pinned().admin.deployment_routing_headers;
 
         // Did we find an existing deployment with a conflicting endpoint url?
         let existing_deployment = self
@@ -363,15 +364,16 @@ impl SchemaUpdater {
                 schemas.ty.protocol_type() == deployment_metadata.ty.protocol_type()
                     && schemas.ty.normalized_address()
                         == deployment_metadata.ty.normalized_address()
-                    && routing_header.as_ref().is_none_or(
-                        |(routing_header_key, routing_header_value)| {
-                            schemas
+                    && deployment_routing_headers.iter().all(|routing_header_key| {
+                        deployment_metadata
+                            .delivery_options
+                            .additional_headers
+                            .get(routing_header_key)
+                            == schemas
                                 .delivery_options
                                 .additional_headers
                                 .get(routing_header_key)
-                                .is_some_and(|v| v == routing_header_value)
-                        },
-                    )
+                    })
             })
             // There are few situations where we might have multiple deployments for the same endpoint:
             // * If the user specified in the at least two previous registrations the routing-header,
@@ -442,12 +444,6 @@ impl SchemaUpdater {
             computed_services.insert(service_name.to_string(), Arc::new(new_service_revision));
         }
 
-        if let Some((key, value)) = routing_header {
-            deployment_metadata
-                .delivery_options
-                .additional_headers
-                .insert(key, value);
-        }
         self.schema.deployments.insert(
             deployment_id,
             Deployment {

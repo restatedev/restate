@@ -11,15 +11,14 @@
 use super::*;
 use std::convert::Infallible;
 
+use crate::Versioned;
+use crate::schema::deployment::DeploymentResolver;
+use crate::schema::deployment::{DeliveryOptions, Deployment};
+use crate::schema::invocation_target::InvocationTargetResolver;
+use crate::schema::service::ServiceMetadataResolver;
 use http::HeaderName;
 use restate_test_util::{assert, assert_eq};
 use test_log::test;
-
-use crate::Versioned;
-use crate::schema::deployment::Deployment;
-use crate::schema::deployment::DeploymentResolver;
-use crate::schema::invocation_target::InvocationTargetResolver;
-use crate::schema::service::ServiceMetadataResolver;
 
 const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
 const GREET_HANDLER_NAME: &str = "greet";
@@ -201,12 +200,7 @@ fn register_new_deployment() {
 
     let mut deployment = Deployment::mock();
     deployment.id = updater
-        .add_deployment(
-            deployment.metadata.clone(),
-            None,
-            vec![greeter_service()],
-            false,
-        )
+        .add_deployment(deployment.metadata.clone(), vec![greeter_service()], false)
         .unwrap();
 
     let schema = updater.into_inner();
@@ -228,7 +222,6 @@ fn register_new_deployment_add_unregistered_service() {
     deployment_1.id = updater
         .add_deployment(
             deployment_1.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -247,7 +240,6 @@ fn register_new_deployment_add_unregistered_service() {
     deployment_2.id = updater
         .add_deployment(
             deployment_2.metadata.clone(),
-            None,
             vec![greeter_service(), another_greeter_service()],
             false,
         )
@@ -260,85 +252,290 @@ fn register_new_deployment_add_unregistered_service() {
     schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
 }
 
-#[test]
-fn register_new_deployment_discriminate_on_routing_header() {
-    let deployment = Deployment::mock_with_uri("http://localhost:9080");
+mod routing_header {
+    use super::*;
 
-    // Register first deployment
-    let (deployment_id_1, schema) =
-        SchemaUpdater::update_and_return(Schema::default(), |updater| {
+    use restate_test_util::{assert, assert_eq};
+    use test_log::test;
+
+    #[test]
+    fn register_new_deployment_with_routing_header_first() {
+        let mut config = Configuration::default();
+        config.admin.deployment_routing_headers = vec![HeaderName::from_static("x-routing")];
+        crate::config::set_current_config(config);
+
+        let deployment = Deployment::mock_with_uri("http://localhost:9080");
+
+        // Register first deployment
+        let (deployment_id_1, schema) =
+            SchemaUpdater::update_and_return(Schema::default(), |updater| {
+                updater.add_deployment(
+                    DeploymentMetadata {
+                        delivery_options: DeliveryOptions::new(
+                            [(
+                                HeaderName::from_static("x-routing"),
+                                HeaderValue::from_static("1"),
+                            )]
+                            .into(),
+                        ),
+                        ..deployment.metadata.clone()
+                    },
+                    vec![greeter_service()],
+                    false,
+                )
+            })
+            .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_1);
+
+        // Update providing another routing header
+        let (deployment_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
             updater.add_deployment(
-                deployment.metadata.clone(),
-                Some((
-                    HeaderName::from_static("x-routing"),
-                    HeaderValue::from_static("1"),
-                )),
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-routing"),
+                            HeaderValue::from_static("2"),
+                        )]
+                        .into(),
+                    ),
+                    created_at: (deployment.metadata.created_at.as_u64() + 1).into(),
+                    ..deployment.metadata.clone()
+                },
                 vec![greeter_service()],
                 false,
             )
         })
         .unwrap();
-    schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_1);
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
 
-    // Update providing another routing header
-    let (deployment_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
-        updater.add_deployment(
-            deployment.metadata.clone(),
-            Some((
-                HeaderName::from_static("x-routing"),
-                HeaderValue::from_static("2"),
-            )),
-            vec![greeter_service()],
-            false,
-        )
-    })
-    .unwrap();
-    schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
+        // Update not providing routing_header -> new deployment here
+        let (deployment_id_3, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(Default::default()),
+                    created_at: (deployment.metadata.created_at.as_u64() + 2).into(),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_3);
 
-    // Update providing no routing header -> conflict
-    let update_result = SchemaUpdater::update_and_return(schema.clone(), |updater| {
-        updater.add_deployment(
-            deployment.metadata.clone(),
-            None,
-            vec![greeter_service()],
-            false,
-        )
-    });
-    assert!(let SchemaError::Override(_) = update_result.unwrap_err());
+        // Update providing the same routing header-> conflict
+        let update_result = SchemaUpdater::update_and_return(schema.clone(), |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-routing"),
+                            HeaderValue::from_static("2"),
+                        )]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        });
+        assert!(let SchemaError::Override(_) = update_result.unwrap_err());
 
-    // Update providing the same routing header-> conflict
-    let update_result = SchemaUpdater::update_and_return(schema.clone(), |updater| {
-        updater.add_deployment(
-            deployment.metadata.clone(),
-            Some((
-                HeaderName::from_static("x-routing"),
-                HeaderValue::from_static("2"),
-            )),
-            vec![greeter_service()],
-            false,
-        )
-    });
-    assert!(let SchemaError::Override(_) = update_result.unwrap_err());
+        // Force with same routing header -> all good
+        let (expected_dp_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-routing"),
+                            HeaderValue::from_static("2"),
+                        )]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_virtual_object()],
+                true,
+            )
+        })
+        .unwrap();
+        assert_eq!(expected_dp_id_2, deployment_id_2);
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
+        assert_eq!(
+            schema.assert_service(GREETER_SERVICE_NAME).ty,
+            ServiceType::VirtualObject
+        );
+    }
 
-    // Force with same routing header -> all good
-    let (expected_dp_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
-        updater.add_deployment(
-            deployment.metadata.clone(),
-            Some((
-                HeaderName::from_static("x-routing"),
-                HeaderValue::from_static("2"),
-            )),
-            vec![greeter_virtual_object()],
-            true,
-        )
-    })
-    .unwrap();
-    assert_eq!(expected_dp_id_2, deployment_id_2);
-    schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
-    assert_eq!(
-        schema.assert_service(GREETER_SERVICE_NAME).ty,
-        ServiceType::VirtualObject
-    );
+    #[test]
+    fn register_new_deployment_without_routing_header_first() {
+        let mut config = Configuration::default();
+        config.admin.deployment_routing_headers = vec![HeaderName::from_static("x-routing")];
+        crate::config::set_current_config(config);
+
+        let deployment = Deployment::mock_with_uri("http://localhost:9080");
+
+        // Register first deployment with routing header
+        let (deployment_id_1, schema) =
+            SchemaUpdater::update_and_return(Schema::default(), |updater| {
+                updater.add_deployment(
+                    DeploymentMetadata {
+                        delivery_options: DeliveryOptions::new(
+                            [(
+                                HeaderName::from_static("x-routing"),
+                                HeaderValue::from_static("1"),
+                            )]
+                            .into(),
+                        ),
+                        ..deployment.metadata.clone()
+                    },
+                    vec![greeter_service()],
+                    false,
+                )
+            })
+            .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_1);
+
+        // Update without routing header -> new deployment
+        let (deployment_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(Default::default()),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
+    }
+
+    #[test]
+    fn with_multiple_configured_routing_headers() {
+        let mut config = Configuration::default();
+        config.admin.deployment_routing_headers = vec![
+            HeaderName::from_static("x-restate-routing"),
+            HeaderName::from_static("x-my-routing"),
+        ];
+        crate::config::set_current_config(config);
+
+        let deployment = Deployment::mock_with_uri("http://localhost:9080");
+
+        // Register first deployment with routing header
+        let (deployment_id_1, schema) =
+            SchemaUpdater::update_and_return(Schema::default(), |updater| {
+                updater.add_deployment(
+                    DeploymentMetadata {
+                        delivery_options: DeliveryOptions::new(
+                            [(
+                                HeaderName::from_static("x-restate-routing"),
+                                HeaderValue::from_static("1"),
+                            )]
+                            .into(),
+                        ),
+                        ..deployment.metadata.clone()
+                    },
+                    vec![greeter_service()],
+                    false,
+                )
+            })
+            .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_1);
+
+        // Update with different routing header -> new deployment
+        let (deployment_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-my-routing"),
+                            HeaderValue::from_static("1"),
+                        )]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
+
+        // No routing header -> new deployment
+        let (deployment_id_3, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(Default::default()),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_3);
+
+        // Update with both routing header -> new deployment
+        let (deployment_id_4, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [
+                            (
+                                HeaderName::from_static("x-restate-routing"),
+                                HeaderValue::from_static("1"),
+                            ),
+                            (
+                                HeaderName::from_static("x-my-routing"),
+                                HeaderValue::from_static("1"),
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_4);
+
+        // Update with same header -> fails
+        let update_result = SchemaUpdater::update_and_return(schema.clone(), |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-routing"),
+                            HeaderValue::from_static("1"),
+                        )]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        });
+        assert!(let SchemaError::Override(_) = update_result.unwrap_err());
+
+        // Update without header -> fails
+        let update_result = SchemaUpdater::update_and_return(schema.clone(), |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(Default::default()),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        });
+        assert!(let SchemaError::Override(_) = update_result.unwrap_err());
+    }
 }
 
 /// This test case ensures that https://github.com/restatedev/restate/issues/1205 works
@@ -347,12 +544,8 @@ fn force_deploy_private_service() -> Result<(), SchemaError> {
     let mut updater = SchemaUpdater::default();
     let mut deployment = Deployment::mock();
 
-    deployment.id = updater.add_deployment(
-        deployment.metadata.clone(),
-        None,
-        vec![greeter_service()],
-        false,
-    )?;
+    deployment.id =
+        updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], false)?;
 
     let schemas = updater.into_inner();
 
@@ -380,12 +573,8 @@ fn force_deploy_private_service() -> Result<(), SchemaError> {
     );
 
     updater = SchemaUpdater::new(schemas);
-    deployment.id = updater.add_deployment(
-        deployment.metadata.clone(),
-        None,
-        vec![greeter_service()],
-        true,
-    )?;
+    deployment.id =
+        updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], true)?;
 
     let schemas = updater.into_inner();
     assert!(schemas.assert_service(GREETER_SERVICE_NAME).public);
@@ -414,7 +603,6 @@ mod change_service_type {
         deployment_1.id = updater
             .add_deployment(
                 deployment_1.metadata.clone(),
-                None,
                 vec![greeter_service()],
                 false,
             )
@@ -425,7 +613,6 @@ mod change_service_type {
 
         let compute_result = SchemaUpdater::new(schemas).add_deployment(
             deployment_2.metadata,
-            None,
             vec![greeter_virtual_object()],
             false,
         );
@@ -445,7 +632,6 @@ mod change_service_type {
         deployment_1.id = updater
             .add_deployment(
                 deployment_1.metadata.clone(),
-                None,
                 vec![greeter_service()],
                 false,
             )
@@ -455,12 +641,7 @@ mod change_service_type {
 
         updater = SchemaUpdater::new(schemas);
         deployment_2.id = updater
-            .add_deployment(
-                deployment_2.metadata,
-                None,
-                vec![greeter_virtual_object()],
-                true,
-            )
+            .add_deployment(deployment_2.metadata, vec![greeter_virtual_object()], true)
             .unwrap();
         let schemas = updater.into_inner();
         schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
@@ -481,7 +662,6 @@ mod change_service_type {
         deployment_1.id = updater
             .add_deployment(
                 deployment_1.metadata.clone(),
-                None,
                 vec![greeter_service()],
                 false,
             )
@@ -491,7 +671,7 @@ mod change_service_type {
 
         updater = SchemaUpdater::new(schemas);
         deployment_2.id = updater
-            .add_deployment(deployment_2.metadata, None, vec![greeter_workflow()], true)
+            .add_deployment(deployment_2.metadata, vec![greeter_workflow()], true)
             .unwrap();
         let schemas = updater.into_inner();
         schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);
@@ -511,7 +691,6 @@ fn override_existing_deployment_removing_a_service() {
     let (deployment_id, schemas) = SchemaUpdater::update_and_return(Schema::default(), |updater| {
         updater.add_deployment(
             deployment.metadata.clone(),
-            None,
             vec![greeter_service(), another_greeter_service()],
             false,
         )
@@ -523,12 +702,7 @@ fn override_existing_deployment_removing_a_service() {
     schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment.id);
 
     let (deployment_id, schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
-        updater.add_deployment(
-            deployment.metadata.clone(),
-            None,
-            vec![greeter_service()],
-            true,
-        )
+        updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], true)
     })
     .unwrap();
     assert_eq!(deployment_id, deployment.id);
@@ -547,17 +721,11 @@ fn cannot_override_existing_deployment_endpoint_conflict() {
 
     let mut deployment = Deployment::mock();
     deployment.id = updater
-        .add_deployment(
-            deployment.metadata.clone(),
-            None,
-            vec![greeter_service()],
-            false,
-        )
+        .add_deployment(deployment.metadata.clone(), vec![greeter_service()], false)
         .unwrap();
 
     assert!(let SchemaError::Override(_) = updater.add_deployment(
         deployment.metadata,
-        None,
         vec![greeter_service()],
         false).unwrap_err()
     );
@@ -572,7 +740,6 @@ fn register_two_deployments_then_remove_first() {
         SchemaUpdater::update_and_return(Schema::default(), |updater| {
             updater.add_deployment(
                 deployment_1.metadata.clone(),
-                None,
                 vec![greeter_service(), another_greeter_service()],
                 false,
             )
@@ -583,7 +750,6 @@ fn register_two_deployments_then_remove_first() {
     let (deployment_id_2, schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
         updater.add_deployment(
             deployment_2.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -623,7 +789,6 @@ fn register_two_deployments_then_remove_second() {
         SchemaUpdater::update_and_return(Schema::default(), |updater| {
             updater.add_deployment(
                 deployment_1.metadata.clone(),
-                None,
                 vec![greeter_service(), another_greeter_service()],
                 false,
             )
@@ -634,7 +799,6 @@ fn register_two_deployments_then_remove_second() {
     let (deployment_id_2, schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
         updater.add_deployment(
             deployment_2.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -778,24 +942,14 @@ mod remove_handler {
         let deployment_2 = Deployment::mock_with_uri("http://localhost:9081");
 
         deployment_1.id = updater
-            .add_deployment(
-                deployment_1.metadata,
-                None,
-                vec![greeter_v1_service()],
-                false,
-            )
+            .add_deployment(deployment_1.metadata, vec![greeter_v1_service()], false)
             .unwrap();
         let schemas = updater.into_inner();
         schemas.assert_service_revision(GREETER_SERVICE_NAME, 1);
 
         updater = SchemaUpdater::new(schemas);
         let rejection = updater
-            .add_deployment(
-                deployment_2.metadata,
-                None,
-                vec![greeter_v2_service()],
-                false,
-            )
+            .add_deployment(deployment_2.metadata, vec![greeter_v2_service()], false)
             .unwrap_err();
 
         let schemas = updater.into_inner();
@@ -819,7 +973,6 @@ fn update_latest_deployment() {
     deployment_1.id = updater
         .add_deployment(
             deployment_1.metadata.clone(),
-            None,
             vec![greeter_virtual_object()],
             false,
         )
@@ -906,7 +1059,6 @@ fn update_draining_deployment() {
     deployment_1.id = updater
         .add_deployment(
             deployment_1.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -915,7 +1067,6 @@ fn update_draining_deployment() {
     deployment_2.id = updater
         .add_deployment(
             deployment_2.metadata.clone(),
-            None,
             vec![greeter_service(), another_greeter_service()],
             false,
         )
@@ -963,7 +1114,6 @@ fn update_deployment_same_uri() {
         SchemaUpdater::update_and_return(Schema::default(), |updater| {
             updater.add_deployment(
                 deployment_1.metadata.clone(),
-                None,
                 vec![greeter_service()],
                 false,
             )
@@ -975,7 +1125,6 @@ fn update_deployment_same_uri() {
     let (deployment_id_2, schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
         updater.add_deployment(
             deployment_2.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -1018,7 +1167,6 @@ fn update_deployment_same_uri() {
         deployment_2.id,
         SchemaUpdater::update_and_return(schemas, |updater| updater.add_deployment(
             deployment_2.metadata.clone(),
-            None,
             vec![greeter_service(), greeter_virtual_object()],
             true,
         ))
@@ -1036,7 +1184,6 @@ fn update_latest_deployment_add_handler() {
     deployment_1.id = updater
         .add_deployment(
             deployment_1.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -1107,7 +1254,6 @@ fn update_draining_deployment_add_handler() {
     deployment_1.id = updater
         .add_deployment(
             deployment_1.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -1116,7 +1262,6 @@ fn update_draining_deployment_add_handler() {
     deployment_2.id = updater
         .add_deployment(
             deployment_2.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -1201,7 +1346,6 @@ fn update_latest_deployment_add_service() {
     deployment_1.id = updater
         .add_deployment(
             deployment_1.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -1239,7 +1383,6 @@ fn update_draining_deployment_add_service() {
     deployment_1.id = updater
         .add_deployment(
             deployment_1.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -1248,7 +1391,6 @@ fn update_draining_deployment_add_service() {
     deployment_2.id = updater
         .add_deployment(
             deployment_2.metadata.clone(),
-            None,
             vec![greeter_service()],
             false,
         )
@@ -1281,12 +1423,8 @@ fn update_deployment_with_private_service() -> Result<(), SchemaError> {
     let mut updater = SchemaUpdater::default();
     let mut deployment = Deployment::mock();
 
-    deployment.id = updater.add_deployment(
-        deployment.metadata.clone(),
-        None,
-        vec![greeter_service()],
-        false,
-    )?;
+    deployment.id =
+        updater.add_deployment(deployment.metadata.clone(), vec![greeter_service()], false)?;
 
     let schemas = updater.into_inner();
 
@@ -1354,7 +1492,7 @@ mod endpoint_manifest_options_propagation {
         let mut deployment = Deployment::mock();
         let (deployment_id, schema) =
             SchemaUpdater::update_and_return(Schema::default(), move |updater| {
-                updater.add_deployment(deployment.metadata.clone(), None, vec![svc], false)
+                updater.add_deployment(deployment.metadata.clone(), vec![svc], false)
             })
             .unwrap();
         deployment.id = deployment_id;
@@ -1384,7 +1522,6 @@ mod endpoint_manifest_options_propagation {
             updater
                 .add_deployment(
                     Deployment::mock().metadata,
-                    None,
                     vec![endpoint_manifest::Service {
                         // Mock two handlers, one explicitly private, the other just default settings
                         handlers: vec![
@@ -1423,7 +1560,6 @@ mod endpoint_manifest_options_propagation {
         assert_that!(
             updater.add_deployment(
                 deployment.metadata.clone(),
-                None,
                 vec![endpoint_manifest::Service {
                     ingress_private: Some(true),
                     handlers: vec![endpoint_manifest::Handler {
@@ -1447,7 +1583,6 @@ mod endpoint_manifest_options_propagation {
             SchemaUpdater::update_and_return(Schema::default(), move |updater| {
                 updater.add_deployment(
                     Deployment::mock().metadata.clone(),
-                    None,
                     vec![endpoint_manifest::Service {
                         handlers: vec![endpoint_manifest::Handler {
                             workflow_completion_retention: Some(30 * 1000),
@@ -1688,7 +1823,6 @@ mod endpoint_manifest_options_propagation {
             SchemaUpdater::update_and_return(Schema::default(), move |updater| {
                 updater.add_deployment(
                     deployment.metadata.clone(),
-                    None,
                     vec![endpoint_manifest::Service {
                         journal_retention: Some(60 * 1000), // A = 60 seconds
                         ..greeter_service()
@@ -1750,7 +1884,6 @@ mod endpoint_manifest_options_propagation {
         let (deployment_id, schema) = SchemaUpdater::update_and_return(schema, move |updater| {
             updater.add_deployment(
                 deployment.metadata.clone(),
-                None,
                 vec![endpoint_manifest::Service {
                     journal_retention: Some(60 * 1000), // A = 60 seconds again
                     ..greeter_service()
@@ -1828,7 +1961,6 @@ mod endpoint_manifest_options_propagation {
         let (deployment_id, schema) = SchemaUpdater::update_and_return(schema, move |updater| {
             updater.add_deployment(
                 deployment.metadata.clone(),
-                None,
                 vec![endpoint_manifest::Service {
                     journal_retention: None,
                     ..greeter_service()
@@ -1925,7 +2057,6 @@ mod endpoint_manifest_options_propagation {
             SchemaUpdater::update_and_return(Schema::default(), move |updater| {
                 updater.add_deployment(
                     deployment.metadata.clone(),
-                    None,
                     vec![endpoint_manifest::Service {
                         journal_retention: Some(120 * 1000), // Service sets 120 seconds
                         handlers: vec![endpoint_manifest::Handler {
@@ -2080,7 +2211,7 @@ mod endpoint_manifest_options_propagation {
 
         let mut deployment = Deployment::mock();
         deployment.id = updater
-            .add_deployment(deployment.metadata.clone(), None, vec![svc], false)
+            .add_deployment(deployment.metadata.clone(), vec![svc], false)
             .unwrap();
 
         let schema = updater.into_inner();
@@ -2163,7 +2294,6 @@ mod modify_service {
             SchemaUpdater::update_and_return(Schema::default(), move |updater| {
                 updater.add_deployment(
                     Deployment::mock().metadata.clone(),
-                    None,
                     vec![greeter_workflow()],
                     false,
                 )
@@ -2231,7 +2361,6 @@ mod modify_service {
             SchemaUpdater::update_and_return(Schema::default(), move |updater| {
                 updater.add_deployment(
                     Deployment::mock().metadata.clone(),
-                    None,
                     vec![greeter_service()],
                     false,
                 )
@@ -2290,7 +2419,6 @@ mod modify_service {
             SchemaUpdater::update_and_return(schema, move |updater| {
                 updater.add_deployment(
                     deployment_2.metadata.clone(),
-                    None,
                     vec![greeter_service()], // identical service definition
                     false,
                 )
@@ -2328,7 +2456,6 @@ mod modify_service {
             SchemaUpdater::update_and_return(Schema::default(), move |updater| {
                 updater.add_deployment(
                     Deployment::mock().metadata.clone(),
-                    None,
                     vec![greeter_workflow()],
                     false,
                 )
@@ -2411,7 +2538,6 @@ mod modify_service {
             SchemaUpdater::update_and_return(schema, move |updater| {
                 updater.add_deployment(
                     deployment_2.metadata.clone(),
-                    None,
                     vec![greeter_workflow()], // identical service definition
                     false,
                 )

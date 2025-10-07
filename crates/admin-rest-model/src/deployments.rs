@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use http::Uri;
 use http::Version;
-use http::{HeaderName, HeaderValue, Uri};
 use restate_serde_util::SerdeableHeaderHashMap;
 use restate_types::identifiers::ServiceRevision;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
@@ -17,18 +17,6 @@ use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType}
 use restate_types::schema::service::ServiceMetadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-
-#[serde_as]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Header {
-    #[serde_as(as = "restate_serde_util::HeaderNameSerde")]
-    #[cfg_attr(feature = "schema", schemars(with = "String"))]
-    pub key: HeaderName,
-    #[serde_as(as = "restate_serde_util::HeaderValueSerde")]
-    #[cfg_attr(feature = "schema", schemars(with = "String"))]
-    pub value: HeaderValue,
-}
 
 // This enum could be a struct with a nested enum to avoid repeating some fields, but serde(flatten) unfortunately breaks the openapi code generation
 #[serde_as]
@@ -50,13 +38,6 @@ pub enum RegisterDeploymentRequest {
         #[serde_as(as = "serde_with::DisplayFromStr")]
         #[cfg_attr(feature = "schema", schemars(with = "String"))]
         uri: Uri,
-
-        /// # Routing header
-        ///
-        /// Header used for routing to a specific deployment.
-        /// If the load balancer between restate-server and your deployments uses a specific header to route,
-        /// you should set this as the routing header, as it will be used to distinguish this deployment with other deployments with the same URL.
-        routing_header: Option<Header>,
 
         /// # Additional headers
         ///

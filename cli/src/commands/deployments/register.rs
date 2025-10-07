@@ -18,7 +18,7 @@ use comfy_table::Table;
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
 
-use restate_admin_rest_model::deployments::{Header, RegisterDeploymentRequest};
+use restate_admin_rest_model::deployments::RegisterDeploymentRequest;
 use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
@@ -48,19 +48,10 @@ pub struct Register {
     assume_role_arn: Option<String>,
 
     /// Additional header that will be sent to the endpoint during the discovery request.
-    /// You typically want to include here API keys and other tokens required to send requests to deployments.
     ///
     /// Use `--extra-header name=value` format and repeat --extra-header for each additional header.
     #[clap(long="extra-header", value_parser = parse_header, action = clap::ArgAction::Append)]
     extra_headers: Option<Vec<HeaderKeyValue>>,
-
-    /// Header used for routing to a specific deployment.
-    /// If the load balancer between restate-server and your deployments uses a specific header to route,
-    /// you should set this as the routing header, as it will be used to distinguish this deployment with other deployments with the same URL.
-    ///
-    /// Use `--routing-header name=value` format.
-    #[clap(long="routing-header", value_parser = parse_header)]
-    routing_header: Option<HeaderKeyValue>,
 
     /// Attempt discovery using a client that defaults to HTTP1.1 instead of a prior-knowledge HTTP2 client.
     /// This may be necessary if you see `META0014` discovering local dev servers like `wrangler dev`.
@@ -140,14 +131,6 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     let headers = discover_opts.extra_headers.as_ref().map(|headers| {
         HashMap::from_iter(headers.iter().map(|kv| (kv.key.clone(), kv.value.clone())))
     });
-    let routing_header =
-        discover_opts
-            .routing_header
-            .as_ref()
-            .map(|HeaderKeyValue { key, value }| Header {
-                key: key.clone(),
-                value: value.clone(),
-            });
 
     // Preparing the discovery request
     let client = AdminClient::new(&env).await?;
@@ -206,7 +189,6 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     let mk_request_body = |force, dry_run| match &deployment {
         DeploymentEndpoint::Uri(uri) => RegisterDeploymentRequest::Http {
             uri: uri.clone(),
-            routing_header: routing_header.clone(),
             additional_headers: headers.clone().map(Into::into),
             use_http_11: discover_opts.use_http_11,
             force,
