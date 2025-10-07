@@ -56,8 +56,8 @@ use serde::Deserialize;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_deployment<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn create_deployment<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Extension(version): Extension<AdminApiVersion>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError> {
@@ -181,8 +181,8 @@ pub async fn create_deployment<V, IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn get_deployment<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
     let (deployment, services) = state
@@ -200,8 +200,8 @@ pub async fn get_deployment<V, IC>(
     operation_id = "list_deployments",
     tags = "deployment"
 )]
-pub async fn list_deployments<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn list_deployments<IC>(
+    State(state): State<AdminServiceState<IC>>,
 ) -> Json<ListDeploymentsResponse> {
     let deployments = state
         .schema_registry
@@ -254,8 +254,8 @@ pub struct DeleteDeploymentParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_deployment<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn delete_deployment<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(deployment_id): Path<DeploymentId>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
 ) -> Result<StatusCode, MetaApiError> {
@@ -286,8 +286,8 @@ pub async fn delete_deployment<V, IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn update_deployment<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn update_deployment<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Extension(version): Extension<AdminApiVersion>,
     method: Method,
     Path(deployment_id): Path<DeploymentId>,

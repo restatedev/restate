@@ -25,16 +25,14 @@ use okapi_operation::okapi::openapi3::{ExternalDocs, Tag};
 use okapi_operation::*;
 use restate_types::identifiers::PartitionKey;
 use restate_types::invocation::client::InvocationClient;
-use restate_types::schema::subscriptions::SubscriptionValidator;
 use restate_wal_protocol::{Destination, Header, Source};
 
 use crate::state::AdminServiceState;
 
 pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 
-pub fn create_router<V, IC>(state: AdminServiceState<V, IC>) -> axum::Router<()>
+pub fn create_router<IC>(state: AdminServiceState<IC>) -> axum::Router<()>
 where
-    V: SubscriptionValidator + Send + Sync + Clone + 'static,
     IC: InvocationClient + Send + Sync + Clone + 'static,
 {
     let mut router = axum_integration::Router::new()

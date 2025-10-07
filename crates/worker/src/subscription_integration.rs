@@ -8,33 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::Deref;
-use std::sync::Arc;
-
 use restate_ingress_kafka::SubscriptionCommandSender;
-use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
-use restate_types::schema::subscriptions::{Subscription, SubscriptionValidator};
+use restate_types::schema::subscriptions::Subscription;
 
 use crate::{SubscriptionController, WorkerHandleError};
 
 #[derive(Debug, Clone)]
-pub struct SubscriptionControllerHandle(Arc<IngressOptions>, SubscriptionCommandSender);
+pub struct SubscriptionControllerHandle(SubscriptionCommandSender);
 
 impl SubscriptionControllerHandle {
-    pub(crate) fn new(
-        ingress_options: IngressOptions,
-        commands_tx: SubscriptionCommandSender,
-    ) -> Self {
-        Self(Arc::new(ingress_options), commands_tx)
-    }
-}
-
-impl SubscriptionValidator for SubscriptionControllerHandle {
-    type Error = <IngressOptions as SubscriptionValidator>::Error;
-
-    fn validate(&self, subscription: Subscription) -> Result<Subscription, Self::Error> {
-        SubscriptionValidator::validate(self.0.deref(), subscription)
+    pub(crate) fn new(commands_tx: SubscriptionCommandSender) -> Self {
+        Self(commands_tx)
     }
 }
 
@@ -43,7 +28,7 @@ impl SubscriptionController for SubscriptionControllerHandle {
         &self,
         subscription: Subscription,
     ) -> Result<(), WorkerHandleError> {
-        self.1
+        self.0
             .send(restate_ingress_kafka::Command::StartSubscription(
                 subscription,
             ))
@@ -52,7 +37,7 @@ impl SubscriptionController for SubscriptionControllerHandle {
     }
 
     async fn stop_subscription(&self, id: SubscriptionId) -> Result<(), WorkerHandleError> {
-        self.1
+        self.0
             .send(restate_ingress_kafka::Command::StopSubscription(id))
             .await
             .map_err(|_| WorkerHandleError::Unreachable)
@@ -62,7 +47,7 @@ impl SubscriptionController for SubscriptionControllerHandle {
         &self,
         subscriptions: Vec<Subscription>,
     ) -> Result<(), WorkerHandleError> {
-        self.1
+        self.0
             .send(restate_ingress_kafka::Command::UpdateSubscriptions(
                 subscriptions,
             ))

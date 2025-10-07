@@ -29,8 +29,8 @@ use restate_types::schema::service::HandlerMetadata;
         schema = "std::string::String"
     ))
 )]
-pub async fn list_service_handlers<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn list_service_handlers<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ListServiceHandlersResponse>, MetaApiError> {
     match state.schema_registry.list_service_handlers(&service_name) {
@@ -58,8 +58,8 @@ pub async fn list_service_handlers<V, IC>(
         )
     )
 )]
-pub async fn get_service_handler<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn get_service_handler<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path((service_name, handler_name)): Path<(String, String)>,
 ) -> Result<Json<HandlerMetadata>, MetaApiError> {
     match state

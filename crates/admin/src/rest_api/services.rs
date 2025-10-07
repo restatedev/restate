@@ -35,8 +35,8 @@ use tracing::{debug, warn};
     operation_id = "list_services",
     tags = "service"
 )]
-pub async fn list_services<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn list_services<IC>(
+    State(state): State<AdminServiceState<IC>>,
 ) -> Result<Json<ListServicesResponse>, MetaApiError> {
     let services = state.schema_registry.list_services();
 
@@ -55,8 +55,8 @@ pub async fn list_services<V, IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn get_service<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError> {
     state
@@ -87,8 +87,8 @@ pub async fn get_service<V, IC>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn get_service_openapi<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn get_service_openapi<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<serde_json::Value>, MetaApiError> {
     // TODO return correct vnd type
@@ -112,8 +112,8 @@ pub async fn get_service_openapi<V, IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn modify_service<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn modify_service<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceRequest {
         public,
@@ -183,8 +183,8 @@ pub async fn modify_service<V, IC>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn modify_service_state<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn modify_service_state<IC>(
+    State(state): State<AdminServiceState<IC>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceStateRequest {
         version,

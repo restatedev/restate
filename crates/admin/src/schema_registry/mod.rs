@@ -31,7 +31,7 @@ use restate_types::schema::deployment::{
 };
 use restate_types::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use restate_types::schema::subscriptions::{
-    ListSubscriptionFilter, Subscription, SubscriptionResolver, SubscriptionValidator,
+    ListSubscriptionFilter, Subscription, SubscriptionResolver,
 };
 pub(crate) use restate_types::schema::updater::RegisterDeploymentResult;
 use restate_types::schema::{Schema, updater};
@@ -119,25 +119,22 @@ pub(crate) enum UpdateDeploymentAddress {
 
 /// This is the business logic driving the Admin API schema related endpoints.
 #[derive(Clone)]
-pub struct SchemaRegistry<V> {
+pub struct SchemaRegistry {
     metadata_writer: MetadataWriter,
     service_discovery: ServiceDiscovery,
     telemetry_http_client: Option<HttpClient>,
-    subscription_validator: V,
 }
 
-impl<V> SchemaRegistry<V> {
+impl SchemaRegistry {
     pub fn new(
         metadata_writer: MetadataWriter,
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
-        subscription_validator: V,
     ) -> Self {
         Self {
             metadata_writer,
             service_discovery,
             telemetry_http_client,
-            subscription_validator,
         }
     }
 
@@ -613,12 +610,7 @@ impl<V> SchemaRegistry<V> {
     pub fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
         Metadata::with_current(|m| m.schema()).list_subscriptions(filters)
     }
-}
 
-impl<V> SchemaRegistry<V>
-where
-    V: SubscriptionValidator,
-{
     pub(crate) async fn create_subscription(
         &self,
         source: Uri,
@@ -641,7 +633,6 @@ where
                             source.clone(),
                             sink.clone(),
                             options.clone(),
-                            &self.subscription_validator,
                         )
                     },
                 )?;

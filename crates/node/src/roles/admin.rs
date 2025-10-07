@@ -32,7 +32,6 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
 use restate_types::config::Configuration;
-use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
@@ -60,7 +59,7 @@ pub enum AdminRoleBuildError {
 pub struct AdminRole<T> {
     updateable_config: Live<Configuration>,
     controller: Option<cluster_controller::Service<T>>,
-    admin: AdminService<IngressOptions, PartitionProcessorInvocationClient<T>>,
+    admin: AdminService<PartitionProcessorInvocationClient<T>>,
     storage_accounting_task: Option<StorageAccountingTask>,
 }
 
@@ -123,7 +122,6 @@ impl<T: TransportConnect> AdminRole<T> {
                 partition_table,
                 partition_routing,
             ),
-            config.ingress.clone(),
             service_discovery,
             telemetry_http_client,
         )
