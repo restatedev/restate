@@ -43,6 +43,7 @@ pub enum RegisterDeploymentRequest {
         ///
         /// Additional headers added to the discover/invoke requests to the deployment.
         ///
+        /// You typically want to include here API keys and other tokens required to send requests to deployments.
         additional_headers: Option<SerdeableHeaderHashMap>,
 
         /// # Use http1.1

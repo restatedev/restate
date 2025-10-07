@@ -11,15 +11,14 @@
 use super::*;
 use std::convert::Infallible;
 
+use crate::Versioned;
+use crate::schema::deployment::DeploymentResolver;
+use crate::schema::deployment::{DeliveryOptions, Deployment};
+use crate::schema::invocation_target::InvocationTargetResolver;
+use crate::schema::service::ServiceMetadataResolver;
 use http::HeaderName;
 use restate_test_util::{assert, assert_eq};
 use test_log::test;
-
-use crate::Versioned;
-use crate::schema::deployment::Deployment;
-use crate::schema::deployment::DeploymentResolver;
-use crate::schema::invocation_target::InvocationTargetResolver;
-use crate::schema::service::ServiceMetadataResolver;
 
 const GREETER_SERVICE_NAME: &str = "greeter.Greeter";
 const GREET_HANDLER_NAME: &str = "greet";
@@ -251,6 +250,292 @@ fn register_new_deployment_add_unregistered_service() {
     schemas.assert_service_revision(GREETER_SERVICE_NAME, 2);
     schemas.assert_service_deployment(ANOTHER_GREETER_SERVICE_NAME, deployment_2.id);
     schemas.assert_service_revision(ANOTHER_GREETER_SERVICE_NAME, 1);
+}
+
+mod routing_header {
+    use super::*;
+
+    use restate_test_util::{assert, assert_eq};
+    use test_log::test;
+
+    #[test]
+    fn register_new_deployment_with_routing_header_first() {
+        let mut config = Configuration::default();
+        config.admin.deployment_routing_headers = vec![HeaderName::from_static("x-routing")];
+        crate::config::set_current_config(config);
+
+        let deployment = Deployment::mock_with_uri("http://localhost:9080");
+
+        // Register first deployment
+        let (deployment_id_1, schema) =
+            SchemaUpdater::update_and_return(Schema::default(), |updater| {
+                updater.add_deployment(
+                    DeploymentMetadata {
+                        delivery_options: DeliveryOptions::new(
+                            [(
+                                HeaderName::from_static("x-routing"),
+                                HeaderValue::from_static("1"),
+                            )]
+                            .into(),
+                        ),
+                        ..deployment.metadata.clone()
+                    },
+                    vec![greeter_service()],
+                    false,
+                )
+            })
+            .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_1);
+
+        // Update providing another routing header
+        let (deployment_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-routing"),
+                            HeaderValue::from_static("2"),
+                        )]
+                        .into(),
+                    ),
+                    created_at: (deployment.metadata.created_at.as_u64() + 1).into(),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
+
+        // Update not providing routing_header -> new deployment here
+        let (deployment_id_3, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(Default::default()),
+                    created_at: (deployment.metadata.created_at.as_u64() + 2).into(),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_3);
+
+        // Update providing the same routing header-> conflict
+        let update_result = SchemaUpdater::update_and_return(schema.clone(), |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-routing"),
+                            HeaderValue::from_static("2"),
+                        )]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        });
+        assert!(let SchemaError::Override(_) = update_result.unwrap_err());
+
+        // Force with same routing header -> all good
+        let (expected_dp_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-routing"),
+                            HeaderValue::from_static("2"),
+                        )]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_virtual_object()],
+                true,
+            )
+        })
+        .unwrap();
+        assert_eq!(expected_dp_id_2, deployment_id_2);
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
+        assert_eq!(
+            schema.assert_service(GREETER_SERVICE_NAME).ty,
+            ServiceType::VirtualObject
+        );
+    }
+
+    #[test]
+    fn register_new_deployment_without_routing_header_first() {
+        let mut config = Configuration::default();
+        config.admin.deployment_routing_headers = vec![HeaderName::from_static("x-routing")];
+        crate::config::set_current_config(config);
+
+        let deployment = Deployment::mock_with_uri("http://localhost:9080");
+
+        // Register first deployment with routing header
+        let (deployment_id_1, schema) =
+            SchemaUpdater::update_and_return(Schema::default(), |updater| {
+                updater.add_deployment(
+                    DeploymentMetadata {
+                        delivery_options: DeliveryOptions::new(
+                            [(
+                                HeaderName::from_static("x-routing"),
+                                HeaderValue::from_static("1"),
+                            )]
+                            .into(),
+                        ),
+                        ..deployment.metadata.clone()
+                    },
+                    vec![greeter_service()],
+                    false,
+                )
+            })
+            .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_1);
+
+        // Update without routing header -> new deployment
+        let (deployment_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(Default::default()),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
+    }
+
+    #[test]
+    fn with_multiple_configured_routing_headers() {
+        let mut config = Configuration::default();
+        config.admin.deployment_routing_headers = vec![
+            HeaderName::from_static("x-restate-routing"),
+            HeaderName::from_static("x-my-routing"),
+        ];
+        crate::config::set_current_config(config);
+
+        let deployment = Deployment::mock_with_uri("http://localhost:9080");
+
+        // Register first deployment with routing header
+        let (deployment_id_1, schema) =
+            SchemaUpdater::update_and_return(Schema::default(), |updater| {
+                updater.add_deployment(
+                    DeploymentMetadata {
+                        delivery_options: DeliveryOptions::new(
+                            [(
+                                HeaderName::from_static("x-restate-routing"),
+                                HeaderValue::from_static("1"),
+                            )]
+                            .into(),
+                        ),
+                        ..deployment.metadata.clone()
+                    },
+                    vec![greeter_service()],
+                    false,
+                )
+            })
+            .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_1);
+
+        // Update with different routing header -> new deployment
+        let (deployment_id_2, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-my-routing"),
+                            HeaderValue::from_static("1"),
+                        )]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_2);
+
+        // No routing header -> new deployment
+        let (deployment_id_3, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(Default::default()),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_3);
+
+        // Update with both routing header -> new deployment
+        let (deployment_id_4, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [
+                            (
+                                HeaderName::from_static("x-restate-routing"),
+                                HeaderValue::from_static("1"),
+                            ),
+                            (
+                                HeaderName::from_static("x-my-routing"),
+                                HeaderValue::from_static("1"),
+                            ),
+                        ]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        })
+        .unwrap();
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id_4);
+
+        // Update with same header -> fails
+        let update_result = SchemaUpdater::update_and_return(schema.clone(), |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(
+                        [(
+                            HeaderName::from_static("x-routing"),
+                            HeaderValue::from_static("1"),
+                        )]
+                        .into(),
+                    ),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        });
+        assert!(let SchemaError::Override(_) = update_result.unwrap_err());
+
+        // Update without header -> fails
+        let update_result = SchemaUpdater::update_and_return(schema.clone(), |updater| {
+            updater.add_deployment(
+                DeploymentMetadata {
+                    delivery_options: DeliveryOptions::new(Default::default()),
+                    ..deployment.metadata.clone()
+                },
+                vec![greeter_service()],
+                false,
+            )
+        });
+        assert!(let SchemaError::Override(_) = update_result.unwrap_err());
+    }
 }
 
 /// This test case ensures that https://github.com/restatedev/restate/issues/1205 works
@@ -858,23 +1143,6 @@ fn update_deployment_same_uri() {
         )
     })
     .unwrap();
-
-    // there are now two deployment IDs pointing to :9081, so we shouldn't be able to force either of them
-    assert!(let &SchemaError::Deployment(
-            DeploymentError::MultipleExistingDeployments(_)
-        ) = SchemaUpdater::update(schemas.clone(), |updater| updater.add_deployment(
-            deployment_1.metadata.clone(),
-            vec![greeter_service(), greeter_virtual_object()],
-            true,
-        ).map(|_| ())).unwrap_err());
-
-    assert!(let &SchemaError::Deployment(
-            DeploymentError::MultipleExistingDeployments(_)
-        ) = SchemaUpdater::update(schemas.clone(), |updater| updater.add_deployment(
-            deployment_2.metadata.clone(),
-            vec![greeter_service(), greeter_virtual_object()],
-            true,
-   ).map(|_| ())).unwrap_err());
 
     // Latest should remain deployment_2
     schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_2.id);

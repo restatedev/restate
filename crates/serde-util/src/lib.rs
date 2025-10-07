@@ -15,12 +15,14 @@ mod proto;
 
 pub mod authority;
 pub mod default;
+mod header_name;
 pub mod header_value;
 mod map_as_vec;
 mod version;
 
 pub use byte_count::*;
 pub use header_map::SerdeableHeaderHashMap;
+pub use header_name::HeaderNameSerde;
 pub use header_value::HeaderValueSerde;
 pub use map_as_vec::{MapAsVec, MapAsVecItem};
 #[cfg(feature = "proto")]
