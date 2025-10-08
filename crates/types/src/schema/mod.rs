@@ -10,12 +10,18 @@
 
 //! ## Schema
 //!
-//! This module contains the APIs and the [`Schema`] data structure that represents all the metadata discovered during service registration,
-//! and all the changes executed in the Admin API.
+//! This module contains the implementation of the schema registry.
 //!
-//! Check the submodules [`deployment`], [`invocation_target`], [`service`] and [`subscriptions`] for the various schema registry access APIs.
+//! The schema registry takes care of:
 //!
-//! Check [`Schema`] and the [`updater`] package to store the schema registry, and the APIs to update it.
+//! * Storing deployments, handle registration
+//! * Storing service/handler configurations
+//!
+//! Check [`registry::SchemaRegistry`] for the schema registry implementation, implementing both read and write operations.
+//!
+//! Check the submodules [`deployment`], [`invocation_target`], [`service`] and [`subscriptions`] for the various read APIs.
+//!
+//! The [`Schema`] data structure is a serializable representation of this schema registry.
 
 pub mod deployment;
 pub mod invocation_target;
