@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use codederror::{BoxedCodedError, CodedError};
 use http::{StatusCode, Uri};
@@ -20,8 +19,6 @@ use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
-use crate::live::Pinned;
-use crate::schema::Schema;
 use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::metadata::updater;
 use crate::schema::metadata::updater::{SchemaError, SchemaUpdater, ServiceError};
@@ -605,37 +602,5 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .expect("subscription was just added");
 
         Ok(subscription)
-    }
-}
-
-#[cfg(any(test, feature = "test-util"))]
-mod mocks {
-    use super::*;
-    use arc_swap::ArcSwap;
-    use std::ops::Deref;
-
-    impl TelemetryClient for () {
-        fn send_register_deployment_telemetry(&self, _: Option<String>) {
-            // Nothing
-        }
-    }
-
-    impl MetadataService for ArcSwap<Schema> {
-        fn get(&self) -> Pinned<Schema> {
-            Pinned::new(self)
-        }
-
-        fn update<T: Send, F>(
-            &self,
-            modify: F,
-        ) -> impl Future<Output = Result<(T, Arc<Schema>), SchemaRegistryError>> + Send
-        where
-            F: Fn(Schema) -> Result<(T, Schema), SchemaRegistryError>,
-        {
-            std::future::ready(
-                modify(self.load().deref().deref().clone())
-                    .map(|(t, schema)| (t, Arc::new(schema))),
-            )
-        }
     }
 }

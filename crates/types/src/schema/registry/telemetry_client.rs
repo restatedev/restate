@@ -11,3 +11,14 @@
 pub trait TelemetryClient {
     fn send_register_deployment_telemetry(&self, sdk_version: Option<String>);
 }
+
+#[cfg(any(test, feature = "test-util"))]
+mod mocks {
+    use super::*;
+
+    impl TelemetryClient for () {
+        fn send_register_deployment_telemetry(&self, _: Option<String>) {
+            // Nothing
+        }
+    }
+}
