@@ -154,8 +154,8 @@ impl SchemaRegistry {
         // Verify first if we have the service. If we do, no need to do anything here.
         if overwrite == updater::Overwrite::No {
             // Verify if we have a service for this endpoint already or not
-            if let Some((deployment, services)) =
-                Metadata::with_current(|m| m.schema_ref()).find_deployment(&deployment_address)
+            if let Some((deployment, services)) = Metadata::with_current(|m| m.schema_ref())
+                .find_deployment(&deployment_address, &additional_headers)
             {
                 return Ok((RegisterDeploymentResult::Unchanged, deployment, services));
             }

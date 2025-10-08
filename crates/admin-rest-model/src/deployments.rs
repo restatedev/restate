@@ -8,8 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use http::Uri;
-use http::Version;
+use http::{Uri, Version};
 use restate_serde_util::SerdeableHeaderHashMap;
 use restate_types::identifiers::ServiceRevision;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
@@ -44,7 +43,7 @@ pub enum RegisterDeploymentRequest {
         ///
         /// Additional headers added to every discover/invoke request to the deployment.
         ///
-        /// Fill this field with API Tokens and other authorization headers needed to send requests to the deployment.
+        /// You typically want to include here API keys and other tokens required to send requests to deployments.
         additional_headers: Option<SerdeableHeaderHashMap>,
 
         /// # Metadata
