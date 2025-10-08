@@ -22,9 +22,9 @@ use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
 use restate_errors::warn_it;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
+use restate_types::schema;
 use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::ServiceMetadata;
-use restate_types::schema::updater::ModifyServiceChange;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{Command, Envelope};
 use tracing::{debug, warn};
@@ -137,31 +137,22 @@ pub async fn modify_service<Metadata, Discovery, Telemetry, Invocations>(
 where
     Metadata: MetadataService,
 {
-    let mut modify_request = vec![];
-    if let Some(new_public_value) = public {
-        modify_request.push(ModifyServiceChange::Public(new_public_value));
-    }
-    if let Some(new_idempotency_retention) = idempotency_retention {
-        modify_request.push(ModifyServiceChange::IdempotencyRetention(
-            new_idempotency_retention,
-        ));
-    }
-    if let Some(new_workflow_completion_retention) = workflow_completion_retention {
-        modify_request.push(ModifyServiceChange::WorkflowCompletionRetention(
-            new_workflow_completion_retention,
-        ));
-    }
-    if let Some(new_journal_retention) = journal_retention {
-        modify_request.push(ModifyServiceChange::JournalRetention(new_journal_retention));
-    }
-    if let Some(inactivity_timeout) = inactivity_timeout {
-        modify_request.push(ModifyServiceChange::InactivityTimeout(inactivity_timeout));
-    }
-    if let Some(abort_timeout) = abort_timeout {
-        modify_request.push(ModifyServiceChange::AbortTimeout(abort_timeout));
-    }
+    let modify_request = schema::registry::ModifyServiceRequest {
+        public,
+        idempotency_retention,
+        journal_retention,
+        workflow_completion_retention,
+        inactivity_timeout,
+        abort_timeout,
+    };
 
-    if modify_request.is_empty() {
+    if modify_request.public.is_none()
+        && modify_request.idempotency_retention.is_none()
+        && modify_request.journal_retention.is_none()
+        && modify_request.workflow_completion_retention.is_none()
+        && modify_request.inactivity_timeout.is_none()
+        && modify_request.abort_timeout.is_none()
+    {
         // No need to do anything
         return get_service(State(state), Path(service_name)).await;
     }

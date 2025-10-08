@@ -547,7 +547,10 @@ fn force_deploy_private_service() -> Result<(), SchemaError> {
     updater = SchemaUpdater::new(schemas);
     updater.modify_service(
         GREETER_SERVICE_NAME,
-        vec![ModifyServiceChange::Public(false)],
+        ModifyServiceRequest {
+            public: Some(false),
+            ..ModifyServiceRequest::default()
+        },
     )?;
     let schemas = updater.into_inner();
 
@@ -1403,7 +1406,10 @@ fn update_deployment_with_private_service() -> Result<(), SchemaError> {
     updater = SchemaUpdater::new(schemas);
     updater.modify_service(
         GREETER_SERVICE_NAME,
-        vec![ModifyServiceChange::Public(false)],
+        ModifyServiceRequest {
+            public: Some(false),
+            ..ModifyServiceRequest::default()
+        },
     )?;
     let schemas = updater.into_inner();
     let version_after_modification = schemas.version();
@@ -1797,9 +1803,10 @@ mod endpoint_manifest_options_propagation {
         let schema = SchemaUpdater::update(schema, |updater| {
             updater.modify_service(
                 GREETER_SERVICE_NAME,
-                vec![ModifyServiceChange::JournalRetention(Duration::from_secs(
-                    120,
-                ))], // B = 120 seconds
+                ModifyServiceRequest {
+                    journal_retention: Some(Duration::from_secs(120)),
+                    ..ModifyServiceRequest::default()
+                }, // B = 120 seconds
             )
         })
         .unwrap();
@@ -2250,9 +2257,10 @@ mod modify_service {
         schema = SchemaUpdater::update(schema, |updater| {
             updater.modify_service(
                 GREETER_SERVICE_NAME,
-                vec![ModifyServiceChange::WorkflowCompletionRetention(
-                    new_retention,
-                )],
+                ModifyServiceRequest {
+                    workflow_completion_retention: Some(new_retention),
+                    ..ModifyServiceRequest::default()
+                },
             )
         })
         .unwrap();
@@ -2313,13 +2321,14 @@ mod modify_service {
         schema = SchemaUpdater::update(schema, |updater| {
             updater.modify_service(
                 GREETER_SERVICE_NAME,
-                vec![
-                    ModifyServiceChange::Public(new_public),
-                    ModifyServiceChange::IdempotencyRetention(new_idempotency_retention),
-                    ModifyServiceChange::JournalRetention(new_journal_retention),
-                    ModifyServiceChange::InactivityTimeout(new_inactivity_timeout),
-                    ModifyServiceChange::AbortTimeout(new_abort_timeout),
-                ],
+                ModifyServiceRequest {
+                    public: Some(new_public),
+                    idempotency_retention: Some(new_idempotency_retention),
+                    journal_retention: Some(new_journal_retention),
+                    workflow_completion_retention: None,
+                    inactivity_timeout: Some(new_inactivity_timeout),
+                    abort_timeout: Some(new_abort_timeout),
+                },
             )
         })
         .unwrap();
@@ -2404,16 +2413,14 @@ mod modify_service {
         schema = SchemaUpdater::update(schema, |updater| {
             updater.modify_service(
                 GREETER_SERVICE_NAME,
-                vec![
-                    ModifyServiceChange::Public(new_public),
-                    ModifyServiceChange::IdempotencyRetention(new_idempotency_retention),
-                    ModifyServiceChange::JournalRetention(new_journal_retention),
-                    ModifyServiceChange::WorkflowCompletionRetention(
-                        new_workflow_completion_retention,
-                    ),
-                    ModifyServiceChange::InactivityTimeout(new_inactivity_timeout),
-                    ModifyServiceChange::AbortTimeout(new_abort_timeout),
-                ],
+                ModifyServiceRequest {
+                    public: Some(new_public),
+                    idempotency_retention: Some(new_idempotency_retention),
+                    journal_retention: Some(new_journal_retention),
+                    workflow_completion_retention: Some(new_workflow_completion_retention),
+                    inactivity_timeout: Some(new_inactivity_timeout),
+                    abort_timeout: Some(new_abort_timeout),
+                },
             )
         })
         .unwrap();

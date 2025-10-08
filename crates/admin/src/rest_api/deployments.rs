@@ -26,11 +26,10 @@ use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision
 use restate_types::schema;
 use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
-    ApplyMode, DiscoveryClient, MetadataService, TelemetryClient,
+    AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
+    Overwrite, TelemetryClient,
 };
 use restate_types::schema::service::ServiceMetadata;
-use restate_types::schema::updater;
-use restate_types::schema::updater::AddDeploymentResult;
 use serde::Deserialize;
 
 /// Create deployment and return discovered services.
@@ -87,11 +86,11 @@ where
     let (allow_breaking, overwrite) =
         // Force defaults to true only in admin api version 1 or 2
         if force.unwrap_or(version == AdminApiVersion::V1 || version == AdminApiVersion::V2) {
-            (updater::AllowBreakingChanges::Yes, updater::Overwrite::Yes)
+            (AllowBreakingChanges::Yes, Overwrite::Yes)
         } else if breaking {
-            (updater::AllowBreakingChanges::Yes, updater::Overwrite::No)
+            (AllowBreakingChanges::Yes, Overwrite::No)
         } else {
-            (updater::AllowBreakingChanges::No, updater::Overwrite::No)
+            (AllowBreakingChanges::No, Overwrite::No)
         };
     let apply_mode = if dry_run {
         ApplyMode::DryRun
@@ -330,9 +329,9 @@ where
         } => (*overwrite, *dry_run),
     };
     let overwrite = if overwrite {
-        updater::Overwrite::Yes
+        Overwrite::Yes
     } else {
-        updater::Overwrite::No
+        Overwrite::No
     };
     let apply_mode = if dry_run {
         ApplyMode::DryRun

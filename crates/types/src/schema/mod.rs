@@ -25,4 +25,3 @@ pub mod service;
 pub mod subscriptions;
 
 pub use metadata::Schema;
-pub use metadata::updater;

@@ -53,16 +53,6 @@ pub enum Overwrite {
     No,
 }
 
-#[derive(Debug, Clone)]
-pub enum ModifyServiceChange {
-    Public(bool),
-    IdempotencyRetention(Duration),
-    JournalRetention(Duration),
-    WorkflowCompletionRetention(Duration),
-    InactivityTimeout(Duration),
-    AbortTimeout(Duration),
-}
-
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub(in crate::schema) enum SchemaError {
     // Those are generic and used by all schema resources
@@ -246,6 +236,16 @@ pub struct UpdateDeploymentRequest {
     pub(in crate::schema) additional_headers: Headers,
     pub(in crate::schema) discovery_response: DiscoveryResponse,
     pub(in crate::schema) overwrite: Overwrite,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModifyServiceRequest {
+    pub public: Option<bool>,
+    pub idempotency_retention: Option<Duration>,
+    pub journal_retention: Option<Duration>,
+    pub workflow_completion_retention: Option<Duration>,
+    pub inactivity_timeout: Option<Duration>,
+    pub abort_timeout: Option<Duration>,
 }
 
 /// Responsible for updating the provided [`Schema`] with new
@@ -982,40 +982,36 @@ impl SchemaUpdater {
     pub(in crate::schema) fn modify_service(
         &mut self,
         name: &str,
-        changes: Vec<ModifyServiceChange>,
+        modify_service_request: ModifyServiceRequest,
     ) -> Result<(), SchemaError> {
         self.apply_change_to_active_service_revision(name, |svc| {
-            for command in changes {
-                match command {
-                    ModifyServiceChange::Public(new_public_value) => {
-                        svc.public = new_public_value;
-                        // Cleanup generated OpenAPI
-                        svc.service_openapi_cache = Default::default();
-                    }
-                    ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
-                        svc.idempotency_retention = Some(new_idempotency_retention);
-                    }
-                    ModifyServiceChange::WorkflowCompletionRetention(
-                        new_workflow_completion_retention,
-                    ) => {
-                        // This applies only to workflow services
-                        if svc.ty != ServiceType::Workflow {
-                            return Err(SchemaError::Service(
-                                ServiceError::CannotModifyRetentionTime(svc.ty),
-                            ));
-                        }
-                        svc.workflow_completion_retention = Some(new_workflow_completion_retention);
-                    }
-                    ModifyServiceChange::JournalRetention(new_journal_retention) => {
-                        svc.journal_retention = Some(new_journal_retention);
-                    }
-                    ModifyServiceChange::InactivityTimeout(inactivity_timeout) => {
-                        svc.inactivity_timeout = Some(inactivity_timeout);
-                    }
-                    ModifyServiceChange::AbortTimeout(abort_timeout) => {
-                        svc.abort_timeout = Some(abort_timeout);
-                    }
+            if let Some(new_public_value) = modify_service_request.public {
+                svc.public = new_public_value;
+                // Cleanup generated OpenAPI
+                svc.service_openapi_cache = Default::default();
+            }
+            if let Some(new_idempotency_retention) = modify_service_request.idempotency_retention {
+                svc.idempotency_retention = Some(new_idempotency_retention);
+            }
+            if let Some(new_workflow_completion_retention) =
+                modify_service_request.workflow_completion_retention
+            {
+                // This applies only to workflow services
+                if svc.ty != ServiceType::Workflow {
+                    return Err(SchemaError::Service(
+                        ServiceError::CannotModifyRetentionTime(svc.ty),
+                    ));
                 }
+                svc.workflow_completion_retention = Some(new_workflow_completion_retention);
+            }
+            if let Some(new_journal_retention) = modify_service_request.journal_retention {
+                svc.journal_retention = Some(new_journal_retention);
+            }
+            if let Some(new_inactivity_timeout) = modify_service_request.inactivity_timeout {
+                svc.inactivity_timeout = Some(new_inactivity_timeout);
+            }
+            if let Some(new_abort_timeout) = modify_service_request.abort_timeout {
+                svc.abort_timeout = Some(new_abort_timeout);
             }
             Ok(())
         })?;

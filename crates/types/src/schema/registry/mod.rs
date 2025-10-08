@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use codederror::{BoxedCodedError, CodedError};
-use http::{StatusCode, Uri};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+use codederror::{BoxedCodedError, CodedError};
+use http::{StatusCode, Uri};
 use tracing::subscriber::NoSubscriber;
 
 use crate::deployment;
@@ -20,17 +21,20 @@ use crate::deployment::{
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use crate::live::Pinned;
+use crate::schema::Schema;
 use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
+use crate::schema::metadata::updater;
+use crate::schema::metadata::updater::{SchemaError, SchemaUpdater, ServiceError};
 use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
-pub(crate) use crate::schema::updater::AddDeploymentResult;
-use crate::schema::updater::SchemaError;
-use crate::schema::{Schema, updater, updater::SchemaUpdater};
 
 mod discovery_client;
 mod metadata_service;
 mod telemetry_client;
 
+pub use crate::schema::metadata::updater::{
+    AddDeploymentResult, AllowBreakingChanges, ModifyServiceRequest, Overwrite,
+};
 pub use discovery_client::*;
 pub use metadata_service::*;
 pub use telemetry_client::*;
@@ -54,8 +58,8 @@ impl SchemaRegistryError {
         match &self.0 {
             SchemaRegistryErrorInner::Schema(schema_error) => match schema_error {
                 SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
-                SchemaError::Service(updater::ServiceError::DifferentType { .. })
-                | SchemaError::Service(updater::ServiceError::RemovedHandlers { .. }) => {
+                SchemaError::Service(ServiceError::DifferentType { .. })
+                | SchemaError::Service(ServiceError::RemovedHandlers { .. }) => {
                     StatusCode::CONFLICT
                 }
                 SchemaError::Service(_) => StatusCode::BAD_REQUEST,
@@ -121,15 +125,15 @@ pub struct RegisterDeploymentRequest {
     pub additional_headers: Headers,
     pub metadata: deployment::Metadata,
     pub use_http_11: bool,
-    pub allow_breaking: updater::AllowBreakingChanges,
-    pub overwrite: updater::Overwrite,
+    pub allow_breaking: AllowBreakingChanges,
+    pub overwrite: Overwrite,
     pub apply_mode: ApplyMode,
 }
 
 pub struct UpdateDeploymentRequest {
     pub update_deployment_address: Option<UpdateDeploymentAddress>,
     pub additional_headers: Option<Headers>,
-    pub overwrite: updater::Overwrite,
+    pub overwrite: Overwrite,
     pub apply_mode: ApplyMode,
 }
 
@@ -182,7 +186,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
         }: RegisterDeploymentRequest,
     ) -> Result<(AddDeploymentResult, Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
         // Verify first if we have the service. If we do, no need to do anything here.
-        if overwrite == updater::Overwrite::No {
+        if overwrite == Overwrite::No {
             // Verify if we have a service for this endpoint already or not
             if let Some((deployment, services)) = self
                 .metadata_service
@@ -281,7 +285,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
     ) -> Result<(Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
         let Some(existing_deployment) = self.metadata_service.get().get_deployment(&deployment_id)
         else {
-            return Err(updater::SchemaError::NotFound(deployment_id.to_string()).into());
+            return Err(SchemaError::NotFound(deployment_id.to_string()).into());
         };
 
         // Merge with update changes requested
@@ -456,7 +460,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
                         if updater.remove_deployment(deployment_id) {
                             Ok(())
                         } else {
-                            Err(updater::SchemaError::NotFound(format!(
+                            Err(SchemaError::NotFound(format!(
                                 "deployment with id '{deployment_id}'"
                             )))
                         }
@@ -471,7 +475,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
     pub async fn modify_service(
         &self,
         service_name: String,
-        changes: Vec<updater::ModifyServiceChange>,
+        request: ModifyServiceRequest,
     ) -> Result<ServiceMetadata, SchemaRegistryError> {
         let (_, schema) = self
             .metadata_service
@@ -480,7 +484,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
                     Ok((
                         (),
                         SchemaUpdater::update(schema, |updater| {
-                            updater.modify_service(&service_name, changes.clone())
+                            updater.modify_service(&service_name, request.clone())
                         })?,
                     ))
                 } else {
@@ -508,7 +512,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
                         if updater.remove_subscription(subscription_id) {
                             Ok(())
                         } else {
-                            Err(updater::SchemaError::NotFound(format!(
+                            Err(SchemaError::NotFound(format!(
                                 "subscription with id '{subscription_id}'"
                             )))
                         }

@@ -50,6 +50,10 @@ pub struct Deployment {
 }
 
 impl Deployment {
+    pub fn as_address(&self) -> DeploymentAddress {
+        self.ty.as_address()
+    }
+
     // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
     // and for Lambda deployments its the ARN
     pub fn address_display(&self) -> impl Display + '_ {
@@ -158,6 +162,20 @@ impl DeploymentType {
             }
         }
         Wrapper(self)
+    }
+
+    pub fn as_address(&self) -> DeploymentAddress {
+        match self {
+            DeploymentType::Http { address, .. } => {
+                HttpDeploymentAddress::new(address.clone()).into()
+            }
+            DeploymentType::Lambda {
+                arn,
+                assume_role_arn,
+                ..
+            } => LambdaDeploymentAddress::new(arn.clone(), assume_role_arn.clone().map(Into::into))
+                .into(),
+        }
     }
 
     pub fn backfill_http_version(protocol_type: ProtocolType) -> http::Version {
