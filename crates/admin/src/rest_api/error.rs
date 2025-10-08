@@ -12,7 +12,7 @@ use assert2::let_assert;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use codederror::{BoxedCodedError, Code, CodedError};
+use codederror::{Code, CodedError};
 use okapi_operation::okapi::map;
 use okapi_operation::okapi::openapi3::{RefOr, Responses};
 use okapi_operation::{Components, ToMediaTypes, ToResponses, okapi};
@@ -20,7 +20,6 @@ use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;
 use restate_types::schema::registry::SchemaRegistryError;
-use restate_types::schema::updater;
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::ops::RangeInclusive;
@@ -291,9 +290,7 @@ pub enum MetaApiError {
     #[error("Cannot {0} for service type {1}")]
     UnsupportedOperation(&'static str, ServiceType),
     #[error(transparent)]
-    Schema(#[from] updater::SchemaError),
-    #[error("{0}")]
-    Discovery(#[from] BoxedCodedError),
+    Schema(#[from] SchemaRegistryError),
     #[error("Internal server error: {0}")]
     Internal(String),
     #[error("Conflict: {0}")]
@@ -324,15 +321,7 @@ impl IntoResponse for MetaApiError {
             MetaApiError::InvalidField(_, _) | MetaApiError::UnsupportedOperation(_, _) => {
                 StatusCode::BAD_REQUEST
             }
-            MetaApiError::Schema(schema_error) => match schema_error {
-                updater::SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
-                updater::SchemaError::Service(updater::ServiceError::DifferentType { .. })
-                | updater::SchemaError::Service(updater::ServiceError::RemovedHandlers {
-                    ..
-                }) => StatusCode::CONFLICT,
-                updater::SchemaError::Service(_) => StatusCode::BAD_REQUEST,
-                _ => StatusCode::BAD_REQUEST,
-            },
+            MetaApiError::Schema(error) => error.status_code(),
             MetaApiError::Conflict(_) => StatusCode::CONFLICT,
             MetaApiError::DeprecatedPutDeployment => StatusCode::METHOD_NOT_ALLOWED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -341,10 +330,6 @@ impl IntoResponse for MetaApiError {
             MetaApiError::Schema(m) => ErrorDescriptionResponse {
                 message: m.decorate().to_string(),
                 restate_code: m.code().map(Code::code),
-            },
-            MetaApiError::Discovery(err) => ErrorDescriptionResponse {
-                message: err.to_string(),
-                restate_code: err.code().map(Code::code),
             },
             e => ErrorDescriptionResponse {
                 message: e.to_string(),
@@ -383,19 +368,6 @@ impl ToResponses for MetaApiError {
             },
             ..Default::default()
         })
-    }
-}
-
-impl From<SchemaRegistryError> for MetaApiError {
-    fn from(value: SchemaRegistryError) -> Self {
-        match value {
-            SchemaRegistryError::Schema(err) => MetaApiError::Schema(err),
-            SchemaRegistryError::Internal(msg) => MetaApiError::Internal(msg),
-            SchemaRegistryError::Discovery(e) => MetaApiError::Discovery(e),
-            e @ SchemaRegistryError::UpdateDeployment { .. } => {
-                MetaApiError::Conflict(e.to_string())
-            }
-        }
     }
 }
 

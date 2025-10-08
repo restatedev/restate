@@ -61,7 +61,7 @@ pub enum ModifyServiceChange {
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum SchemaError {
+pub(in crate::schema) enum SchemaError {
     // Those are generic and used by all schema resources
     #[error("not found in the schema registry: {0}")]
     #[code(unknown)]
@@ -89,7 +89,7 @@ pub enum SchemaError {
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum ServiceError {
+pub(in crate::schema) enum ServiceError {
     #[error("cannot insert/modify service '{0}' as it contains a reserved name")]
     #[code(restate_errors::META0005)]
     ReservedName(String),
@@ -148,7 +148,7 @@ pub enum ServiceError {
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(restate_errors::META0009)]
-pub enum SubscriptionError {
+pub(in crate::schema) enum SubscriptionError {
     #[error("subscription {0} already exists")]
     Override(SubscriptionId),
 
@@ -178,17 +178,7 @@ pub enum SubscriptionError {
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum DeploymentError {
-    #[error(
-        "an update deployment operation must provide an endpoint with the same services and handlers. The update tried to remove the services {0:?}"
-    )]
-    #[code(restate_errors::META0016)]
-    RemovedServices(Vec<String>),
-    #[error(
-        "multiple deployments ({0:?}) were found that reference the discovered endpoint. A deployment can only be force updated when it uniquely owns its endpoint. First delete one or more of the deployments"
-    )]
-    #[code(restate_errors::META0017)]
-    MultipleExistingDeployments(Vec<DeploymentId>),
+pub(in crate::schema) enum DeploymentError {
     #[error(
         "an update deployment operation must provide an endpoint with the same services and handlers. The update tried to change the supported protocol versions from {0:?} to {1:?}"
     )]
@@ -240,13 +230,13 @@ pub enum RegisterDeploymentResult {
 /// schema information. It makes sure that the version of schema information
 /// is incremented on changes.
 #[derive(Debug, Default)]
-pub struct SchemaUpdater {
+pub(in crate::schema) struct SchemaUpdater {
     schema: Schema,
     modified: bool,
 }
 
 impl SchemaUpdater {
-    pub fn update<E>(
+    pub(in crate::schema) fn update<E>(
         schema: Schema,
         updater_fn: impl FnOnce(&mut SchemaUpdater) -> Result<(), E>,
     ) -> Result<Schema, E> {
@@ -255,7 +245,7 @@ impl SchemaUpdater {
         Ok(schema_updater.into_inner())
     }
 
-    pub fn update_and_return<T, E>(
+    pub(in crate::schema) fn update_and_return<T, E>(
         schema: Schema,
         updater_fn: impl FnOnce(&mut SchemaUpdater) -> Result<T, E>,
     ) -> Result<(T, Schema), E> {
@@ -285,7 +275,7 @@ impl SchemaUpdater {
         self.modified = true;
     }
 
-    pub fn add_deployment(
+    pub(in crate::schema) fn add_deployment(
         &mut self,
         deployment_metadata: DeploymentMetadata,
         services: Vec<endpoint_manifest::Service>,
@@ -609,7 +599,7 @@ impl SchemaUpdater {
         })
     }
 
-    pub fn update_deployment(
+    pub(in crate::schema) fn update_deployment(
         &mut self,
         deployment_id: DeploymentId,
         new_deployment_metadata: DeploymentMetadata,
@@ -788,7 +778,7 @@ impl SchemaUpdater {
         false
     }
 
-    pub fn add_subscription(
+    pub(in crate::schema) fn add_subscription(
         &mut self,
         id: Option<SubscriptionId>,
         source: Uri,
@@ -917,7 +907,7 @@ impl SchemaUpdater {
         false
     }
 
-    pub fn modify_service(
+    pub(in crate::schema) fn modify_service(
         &mut self,
         name: &str,
         changes: Vec<ModifyServiceChange>,

@@ -16,8 +16,8 @@ use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_service_client::HttpClient;
 use restate_types::live::Pinned;
+use restate_types::schema::Schema;
 use restate_types::schema::registry::SchemaRegistryError;
-use restate_types::schema::{Schema, updater};
 use tracing::trace;
 
 #[derive(Clone)]
@@ -30,7 +30,7 @@ impl restate_types::schema::registry::MetadataService for MetadataService {
 
     async fn update<T: Send, F>(&self, modify: F) -> Result<(T, Arc<Schema>), SchemaRegistryError>
     where
-        F: (Fn(Schema) -> Result<(T, Schema), updater::SchemaError>) + Send + Sync,
+        F: (Fn(Schema) -> Result<(T, Schema), SchemaRegistryError>) + Send + Sync,
     {
         let mut t = None;
         let schemas = self
@@ -47,8 +47,8 @@ impl restate_types::schema::registry::MetadataService for MetadataService {
             })
             .await
             .map_err(|err| match err {
-                ReadModifyWriteError::FailedOperation(err) => SchemaRegistryError::Schema(err),
-                err => SchemaRegistryError::Internal(err.to_string()),
+                ReadModifyWriteError::FailedOperation(err) => err,
+                err => SchemaRegistryError::internal(err),
             })?;
 
         Ok((t.unwrap(), schemas))

@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use codederror::{BoxedCodedError, CodedError};
-use http::{HeaderName, HeaderValue, Uri};
+use http::{StatusCode, Uri};
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 use tracing::subscriber::NoSubscriber;
 
+use crate::deployment;
 use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
@@ -27,56 +27,58 @@ use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataRe
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
 pub(crate) use crate::schema::updater::RegisterDeploymentResult;
 use crate::schema::updater::SchemaError;
-use crate::schema::{Schema, updater};
-use crate::{deployment, endpoint_manifest};
-// --- Schema registry dependencies
+use crate::schema::{Schema, updater, updater::SchemaUpdater};
 
-pub trait MetadataService {
-    fn get(&self) -> Pinned<Schema>;
+mod discovery_client;
+mod metadata_service;
+mod telemetry_client;
 
-    fn update<T: Send, F>(
-        &self,
-        modify: F,
-    ) -> impl Future<Output = Result<(T, Arc<Schema>), SchemaRegistryError>> + Send
-    where
-        F: (Fn(Schema) -> Result<(T, Schema), updater::SchemaError>) + Send + Sync;
-}
-
-#[derive(Debug)]
-pub struct DiscoveryRequest {
-    pub address: DeploymentAddress,
-    pub use_http_11: bool,
-    pub additional_headers: HashMap<HeaderName, HeaderValue>,
-}
-
-#[derive(Debug)]
-pub struct DiscoveryResponse {
-    pub deployment_type: DeploymentType,
-    pub headers: HashMap<HeaderName, HeaderValue>,
-    pub services: Vec<endpoint_manifest::Service>,
-    // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
-    // and we need to represent unknown later versions
-    pub supported_protocol_versions: RangeInclusive<i32>,
-    pub sdk_version: Option<String>,
-}
-
-pub trait DiscoveryClient {
-    type Error: CodedError + Send + Sync + 'static;
-
-    fn discover(
-        &self,
-        req: DiscoveryRequest,
-    ) -> impl Future<Output = Result<DiscoveryResponse, Self::Error>> + Send;
-}
-
-pub trait TelemetryClient {
-    fn send_register_deployment_telemetry(&self, sdk_version: Option<String>);
-}
+pub use discovery_client::*;
+pub use metadata_service::*;
+pub use telemetry_client::*;
 
 // -- Schema registry error and other types
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum SchemaRegistryError {
+#[error(transparent)]
+pub struct SchemaRegistryError(
+    #[from]
+    #[code]
+    SchemaRegistryErrorInner,
+);
+
+impl SchemaRegistryError {
+    pub fn internal(error: impl ToString) -> Self {
+        Self(SchemaRegistryErrorInner::Internal(error.to_string()))
+    }
+
+    pub fn status_code(&self) -> StatusCode {
+        match &self.0 {
+            SchemaRegistryErrorInner::Schema(schema_error) => match schema_error {
+                SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
+                SchemaError::Service(updater::ServiceError::DifferentType { .. })
+                | SchemaError::Service(updater::ServiceError::RemovedHandlers { .. }) => {
+                    StatusCode::CONFLICT
+                }
+                SchemaError::Service(_) => StatusCode::BAD_REQUEST,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            SchemaRegistryErrorInner::UpdateDeployment { .. } => StatusCode::BAD_REQUEST,
+            SchemaRegistryErrorInner::Discovery(_) | SchemaRegistryErrorInner::Internal(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }
+    }
+}
+
+impl From<SchemaError> for SchemaRegistryError {
+    fn from(value: SchemaError) -> Self {
+        Self(value.into())
+    }
+}
+
+#[derive(Debug, thiserror::Error, codederror::CodedError)]
+enum SchemaRegistryErrorInner {
     #[error(transparent)]
     Schema(
         #[from]
@@ -91,9 +93,9 @@ pub enum SchemaRegistryError {
         actual_deployment_type: &'static str,
         expected_deployment_type: &'static str,
     },
-    #[error(transparent)]
+    #[error("{0}")]
     Discovery(
-        #[from]
+        #[source]
         #[code]
         BoxedCodedError,
     ),
@@ -208,7 +210,9 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
             .discovery_client
             .discover(discovery_request)
             .await
-            .map_err(|e| e.into_boxed())?;
+            .map_err(|e| e.into_boxed())
+            .map_err(SchemaRegistryErrorInner::Discovery)
+            .map_err(SchemaRegistryError::from)?;
 
         // Construct deployment metadata from discovery response
         let deployment_metadata = DeploymentMetadata::new(
@@ -224,7 +228,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
             // Suppress logging output in case of a dry run
             let ((deployment_result, deployment_id), schemas) =
                 tracing::subscriber::with_default(NoSubscriber::new(), || {
-                    updater::SchemaUpdater::update_and_return(
+                    SchemaUpdater::update_and_return(
                         self.metadata_service.get().clone(),
                         |updater| {
                             updater.add_deployment(
@@ -247,13 +251,15 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
             let ((new_deployment_result, new_deployment_id), schemas) = self
                 .metadata_service
                 .update(|schema| {
-                    updater::SchemaUpdater::update_and_return(schema, |updater| {
-                        updater.add_deployment(
-                            deployment_metadata.clone(),
-                            discovery_response.services.clone(),
-                            allow_breaking,
-                            overwrite,
-                        )
+                    SchemaUpdater::update_and_return(schema, |updater| {
+                        updater
+                            .add_deployment(
+                                deployment_metadata.clone(),
+                                discovery_response.services.clone(),
+                                allow_breaking,
+                                overwrite,
+                            )
+                            .map_err(Into::into)
                     })
                 })
                 .await?;
@@ -346,16 +352,18 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                     false,
                 ),
                 (Some(UpdateDeploymentAddress::Lambda { .. }), DeploymentType::Http { .. }) => {
-                    return Err(SchemaRegistryError::UpdateDeployment {
+                    return Err(SchemaRegistryErrorInner::UpdateDeployment {
                         actual_deployment_type: "http",
                         expected_deployment_type: "lambda",
-                    });
+                    }
+                    .into());
                 }
                 (Some(UpdateDeploymentAddress::Http { .. }), DeploymentType::Lambda { .. }) => {
-                    return Err(SchemaRegistryError::UpdateDeployment {
+                    return Err(SchemaRegistryErrorInner::UpdateDeployment {
                         actual_deployment_type: "lambda",
                         expected_deployment_type: "http",
-                    });
+                    }
+                    .into());
                 }
                 (
                     None,
@@ -404,7 +412,9 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
             .discovery_client
             .discover(discovery_request)
             .await
-            .map_err(|e| e.into_boxed())?;
+            .map_err(|e| e.into_boxed())
+            .map_err(SchemaRegistryErrorInner::Discovery)
+            .map_err(SchemaRegistryError::from)?;
 
         // Construct deployment metadata from discovery response
         let deployment_metadata = DeploymentMetadata::new(
@@ -419,7 +429,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
             // --- Dry run
             // Suppress logging output in case of a dry run
             let schemas = tracing::subscriber::with_default(NoSubscriber::new(), || {
-                updater::SchemaUpdater::update(self.metadata_service.get().clone(), |updater| {
+                SchemaUpdater::update(self.metadata_service.get().clone(), |updater| {
                     updater.update_deployment(
                         deployment_id,
                         deployment_metadata,
@@ -439,7 +449,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                 .update(|schema| {
                     Ok((
                         (),
-                        updater::SchemaUpdater::update(schema, |updater| {
+                        SchemaUpdater::update(schema, |updater| {
                             updater.update_deployment(
                                 deployment_id,
                                 deployment_metadata.clone(),
@@ -470,7 +480,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .update(|schema| {
                 Ok((
                     (),
-                    updater::SchemaUpdater::update(schema, |updater| {
+                    SchemaUpdater::update(schema, |updater| {
                         if updater.remove_deployment(deployment_id) {
                             Ok(())
                         } else {
@@ -497,14 +507,12 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
                 if schema.resolve_latest_service(&service_name).is_some() {
                     Ok((
                         (),
-                        updater::SchemaUpdater::update(schema, |updater| {
+                        SchemaUpdater::update(schema, |updater| {
                             updater.modify_service(&service_name, changes.clone())
                         })?,
                     ))
                 } else {
-                    Err(updater::SchemaError::NotFound(format!(
-                        "service with name '{service_name}'"
-                    )))
+                    Err(SchemaError::NotFound(format!("service with name '{service_name}'")).into())
                 }
             })
             .await?;
@@ -524,7 +532,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .update(|schema| {
                 Ok((
                     (),
-                    updater::SchemaUpdater::update(schema, |updater| {
+                    SchemaUpdater::update(schema, |updater| {
                         if updater.remove_subscription(subscription_id) {
                             Ok(())
                         } else {
@@ -609,9 +617,10 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
         let (subscription_id, schema) = self
             .metadata_service
             .update(|schema| {
-                updater::SchemaUpdater::update_and_return(schema, |updater| {
+                SchemaUpdater::update_and_return(schema, |updater| {
                     updater.add_subscription(None, source.clone(), sink.clone(), options.clone())
                 })
+                .map_err(Into::into)
             })
             .await?;
 
@@ -645,12 +654,11 @@ mod mocks {
             modify: F,
         ) -> impl Future<Output = Result<(T, Arc<Schema>), SchemaRegistryError>> + Send
         where
-            F: Fn(Schema) -> Result<(T, Schema), SchemaError>,
+            F: Fn(Schema) -> Result<(T, Schema), SchemaRegistryError>,
         {
             std::future::ready(
                 modify(self.load().deref().deref().clone())
-                    .map(|(t, schema)| (t, Arc::new(schema)))
-                    .map_err(SchemaRegistryError::from),
+                    .map(|(t, schema)| (t, Arc::new(schema))),
             )
         }
     }
