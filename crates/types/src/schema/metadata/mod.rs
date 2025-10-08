@@ -30,9 +30,9 @@ use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeploymentResolver, DeploymentType};
 use crate::schema::invocation_target::{
-    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InputRules,
-    InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver, OnMaxAttempts,
-    OutputRules,
+    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, DeploymentStatus,
+    InputRules, InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver,
+    OnMaxAttempts, OutputRules,
 };
 use crate::schema::metadata::openapi::ServiceOpenAPI;
 use crate::schema::service::{
@@ -40,6 +40,7 @@ use crate::schema::service::{
 };
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
 use crate::schema::{deployment, service};
+use crate::service_protocol::ServiceProtocolVersion;
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
 
@@ -597,7 +598,8 @@ impl InvocationTargetResolver for Schema {
         let handler_name = handler_name.as_ref();
 
         let ActiveServiceRevision {
-            service_revision, ..
+            service_revision,
+            deployment_id,
         } = self.active_service_revisions.get(service_name)?;
         let handler = service_revision.handlers.get(handler_name)?;
 
@@ -627,6 +629,24 @@ impl InvocationTargetResolver for Schema {
             )
             .unwrap_or(Duration::ZERO);
 
+        let deployment_status = self
+            .deployments
+            .get(deployment_id)
+            .map(|dp| {
+                if ServiceProtocolVersion::is_acceptable_for_new_invocations(
+                    *dp.supported_protocol_versions.start(),
+                    *dp.supported_protocol_versions.end(),
+                ) {
+                    DeploymentStatus::Enabled
+                } else {
+                    DeploymentStatus::Deprecated(dp.id)
+                }
+            })
+            // It should never happen that the deployment doesn't exist,
+            // this is an invalid schema registry otherwise.
+            // But let's not panic yet, this will fail later on.
+            .unwrap_or_default();
+
         Some(InvocationTargetMetadata {
             public: handler.public.unwrap_or(service_revision.public),
             completion_retention,
@@ -634,6 +654,7 @@ impl InvocationTargetResolver for Schema {
             target_ty: handler.target_ty,
             input_rules: handler.input_rules.clone(),
             output_rules: handler.output_rules.clone(),
+            deployment_status,
         })
     }
 

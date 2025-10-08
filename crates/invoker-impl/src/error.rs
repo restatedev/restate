@@ -293,6 +293,9 @@ pub(crate) enum CommandPreconditionError {
     NoStateOperations,
     #[error("unsupported entry type, this handler type cannot write state")]
     NoWriteStateOperations,
+    #[error("the service {0} is exposed by the deprecated deployment {1}.")]
+    #[code(restate_errors::RT0020)]
+    DeploymentDeprecated(String, DeploymentId),
 }
 
 #[derive(Debug)]

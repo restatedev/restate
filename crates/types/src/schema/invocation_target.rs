@@ -72,6 +72,14 @@ pub enum OnMaxAttempts {
     Kill,
 }
 
+#[derive(Debug, Clone, Default)]
+pub enum DeploymentStatus {
+    #[default]
+    Enabled,
+    /// If de, deployment is disabled, and new requests should not be accepted.
+    Deprecated(DeploymentId),
+}
+
 #[derive(Debug, Clone)]
 pub struct InvocationTargetMetadata {
     pub public: bool,
@@ -84,6 +92,8 @@ pub struct InvocationTargetMetadata {
     pub target_ty: InvocationTargetType,
     pub input_rules: InputRules,
     pub output_rules: OutputRules,
+
+    pub deployment_status: DeploymentStatus,
 }
 
 impl InvocationTargetMetadata {
@@ -577,6 +587,7 @@ pub mod test_util {
                 target_ty: invocation_target_type,
                 input_rules: Default::default(),
                 output_rules: Default::default(),
+                deployment_status: DeploymentStatus::Enabled,
             }
         }
     }

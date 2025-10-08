@@ -14,6 +14,7 @@ use crate::RequestDispatcherError;
 use bytes::Bytes;
 use http::{Response, StatusCode, header};
 use restate_types::errors::{IdDecodeError, InvocationError};
+use restate_types::identifiers::DeploymentId;
 use restate_types::schema::invocation_target::InputValidationError;
 use serde::Serialize;
 use std::string;
@@ -28,6 +29,10 @@ pub(crate) enum HandlerError {
         "the service '{0}' exists, but the handler '{1}' was not found, check that the handler exists in the latest registered service version."
     )]
     ServiceHandlerNotFound(String, String),
+    #[error(
+        "the service {0} is exposed by the deprecated deployment {1}. Upgrade the SDK used by {0}."
+    )]
+    DeploymentDeprecated(String, DeploymentId),
     #[error("invocation not found")]
     InvocationNotFound,
     #[error(
@@ -128,7 +133,8 @@ impl HandlerError {
             | HandlerError::BadWorkflowPath
             | HandlerError::InputValidation(_)
             | HandlerError::UnsupportedIdempotencyKey
-            | HandlerError::UnsupportedGetOutput => StatusCode::BAD_REQUEST,
+            | HandlerError::UnsupportedGetOutput
+            | HandlerError::DeploymentDeprecated(_, _) => StatusCode::BAD_REQUEST,
             HandlerError::DispatcherError(_) => {
                 // TODO add more distinctions between different dispatcher errors (unavailable, etc)
                 StatusCode::INTERNAL_SERVER_ERROR

@@ -33,7 +33,7 @@ use restate_types::journal::{
 use restate_types::journal::{EntryType, InvokeRequest};
 use restate_types::journal_v2::SignalId;
 use restate_types::live::Live;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 
 #[derive(Clone)]
 pub(super) struct EntryEnricher<Schemas, Codec> {
@@ -77,6 +77,15 @@ where
                     &request.handler_name,
                 )
             })?;
+        if let DeploymentStatus::Deprecated(dp_id) = meta.deployment_status {
+            return Err(InvocationError::new(
+                codes::INTERNAL,
+                format!(
+                    "the service {} is exposed by the deprecated deployment {dp_id}. Upgrade the SDK used by {}.",
+                    request.service_name, request.service_name
+                ),
+            ));
+        }
 
         let invocation_target = match meta.target_ty {
             InvocationTargetType::Service => {
