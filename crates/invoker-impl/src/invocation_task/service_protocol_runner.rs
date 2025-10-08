@@ -37,9 +37,7 @@ use restate_types::journal::EntryType;
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal_v2;
 use restate_types::journal_v2::EntryMetadata;
-use restate_types::schema::deployment::{
-    Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
-};
+use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
@@ -112,7 +110,7 @@ where
         let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
             ProtocolType::RequestResponse
         } else {
-            deployment.metadata.ty.protocol_type()
+            deployment.ty.protocol_type()
         };
 
         // Close the invoker_rx in case it's request response, this avoids further buffering of messages in this channel.
@@ -132,7 +130,7 @@ where
 
         debug!(
             restate.invocation.id = %self.invocation_task.invocation_id,
-            deployment.address = %deployment.metadata.address_display(),
+            deployment.address = %deployment.address_display(),
             deployment.service_protocol_version = %self.service_protocol_version.as_repr(),
             path = %path,
             "Executing invocation at deployment"
@@ -145,7 +143,7 @@ where
         // Prepare the request and send start message
         let (mut http_stream_tx, request) = Self::prepare_request(
             path,
-            deployment.metadata,
+            deployment,
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             &service_invocation_span_context,
@@ -212,7 +210,7 @@ where
 
     fn prepare_request(
         path: PathAndQuery,
-        deployment_metadata: DeploymentMetadata,
+        deployment: Deployment,
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
@@ -262,7 +260,7 @@ where
             }
         }
 
-        let address = match deployment_metadata.ty {
+        let address = match deployment.ty {
             DeploymentType::Lambda {
                 arn,
                 assume_role_arn,
@@ -275,7 +273,7 @@ where
             } => Endpoint::Http(address, Some(http_version)),
         };
 
-        headers.extend(deployment_metadata.delivery_options.additional_headers);
+        headers.extend(deployment.additional_headers);
 
         (
             http_stream_tx,

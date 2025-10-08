@@ -100,7 +100,6 @@ where
                         };
 
                         if !deployment
-                            .metadata
                             .supported_protocol_versions
                             .contains(&(pinned_deployment.service_protocol_version as i32))
                         {
@@ -108,9 +107,7 @@ where
                                 pinned_protocol_version: pinned_deployment.service_protocol_version
                                     as i32,
                                 deployment_id: deployment.id,
-                                supported_protocol_versions: deployment
-                                    .metadata
-                                    .supported_protocol_versions,
+                                supported_protocol_versions: deployment.supported_protocol_versions,
                             });
                             return Ok(());
                         }
@@ -411,7 +408,7 @@ mod tests {
 
         // Candidate deployment supports only up to V4 -> incompatible with V5
         let mut dep = Deployment::mock();
-        dep.metadata.supported_protocol_versions = 1..=4;
+        dep.supported_protocol_versions = 1..=4;
         let expected_deployment_id = dep.id;
 
         let mut schemas = MockDeploymentMetadataRegistry::default();
@@ -486,7 +483,7 @@ mod tests {
 
         // Candidate deployment supports V4 -> Should be compatible
         let mut dep = Deployment::mock();
-        dep.metadata.supported_protocol_versions = 1..=4;
+        dep.supported_protocol_versions = 1..=4;
         let expected_deployment_id = dep.id;
 
         let mut schemas = MockDeploymentMetadataRegistry::default();

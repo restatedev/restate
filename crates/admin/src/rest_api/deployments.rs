@@ -24,13 +24,13 @@ use restate_errors::warn_it;
 use restate_types::deployment::{HttpDeploymentAddress, LambdaDeploymentAddress};
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
 use restate_types::schema;
-use restate_types::schema::deployment::{Deployment, DeploymentMetadata, DeploymentType};
+use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
     ApplyMode, DiscoveryClient, MetadataService, TelemetryClient,
 };
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::schema::updater;
-use restate_types::schema::updater::RegisterDeploymentResult;
+use restate_types::schema::updater::AddDeploymentResult;
 use serde::Deserialize;
 
 /// Create deployment and return discovered services.
@@ -150,8 +150,8 @@ where
 
     // -- Map response
     let status_code = match result {
-        RegisterDeploymentResult::Created => StatusCode::CREATED,
-        RegisterDeploymentResult::Unchanged => {
+        AddDeploymentResult::Created => StatusCode::CREATED,
+        AddDeploymentResult::Unchanged => {
             if version == AdminApiVersion::Unknown || version.as_repr() >= 3 {
                 StatusCode::OK
             } else {
@@ -161,7 +161,7 @@ where
                 )));
             }
         }
-        RegisterDeploymentResult::Overwritten => {
+        AddDeploymentResult::Overwritten => {
             if version == AdminApiVersion::Unknown || version.as_repr() >= 3 {
                 StatusCode::OK
             } else {
@@ -425,12 +425,9 @@ where
 fn to_register_response(
     Deployment {
         id,
-        metadata:
-            DeploymentMetadata {
-                supported_protocol_versions,
-                sdk_version,
-                ..
-            },
+        supported_protocol_versions,
+        sdk_version,
+        ..
     }: Deployment,
     services: Vec<ServiceMetadata>,
 ) -> RegisterDeploymentResponse {
@@ -446,16 +443,13 @@ fn to_register_response(
 fn to_deployment_response(
     Deployment {
         id,
-        metadata:
-            DeploymentMetadata {
-                ty,
-                delivery_options,
-                supported_protocol_versions,
-                sdk_version,
-                created_at,
-                metadata,
-                ..
-            },
+        ty,
+        additional_headers,
+        supported_protocol_versions,
+        sdk_version,
+        created_at,
+        metadata,
+        ..
     }: Deployment,
     services: Vec<(String, ServiceRevision)>,
 ) -> DeploymentResponse {
@@ -469,7 +463,7 @@ fn to_deployment_response(
             uri: address,
             protocol_type,
             http_version,
-            additional_headers: delivery_options.additional_headers.into(),
+            additional_headers: additional_headers.into(),
             metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
@@ -489,7 +483,7 @@ fn to_deployment_response(
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
             compression,
-            additional_headers: delivery_options.additional_headers.into(),
+            additional_headers: additional_headers.into(),
             metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
@@ -506,16 +500,13 @@ fn to_deployment_response(
 fn to_detailed_deployment_response(
     Deployment {
         id,
-        metadata:
-            DeploymentMetadata {
-                ty,
-                delivery_options,
-                supported_protocol_versions,
-                sdk_version,
-                created_at,
-                metadata,
-                ..
-            },
+        ty,
+        additional_headers,
+        supported_protocol_versions,
+        sdk_version,
+        created_at,
+        metadata,
+        ..
     }: Deployment,
     services: Vec<ServiceMetadata>,
 ) -> DetailedDeploymentResponse {
@@ -529,7 +520,7 @@ fn to_detailed_deployment_response(
             uri: address,
             protocol_type,
             http_version,
-            additional_headers: delivery_options.additional_headers.into(),
+            additional_headers: additional_headers.into(),
             metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
@@ -546,7 +537,7 @@ fn to_detailed_deployment_response(
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
             compression,
-            additional_headers: delivery_options.additional_headers.into(),
+            additional_headers: additional_headers.into(),
             metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),

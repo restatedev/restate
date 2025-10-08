@@ -250,7 +250,6 @@ where
 
                     // Check the protocol constraints are respected.
                     if !deployment
-                        .metadata
                         .supported_protocol_versions
                         .contains(&(pinned_deployment.service_protocol_version as i32))
                     {
@@ -259,9 +258,7 @@ where
                                 pinned_protocol_version: pinned_deployment.service_protocol_version
                                     as i32,
                                 deployment_id: deployment.id,
-                                supported_protocol_versions: deployment
-                                    .metadata
-                                    .supported_protocol_versions,
+                                supported_protocol_versions: deployment.supported_protocol_versions,
                             },
                         );
                         return Ok(());
@@ -911,7 +908,7 @@ mod tests {
         // Deployment registry with a compatible latest deployment
         let mut registry = MockDeploymentMetadataRegistry::default();
         let mut deployment = Deployment::mock();
-        deployment.metadata.supported_protocol_versions =
+        deployment.supported_protocol_versions =
             (pinned.service_protocol_version as i32)..=(pinned.service_protocol_version as i32 + 2);
         let latest_id = deployment.id;
         registry.mock_deployment(deployment.clone());
@@ -970,7 +967,7 @@ mod tests {
         // Registry returns a deployment that does NOT support pinned protocol
         let mut registry = MockDeploymentMetadataRegistry::default();
         let mut deployment = Deployment::mock();
-        deployment.metadata.supported_protocol_versions = 1..=2; // incompatible
+        deployment.supported_protocol_versions = 1..=2; // incompatible
         let id = deployment.id;
         registry.mock_deployment(deployment);
 

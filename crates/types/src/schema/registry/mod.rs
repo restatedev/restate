@@ -20,12 +20,10 @@ use crate::deployment::{
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use crate::live::Pinned;
-use crate::schema::deployment::{
-    DeliveryOptions, Deployment, DeploymentMetadata, DeploymentResolver, DeploymentType,
-};
+use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
-pub(crate) use crate::schema::updater::RegisterDeploymentResult;
+pub(crate) use crate::schema::updater::AddDeploymentResult;
 use crate::schema::updater::SchemaError;
 use crate::schema::{Schema, updater, updater::SchemaUpdater};
 
@@ -182,8 +180,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
             overwrite,
             apply_mode,
         }: RegisterDeploymentRequest,
-    ) -> Result<(RegisterDeploymentResult, Deployment, Vec<ServiceMetadata>), SchemaRegistryError>
-    {
+    ) -> Result<(AddDeploymentResult, Deployment, Vec<ServiceMetadata>), SchemaRegistryError> {
         // Verify first if we have the service. If we do, no need to do anything here.
         if overwrite == updater::Overwrite::No {
             // Verify if we have a service for this endpoint already or not
@@ -192,14 +189,14 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
                 .get()
                 .find_deployment(&deployment_address, &additional_headers)
             {
-                return Ok((RegisterDeploymentResult::Unchanged, deployment, services));
+                return Ok((AddDeploymentResult::Unchanged, deployment, services));
             }
         }
 
         let discovery_request = DiscoveryRequest {
-            address: deployment_address,
+            address: deployment_address.clone(),
             use_http_11,
-            additional_headers,
+            additional_headers: additional_headers.clone(),
         };
 
         // The number of concurrent discovery calls is bound by the number of concurrent
@@ -214,14 +211,16 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
             .map_err(SchemaRegistryErrorInner::Discovery)
             .map_err(SchemaRegistryError::from)?;
 
-        // Construct deployment metadata from discovery response
-        let deployment_metadata = DeploymentMetadata::new(
-            discovery_response.deployment_type,
-            DeliveryOptions::new(discovery_response.headers),
-            discovery_response.supported_protocol_versions,
-            discovery_response.sdk_version,
+        let sdk_version = discovery_response.sdk_version.clone();
+
+        let add_deployment_request = updater::AddDeploymentRequest {
+            deployment_address,
+            additional_headers,
             metadata,
-        );
+            discovery_response,
+            allow_breaking_changes: allow_breaking,
+            overwrite,
+        };
 
         let (register_deployment_result, deployment, services) = if !apply_mode.should_apply() {
             // --- Dry run
@@ -230,14 +229,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
                 tracing::subscriber::with_default(NoSubscriber::new(), || {
                     SchemaUpdater::update_and_return(
                         self.metadata_service.get().clone(),
-                        |updater| {
-                            updater.add_deployment(
-                                deployment_metadata,
-                                discovery_response.services,
-                                allow_breaking,
-                                overwrite,
-                            )
-                        },
+                        |updater| updater.add_deployment(add_deployment_request),
                     )
                 })?;
 
@@ -253,12 +245,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
                 .update(|schema| {
                     SchemaUpdater::update_and_return(schema, |updater| {
                         updater
-                            .add_deployment(
-                                deployment_metadata.clone(),
-                                discovery_response.services.clone(),
-                                allow_breaking,
-                                overwrite,
-                            )
+                            .add_deployment(add_deployment_request.clone())
                             .map_err(Into::into)
                     })
                 })
@@ -273,7 +260,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
 
         if apply_mode.should_apply() {
             self.telemetry_client
-                .send_register_deployment_telemetry(deployment.metadata.sdk_version.clone());
+                .send_register_deployment_telemetry(sdk_version);
         }
 
         Ok((register_deployment_result, deployment, services))
@@ -299,7 +286,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
 
         // Merge with update changes requested
         let (deployment_address, use_http_11) =
-            match (update_deployment_address, existing_deployment.metadata.ty) {
+            match (update_deployment_address, existing_deployment.ty) {
                 (
                     Some(UpdateDeploymentAddress::Http {
                         uri: Some(uri),
@@ -391,17 +378,13 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                     false,
                 ),
             };
-        let additional_headers = additional_headers.unwrap_or(
-            existing_deployment
-                .metadata
-                .delivery_options
-                .additional_headers,
-        );
+        let additional_headers =
+            additional_headers.unwrap_or(existing_deployment.additional_headers);
 
         let discovery_request = DiscoveryRequest {
-            address: deployment_address,
+            address: deployment_address.clone(),
             use_http_11,
-            additional_headers,
+            additional_headers: additional_headers.clone(),
         };
 
         // The number of concurrent discovery calls is bound by the number of concurrent
@@ -416,26 +399,20 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
             .map_err(SchemaRegistryErrorInner::Discovery)
             .map_err(SchemaRegistryError::from)?;
 
-        // Construct deployment metadata from discovery response
-        let deployment_metadata = DeploymentMetadata::new(
-            discovery_response.deployment_type,
-            DeliveryOptions::new(discovery_response.headers),
-            discovery_response.supported_protocol_versions,
-            discovery_response.sdk_version,
-            existing_deployment.metadata.metadata,
-        );
+        let update_deployment_request = updater::UpdateDeploymentRequest {
+            deployment_id,
+            deployment_address,
+            additional_headers,
+            discovery_response,
+            overwrite,
+        };
 
         if !apply_mode.should_apply() {
             // --- Dry run
             // Suppress logging output in case of a dry run
             let schemas = tracing::subscriber::with_default(NoSubscriber::new(), || {
                 SchemaUpdater::update(self.metadata_service.get().clone(), |updater| {
-                    updater.update_deployment(
-                        deployment_id,
-                        deployment_metadata,
-                        discovery_response.services,
-                        overwrite,
-                    )
+                    updater.update_deployment(update_deployment_request)
                 })
             })?;
 
@@ -450,12 +427,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                     Ok((
                         (),
                         SchemaUpdater::update(schema, |updater| {
-                            updater.update_deployment(
-                                deployment_id,
-                                deployment_metadata.clone(),
-                                discovery_response.services.clone(),
-                                overwrite,
-                            )
+                            updater.update_deployment(update_deployment_request.clone())
                         })?,
                     ))
                 })

@@ -49,9 +49,7 @@ use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
 use restate_types::journal_v2::{
     CommandIndex, CommandType, Entry, EntryType, NotificationId, RunCompletion, RunResult, SignalId,
 };
-use restate_types::schema::deployment::{
-    Deployment, DeploymentMetadata, DeploymentType, ProtocolType,
-};
+use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
@@ -120,7 +118,7 @@ where
         let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
             ProtocolType::RequestResponse
         } else {
-            deployment.metadata.ty.protocol_type()
+            deployment.ty.protocol_type()
         };
 
         // Close the invoker_rx in case it's request response, this avoids further buffering of messages in this channel.
@@ -140,7 +138,7 @@ where
 
         debug!(
             restate.invocation.id = %self.invocation_task.invocation_id,
-            deployment.address = %deployment.metadata.address_display(),
+            deployment.address = %deployment.address_display(),
             deployment.service_protocol_version = %self.service_protocol_version.as_repr(),
             path = %path,
             "Executing invocation at deployment"
@@ -153,7 +151,7 @@ where
         // Prepare the request and send start message
         let (mut http_stream_tx, request) = Self::prepare_request(
             path,
-            deployment.metadata,
+            deployment,
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             &service_invocation_span_context,
@@ -228,7 +226,7 @@ where
 
     fn prepare_request(
         path: PathAndQuery,
-        deployment_metadata: DeploymentMetadata,
+        deployment_metadata: Deployment,
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
@@ -291,7 +289,7 @@ where
             } => Endpoint::Http(address, Some(http_version)),
         };
 
-        headers.extend(deployment_metadata.delivery_options.additional_headers);
+        headers.extend(deployment_metadata.additional_headers);
 
         (
             http_stream_tx,

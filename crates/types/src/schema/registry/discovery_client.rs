@@ -16,7 +16,7 @@ use http::{HeaderName, HeaderValue};
 
 use crate::deployment::DeploymentAddress;
 use crate::endpoint_manifest;
-use crate::schema::deployment::DeploymentType;
+use crate::schema::deployment::{EndpointLambdaCompression, ProtocolType};
 
 #[derive(Debug)]
 pub struct DiscoveryRequest {
@@ -25,15 +25,26 @@ pub struct DiscoveryRequest {
     pub additional_headers: HashMap<HeaderName, HeaderValue>,
 }
 
-#[derive(Debug)]
+/// Additional connection parameters discovered during deployment
+#[derive(Debug, Clone)]
+pub enum DeploymentConnectionParameters {
+    Http {
+        protocol_type: ProtocolType,
+        http_version: http::Version,
+    },
+    Lambda {
+        compression: Option<EndpointLambdaCompression>,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct DiscoveryResponse {
-    pub deployment_type: DeploymentType,
-    pub headers: HashMap<HeaderName, HeaderValue>,
-    pub services: Vec<endpoint_manifest::Service>,
+    pub deployment_type_parameters: DeploymentConnectionParameters,
     // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
     // and we need to represent unknown later versions
     pub supported_protocol_versions: RangeInclusive<i32>,
     pub sdk_version: Option<String>,
+    pub services: Vec<endpoint_manifest::Service>,
 }
 
 pub trait DiscoveryClient {
@@ -41,6 +52,6 @@ pub trait DiscoveryClient {
 
     fn discover(
         &self,
-        req: crate::schema::registry::DiscoveryRequest,
-    ) -> impl Future<Output = Result<crate::schema::registry::DiscoveryResponse, Self::Error>> + Send;
+        req: DiscoveryRequest,
+    ) -> impl Future<Output = Result<DiscoveryResponse, Self::Error>> + Send;
 }
