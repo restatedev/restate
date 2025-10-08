@@ -1139,6 +1139,7 @@ fn update_deployment_same_uri() {
         deployment_id_2,
         SchemaUpdater::update_and_return(schemas, |updater| updater.add_deployment(
             AddDeploymentRequest {
+                deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
                 allow_breaking_changes: AllowBreakingChanges::Yes,
                 overwrite: Overwrite::Yes,
                 ..add_deployment_request(vec![greeter_service(), greeter_virtual_object()])
