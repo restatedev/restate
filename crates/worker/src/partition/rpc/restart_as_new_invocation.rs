@@ -200,9 +200,7 @@ where
                 InvocationRequest::new(invocation_request_header, input_command.payload);
             let service_invocation = ServiceInvocation::from_request(
                 invocation_request,
-                // TODO (slinkydeveloper) in Restate v1.6 replace this with
-                // invocation::Source::RestartAsNew(invocation_id)
-                invocation::Source::ingress(request_id),
+                invocation::Source::RestartAsNew(invocation_id),
             );
 
             // Propose the usual Invoke command
