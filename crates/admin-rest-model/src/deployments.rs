@@ -79,7 +79,10 @@ pub enum RegisterDeploymentRequest {
         /// When set to `true`, it implies `breaking = true`.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
-        #[schemars(default = "restate_serde_util::default::bool::<true>")]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(default = "restate_serde_util::default::bool::<true>")
+        )]
         force: Option<bool>,
 
         /// # Dry-run mode
@@ -136,7 +139,10 @@ pub enum RegisterDeploymentRequest {
         /// This implies `breaking = true`.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
-        #[schemars(default = "restate_serde_util::default::bool::<true>")]
+        #[cfg_attr(
+            feature = "schema",
+            schemars(default = "restate_serde_util::default::bool::<true>")
+        )]
         force: Option<bool>,
 
         /// # Dry-run mode
