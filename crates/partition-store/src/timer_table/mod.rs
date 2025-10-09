@@ -145,7 +145,7 @@ fn add_timer<S: StorageAccess>(
 ) -> Result<()> {
     let key = write_timer_key(partition_id, key);
 
-    storage.put_kv(key, timer)
+    storage.put_kv_proto(key, timer)
 }
 
 fn delete_timer<S: StorageAccess>(

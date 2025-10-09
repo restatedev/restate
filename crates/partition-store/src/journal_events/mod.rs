@@ -80,7 +80,7 @@ fn put_journal_event<S: StorageAccess>(
     lsn: u64,
 ) -> Result<()> {
     let (event_ty, event_value) = event.event.into_inner();
-    storage.put_kv(
+    storage.put_kv_proto(
         write_journal_event_key(
             invocation_id,
             event_ty as u8,

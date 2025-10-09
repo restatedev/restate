@@ -156,7 +156,7 @@ impl WriteInboxTable for PartitionStoreTransaction<'_> {
             .service_key(service_id.key.clone())
             .sequence_number(inbox_sequence_number);
 
-        self.put_kv(key, inbox_entry)
+        self.put_kv_proto(key, inbox_entry)
     }
 
     fn delete_inbox_entry(&mut self, service_id: &ServiceId, sequence_number: u64) -> Result<()> {

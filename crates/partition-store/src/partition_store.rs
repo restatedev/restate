@@ -38,8 +38,10 @@ use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPart
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
 use restate_types::storage::StorageCodec;
+use restate_types::storage::StorageDecode;
+use restate_types::storage::StorageEncode;
 
-use crate::fsm_table::{get_locally_durable_lsn, get_schema_version, put_schema_version};
+use crate::fsm_table::{get_locally_durable_lsn, get_storage_version, put_storage_version};
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
 use crate::migrations::{LATEST_VERSION, SchemaVersion};
@@ -679,7 +681,7 @@ impl PartitionStore {
 
     pub async fn verify_and_run_migrations(&mut self) -> Result<()> {
         let mut schema_version: SchemaVersion =
-            get_schema_version(self, self.partition_id()).await?.into();
+            get_storage_version(self, self.partition_id()).await?.into();
         if schema_version != LATEST_VERSION {
             // We need to run some migrations!
             debug!(
@@ -687,7 +689,7 @@ impl PartitionStore {
                 schema_version, LATEST_VERSION
             );
             schema_version = schema_version.run_all_migrations(self).await?;
-            put_schema_version(self, self.partition_id(), schema_version as u16).await?;
+            put_storage_version(self, self.partition_id(), schema_version as u16).await?;
         }
 
         Ok(())
@@ -1071,7 +1073,19 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn put_kv<K: TableKey, V: PartitionStoreProtobufValue + Clone + 'static>(
+    fn put_kv_proto<K: TableKey, V: PartitionStoreProtobufValue + Clone + 'static>(
+        &mut self,
+        key: K,
+        value: &V,
+    ) -> Result<()> {
+        self.put_kv_storage_codec(
+            key,
+            &ProtobufStorageWrapper::<V::ProtobufType>(value.clone().into()),
+        )
+    }
+
+    #[inline]
+    fn put_kv_storage_codec<K: TableKey, V: StorageEncode + 'static>(
         &mut self,
         key: K,
         value: &V,
@@ -1081,11 +1095,7 @@ pub(crate) trait StorageAccess {
         let key_buffer = key_buffer.split();
 
         let value_buffer = self.cleared_value_buffer_mut(0);
-        StorageCodec::encode(
-            &ProtobufStorageWrapper::<V::ProtobufType>(value.clone().into()),
-            value_buffer,
-        )
-        .map_err(|e| StorageError::Generic(e.into()))?;
+        StorageCodec::encode(value, value_buffer).map_err(|e| StorageError::Generic(e.into()))?;
         let value_buffer = value_buffer.split();
 
         self.put_cf(K::TABLE, key_buffer, value_buffer)
@@ -1101,29 +1111,39 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn get_value<K, V>(&mut self, key: K) -> Result<Option<V>>
+    fn get_value_proto<K, V>(&mut self, key: K) -> Result<Option<V>>
     where
         K: TableKey,
         V: PartitionStoreProtobufValue,
         <<V as PartitionStoreProtobufValue>::ProtobufType as TryInto<V>>::Error:
             Into<anyhow::Error>,
     {
+        let value: Option<ProtobufStorageWrapper<V::ProtobufType>> =
+            self.get_value_storage_codec(key)?;
+
+        value
+            .map(|v| v.0.try_into())
+            .transpose()
+            .map_err(|err| StorageError::Conversion(err.into()))
+    }
+
+    #[inline]
+    fn get_value_storage_codec<K, V>(&mut self, key: K) -> Result<Option<V>>
+    where
+        K: TableKey,
+        V: StorageDecode,
+    {
         let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
         key.serialize_to(&mut buf);
         let buf = buf.split();
 
-        match self.get(K::TABLE, &buf) {
-            Ok(value) => {
-                let slice = value.as_ref().map(|v| v.as_ref());
-
-                if let Some(mut slice) = slice {
-                    Ok(Some(V::decode(&mut slice)?))
-                } else {
-                    Ok(None)
-                }
-            }
-            Err(err) => Err(err),
-        }
+        self.get(K::TABLE, &buf)?
+            .map(|value| {
+                let mut slice = value.as_ref();
+                StorageCodec::decode(&mut slice)
+            })
+            .transpose()
+            .map_err(|err| StorageError::Generic(err.into()))
     }
 
     /// Forces a read from persistent storage, bypassing memtables and block cache.

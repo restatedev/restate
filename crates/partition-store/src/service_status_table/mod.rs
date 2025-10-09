@@ -54,7 +54,7 @@ fn put_virtual_object_status<S: StorageAccess>(
     if *status == VirtualObjectStatus::Unlocked {
         storage.delete_key(&key)
     } else {
-        storage.put_kv(key, status)
+        storage.put_kv_proto(key, status)
     }
 }
 
@@ -69,7 +69,7 @@ fn get_virtual_object_status<S: StorageAccess>(
         .service_key(service_id.key.clone());
 
     storage
-        .get_value(key)
+        .get_value_proto(key)
         .map(|value| value.unwrap_or(VirtualObjectStatus::Unlocked))
 }
 
