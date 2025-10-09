@@ -8,8 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future::pending;
+use std::io::Write;
+use std::sync::Arc;
+use std::time::Duration;
+use std::{env, io};
+
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use schemars::r#gen::SchemaSettings;
+
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
@@ -36,12 +44,6 @@ use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::SubscriptionController;
 use restate_worker::WorkerHandle;
 use restate_worker::WorkerHandleError;
-use schemars::r#gen::SchemaSettings;
-use std::future::pending;
-use std::io::Write;
-use std::sync::Arc;
-use std::time::Duration;
-use std::{env, io};
 
 fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2019_09()

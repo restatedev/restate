@@ -304,6 +304,13 @@ impl CodedError for BoxedCodedError {
     fn code(&self) -> Option<&'static Code> {
         self.code
     }
+
+    fn into_boxed(self) -> BoxedCodedError
+    where
+        Self: Send + Sync + 'static,
+    {
+        self
+    }
 }
 
 impl Display for BoxedCodedError {

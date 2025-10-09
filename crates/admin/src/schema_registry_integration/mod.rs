@@ -60,56 +60,58 @@ pub struct TelemetryClient(pub(crate) Option<HttpClient>);
 
 impl restate_types::schema::registry::TelemetryClient for TelemetryClient {
     fn send_register_deployment_telemetry(&self, sdk_version: Option<String>) {
-        if let Some(client) = &self.0 {
-            let client = client.clone();
-            let _ = TaskCenter::spawn(TaskKind::Disposable, "telemetry-operation", async move {
-                let (sdk_type, full_sdk_version_string) = if let Some(sdk_version) = &sdk_version {
-                    (
-                        sdk_version
-                            .split_once('/')
-                            .map(|(version, _)| version)
-                            .unwrap_or_else(|| "unknown"),
-                        sdk_version.as_str(),
-                    )
-                } else {
-                    ("unknown", "unknown")
-                };
+        let Some(client) = &self.0 else {
+            return;
+        };
 
-                let uri = format!(
-                    "{TELEMETRY_URI_PREFIX}?sdk={}&version={}",
-                    urlencoding::encode(sdk_type),
-                    urlencoding::encode(full_sdk_version_string)
+        let client = client.clone();
+        let _ = TaskCenter::spawn(TaskKind::Disposable, "telemetry-operation", async move {
+            let (sdk_type, full_sdk_version_string) = if let Some(sdk_version) = &sdk_version {
+                (
+                    sdk_version
+                        .split_once('/')
+                        .map(|(version, _)| version)
+                        .unwrap_or_else(|| "unknown"),
+                    sdk_version.as_str(),
                 )
-                .parse()
-                .with_context(|| "cannot create telemetry uri")?;
+            } else {
+                ("unknown", "unknown")
+            };
 
-                trace!(%uri, "Sending telemetry data");
+            let uri = format!(
+                "{TELEMETRY_URI_PREFIX}?sdk={}&version={}",
+                urlencoding::encode(sdk_type),
+                urlencoding::encode(full_sdk_version_string)
+            )
+            .parse()
+            .with_context(|| "cannot create telemetry uri")?;
 
-                match client
-                    .request(
-                        uri,
-                        None,
-                        http::Method::GET,
-                        http_body_util::Empty::new(),
-                        PathAndQuery::from_static("/"),
-                        HeaderMap::from_iter([(
-                            http::header::USER_AGENT,
-                            HeaderValue::from_static("restate-server"),
-                        )]),
-                    )
-                    .await
-                {
-                    Ok(resp) => {
-                        trace!(status = %resp.status(), "Sent telemetry data")
-                    }
-                    Err(err) => {
-                        trace!(error = %err, "Failed to send telemetry data")
-                    }
+            trace!(%uri, "Sending telemetry data");
+
+            match client
+                .request(
+                    uri,
+                    None,
+                    http::Method::GET,
+                    http_body_util::Empty::new(),
+                    PathAndQuery::from_static("/"),
+                    HeaderMap::from_iter([(
+                        http::header::USER_AGENT,
+                        HeaderValue::from_static("restate-server"),
+                    )]),
+                )
+                .await
+            {
+                Ok(resp) => {
+                    trace!(status = %resp.status(), "Sent telemetry data")
                 }
+                Err(err) => {
+                    trace!(error = %err, "Failed to send telemetry data")
+                }
+            }
 
-                Ok(())
-            });
-        }
+            Ok(())
+        });
     }
 }
 
