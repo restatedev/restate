@@ -17,22 +17,22 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::pin::Pin;
-use std::time::SystemTime;
-use std::{cmp, panic};
-
 use futures::StreamExt;
 use gardal::futures::ThrottledStream;
 use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
 use metrics::counter;
 use restate_time_util::DurationExt;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::io::ErrorKind;
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::time::SystemTime;
+use std::{cmp, panic};
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 use tracing::{error, instrument};
 
 use restate_core::cancellation_watcher;
@@ -298,12 +298,27 @@ where
         });
 
         // Prepare the segmented queue
-        let mut segmented_input_queue = std::pin::pin!(
-            SegmentQueue::init(tmp_dir, in_memory_limit)
-                .await
-                .expect("Cannot initialize input spillable queue")
-                .throttle(invocation_token_bucket)
-        );
+        let mut segmented_input_queue = match SegmentQueue::init(tmp_dir.clone(), in_memory_limit)
+            .await
+        {
+            Ok(queue) => std::pin::pin!(queue.throttle(invocation_token_bucket)),
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                warn!(
+                    "Could not initialize the invoker spill queue, permission denied to write the directory '{}'\n\
+                Make sure restate-server has permissions to write that directory, or change the spill queue directory with the config option 'worker.invoker.tmp_dir' or the env RESTATE_WORKER__INVOKER__TMP_DIR.\n{e}",
+                    tmp_dir.display()
+                );
+                panic!("Could not initialize invoker spill queue: {e}");
+            }
+            Err(e) => {
+                warn!(
+                    "Could not initialize the invoker spill queue, error when trying to write directory '{}'\n\
+                If the error persists, change the spill queue directory with the config option 'worker.invoker.tmp_dir' or the env RESTATE_WORKER__INVOKER__TMP_DIR.\n{e}",
+                    tmp_dir.display()
+                );
+                panic!("Could not initialize invoker spill queue: {e}");
+            }
+        };
 
         loop {
             let options = updateable_options.live_load();
