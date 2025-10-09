@@ -725,17 +725,7 @@ where
                     self.schemas.live_load(),
                 );
 
-                // If we think this selected deployment has been freshly picked, otherwise
-                // we assume that we have stored it previously.
-                if has_changed {
-                    ism.notify_pinned_deployment(pinned_deployment);
-                } else {
-                    // The service protocol is selected only if this was the stored version already,
-                    // or if we send the pinned deployment through (see handle_new_command)
-                    ism.notify_selected_service_protocol(
-                        pinned_deployment.service_protocol_version,
-                    );
-                }
+                ism.notify_pinned_deployment(pinned_deployment, has_changed);
             },
         );
     }
@@ -1338,6 +1328,7 @@ where
         error: InvokerError,
         mut ism: InvocationStateMachine,
     ) {
+        let attempt_deployment_id = ism.attempt_deployment_id();
         match ism.handle_task_error(
             error.is_transient(),
             error.next_retry_interval_override(),
@@ -1357,6 +1348,7 @@ where
                         restate.invocation.id = %invocation_id,
                         restate.invocation.target = %ism.invocation_target,
                         restate.invocation.error.stacktrace = %error_stacktrace,
+                        restate.deployment.id = %attempt_deployment_id,
                         "Invocation error, retrying in {}.",
                         next_retry_timer_duration.friendly());
                 } else {
@@ -1364,6 +1356,7 @@ where
                         error,
                         restate.invocation.id = %invocation_id,
                         restate.invocation.target = %ism.invocation_target,
+                        restate.deployment.id = %attempt_deployment_id,
                         "Invocation error, retrying in {}.",
                         next_retry_timer_duration.friendly());
                 }
@@ -1443,6 +1436,7 @@ where
                     error,
                     restate.invocation.id = %invocation_id,
                     restate.invocation.target = %ism.invocation_target,
+                    restate.deployment.id = %attempt_deployment_id,
                     "Error when executing the invocation, pausing the invocation.");
                 self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &invocation_id);
@@ -1504,6 +1498,7 @@ where
                     error,
                     restate.invocation.id = %invocation_id,
                     restate.invocation.target = %ism.invocation_target,
+                    restate.deployment.id = %attempt_deployment_id,
                     "Error when executing the invocation, not going to retry.");
                 self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &invocation_id);
