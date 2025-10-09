@@ -22,7 +22,7 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
-    PurgeInvocationResponse, ResumeInvocationResponse,
+    PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_types::journal_v2::EntryIndex;
@@ -561,4 +561,67 @@ where
     };
 
     Ok(())
+}
+
+generate_meta_api_error!(PauseInvocationError: [
+    InvocationNotFoundError,
+    InvocationClientError,
+    InvalidFieldError,
+    PauseInvocationNotRunningError,
+]);
+
+/// Pause an invocation
+#[openapi(
+    summary = "Pause an invocation",
+    description = "Pause the given invocation. This applies only to running invocations, and will cause them to eventually pause.",
+    operation_id = "pause_invocation",
+    tags = "invocation",
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    )),
+    responses(
+        ignore_return_type = true,
+        response(
+            status = "200",
+            description = "Already paused",
+            content = "okapi_operation::Empty",
+        ),
+        response(
+            status = "202",
+            description = "Accepted",
+            content = "okapi_operation::Empty",
+        ),
+        from_type = "PauseInvocationError",
+    )
+)]
+pub async fn pause_invocation<IC>(
+    State(state): State<AdminServiceState<IC>>,
+    Path(invocation_id): Path<String>,
+) -> Result<StatusCode, PauseInvocationError>
+where
+    IC: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .pause_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .await
+        .map_err(InvocationClientError)?
+    {
+        PauseInvocationResponse::Accepted => {}
+        PauseInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        PauseInvocationResponse::NotRunning => {
+            Err(PauseInvocationNotRunningError(invocation_id.to_string()))?
+        }
+        PauseInvocationResponse::AlreadyPaused => return Ok(StatusCode::OK),
+    };
+
+    Ok(StatusCode::ACCEPTED)
 }

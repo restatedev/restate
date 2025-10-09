@@ -173,6 +173,15 @@ pub enum ResumeInvocationResponse {
     Completed,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PauseInvocationResponse {
+    AlreadyPaused,
+    Accepted,
+    NotFound,
+    /// The invocation is not running
+    NotRunning,
+}
+
 /// This trait provides the functionalities to interact with Restate invocations.
 pub trait InvocationClient {
     /// Append the invocation to the log, waiting for the PP to emit [`SubmittedInvocationNotification`] when the command is processed.
@@ -262,4 +271,11 @@ pub trait InvocationClient {
         invocation_id: InvocationId,
         resume_invocation_deployment_id: PatchDeploymentId,
     ) -> impl Future<Output = Result<ResumeInvocationResponse, InvocationClientError>> + Send;
+
+    /// Pause the given invocation.
+    fn pause_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> impl Future<Output = Result<PauseInvocationResponse, InvocationClientError>> + Send;
 }

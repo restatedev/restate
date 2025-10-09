@@ -25,13 +25,14 @@ use tokio::task::AbortHandle;
 pub(super) struct InvocationStateMachine {
     pub(super) invocation_target: InvocationTarget,
     pub(super) invocation_epoch: InvocationEpoch,
-    last_transient_error_event: Option<TransientErrorEvent>,
+    pub(super) last_transient_error_event: Option<TransientErrorEvent>,
     selected_service_protocol: Option<ServiceProtocolVersion>,
     invocation_state: InvocationState,
     retry_policy_state: RetryPolicyState,
     /// This retry count is passed in the StartMessage.
     /// For more details of when we bump it, see [`InvokerError::should_bump_start_message_retry_count_since_last_stored_entry`].
     pub(super) start_message_retry_count_since_last_stored_command: u32,
+    pub(super) requested_pause: bool,
 }
 
 /// This struct tracks which commands the invocation task generates,
@@ -188,6 +189,7 @@ impl InvocationStateMachine {
                 on_max_attempts,
             },
             start_message_retry_count_since_last_stored_command: 0,
+            requested_pause: false,
         }
     }
 
@@ -299,7 +301,9 @@ impl InvocationStateMachine {
             InvocationState::InFlight { .. }
         ));
 
+        // Invocation made some progress, reset the retry count and reset the last_transient_error_event
         self.start_message_retry_count_since_last_stored_command = 0;
+        self.last_transient_error_event = None;
 
         if let InvocationState::InFlight {
             journal_tracker,
@@ -397,6 +401,11 @@ impl InvocationStateMachine {
     }
 
     pub(super) fn notify_retry_timer_fired(&mut self) {
+        debug_assert!(matches!(
+            &self.invocation_state,
+            InvocationState::WaitingRetry { .. }
+        ));
+
         if let InvocationState::WaitingRetry { timer_fired, .. } = &mut self.invocation_state {
             *timer_fired = true;
         }
@@ -428,6 +437,11 @@ impl InvocationStateMachine {
             }
         };
 
+        if self.requested_pause {
+            // Shortcircuit to pause, as this is what the user asked for
+            return OnTaskError::Pause;
+        }
+
         if error_is_transient
             && let Some(next_timer) =
                 next_retry_interval_override.or_else(|| self.retry_policy_state.retry_iter.next())
@@ -456,6 +470,24 @@ impl InvocationStateMachine {
             } => *timer_fired && journal_tracker.can_retry(),
             _ => false,
         }
+    }
+
+    // If returns true, we should pause now, otherwise we should wait for that.
+    pub(super) fn notify_pause(&mut self) -> bool {
+        self.requested_pause = true;
+        if let InvocationState::InFlight {
+            notifications_tx, ..
+        } = &mut self.invocation_state
+        {
+            // Close notifications_tx to trigger suspension
+            *notifications_tx = None;
+
+            // Invocation is still in-flight, pause will happen later on
+            return false;
+        }
+
+        // Invocation is not in-flight, all good we can pause now
+        true
     }
 
     pub(crate) fn should_emit_transient_error_event(
