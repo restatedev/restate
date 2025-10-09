@@ -9,10 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
+use assert2::let_assert;
 use opentelemetry::trace::Span;
+use restate_service_protocol::codec::ProtobufRawEntryCodec as OldProtocolEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_storage_api::journal_table_v2::ReadJournalTable;
+use restate_storage_api::journal_table as journal_table_v1;
+use restate_storage_api::journal_table_v2;
 use restate_types::identifiers::{EntryIndex, InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
@@ -20,9 +23,8 @@ use restate_types::invocation::{
     InvocationRetention, RestartAsNewInvocationRequest, ServiceInvocation, ServiceType,
     SpanRelation,
 };
-use restate_types::journal_v2::{
-    CommandMetadata, CommandType, EntryMetadata, EntryType, InputCommand,
-};
+use restate_types::journal as journal_v1;
+use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType};
 use restate_types::net::partition_processor::RestartAsNewInvocationRpcResponse;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::{invocation, journal_v2};
@@ -48,7 +50,9 @@ impl<'a, TActuator: Actuator, TSchemas, TStorage> RpcHandler<Request>
 where
     TActuator: Actuator,
     TSchemas: DeploymentResolver,
-    TStorage: ReadInvocationStatusTable + ReadJournalTable,
+    TStorage: ReadInvocationStatusTable
+        + journal_table_v2::ReadJournalTable
+        + journal_table_v1::ReadJournalTable,
 {
     type Output = RestartAsNewInvocationRpcResponse;
     type Error = ();
@@ -90,18 +94,17 @@ where
             bail!(replier, MissingInput);
         }
 
-        // Check if journal v2 was used
-        let Some(pinned_deployment) = completed_invocation.pinned_deployment else {
-            bail!(replier, Unsupported);
-        };
-        if pinned_deployment.service_protocol_version < ServiceProtocolVersion::V4 {
-            bail!(replier, Unsupported);
-        }
-
         // Check that is not a workflow
         if completed_invocation.invocation_target.service_ty() == ServiceType::Workflow {
             bail!(replier, Unsupported);
         }
+
+        // If the invocation is using the old protocol version or no version is set at all.
+        // We have a workaround here that manually creates the ServiceInvocation data structure reading the journal table v1
+        let use_old_journal_workaround = completed_invocation
+            .pinned_deployment
+            .as_ref()
+            .is_none_or(|pd| pd.service_protocol_version < ServiceProtocolVersion::V4);
 
         // New invocation id
         let new_invocation_id = InvocationId::from_parts(
@@ -110,11 +113,22 @@ where
         );
         debug_assert_ne!(new_invocation_id, invocation_id);
 
-        // Now, let's discriminate between whether it's "plain restart as new" and "restart as new from prefix"
-        if copy_prefix_up_to_index_included == 0 {
-            // If it's 0, it means we only need to copy over the input entry.
-            // We just implement this with the usual service invocation command
-            // TODO(slinkydeveloper) from v1.6 we could just use the RestartAsNewInvocationCommand.
+        // TODO this piece of code can be completely removed, or disabled,
+        //  when we start writing by default to journal table v2
+        //  see https://github.com/restatedev/restate/issues/3184
+        if use_old_journal_workaround {
+            // Only copying the input entry works with this workaround!
+            if use_old_journal_workaround && copy_prefix_up_to_index_included > 0 {
+                bail!(replier, Unsupported);
+            }
+
+            // Patching the deployment id doesn't work with this workaround!
+            if matches!(
+                patch_deployment_id,
+                PatchDeploymentId::KeepPinned | PatchDeploymentId::PinTo { .. }
+            ) {
+                bail!(replier, CannotPatchDeploymentId);
+            }
 
             // Patching the deployment id doesn't work with this method!
             if matches!(
@@ -126,34 +140,35 @@ where
 
             // Now retrieve the input command
             let find_result = async {
-                for index in 0..completed_invocation.journal_metadata.length {
-                    // Use `?` to propagate storage errors, mapping them to our error type.
-                    let Some(entry) = self
-                        .storage
-                        .get_journal_entry(invocation_id, index)
-                        .await
-                        .map_err(|e| PartitionProcessorRpcError::Internal(e.to_string()))?
-                    else {
-                        // `Ok(None)` from storage indicates the end of the journal, so we stop.
-                        break;
-                    };
+                // Use `?` to propagate storage errors, mapping them to our error type.
+                let Some(journal_table_v1::JournalEntry::Entry(entry)) =
+                    journal_table_v1::ReadJournalTable::get_journal_entry(
+                        self.storage,
+                        &invocation_id,
+                        0,
+                    )
+                    .await
+                    .map_err(|e| PartitionProcessorRpcError::Internal(e.to_string()))?
+                else {
+                    return Ok(None);
+                };
 
-                    if entry.ty() == EntryType::Command(CommandType::Input) {
-                        // Found the entry. Decode it and immediately return the result from the block.
-                        return entry
-                            .decode::<ServiceProtocolV4Codec, InputCommand>()
-                            .map(Some) // On success, wrap the command in Some to indicate it was found.
-                            .map_err(|e| PartitionProcessorRpcError::Internal(e.to_string()));
-                    }
+                if entry.ty() != journal_v1::EntryType::Input {
+                    return Ok(None);
                 }
-                // The loop finished without finding the entry.
-                Ok(None)
+
+                let_assert!(
+                    journal_v1::Entry::Input(journal_v1::InputEntry { value, headers }) = entry
+                        .deserialize_entry_ref::<OldProtocolEntryCodec>()
+                        .map_err(|e| PartitionProcessorRpcError::Internal(e.to_string()))?
+                );
+                Ok(Some((value, headers)))
             }
             .await;
-            let input_command = match find_result {
-                // Success: found and decoded the command.
+            let (payload, headers) = match find_result {
+                // Found and decoded the command.
                 Ok(Some(ic)) => ic,
-                // Success: searched the whole journal, but found no matching entry.
+                // No matching entry.
                 Ok(None) => {
                     bail!(replier, MissingInput);
                 }
@@ -187,7 +202,7 @@ where
                 new_invocation_id,
                 completed_invocation.invocation_target,
             );
-            invocation_request_header.headers = input_command.headers;
+            invocation_request_header.headers = headers;
             invocation_request_header.with_retention(InvocationRetention {
                 completion_retention: completed_invocation.completion_retention_duration,
                 journal_retention: completed_invocation.journal_retention_duration,
@@ -196,13 +211,10 @@ where
                 .with_related_span(SpanRelation::parent(restart_as_new_span.span_context()));
 
             // Final bundling of the service invocation
-            let invocation_request =
-                InvocationRequest::new(invocation_request_header, input_command.payload);
+            let invocation_request = InvocationRequest::new(invocation_request_header, payload);
             let service_invocation = ServiceInvocation::from_request(
                 invocation_request,
-                // TODO (slinkydeveloper) in Restate v1.6 replace this with
-                // invocation::Source::RestartAsNew(invocation_id)
-                invocation::Source::ingress(request_id),
+                invocation::Source::RestartAsNew(invocation_id),
             );
 
             // Propose the usual Invoke command
@@ -217,130 +229,136 @@ where
                     RestartAsNewInvocationRpcResponse::Ok { new_invocation_id },
                 )
                 .await;
-        } else {
-            // For Restart from prefix, the PP will actually execute the operation,
-            // but here we perform few checks anyway.
 
-            // Because of the changes to ctx.rand, you can restart only if invocation >= protocol 6
-            if pinned_deployment.service_protocol_version < ServiceProtocolVersion::V6 {
-                bail!(replier, Unsupported);
+            // All good
+            return Ok(());
+        }
+
+        // For Restart from prefix, the PP will actually execute the operation,
+        // but here we perform few checks anyway.
+
+        let pinned_deployment = completed_invocation.pinned_deployment.unwrap();
+
+        // Because of the changes to ctx.rand, you can restart from prefix different from 0 only if invocation >= protocol 6
+        if pinned_deployment.service_protocol_version < ServiceProtocolVersion::V6
+            && copy_prefix_up_to_index_included > 0
+        {
+            bail!(replier, Unsupported);
+        }
+
+        // Figure out the deployment id, validate the protocol version constraints.
+        let deployment_id = match patch_deployment_id {
+            PatchDeploymentId::KeepPinned => {
+                // Just keep current deployment, all good
+                pinned_deployment.deployment_id
             }
-
-            // Figure out the deployment id, validate the protocol version constraints.
-            let deployment_id = match patch_deployment_id {
-                PatchDeploymentId::KeepPinned => {
-                    // Just keep current deployment, all good
-                    pinned_deployment.deployment_id
-                }
-                PatchDeploymentId::PinToLatest | PatchDeploymentId::PinTo { .. } => {
-                    // Retrieve the deployment
-                    let Some(deployment) = (match patch_deployment_id {
-                        PatchDeploymentId::PinToLatest => {
-                            self.schemas.resolve_latest_deployment_for_service(
-                                completed_invocation.invocation_target.service_name(),
-                            )
-                        }
-                        PatchDeploymentId::PinTo { id } => self.schemas.get_deployment(&id),
-                        PatchDeploymentId::KeepPinned => {
-                            unreachable!()
-                        }
-                    }) else {
-                        bail!(replier, DeploymentNotFound);
-                    };
-
-                    // Check the protocol constraints are respected.
-                    if !deployment
-                        .supported_protocol_versions
-                        .contains(&(pinned_deployment.service_protocol_version as i32))
-                    {
-                        replier.send(
-                            RestartAsNewInvocationRpcResponse::IncompatibleDeploymentId {
-                                pinned_protocol_version: pinned_deployment.service_protocol_version
-                                    as i32,
-                                deployment_id: deployment.id,
-                                supported_protocol_versions: deployment.supported_protocol_versions,
-                            },
-                        );
-                        return Ok(());
+            PatchDeploymentId::PinToLatest | PatchDeploymentId::PinTo { .. } => {
+                // Retrieve the deployment
+                let Some(deployment) = (match patch_deployment_id {
+                    PatchDeploymentId::PinToLatest => {
+                        self.schemas.resolve_latest_deployment_for_service(
+                            completed_invocation.invocation_target.service_name(),
+                        )
                     }
-                    deployment.id
+                    PatchDeploymentId::PinTo { id } => self.schemas.get_deployment(&id),
+                    PatchDeploymentId::KeepPinned => {
+                        unreachable!()
+                    }
+                }) else {
+                    bail!(replier, DeploymentNotFound);
+                };
+
+                // Check the protocol constraints are respected.
+                if !deployment
+                    .supported_protocol_versions
+                    .contains(&(pinned_deployment.service_protocol_version as i32))
+                {
+                    replier.send(
+                        RestartAsNewInvocationRpcResponse::IncompatibleDeploymentId {
+                            pinned_protocol_version: pinned_deployment.service_protocol_version
+                                as i32,
+                            deployment_id: deployment.id,
+                            supported_protocol_versions: deployment
+                                .supported_protocol_versions,
+                        },
+                    );
+                    return Ok(());
+                }
+                deployment.id
+            }
+        };
+
+        // Check that it is safe to copy this prefix of the journal,
+        // that is each copied commands must have the related completions in the journal (prefix or suffix).
+        //
+        // Some examples:
+        // * Valid because all commands in prefix have a completion
+        // input -> sleep(comp_id 1) -> sleep_comp(1)
+        //          ∟ copy_prefix_idx
+        // * Invalid because sleep 1 misses completion
+        // input -> sleep(comp_id 1) -> sleep(comp_id 2) -> sleep_comp(2)
+        //                              ∟ copy_prefix_idx
+        // * Valid because sleep 1 has completion and sleep 2 is in the suffix we don't copy over
+        // input -> sleep(comp_id 1) -> sleep_comp(1) -> sleep(comp_id 2)
+        //                              ∟ copy_prefix_idx
+        for i in 1..(copy_prefix_up_to_index_included + 1) {
+            match journal_table_v2::ReadJournalTable::get_journal_entry(
+                self.storage,
+                invocation_id,
+                i,
+            )
+            .await
+            {
+                Ok(Some(entry)) if matches!(entry.ty(), EntryType::Command(_)) => {
+                    // Check we got the notifications available in the journal
+                    let cmd = match entry.decode::<ServiceProtocolV4Codec, journal_v2::Command>() {
+                        Ok(cmd) => cmd,
+                        Err(err) => {
+                            replier.send_result(Err(PartitionProcessorRpcError::Internal(
+                                err.to_string(),
+                            )));
+                            return Ok(());
+                        }
+                    };
+                    for completion_id in cmd.related_completion_ids() {
+                        if !self
+                            .storage
+                            .has_completion(invocation_id, completion_id)
+                            .await
+                            .is_ok_and(|b| b)
+                        {
+                            bail!(replier, JournalCopyRangeInvalid);
+                        }
+                    }
+                }
+                Ok(Some(_)) => {
+                    continue;
+                }
+                Ok(None) => {
+                    // Not sure what else to do here...
+                    bail!(replier, JournalCopyRangeInvalid);
+                }
+
+                Err(err) => {
+                    replier.send_result(Err(PartitionProcessorRpcError::Internal(err.to_string())));
+                    return Ok(());
                 }
             };
+        }
 
-            // Check that it is safe to copy this prefix of the journal,
-            // that is each copied commands must have the related completions in the journal (prefix or suffix).
-            //
-            // Some examples:
-            // * Valid because all commands in prefix have a completion
-            // input -> sleep(comp_id 1) -> sleep_comp(1)
-            //          ∟ copy_prefix_idx
-            // * Invalid because sleep 1 misses completion
-            // input -> sleep(comp_id 1) -> sleep(comp_id 2) -> sleep_comp(2)
-            //                              ∟ copy_prefix_idx
-            // * Valid because sleep 1 has completion and sleep 2 is in the suffix we don't copy over
-            // input -> sleep(comp_id 1) -> sleep_comp(1) -> sleep(comp_id 2)
-            //                              ∟ copy_prefix_idx
-            for i in 1..(copy_prefix_up_to_index_included + 1) {
-                match self.storage.get_journal_entry(invocation_id, i).await {
-                    Ok(Some(entry)) if matches!(entry.ty(), EntryType::Command(_)) => {
-                        // Check we got the notifications available in the journal
-                        let cmd =
-                            match entry.decode::<ServiceProtocolV4Codec, journal_v2::Command>() {
-                                Ok(cmd) => cmd,
-                                Err(err) => {
-                                    replier.send_result(Err(PartitionProcessorRpcError::Internal(
-                                        err.to_string(),
-                                    )));
-                                    return Ok(());
-                                }
-                            };
-                        for completion_id in cmd.related_completion_ids() {
-                            if !self
-                                .storage
-                                .has_completion(invocation_id, completion_id)
-                                .await
-                                .is_ok_and(|b| b)
-                            {
-                                bail!(replier, JournalCopyRangeInvalid);
-                            }
-                        }
-                    }
-                    Ok(Some(_)) => {
-                        continue;
-                    }
-                    Ok(None) => {
-                        // Not sure what else to do here...
-                        bail!(replier, JournalCopyRangeInvalid);
-                    }
-
-                    Err(err) => {
-                        replier.send_result(Err(PartitionProcessorRpcError::Internal(
-                            err.to_string(),
-                        )));
-                        return Ok(());
-                    }
-                };
-            }
-
-            // Pass the ball to the state machine, the PP will reply to the RPC request.
-            let cmd = Command::RestartAsNewInvocation(RestartAsNewInvocationRequest {
-                invocation_id,
-                new_invocation_id,
-                copy_prefix_up_to_index_included,
-                patch_deployment_id: Some(deployment_id),
-                response_sink: Some(InvocationMutationResponseSink::Ingress(
-                    IngressInvocationResponseSink { request_id },
-                )),
-            });
-            self.proposer
-                .handle_rpc_proposal_command(
-                    invocation_id.partition_key(),
-                    cmd,
-                    request_id,
-                    replier,
-                )
-                .await;
-        };
+        // Pass the ball to the state machine, the PP will reply to the RPC request.
+        let cmd = Command::RestartAsNewInvocation(RestartAsNewInvocationRequest {
+            invocation_id,
+            new_invocation_id,
+            copy_prefix_up_to_index_included,
+            patch_deployment_id: Some(deployment_id),
+            response_sink: Some(InvocationMutationResponseSink::Ingress(
+                IngressInvocationResponseSink { request_id },
+            )),
+        });
+        self.proposer
+            .handle_rpc_proposal_command(invocation_id.partition_key(), cmd, request_id, replier)
+            .await;
 
         Ok(())
     }
@@ -355,7 +373,7 @@ mod tests {
     use bytes::Bytes;
     use futures::{FutureExt, Stream, stream};
     use googletest::prelude::*;
-    use journal_v2::SleepCommand;
+    use journal_v2::{InputCommand, SleepCommand};
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
         PreFlightInvocationMetadata, ScheduledInvocation,
@@ -365,6 +383,7 @@ mod tests {
     use restate_types::deployment::PinnedDeployment;
     use restate_types::identifiers::{DeploymentId, EntryIndex};
     use restate_types::invocation::{Header, InvocationTarget};
+    use restate_types::journal::raw::RawEntryCodec;
     use restate_types::journal_v2::raw::RawCommand;
     use restate_types::journal_v2::{CompletionId, Entry, NotificationId};
     use restate_types::schema::deployment::Deployment;
@@ -379,12 +398,16 @@ mod tests {
     struct MockStorage {
         expected_invocation_id: InvocationId,
         status: InvocationStatus,
+        // Journal v2 entries
         entries: Vec<StoredRawEntry>,
         has_completion: bool,
+        // For journal v1 workaround
+        v1_input_payload: Option<Bytes>,
+        v1_input_headers: Option<Vec<Header>>,
     }
 
     impl MockStorage {
-        fn new_with_input(
+        fn new_with_input_v1(
             expected_invocation_id: InvocationId,
             status: InvocationStatus,
             payload: Bytes,
@@ -393,16 +416,10 @@ mod tests {
             Self {
                 expected_invocation_id,
                 status,
-                entries: vec![StoredRawEntry::new(
-                    StoredRawEntryHeader::new(MillisSinceEpoch::now()),
-                    Entry::from(InputCommand {
-                        headers: headers.clone(),
-                        payload: payload.clone(),
-                        name: Default::default(),
-                    })
-                    .encode::<ServiceProtocolV4Codec>(),
-                )],
+                entries: vec![],
                 has_completion: false,
+                v1_input_payload: Some(payload),
+                v1_input_headers: Some(headers),
             }
         }
 
@@ -415,10 +432,12 @@ mod tests {
                 status,
                 entries: vec![],
                 has_completion: false,
+                v1_input_payload: None,
+                v1_input_headers: None,
             }
         }
 
-        fn new_with_journal(
+        fn new_with_journal_v2(
             expected_invocation_id: InvocationId,
             status: InvocationStatus,
             entries: Vec<Entry>,
@@ -437,11 +456,14 @@ mod tests {
                     })
                     .collect(),
                 has_completion,
+                v1_input_payload: None,
+                v1_input_headers: None,
             }
         }
     }
 
-    impl ReadJournalTable for MockStorage {
+    // Implement journal v2 table for tests
+    impl journal_table_v2::ReadJournalTable for MockStorage {
         fn get_journal_entry(
             &mut self,
             invocation_id: InvocationId,
@@ -503,6 +525,52 @@ mod tests {
         }
     }
 
+    // Implement journal v1 table as workaround source for tests
+    impl journal_table_v1::ReadJournalTable for MockStorage {
+        fn get_journal_entry(
+            &mut self,
+            invocation_id: &InvocationId,
+            journal_index: u32,
+        ) -> impl Future<
+            Output = restate_storage_api::Result<Option<journal_table_v1::JournalEntry>>,
+        > + Send {
+            assert_eq!(&self.expected_invocation_id, invocation_id);
+            if journal_index == 0
+                && let (Some(payload), Some(headers)) =
+                    (self.v1_input_payload.clone(), self.v1_input_headers.clone())
+            {
+                let enr = OldProtocolEntryCodec::serialize_as_input_entry(headers, payload);
+                return ready(Ok(Some(journal_table_v1::JournalEntry::Entry(enr))));
+            }
+            ready(Ok(None))
+        }
+
+        fn get_journal(
+            &mut self,
+            invocation_id: &InvocationId,
+            journal_length: EntryIndex,
+        ) -> restate_storage_api::Result<
+            impl Stream<
+                Item = restate_storage_api::Result<(EntryIndex, journal_table_v1::JournalEntry)>,
+            > + Send,
+        > {
+            assert_eq!(&self.expected_invocation_id, invocation_id);
+            let items: Vec<(EntryIndex, journal_table_v1::JournalEntry)> = if journal_length > 0 {
+                if let (Some(payload), Some(headers)) =
+                    (self.v1_input_payload.clone(), self.v1_input_headers.clone())
+                {
+                    let enr = OldProtocolEntryCodec::serialize_as_input_entry(headers, payload);
+                    vec![(0, journal_table_v1::JournalEntry::Entry(enr))]
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            };
+            Ok(stream::iter(items.into_iter().map(Ok)))
+        }
+    }
+
     impl ReadInvocationStatusTable for MockStorage {
         fn get_invocation_status(
             &mut self,
@@ -513,7 +581,7 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn reply_when_appended() {
+    async fn copy_prefix_zero_with_no_version_uses_service_invocation_command() {
         let old_invocation_id = InvocationId::mock_random();
         let invocation_target = InvocationTarget::mock_virtual_object();
         let headers = vec![Header::new("key", "value")];
@@ -553,7 +621,7 @@ mod tests {
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .never();
 
-        let mut storage = MockStorage::new_with_input(
+        let mut storage = MockStorage::new_with_input_v1(
             old_invocation_id,
             InvocationStatus::Completed(CompletedInvocation {
                 idempotency_key: Some(bytestring()),
@@ -562,6 +630,7 @@ mod tests {
                     ..JournalMetadata::empty()
                 },
                 invocation_target: invocation_target.clone(),
+                pinned_deployment: None,
                 ..CompletedInvocation::mock_neo()
             }),
             payload.clone(),
@@ -581,6 +650,260 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[test(restate_core::test)]
+    async fn old_workaround_nonzero_prefix_is_unsupported() {
+        let invocation_id = InvocationId::mock_random();
+        let invocation_target = InvocationTarget::mock_virtual_object();
+
+        let mut proposer = MockActuator::new();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .never();
+
+        // Completed with no pinned deployment triggers v1 workaround
+        let status = InvocationStatus::Completed(CompletedInvocation {
+            journal_metadata: JournalMetadata {
+                length: 2,
+                ..JournalMetadata::empty()
+            },
+            invocation_target: invocation_target.clone(),
+            pinned_deployment: None,
+            ..CompletedInvocation::mock_neo()
+        });
+        let mut storage = MockStorage::new_with_input_v1(
+            invocation_id,
+            status,
+            rand::bytes(),
+            vec![Header::new("k", "v")],
+        );
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &(), &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+                copy_prefix_up_to_index_included: 1,
+                patch_deployment_id: Default::default(),
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                RestartAsNewInvocationRpcResponse::Unsupported
+            )
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn old_workaround_keep_pinned_is_rejected() {
+        let invocation_id = InvocationId::mock_random();
+        let invocation_target = InvocationTarget::mock_virtual_object();
+        let payload = rand::bytes();
+        let headers = vec![Header::new("k", "v")];
+
+        let mut proposer = MockActuator::new();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .never();
+
+        let status = InvocationStatus::Completed(CompletedInvocation {
+            journal_metadata: JournalMetadata {
+                length: 1,
+                ..JournalMetadata::empty()
+            },
+            invocation_target: invocation_target.clone(),
+            pinned_deployment: None,
+            ..CompletedInvocation::mock_neo()
+        });
+        let mut storage = MockStorage::new_with_input_v1(invocation_id, status, payload, headers);
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &(), &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+                copy_prefix_up_to_index_included: 0,
+                patch_deployment_id: PatchDeploymentId::KeepPinned,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                RestartAsNewInvocationRpcResponse::CannotPatchDeploymentId
+            )
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn old_workaround_pin_to_is_rejected() {
+        let invocation_id = InvocationId::mock_random();
+        let invocation_target = InvocationTarget::mock_virtual_object();
+
+        let mut proposer = MockActuator::new();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .never();
+
+        let status = InvocationStatus::Completed(CompletedInvocation {
+            journal_metadata: JournalMetadata {
+                length: 1,
+                ..JournalMetadata::empty()
+            },
+            invocation_target: invocation_target.clone(),
+            pinned_deployment: None,
+            ..CompletedInvocation::mock_neo()
+        });
+        let mut storage = MockStorage::new_with_input_v1(
+            invocation_id,
+            status,
+            rand::bytes(),
+            vec![Header::new("k", "v")],
+        );
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &(), &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+                copy_prefix_up_to_index_included: 0,
+                patch_deployment_id: PatchDeploymentId::PinTo {
+                    id: DeploymentId::new(),
+                },
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                RestartAsNewInvocationRpcResponse::CannotPatchDeploymentId
+            )
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn old_workaround_missing_v1_input_is_reported() {
+        let invocation_id = InvocationId::mock_random();
+        let invocation_target = InvocationTarget::mock_virtual_object();
+
+        let mut proposer = MockActuator::new();
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .never();
+        proposer
+            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .never();
+
+        // Completed with journal length>0 but no v1 input present in storage
+        let status = InvocationStatus::Completed(CompletedInvocation {
+            journal_metadata: JournalMetadata {
+                length: 3,
+                ..JournalMetadata::empty()
+            },
+            invocation_target: invocation_target.clone(),
+            pinned_deployment: None,
+            ..CompletedInvocation::mock_neo()
+        });
+        let mut storage = MockStorage::new_without_journal(invocation_id, status);
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(&mut proposer, &(), &mut storage),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+                copy_prefix_up_to_index_included: 0,
+                patch_deployment_id: PatchDeploymentId::PinToLatest,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                RestartAsNewInvocationRpcResponse::MissingInput
+            )
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn copy_prefix_zero_with_pinned_new_version_uses_restart_as_new_command() {
+        let invocation_id = InvocationId::mock_random();
+        let target = InvocationTarget::mock_virtual_object();
+        let completed = mock_completed_invocation(target.clone(), ServiceProtocolVersion::V5, 1);
+
+        let mut storage = MockStorage::new_with_journal_v2(
+            invocation_id,
+            InvocationStatus::Completed(completed.clone()),
+            vec![input_command()],
+            true,
+        );
+
+        let mut proposer = MockActuator::new();
+        let pinned_id = completed.pinned_deployment.unwrap().deployment_id;
+        proposer
+            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .return_once_st(move |_, cmd, _, _| {
+                assert_that!(
+                    cmd,
+                    pat!(Command::RestartAsNewInvocation(pat!(
+                        RestartAsNewInvocationRequest {
+                            copy_prefix_up_to_index_included: eq(0),
+                            patch_deployment_id: some(eq(pinned_id))
+                        }
+                    )))
+                );
+                ready(()).boxed()
+            });
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .never();
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(
+                &mut proposer,
+                &MockDeploymentMetadataRegistry::default(),
+                &mut storage,
+            ),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+                copy_prefix_up_to_index_included: 0,
+                patch_deployment_id: PatchDeploymentId::KeepPinned,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        rx.assert_not_received();
     }
 
     #[test(restate_core::test)]
@@ -620,51 +943,6 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn reply_missing_input() {
-        let invocation_id = InvocationId::mock_random();
-
-        let mut proposer = MockActuator::new();
-        proposer
-            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
-            .never();
-        proposer
-            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
-            .never();
-
-        let mut storage = MockStorage::new_without_journal(
-            invocation_id,
-            InvocationStatus::Completed(CompletedInvocation {
-                journal_metadata: JournalMetadata {
-                    length: 0,
-                    ..JournalMetadata::empty()
-                },
-                ..CompletedInvocation::mock_neo()
-            }),
-        );
-
-        let (tx, rx) = Reciprocal::mock();
-        RpcHandler::handle(
-            RpcContext::new(&mut proposer, &(), &mut storage),
-            Request {
-                request_id: Default::default(),
-                invocation_id,
-                copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
-            },
-            Replier::new(tx),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            rx.recv().await.unwrap(),
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                RestartAsNewInvocationRpcResponse::MissingInput
-            )
-        );
-    }
-
-    #[test(restate_core::test)]
     async fn reply_unsupported() {
         let invocation_id = InvocationId::mock_random();
 
@@ -676,7 +954,7 @@ mod tests {
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .never();
 
-        let mut storage = MockStorage::new_with_input(
+        let mut storage = MockStorage::new_with_input_v1(
             invocation_id,
             InvocationStatus::Completed(CompletedInvocation {
                 journal_metadata: JournalMetadata {
@@ -844,17 +1122,17 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn prefix_keep_pinned_ok() {
+    async fn with_valid_prefix_keep_pinned_deployment() {
         let invocation_id = InvocationId::mock_random();
         let target = InvocationTarget::mock_virtual_object();
         let completed = mock_completed_invocation(target.clone(), ServiceProtocolVersion::V6, 2);
 
         // Create a command at index 1 with a completion id; storage will report it as present
-        let mut storage = MockStorage::new_with_journal(
+        let mut storage = MockStorage::new_with_journal_v2(
             invocation_id,
             InvocationStatus::Completed(completed.clone()),
             vec![input_command(), sleep_command(1)],
-            true,
+            /* has completion */ true,
         );
 
         let mut proposer = MockActuator::new();
@@ -899,7 +1177,7 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn prefix_pin_to_latest_ok() {
+    async fn with_valid_prefix_pin_to_latest() {
         let invocation_id = InvocationId::mock_random();
         let target = InvocationTarget::mock_virtual_object();
         let completed = mock_completed_invocation(target.clone(), ServiceProtocolVersion::V6, 2);
@@ -914,11 +1192,11 @@ mod tests {
         registry.mock_deployment(deployment.clone());
         registry.mock_latest_service(target.service_name(), latest_id);
 
-        let mut storage = MockStorage::new_with_journal(
+        let mut storage = MockStorage::new_with_journal_v2(
             invocation_id,
             InvocationStatus::Completed(completed.clone()),
             vec![input_command(), sleep_command(1)],
-            true,
+            /* has completion */ true,
         );
 
         let mut proposer = MockActuator::new();
@@ -958,7 +1236,7 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn prefix_pin_to_specific_incompatible() {
+    async fn with_invalid_resume_deployment() {
         let invocation_id = InvocationId::mock_random();
         let target = InvocationTarget::mock_virtual_object();
         let completed = mock_completed_invocation(target.clone(), ServiceProtocolVersion::V6, 2);
@@ -971,7 +1249,7 @@ mod tests {
         let id = deployment.id;
         registry.mock_deployment(deployment);
 
-        let mut storage = MockStorage::new_with_journal(
+        let mut storage = MockStorage::new_with_journal_v2(
             invocation_id,
             InvocationStatus::Completed(completed.clone()),
             vec![input_command(), sleep_command(1)],
@@ -1013,7 +1291,7 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn prefix_pin_to_specific_not_found() {
+    async fn pin_to_unknown_deployment() {
         let invocation_id = InvocationId::mock_random();
         let target = InvocationTarget::mock_virtual_object();
         let completed = mock_completed_invocation(target.clone(), ServiceProtocolVersion::V6, 2);
@@ -1021,7 +1299,7 @@ mod tests {
         let registry = MockDeploymentMetadataRegistry::default();
         let some_id = DeploymentId::default();
 
-        let mut storage = MockStorage::new_with_journal(
+        let mut storage = MockStorage::new_with_journal_v2(
             invocation_id,
             InvocationStatus::Completed(completed.clone()),
             vec![input_command(), sleep_command(1)],
@@ -1061,11 +1339,11 @@ mod tests {
         let target = InvocationTarget::mock_virtual_object();
         let completed = mock_completed_invocation(target.clone(), ServiceProtocolVersion::V6, 2);
 
-        let mut storage = MockStorage::new_with_journal(
+        let mut storage = MockStorage::new_with_journal_v2(
             invocation_id,
             InvocationStatus::Completed(completed.clone()),
             vec![input_command(), sleep_command(1)],
-            false,
+            /* has completion */ false,
         );
 
         let mut proposer = MockActuator::new();
