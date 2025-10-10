@@ -50,6 +50,7 @@ enum_dispatch = "0.3.13"
 enumset = { workspace = true, features = ["serde"] }
 figment = { version = "0.10.8", features = ["env", "toml"] }
 flexbuffers = { workspace = true }
+futures = { workspace = true }
 gardal = { workspace = true }
 generic-array = { version = "1.2.0" }
 hostname = { workspace = true }

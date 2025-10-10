@@ -25,15 +25,21 @@ use okapi_operation::okapi::openapi3::{ExternalDocs, Tag};
 use okapi_operation::*;
 use restate_types::identifiers::PartitionKey;
 use restate_types::invocation::client::InvocationClient;
+use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
 use restate_wal_protocol::{Destination, Header, Source};
 
 use crate::state::AdminServiceState;
 
 pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 
-pub fn create_router<IC>(state: AdminServiceState<IC>) -> axum::Router<()>
+pub fn create_router<Metadata, Discovery, Telemetry, Invocations>(
+    state: AdminServiceState<Metadata, Discovery, Telemetry, Invocations>,
+) -> axum::Router<()>
 where
-    IC: InvocationClient + Send + Sync + Clone + 'static,
+    Metadata: MetadataService + Send + Sync + Clone + 'static,
+    Discovery: DiscoveryClient + Send + Sync + Clone + 'static,
+    Telemetry: TelemetryClient + Send + Sync + Clone + 'static,
+    Invocations: InvocationClient + Send + Sync + Clone + 'static,
 {
     let mut router = axum_integration::Router::new()
         .route(

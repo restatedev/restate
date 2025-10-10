@@ -1,0 +1,57 @@
+// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use std::collections::HashMap;
+use std::ops::RangeInclusive;
+
+use codederror::CodedError;
+use http::{HeaderName, HeaderValue};
+
+use crate::deployment::DeploymentAddress;
+use crate::endpoint_manifest;
+use crate::schema::deployment::{EndpointLambdaCompression, ProtocolType};
+
+#[derive(Debug)]
+pub struct DiscoveryRequest {
+    pub address: DeploymentAddress,
+    pub use_http_11: bool,
+    pub additional_headers: HashMap<HeaderName, HeaderValue>,
+}
+
+/// Additional connection parameters discovered during deployment
+#[derive(Debug, Clone)]
+pub enum DeploymentConnectionParameters {
+    Http {
+        protocol_type: ProtocolType,
+        http_version: http::Version,
+    },
+    Lambda {
+        compression: Option<EndpointLambdaCompression>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct DiscoveryResponse {
+    pub deployment_type_parameters: DeploymentConnectionParameters,
+    // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
+    // and we need to represent unknown later versions
+    pub supported_protocol_versions: RangeInclusive<i32>,
+    pub sdk_version: Option<String>,
+    pub services: Vec<endpoint_manifest::Service>,
+}
+
+pub trait DiscoveryClient {
+    type Error: CodedError + Send + Sync + 'static;
+
+    fn discover(
+        &self,
+        req: DiscoveryRequest,
+    ) -> impl Future<Output = Result<DiscoveryResponse, Self::Error>> + Send;
+}

@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
+use http::{HeaderName, HeaderValue};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
 
@@ -26,9 +28,7 @@ use crate::live::Pinned;
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
-use crate::schema::deployment::{
-    DeliveryOptions, DeploymentMetadata, DeploymentResolver, DeploymentType,
-};
+use crate::schema::deployment::{DeploymentResolver, DeploymentType};
 use crate::schema::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InputRules,
     InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver, OnMaxAttempts,
@@ -43,6 +43,9 @@ use crate::schema::{deployment, service};
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
 
+/// Serializable data structure representing the schema registry
+///
+/// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
 pub struct Schema {
@@ -130,6 +133,20 @@ impl ActiveServiceRevision {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct DeliveryOptions {
+    #[serde(
+        with = "serde_with::As::<serde_with::FromInto<restate_serde_util::SerdeableHeaderHashMap>>"
+    )]
+    pub additional_headers: HashMap<HeaderName, HeaderValue>,
+}
+
+impl DeliveryOptions {
+    fn new(additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
+        Self { additional_headers }
+    }
+}
+
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Deployment {
@@ -161,43 +178,14 @@ impl Deployment {
     fn to_deployment(&self) -> deployment::Deployment {
         deployment::Deployment {
             id: self.id,
-            metadata: deployment::DeploymentMetadata {
-                ty: self.ty.clone(),
-                delivery_options: self.delivery_options.clone(),
-                supported_protocol_versions: self.supported_protocol_versions.clone(),
-                sdk_version: self.sdk_version.clone(),
-                created_at: self.created_at,
-                metadata: self.metadata.clone(),
-            },
+            ty: self.ty.clone(),
+            supported_protocol_versions: self.supported_protocol_versions.clone(),
+            sdk_version: self.sdk_version.clone(),
+            created_at: self.created_at,
+            metadata: self.metadata.clone(),
+            additional_headers: self.delivery_options.additional_headers.clone(),
         }
     }
-
-    /// This returns true if the two deployments are to be considered the "same".
-    pub fn semantic_eq_with_deployment(&self, other: &DeploymentMetadata) -> bool {
-        match (&self.ty, &other.ty) {
-            (
-                DeploymentType::Http {
-                    address: this_address,
-                    ..
-                },
-                DeploymentType::Http {
-                    address: other_address,
-                    ..
-                },
-            ) => DeploymentMetadata::semantic_eq_http(
-                this_address,
-                other_address,
-                &self.delivery_options.additional_headers,
-                &other.delivery_options.additional_headers,
-            ),
-            (
-                DeploymentType::Lambda { arn: this_arn, .. },
-                DeploymentType::Lambda { arn: other_arn, .. },
-            ) => DeploymentMetadata::semantic_eq_lambda(this_arn, other_arn),
-            _ => false,
-        }
-    }
-
     /// This returns true if the two deployments are to be considered the "same".
     pub fn semantic_eq_with_address_and_headers(
         &self,
@@ -211,7 +199,7 @@ impl Deployment {
                     ..
                 },
                 DeploymentAddress::Http(HttpDeploymentAddress { uri: other_address }),
-            ) => DeploymentMetadata::semantic_eq_http(
+            ) => deployment::Deployment::semantic_eq_http(
                 this_address,
                 other_address,
                 &self.delivery_options.additional_headers,
@@ -220,7 +208,7 @@ impl Deployment {
             (
                 DeploymentType::Lambda { arn: this_arn, .. },
                 DeploymentAddress::Lambda(LambdaDeploymentAddress { arn: other_arn, .. }),
-            ) => DeploymentMetadata::semantic_eq_lambda(this_arn, other_arn),
+            ) => deployment::Deployment::semantic_eq_lambda(this_arn, other_arn),
             _ => false,
         }
     }

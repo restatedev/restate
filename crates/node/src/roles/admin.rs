@@ -14,6 +14,7 @@ use std::time::Duration;
 use codederror::CodedError;
 use restate_admin::StorageAccountingTask;
 use restate_admin::cluster_controller;
+use restate_admin::schema_registry_integration::{MetadataService, TelemetryClient};
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::network::NetworkServerBuilder;
@@ -59,7 +60,12 @@ pub enum AdminRoleBuildError {
 pub struct AdminRole<T> {
     updateable_config: Live<Configuration>,
     controller: Option<cluster_controller::Service<T>>,
-    admin: AdminService<PartitionProcessorInvocationClient<T>>,
+    admin: AdminService<
+        MetadataService,
+        ServiceDiscovery,
+        TelemetryClient,
+        PartitionProcessorInvocationClient<T>,
+    >,
     storage_accounting_task: Option<StorageAccountingTask>,
 }
 

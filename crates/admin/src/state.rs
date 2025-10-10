@@ -8,18 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::schema_registry::SchemaRegistry;
 use restate_bifrost::Bifrost;
+use restate_types::schema::registry::SchemaRegistry;
 
 #[derive(Clone, derive_builder::Builder)]
-pub struct AdminServiceState<IC> {
-    pub schema_registry: SchemaRegistry,
-    pub invocation_client: IC,
+pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations> {
+    pub schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
+    pub invocation_client: Invocations,
     pub bifrost: Bifrost,
 }
 
-impl<IC> AdminServiceState<IC> {
-    pub fn new(schema_registry: SchemaRegistry, invocation_client: IC, bifrost: Bifrost) -> Self {
+impl<Metadata, Discovery, Telemetry, Invocations>
+    AdminServiceState<Metadata, Discovery, Telemetry, Invocations>
+{
+    pub fn new(
+        schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
+        invocation_client: Invocations,
+        bifrost: Bifrost,
+    ) -> Self {
         Self {
             schema_registry,
             invocation_client,

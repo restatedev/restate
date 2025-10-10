@@ -35,33 +35,12 @@ pub enum ProtocolType {
     BidiStream,
 }
 
-// TODO this type is serde because it represents how data is stored in the schema registry
-//  re-evaluate whether we should use another ad-hoc data structure for storage representation after schema v2 migration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct DeliveryOptions {
-    #[serde(
-        with = "serde_with::As::<serde_with::FromInto<restate_serde_util::SerdeableHeaderHashMap>>"
-    )]
-    pub additional_headers: HashMap<HeaderName, HeaderValue>,
-}
-
-impl DeliveryOptions {
-    pub fn new(additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
-        Self { additional_headers }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Deployment {
-    pub id: DeploymentId,
-    pub metadata: DeploymentMetadata,
-}
-
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub struct DeploymentMetadata {
+pub struct Deployment {
+    pub id: DeploymentId,
     pub ty: DeploymentType,
-    pub delivery_options: DeliveryOptions,
+    pub additional_headers: HashMap<HeaderName, HeaderValue>,
     pub supported_protocol_versions: RangeInclusive<i32>,
     /// Declared SDK during discovery
     pub sdk_version: Option<String>,
@@ -70,68 +49,9 @@ pub struct DeploymentMetadata {
     pub metadata: HashMap<String, String>,
 }
 
-impl DeploymentMetadata {
-    pub fn new(
-        ty: DeploymentType,
-        delivery_options: DeliveryOptions,
-        supported_protocol_versions: RangeInclusive<i32>,
-        sdk_version: Option<String>,
-        metadata: HashMap<String, String>,
-    ) -> Self {
-        Self {
-            ty,
-            delivery_options,
-            created_at: MillisSinceEpoch::now(),
-            supported_protocol_versions,
-            sdk_version,
-            metadata,
-        }
-    }
-
-    pub fn new_http(
-        address: Uri,
-        protocol_type: ProtocolType,
-        http_version: http::Version,
-        delivery_options: DeliveryOptions,
-        supported_protocol_versions: RangeInclusive<i32>,
-        sdk_version: Option<String>,
-        metadata: HashMap<String, String>,
-    ) -> Self {
-        Self {
-            ty: DeploymentType::Http {
-                address,
-                protocol_type,
-                http_version,
-            },
-            delivery_options,
-            created_at: MillisSinceEpoch::now(),
-            supported_protocol_versions,
-            sdk_version,
-            metadata,
-        }
-    }
-
-    pub fn new_lambda(
-        arn: LambdaARN,
-        assume_role_arn: Option<ByteString>,
-        compression: Option<EndpointLambdaCompression>,
-        delivery_options: DeliveryOptions,
-        supported_protocol_versions: RangeInclusive<i32>,
-        sdk_version: Option<String>,
-        metadata: HashMap<String, String>,
-    ) -> Self {
-        Self {
-            ty: DeploymentType::Lambda {
-                arn,
-                assume_role_arn,
-                compression,
-            },
-            delivery_options,
-            created_at: MillisSinceEpoch::now(),
-            supported_protocol_versions,
-            sdk_version,
-            metadata,
-        }
+impl Deployment {
+    pub fn as_address(&self) -> DeploymentAddress {
+        self.ty.as_address()
     }
 
     // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
@@ -159,7 +79,7 @@ impl DeploymentMetadata {
             ) => Self::semantic_eq_http(
                 this_address,
                 other_address,
-                &self.delivery_options.additional_headers,
+                &self.additional_headers,
                 other_additional_headers,
             ),
             (
@@ -242,6 +162,20 @@ impl DeploymentType {
             }
         }
         Wrapper(self)
+    }
+
+    pub fn as_address(&self) -> DeploymentAddress {
+        match self {
+            DeploymentType::Http { address, .. } => {
+                HttpDeploymentAddress::new(address.clone()).into()
+            }
+            DeploymentType::Lambda {
+                arn,
+                assume_role_arn,
+                ..
+            } => LambdaDeploymentAddress::new(arn.clone(), assume_role_arn.clone().map(Into::into))
+                .into(),
+        }
     }
 
     pub fn backfill_http_version(protocol_type: ProtocolType) -> http::Version {
@@ -412,43 +346,50 @@ pub mod test_util {
             let id = "dp_15VqmTOnXH3Vv2pl5HOG7UB"
                 .parse()
                 .expect("valid stable deployment id");
-            let metadata = DeploymentMetadata::new_http(
-                "http://localhost:9080".parse().unwrap(),
-                ProtocolType::BidiStream,
-                http::Version::HTTP_2,
-                Default::default(),
-                1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
-                None,
-                Default::default(),
-            );
-
-            Deployment { id, metadata }
+            Deployment {
+                id,
+                ty: DeploymentType::Http {
+                    address: "http://localhost:9080".parse().unwrap(),
+                    protocol_type: ProtocolType::BidiStream,
+                    http_version: http::Version::HTTP_2,
+                },
+                supported_protocol_versions: 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+                sdk_version: None,
+                created_at: MillisSinceEpoch::now(),
+                metadata: Default::default(),
+                additional_headers: Default::default(),
+            }
         }
 
         pub fn mock_with_uri(uri: &str) -> Deployment {
-            let id = DeploymentId::new();
-            let metadata = DeploymentMetadata::new_http(
-                uri.parse().unwrap(),
-                ProtocolType::BidiStream,
-                http::Version::HTTP_2,
-                Default::default(),
-                1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
-                None,
-                Default::default(),
-            );
-            Deployment { id, metadata }
+            let id = "dp_15VqmTOnXH3Vv2pl5HOG7UB"
+                .parse()
+                .expect("valid stable deployment id");
+            Deployment {
+                id,
+                ty: DeploymentType::Http {
+                    address: uri.parse().unwrap(),
+                    protocol_type: ProtocolType::BidiStream,
+                    http_version: http::Version::HTTP_2,
+                },
+                supported_protocol_versions: 1..=MAX_SERVICE_PROTOCOL_VERSION_VALUE,
+                sdk_version: None,
+                created_at: MillisSinceEpoch::now(),
+                metadata: Default::default(),
+                additional_headers: Default::default(),
+            }
         }
     }
 
     #[derive(Default, Clone, Debug)]
     pub struct MockDeploymentMetadataRegistry {
-        pub deployments: HashMap<DeploymentId, DeploymentMetadata>,
+        pub deployments: HashMap<DeploymentId, Deployment>,
         pub latest_deployment: HashMap<String, DeploymentId>,
     }
 
     impl MockDeploymentMetadataRegistry {
         pub fn mock_deployment(&mut self, deployment: Deployment) {
-            self.deployments.insert(deployment.id, deployment.metadata);
+            self.deployments.insert(deployment.id, deployment);
         }
 
         pub fn mock_latest_service(&mut self, service: &str, deployment_id: DeploymentId) {
@@ -480,13 +421,7 @@ pub mod test_util {
         }
 
         fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
-            self.deployments
-                .get(deployment_id)
-                .cloned()
-                .map(|metadata| Deployment {
-                    id: *deployment_id,
-                    metadata,
-                })
+            self.deployments.get(deployment_id).cloned()
         }
 
         fn get_deployment_and_services(
@@ -496,29 +431,13 @@ pub mod test_util {
             self.deployments
                 .get(deployment_id)
                 .cloned()
-                .map(|metadata| {
-                    (
-                        Deployment {
-                            id: *deployment_id,
-                            metadata,
-                        },
-                        vec![],
-                    )
-                })
+                .map(|deployment| (deployment, vec![]))
         }
 
         fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
             self.deployments
-                .iter()
-                .map(|(id, metadata)| {
-                    (
-                        Deployment {
-                            id: *id,
-                            metadata: metadata.clone(),
-                        },
-                        vec![],
-                    )
-                })
+                .values()
+                .map(|deployment| (deployment.clone(), vec![]))
                 .collect()
         }
     }

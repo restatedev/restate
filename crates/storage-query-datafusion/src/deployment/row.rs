@@ -16,7 +16,7 @@ pub(crate) fn append_deployment_row(builder: &mut SysDeploymentBuilder, deployme
     let mut row = builder.row();
     row.fmt_id(deployment.id);
 
-    match deployment.metadata.ty {
+    match deployment.ty {
         DeploymentType::Http { .. } => {
             row.ty("http");
         }
@@ -25,20 +25,13 @@ pub(crate) fn append_deployment_row(builder: &mut SysDeploymentBuilder, deployme
         }
     }
 
-    row.fmt_endpoint(deployment.metadata.address_display());
-    row.created_at(deployment.metadata.created_at.as_u64() as i64);
+    row.fmt_endpoint(deployment.address_display());
+    row.created_at(deployment.created_at.as_u64() as i64);
     row.min_service_protocol_version(
         deployment
-            .metadata
             .supported_protocol_versions
             .start()
             .unsigned_abs(),
     );
-    row.max_service_protocol_version(
-        deployment
-            .metadata
-            .supported_protocol_versions
-            .end()
-            .unsigned_abs(),
-    );
+    row.max_service_protocol_version(deployment.supported_protocol_versions.end().unsigned_abs());
 }

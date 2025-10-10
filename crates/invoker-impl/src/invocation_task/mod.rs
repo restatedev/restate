@@ -345,11 +345,11 @@ where
                 );
 
                 let chosen_service_protocol_version = shortcircuit!(
-                    ServiceProtocolVersion::pick(&deployment.metadata.supported_protocol_versions,)
+                    ServiceProtocolVersion::pick(&deployment.supported_protocol_versions,)
                         .ok_or_else(|| {
                             InvokerError::IncompatibleServiceEndpoint(
                                 deployment.id,
-                                deployment.metadata.supported_protocol_versions.clone(),
+                                deployment.supported_protocol_versions.clone(),
                             )
                         })
                 );

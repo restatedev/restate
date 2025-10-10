@@ -21,6 +21,7 @@ use axum::{Json, http};
 use okapi_operation::*;
 use restate_errors::warn_it;
 use restate_types::identifiers::SubscriptionId;
+use restate_types::schema::registry::MetadataService;
 
 /// Create subscription.
 #[openapi(
@@ -41,10 +42,13 @@ use restate_types::identifiers::SubscriptionId;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_subscription<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn create_subscription<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
-) -> Result<impl axum::response::IntoResponse, MetaApiError> {
+) -> Result<impl axum::response::IntoResponse, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     let subscription = state
         .schema_registry
         .create_subscription(payload.source, payload.sink, payload.options)
@@ -73,10 +77,13 @@ pub async fn create_subscription<IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_subscription<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn get_subscription<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(subscription_id): Path<SubscriptionId>,
-) -> Result<Json<SubscriptionResponse>, MetaApiError> {
+) -> Result<Json<SubscriptionResponse>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     let subscription = state
         .schema_registry
         .get_subscription(subscription_id)
@@ -110,10 +117,13 @@ pub async fn get_subscription<IC>(
         )
     )
 )]
-pub async fn list_subscriptions<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn list_subscriptions<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Query(ListSubscriptionsParams { sink, source }): Query<ListSubscriptionsParams>,
-) -> Json<ListSubscriptionsResponse> {
+) -> Json<ListSubscriptionsResponse>
+where
+    Metadata: MetadataService,
+{
     let filters = match (sink, source) {
         (Some(sink_filter), Some(source_filter)) => vec![
             ListSubscriptionFilter::ExactMatchSink(sink_filter),
@@ -158,10 +168,13 @@ pub async fn list_subscriptions<IC>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_subscription<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn delete_subscription<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(subscription_id): Path<SubscriptionId>,
-) -> Result<StatusCode, MetaApiError> {
+) -> Result<StatusCode, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     state
         .schema_registry
         .delete_subscription(subscription_id)

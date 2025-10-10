@@ -22,8 +22,9 @@ use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
 use restate_errors::warn_it;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
+use restate_types::schema;
+use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::ServiceMetadata;
-use restate_types::schema::updater::ModifyServiceChange;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{Command, Envelope};
 use tracing::{debug, warn};
@@ -35,9 +36,12 @@ use tracing::{debug, warn};
     operation_id = "list_services",
     tags = "service"
 )]
-pub async fn list_services<IC>(
-    State(state): State<AdminServiceState<IC>>,
-) -> Result<Json<ListServicesResponse>, MetaApiError> {
+pub async fn list_services<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+) -> Result<Json<ListServicesResponse>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     let services = state.schema_registry.list_services();
 
     Ok(ListServicesResponse { services }.into())
@@ -55,10 +59,13 @@ pub async fn list_services<IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn get_service<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(service_name): Path<String>,
-) -> Result<Json<ServiceMetadata>, MetaApiError> {
+) -> Result<Json<ServiceMetadata>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     state
         .schema_registry
         .get_service(&service_name)
@@ -87,10 +94,13 @@ pub async fn get_service<IC>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn get_service_openapi<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn get_service_openapi<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(service_name): Path<String>,
-) -> Result<Json<serde_json::Value>, MetaApiError> {
+) -> Result<Json<serde_json::Value>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     // TODO return correct vnd type
     // TODO accept content negotiation for yaml
     state
@@ -112,8 +122,8 @@ pub async fn get_service_openapi<IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn modify_service<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn modify_service<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceRequest {
         public,
@@ -123,32 +133,26 @@ pub async fn modify_service<IC>(
         inactivity_timeout,
         abort_timeout,
     }): Json<ModifyServiceRequest>,
-) -> Result<Json<ServiceMetadata>, MetaApiError> {
-    let mut modify_request = vec![];
-    if let Some(new_public_value) = public {
-        modify_request.push(ModifyServiceChange::Public(new_public_value));
-    }
-    if let Some(new_idempotency_retention) = idempotency_retention {
-        modify_request.push(ModifyServiceChange::IdempotencyRetention(
-            new_idempotency_retention,
-        ));
-    }
-    if let Some(new_workflow_completion_retention) = workflow_completion_retention {
-        modify_request.push(ModifyServiceChange::WorkflowCompletionRetention(
-            new_workflow_completion_retention,
-        ));
-    }
-    if let Some(new_journal_retention) = journal_retention {
-        modify_request.push(ModifyServiceChange::JournalRetention(new_journal_retention));
-    }
-    if let Some(inactivity_timeout) = inactivity_timeout {
-        modify_request.push(ModifyServiceChange::InactivityTimeout(inactivity_timeout));
-    }
-    if let Some(abort_timeout) = abort_timeout {
-        modify_request.push(ModifyServiceChange::AbortTimeout(abort_timeout));
-    }
+) -> Result<Json<ServiceMetadata>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
+    let modify_request = schema::registry::ModifyServiceRequest {
+        public,
+        idempotency_retention,
+        journal_retention,
+        workflow_completion_retention,
+        inactivity_timeout,
+        abort_timeout,
+    };
 
-    if modify_request.is_empty() {
+    if modify_request.public.is_none()
+        && modify_request.idempotency_retention.is_none()
+        && modify_request.journal_retention.is_none()
+        && modify_request.workflow_completion_retention.is_none()
+        && modify_request.inactivity_timeout.is_none()
+        && modify_request.abort_timeout.is_none()
+    {
         // No need to do anything
         return get_service(State(state), Path(service_name)).await;
     }
@@ -183,15 +187,18 @@ pub async fn modify_service<IC>(
         from_type = "MetaApiError",
     )
 )]
-pub async fn modify_service_state<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn modify_service_state<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceStateRequest {
         version,
         object_key,
         new_state,
     }): Json<ModifyServiceStateRequest>,
-) -> Result<StatusCode, MetaApiError> {
+) -> Result<StatusCode, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     if let Some(svc) = state.schema_registry.get_service(&service_name) {
         if !svc.ty.has_state() {
             return Err(MetaApiError::UnsupportedOperation("modify state", svc.ty));
