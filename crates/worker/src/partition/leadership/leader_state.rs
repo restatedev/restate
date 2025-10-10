@@ -12,6 +12,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::future;
 use std::future::Future;
+use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, SystemTime};
@@ -20,12 +21,14 @@ use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use metrics::counter;
-use tokio_stream::wrappers::ReceiverStream;
+use restate_types::logs::Keys;
+use restate_wal_protocol::control::UpsertSchema;
+use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, trace};
 
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
-use restate_core::{TaskCenter, TaskHandle, TaskId};
+use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_partition_store::PartitionStore;
 use restate_types::identifiers::{
     InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
@@ -36,6 +39,7 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{SemanticRestateVersion, Version, Versioned};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyValue;
 
@@ -45,7 +49,7 @@ use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
 use crate::partition::shuffle;
 use crate::partition::shuffle::HintSender;
-use crate::partition::state_machine::Action;
+use crate::partition::state_machine::{Action, StateMachine};
 
 use super::durability_tracker::DurabilityTracker;
 
@@ -58,7 +62,7 @@ pub struct LeaderState {
     pub(crate) partition_id: PartitionId,
     pub leader_epoch: LeaderEpoch,
     // only needed for proposing TruncateOutbox to ourselves
-    own_partition_key: PartitionKey,
+    partition_key_range: RangeInclusive<PartitionKey>,
 
     pub shuffle_hint_tx: HintSender,
     // It's illegal to await the shuffle task handle once it has
@@ -73,6 +77,7 @@ pub struct LeaderState {
 
     invoker_stream: InvokerStream,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
+    schema_stream: WatchStream<Version>,
     pub pending_cleanup_timers_to_schedule: VecDeque<(InvocationId, Duration)>,
     cleaner_task_id: TaskId,
     trimmer_task_id: TaskId,
@@ -84,7 +89,7 @@ impl LeaderState {
     pub fn new(
         partition_id: PartitionId,
         leader_epoch: LeaderEpoch,
-        own_partition_key: PartitionKey,
+        partition_key_range: RangeInclusive<PartitionKey>,
         shuffle_task_handle: TaskHandle<anyhow::Result<()>>,
         cleaner_task_id: TaskId,
         trimmer_task_id: TaskId,
@@ -98,11 +103,14 @@ impl LeaderState {
         LeaderState {
             partition_id,
             leader_epoch,
-            own_partition_key,
+            partition_key_range,
             shuffle_task_handle: Some(shuffle_task_handle),
             cleaner_task_id,
             trimmer_task_id,
             shuffle_hint_tx,
+            schema_stream: Metadata::with_current(|m| {
+                WatchStream::new(m.watch(MetadataKind::Schema))
+            }),
             timer_service: Box::pin(timer_service),
             self_proposer,
             awaiting_rpc_actions: Default::default(),
@@ -119,7 +127,7 @@ impl LeaderState {
     ///
     /// Important: The future needs to be cancellation safe since it is polled as a tokio::select
     /// arm!
-    pub async fn run(&mut self) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
             |timer_service| async {
@@ -127,6 +135,21 @@ impl LeaderState {
                 Some((ActionEffect::Timer(timer_value), timer_service))
             }
         ));
+
+        let schema_stream = (&mut self.schema_stream).filter_map(|_| {
+            // only upsert schema iff version is newer than current version
+            let current_version = state_machine
+                .schema
+                .as_ref()
+                .map(|schema| schema.version())
+                .unwrap_or_else(Version::invalid);
+
+            std::future::ready(
+                Some(Metadata::with_current(|m| m.schema()))
+                    .filter(|schema| schema.version() > current_version)
+                    .map(|schema| ActionEffect::UpsertSchema(schema.clone())),
+            )
+        });
 
         let invoker_stream = (&mut self.invoker_stream).map(ActionEffect::Invoker);
         let shuffle_stream = (&mut self.shuffle_stream).map(ActionEffect::Shuffle);
@@ -155,7 +178,8 @@ impl LeaderState {
             timer_stream,
             action_effects_stream,
             awaiting_rpc_self_propose_stream,
-            dur_tracker_stream
+            dur_tracker_stream,
+            schema_stream
         );
         let mut all_streams = all_streams.ready_chunks(BATCH_READY_UP_TO);
 
@@ -245,7 +269,7 @@ impl LeaderState {
                     // the replica-set as a sufficient source of durability, or only snapshots.
                     self.self_proposer
                         .propose(
-                            self.own_partition_key,
+                            *self.partition_key_range.start(),
                             Command::UpdatePartitionDurability(partition_durability),
                         )
                         .await?;
@@ -263,7 +287,7 @@ impl LeaderState {
                     //  specific destination messages that are identified by a partition_id
                     self.self_proposer
                         .propose(
-                            self.own_partition_key,
+                            *self.partition_key_range.start(),
                             Command::TruncateOutbox(outbox_truncation.index()),
                         )
                         .await?;
@@ -283,6 +307,24 @@ impl LeaderState {
                             )),
                         )
                         .await?;
+                }
+                ActionEffect::UpsertSchema(schema) => {
+                    const GATE_VERSION: SemanticRestateVersion =
+                        SemanticRestateVersion::new(1, 7, 0);
+
+                    if SemanticRestateVersion::current().is_equal_or_newer_than(&GATE_VERSION) {
+                        self.self_proposer
+                            .propose(
+                                *self.partition_key_range.start(),
+                                Command::UpsertSchema(UpsertSchema {
+                                    partition_key_range: Keys::RangeInclusive(
+                                        self.partition_key_range.clone(),
+                                    ),
+                                    schema,
+                                }),
+                            )
+                            .await?;
+                    }
                 }
                 ActionEffect::AwaitingRpcSelfProposeDone => {
                     // Nothing to do here

@@ -64,6 +64,7 @@ mod tests {
             PartitionKey::MIN..=PartitionKey::MAX,
             SemanticRestateVersion::unknown().clone(),
             Default::default(),
+            None,
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
@@ -106,6 +107,7 @@ mod tests {
             PartitionKey::MIN..=PartitionKey::MAX,
             SemanticRestateVersion::unknown().clone(),
             Default::default(),
+            None,
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;

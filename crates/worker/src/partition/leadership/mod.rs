@@ -52,6 +52,7 @@ use restate_types::net::partition_processor::{
 use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::with_jitter;
+use restate_types::schema::Schema;
 use restate_types::storage::StorageEncodeError;
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
@@ -63,7 +64,7 @@ use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
-use crate::partition::state_machine::Action;
+use crate::partition::state_machine::{Action, StateMachine};
 use crate::partition::types::InvokerEffect;
 
 use self::durability_tracker::DurabilityTracker;
@@ -124,6 +125,7 @@ pub(crate) enum ActionEffect {
     Timer(TimerKeyValue),
     ScheduleCleanupTimer(InvocationId, Duration),
     PartitionMaintenance(PartitionDurability),
+    UpsertSchema(Schema),
     AwaitingRpcSelfProposeDone,
 }
 enum State {
@@ -413,7 +415,7 @@ where
             self.state = State::Leader(Box::new(LeaderState::new(
                 self.partition.partition_id,
                 *leader_epoch,
-                *self.partition.key_range.start(),
+                self.partition.key_range.clone(),
                 shuffle_task_handle,
                 cleaner_task_id,
                 trimmer_task_id,
@@ -518,7 +520,7 @@ where
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
     /// * Leader: Await action effects and monitor appender task
-    pub async fn run(&mut self) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
         match &mut self.state {
             State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
             State::Candidate { self_proposer, .. } => Err(self_proposer
@@ -527,7 +529,7 @@ where
                 .join_on_err()
                 .await
                 .expect_err("never should never be returned")),
-            State::Leader(leader_state) => leader_state.run().await,
+            State::Leader(leader_state) => leader_state.run(state_machine).await,
         }
     }
 

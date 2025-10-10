@@ -46,8 +46,9 @@ use crate::{Version, Versioned, identifiers};
 /// Serializable data structure representing the schema registry
 ///
 /// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
+#[debug("Schema(version: {version})")]
 pub struct Schema {
     /// This gets bumped on each update.
     version: Version,

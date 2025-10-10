@@ -181,6 +181,7 @@ where
         let outbox_seq_number = partition_store.get_outbox_seq_number().await?;
         let outbox_head_seq_number = partition_store.get_outbox_head_seq_number().await?;
         let min_restate_version = partition_store.get_min_restate_version().await?;
+        let schema = partition_store.get_schema().await?;
 
         if !SemanticRestateVersion::current().is_equal_or_newer_than(&min_restate_version) {
             gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL =>
@@ -199,6 +200,7 @@ where
             partition_store.partition_key_range().clone(),
             min_restate_version,
             EnumSet::empty(),
+            schema,
         );
 
         Ok(state_machine)
@@ -561,7 +563,7 @@ where
                     transaction.commit().await?;
                     self.leadership_state.handle_actions(action_collector.drain(..))?;
                 },
-                result = self.leadership_state.run() => {
+                result = self.leadership_state.run(&self.state_machine) => {
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be

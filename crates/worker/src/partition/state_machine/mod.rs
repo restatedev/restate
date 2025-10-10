@@ -90,7 +90,6 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
-use restate_types::journal::*;
 use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawNotification;
@@ -99,11 +98,13 @@ use restate_types::journal_v2::{
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::schema::Schema;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{RestateVersion, SemanticRestateVersion};
+use restate_types::{Versioned, journal::*};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
@@ -118,17 +119,20 @@ pub enum ExperimentalFeature {}
 
 pub struct StateMachine {
     // initialized from persistent storage
-    inbox_seq_number: MessageIndex,
+    pub(crate) inbox_seq_number: MessageIndex,
     /// First outbox message index.
-    outbox_head_seq_number: Option<MessageIndex>,
+    pub(crate) outbox_head_seq_number: Option<MessageIndex>,
     /// The minimum version of restate server that we currently support
-    min_restate_version: SemanticRestateVersion,
+    pub(crate) min_restate_version: SemanticRestateVersion,
     /// Sequence number of the next outbox message to be appended.
-    outbox_seq_number: MessageIndex,
-    partition_key_range: RangeInclusive<PartitionKey>,
+    pub(crate) outbox_seq_number: MessageIndex,
+    /// Consistent schema
+    pub(crate) schema: Option<Schema>,
+
+    pub(crate) partition_key_range: RangeInclusive<PartitionKey>,
 
     /// Enabled experimental features.
-    experimental_features: EnumSet<ExperimentalFeature>,
+    pub(crate) experimental_features: EnumSet<ExperimentalFeature>,
 }
 
 impl Debug for StateMachine {
@@ -214,6 +218,7 @@ impl StateMachine {
         partition_key_range: RangeInclusive<PartitionKey>,
         min_restate_version: SemanticRestateVersion,
         experimental_features: EnumSet<ExperimentalFeature>,
+        schema: Option<Schema>,
     ) -> Self {
         Self {
             inbox_seq_number,
@@ -222,6 +227,7 @@ impl StateMachine {
             partition_key_range,
             min_restate_version,
             experimental_features,
+            schema,
         }
     }
 }
@@ -235,6 +241,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     outbox_seq_number: &'a mut MessageIndex,
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
     min_restate_version: &'a mut SemanticRestateVersion,
+    schema: &'a mut Option<Schema>,
     partition_key_range: RangeInclusive<PartitionKey>,
     #[allow(dead_code)]
     experimental_features: &'a EnumSet<ExperimentalFeature>,
@@ -273,6 +280,7 @@ impl StateMachine {
                 outbox_seq_number: &mut self.outbox_seq_number,
                 outbox_head_seq_number: &mut self.outbox_head_seq_number,
                 min_restate_version: &mut self.min_restate_version,
+                schema: &mut self.schema,
                 partition_key_range: self.partition_key_range.clone(),
                 experimental_features: &self.experimental_features,
                 is_leader,
@@ -604,6 +612,24 @@ impl<S> StateMachineApplyContext<'_, S> {
                 lifecycle::OnNotifyGetInvocationOutputResponse(get_invocation_output_response)
                     .apply(self)
                     .await?;
+                Ok(())
+            }
+            Command::UpsertSchema(upsert) => {
+                trace!(
+                    "Upsert schema record to version '{}'",
+                    upsert.schema.version()
+                );
+                if self
+                    .schema
+                    .as_ref()
+                    .map(|current| current.version() < upsert.schema.version())
+                    .unwrap_or(true)
+                {
+                    // only update if schema is none or has a smaller version
+                    debug!("Schema updated to version '{}'", upsert.schema.version());
+                    *self.schema = Some(upsert.schema);
+                }
+
                 Ok(())
             }
         }
