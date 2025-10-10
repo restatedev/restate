@@ -39,10 +39,15 @@ where
                     .notify_invoker_to_pause(invocation_id, metadata.current_invocation_epoch);
                 replier.send(PauseInvocationRpcResponse::Accepted);
             }
-            Ok(InvocationStatus::Completed(_) | InvocationStatus::Scheduled(_))
-            | Ok(InvocationStatus::Inboxed(_) | InvocationStatus::Suspended { .. })
-            | Ok(InvocationStatus::Paused(_)) => {
+            Ok(
+                InvocationStatus::Completed(_)
+                | InvocationStatus::Scheduled(_)
+                | InvocationStatus::Inboxed(_),
+            ) => {
                 replier.send(PauseInvocationRpcResponse::NotRunning);
+            }
+            Ok(InvocationStatus::Paused(_) | InvocationStatus::Suspended { .. }) => {
+                replier.send(PauseInvocationRpcResponse::AlreadyPaused);
             }
             Ok(InvocationStatus::Free) => {
                 replier.send(PauseInvocationRpcResponse::NotFound);

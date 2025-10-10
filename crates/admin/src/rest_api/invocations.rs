@@ -596,12 +596,12 @@ generate_meta_api_error!(PauseInvocationError: [
         from_type = "PauseInvocationError",
     )
 )]
-pub async fn pause_invocation<IC>(
-    State(state): State<AdminServiceState<IC>>,
+pub async fn pause_invocation<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(invocation_id): Path<String>,
 ) -> Result<StatusCode, PauseInvocationError>
 where
-    IC: InvocationClient,
+    Invocations: InvocationClient,
 {
     let invocation_id = invocation_id
         .parse::<InvocationId>()
