@@ -278,8 +278,7 @@ where
                             pinned_protocol_version: pinned_deployment.service_protocol_version
                                 as i32,
                             deployment_id: deployment.id,
-                            supported_protocol_versions: deployment
-                                .supported_protocol_versions,
+                            supported_protocol_versions: deployment.supported_protocol_versions,
                         },
                     );
                     return Ok(());
