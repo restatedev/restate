@@ -12,6 +12,7 @@ use std::ops::RangeInclusive;
 
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::logs::{Keys, Lsn};
+use restate_types::schema::Schema;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 
@@ -61,4 +62,14 @@ pub struct PartitionDurability {
     pub durable_point: Lsn,
     /// Timestamp which the durability point was updated
     pub modification_time: MillisSinceEpoch,
+}
+
+/// Consistently store schema across partition replicas.
+///
+/// Since v1.6.0.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct UpsertSchema {
+    pub partition_key_range: Keys,
+    pub schema: Schema,
 }
