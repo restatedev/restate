@@ -55,3 +55,39 @@ pub trait DiscoveryClient {
         req: DiscoveryRequest,
     ) -> impl Future<Output = Result<DiscoveryResponse, Self::Error>> + Send;
 }
+
+#[cfg(any(test, feature = "test-util"))]
+mod mocks {
+    use super::*;
+
+    use crate::service_protocol::{
+        MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION,
+    };
+    use codederror::BoxedCodedError;
+
+    impl DiscoveryResponse {
+        pub fn mock(services: Vec<endpoint_manifest::Service>) -> Self {
+            Self {
+                deployment_type_parameters: DeploymentConnectionParameters::Http {
+                    protocol_type: ProtocolType::BidiStream,
+                    http_version: http::Version::HTTP_2,
+                },
+                supported_protocol_versions: MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr()
+                    ..=MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr(),
+                sdk_version: None,
+                services,
+            }
+        }
+    }
+
+    impl DiscoveryClient for DiscoveryResponse {
+        type Error = BoxedCodedError;
+
+        fn discover(
+            &self,
+            _: DiscoveryRequest,
+        ) -> impl Future<Output = Result<DiscoveryResponse, Self::Error>> + Send {
+            std::future::ready(Ok(self.clone()))
+        }
+    }
+}

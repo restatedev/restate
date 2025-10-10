@@ -117,6 +117,7 @@ impl ApplyMode {
     }
 }
 
+#[derive(Clone)]
 pub struct RegisterDeploymentRequest {
     pub deployment_address: DeploymentAddress,
     pub additional_headers: Headers,
@@ -604,3 +605,6 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
         Ok(subscription)
     }
 }
+
+#[cfg(test)]
+mod tests;
