@@ -165,6 +165,15 @@ pub mod test_util {
             Ok(())
         }
 
+        fn pause_invocation(
+            &mut self,
+            _partition_leader_epoch: PartitionLeaderEpoch,
+            _invocation_id: InvocationId,
+            _invocation_epoch: InvocationEpoch,
+        ) -> Result<(), NotRunningError> {
+            Ok(())
+        }
+
         fn register_partition(
             &mut self,
             _partition: PartitionLeaderEpoch,

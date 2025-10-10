@@ -21,8 +21,8 @@ use restate_types::identifiers::{
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PatchDeploymentId, PurgeInvocationResponse, RestartAsNewInvocationResponse,
-    ResumeInvocationResponse, SubmittedInvocationNotification,
+    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
+    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
@@ -544,6 +544,28 @@ where
             }
             _ => {
                 panic!("Expecting ResumeInvocation rpc response")
+            }
+        })
+    }
+
+    async fn pause_invocation(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> Result<PauseInvocationResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::PauseInvocation(pause_invocation_response) => {
+                pause_invocation_response.into()
+            }
+            _ => {
+                panic!("Expecting PauseInvocation rpc response")
             }
         })
     }

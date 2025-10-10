@@ -63,6 +63,13 @@ pub trait InvokerHandle<SR> {
         invocation_epoch: InvocationEpoch,
     ) -> Result<(), NotRunningError>;
 
+    fn pause_invocation(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) -> Result<(), NotRunningError>;
+
     fn notify_stored_command_ack(
         &mut self,
         partition: PartitionLeaderEpoch,

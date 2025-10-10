@@ -14,6 +14,7 @@ mod append_signal;
 mod cancel_invocation;
 mod get_invocation_output;
 mod kill_invocation;
+mod pause_invocation;
 mod purge_invocation;
 mod purge_journal;
 mod restart_as_new_invocation;
@@ -57,6 +58,12 @@ pub(super) trait Actuator {
     ) -> impl Future<Output = ()>;
 
     fn notify_invoker_to_retry_now(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    );
+
+    fn notify_invoker_to_pause(
         &mut self,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
@@ -115,6 +122,22 @@ impl<
             return;
         };
         let _ = invoker_handle.retry_invocation_now(
+            partition_leader_epoch,
+            invocation_id,
+            invocation_epoch,
+        );
+    }
+
+    fn notify_invoker_to_pause(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) {
+        let Some((partition_leader_epoch, invoker_handle)) = LeadershipState::invoker_handle(self)
+        else {
+            return;
+        };
+        let _ = invoker_handle.pause_invocation(
             partition_leader_epoch,
             invocation_id,
             invocation_epoch,
@@ -319,6 +342,10 @@ where
                     replier.map(),
                 )
                 .await
+            }
+            PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id } => {
+                self.handle(pause_invocation::Request { invocation_id }, replier.map())
+                    .await
             }
         }
     }

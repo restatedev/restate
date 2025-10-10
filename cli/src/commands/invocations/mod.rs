@@ -12,6 +12,7 @@ mod cancel;
 mod describe;
 mod kill;
 mod list;
+mod pause;
 mod purge;
 mod restart_as_new;
 mod resume;
@@ -35,6 +36,8 @@ pub enum Invocations {
     RestartAsNew(restart_as_new::RestartAsNew),
     /// Resume an invocation, or a set of invocations.
     Resume(resume::Resume),
+    /// Pause an invocation, or a set of invocations.
+    Pause(pause::Pause),
 }
 
 /// See [cancel::Cancel] for more details on query

@@ -120,6 +120,10 @@ where
             patch(openapi_handler!(invocations::resume_invocation)),
         )
         .route(
+            "/invocations/{invocation_id}/pause",
+            patch(openapi_handler!(invocations::pause_invocation)),
+        )
+        .route(
             "/subscriptions",
             post(openapi_handler!(subscriptions::create_subscription)),
         )

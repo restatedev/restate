@@ -209,6 +209,11 @@ pub(crate) struct ResumeInvocationNotStartedError(pub(crate) String);
 impl_meta_api_error!(ResumeInvocationNotStartedError: TOO_EARLY "The invocation is either inboxed or scheduled. An invocation can be resumed only when running, paused or suspended.");
 
 #[derive(Debug, thiserror::Error)]
+#[error("The invocation '{0}' is not running, cannot be paused.")]
+pub(crate) struct PauseInvocationNotRunningError(pub(crate) String);
+impl_meta_api_error!(PauseInvocationNotRunningError: CONFLICT "The invocation is not running. An invocation can be paused only when running.");
+
+#[derive(Debug, thiserror::Error)]
 #[error(
     "The invocation '{0}' is still running or the deployment id is not pinned yet, deployment id cannot be changed."
 )]

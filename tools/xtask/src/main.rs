@@ -30,8 +30,8 @@ use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, S
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PatchDeploymentId, PurgeInvocationResponse, RestartAsNewInvocationResponse,
-    ResumeInvocationResponse, SubmittedInvocationNotification,
+    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
+    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{
     InvocationQuery, InvocationRequest, InvocationResponse, InvocationTermination,
@@ -197,6 +197,14 @@ impl InvocationClient for Mock {
         _: InvocationId,
         _: PatchDeploymentId,
     ) -> impl Future<Output = Result<ResumeInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
+
+    fn pause_invocation(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+    ) -> impl Future<Output = Result<PauseInvocationResponse, InvocationClientError>> + Send {
         pending()
     }
 }

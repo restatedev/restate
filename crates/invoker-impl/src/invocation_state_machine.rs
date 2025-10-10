@@ -14,7 +14,6 @@ use restate_types::journal::Completion;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
-use restate_types::service_protocol::ServiceProtocolVersion;
 use std::fmt;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -25,13 +24,13 @@ use tokio::task::AbortHandle;
 pub(super) struct InvocationStateMachine {
     pub(super) invocation_target: InvocationTarget,
     pub(super) invocation_epoch: InvocationEpoch,
-    last_transient_error_event: Option<TransientErrorEvent>,
-    selected_service_protocol: Option<ServiceProtocolVersion>,
-    invocation_state: InvocationState,
+    pub(super) last_transient_error_event: Option<TransientErrorEvent>,
+    invocation_state: AttemptState,
     retry_policy_state: RetryPolicyState,
     /// This retry count is passed in the StartMessage.
     /// For more details of when we bump it, see [`InvokerError::should_bump_start_message_retry_count_since_last_stored_entry`].
     pub(super) start_message_retry_count_since_last_stored_command: u32,
+    pub(super) requested_pause: bool,
 }
 
 /// This struct tracks which commands the invocation task generates,
@@ -106,7 +105,7 @@ impl JournalTracker {
     }
 }
 
-enum InvocationState {
+enum AttemptState {
     New,
 
     InFlight {
@@ -119,8 +118,10 @@ enum InvocationState {
         // Acks that should be propagated back to the SDK
         command_acks_to_propagate: HashSet<CommandIndex>,
 
-        // If Some, we need to notify the deployment id to the partition processor
-        pinned_deployment: Option<PinnedDeployment>,
+        // Deployment being used during this attempt
+        using_deployment: Option<PinnedDeployment>,
+        // If true, we need to notify the deployment id to the partition processor
+        should_notify_pinned_deployment: bool,
     },
 
     WaitingRetry {
@@ -129,11 +130,11 @@ enum InvocationState {
     },
 }
 
-impl fmt::Debug for InvocationState {
+impl fmt::Debug for AttemptState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            InvocationState::New => f.write_str("New"),
-            InvocationState::InFlight {
+            AttemptState::New => f.write_str("New"),
+            AttemptState::InFlight {
                 journal_tracker,
                 abort_handle,
                 notifications_tx,
@@ -150,7 +151,7 @@ impl fmt::Debug for InvocationState {
                         .unwrap_or(false),
                 )
                 .finish(),
-            InvocationState::WaitingRetry {
+            AttemptState::WaitingRetry {
                 journal_tracker,
                 timer_fired,
             } => f
@@ -180,14 +181,14 @@ impl InvocationStateMachine {
             invocation_target,
             invocation_epoch,
             last_transient_error_event: None,
-            selected_service_protocol: None,
-            invocation_state: InvocationState::New,
+            invocation_state: AttemptState::New,
             retry_policy_state: RetryPolicyState {
                 selected_from_deployment_id: None,
                 retry_iter,
                 on_max_attempts,
             },
             start_message_retry_count_since_last_stored_command: 0,
+            requested_pause: false,
         }
     }
 
@@ -198,20 +199,21 @@ impl InvocationStateMachine {
     ) {
         debug_assert!(matches!(
             &self.invocation_state,
-            InvocationState::New | InvocationState::WaitingRetry { .. }
+            AttemptState::New | AttemptState::WaitingRetry { .. }
         ));
 
-        self.invocation_state = InvocationState::InFlight {
+        self.invocation_state = AttemptState::InFlight {
             notifications_tx: Some(notifications_tx),
             journal_tracker: Default::default(),
             abort_handle,
             command_acks_to_propagate: Default::default(),
-            pinned_deployment: None,
+            using_deployment: None,
+            should_notify_pinned_deployment: false,
         };
     }
 
     pub(super) fn abort(&mut self) {
-        if let InvocationState::InFlight { abort_handle, .. } = &mut self.invocation_state {
+        if let AttemptState::InFlight { abort_handle, .. } = &mut self.invocation_state {
             abort_handle.abort();
         }
     }
@@ -242,49 +244,49 @@ impl InvocationStateMachine {
         }
     }
 
-    pub(super) fn notify_pinned_deployment(&mut self, deployment: PinnedDeployment) {
+    pub(super) fn notify_pinned_deployment(
+        &mut self,
+        deployment: PinnedDeployment,
+        has_changed: bool,
+    ) {
         debug_assert!(matches!(
             &self.invocation_state,
-            InvocationState::InFlight {
-                pinned_deployment: None,
+            AttemptState::InFlight {
+                using_deployment: None,
                 ..
             }
         ));
 
-        if let InvocationState::InFlight {
-            pinned_deployment, ..
+        if let AttemptState::InFlight {
+            using_deployment: pinned_deployment,
+            should_notify_pinned_deployment,
+            ..
         } = &mut self.invocation_state
         {
             *pinned_deployment = Some(deployment);
+            // If the deployment has changed, we should notify the pinned deployment on the next entry produced.
+            // See call sites of pinned_deployment_to_notify() for more details on when this happens.
+            *should_notify_pinned_deployment = has_changed;
         }
-    }
-
-    pub(super) fn notify_selected_service_protocol(
-        &mut self,
-        service_protocol_version: ServiceProtocolVersion,
-    ) {
-        self.selected_service_protocol = Some(service_protocol_version);
-    }
-
-    #[allow(unused)]
-    pub(super) fn selected_service_protocol(&self) -> Option<ServiceProtocolVersion> {
-        self.selected_service_protocol
     }
 
     pub(super) fn pinned_deployment_to_notify(&mut self) -> Option<PinnedDeployment> {
         debug_assert!(matches!(
             &self.invocation_state,
-            InvocationState::InFlight { .. }
+            AttemptState::InFlight { .. }
         ));
 
-        if let InvocationState::InFlight {
-            pinned_deployment, ..
-        } = &mut self.invocation_state
+        if let AttemptState::InFlight {
+            using_deployment: ref using_deployment_id,
+            ref mut should_notify_pinned_deployment,
+            ..
+        } = self.invocation_state
         {
-            if let Some(pinned_deployment) = pinned_deployment.take() {
+            if *should_notify_pinned_deployment && let Some(pinned_deployment) = using_deployment_id
+            {
                 // When notifying the pinned deployment, we also set the protocol version
-                self.selected_service_protocol = Some(pinned_deployment.service_protocol_version);
-                Some(pinned_deployment)
+                *should_notify_pinned_deployment = false;
+                Some(pinned_deployment.clone())
             } else {
                 None
             }
@@ -296,12 +298,14 @@ impl InvocationStateMachine {
     pub(super) fn notify_new_command(&mut self, command_index: CommandIndex, requires_ack: bool) {
         debug_assert!(matches!(
             &self.invocation_state,
-            InvocationState::InFlight { .. }
+            AttemptState::InFlight { .. }
         ));
 
+        // Invocation made some progress, reset the retry count and reset the last_transient_error_event
         self.start_message_retry_count_since_last_stored_command = 0;
+        self.last_transient_error_event = None;
 
-        if let InvocationState::InFlight {
+        if let AttemptState::InFlight {
             journal_tracker,
             command_acks_to_propagate: entries_to_ack,
             ..
@@ -317,10 +321,10 @@ impl InvocationStateMachine {
     pub(super) fn notify_new_notification_proposal(&mut self, notification_id: NotificationId) {
         debug_assert!(matches!(
             &self.invocation_state,
-            InvocationState::InFlight { .. }
+            AttemptState::InFlight { .. }
         ));
 
-        if let InvocationState::InFlight {
+        if let AttemptState::InFlight {
             journal_tracker, ..
         } = &mut self.invocation_state
         {
@@ -330,7 +334,7 @@ impl InvocationStateMachine {
 
     pub(super) fn notify_stored_ack(&mut self, command_index: CommandIndex) {
         match &mut self.invocation_state {
-            InvocationState::InFlight {
+            AttemptState::InFlight {
                 journal_tracker,
                 command_acks_to_propagate,
                 notifications_tx,
@@ -341,7 +345,7 @@ impl InvocationStateMachine {
                 }
                 journal_tracker.notify_acked_command_from_partition_processor(command_index);
             }
-            InvocationState::WaitingRetry {
+            AttemptState::WaitingRetry {
                 journal_tracker, ..
             } => {
                 journal_tracker.notify_acked_command_from_partition_processor(command_index);
@@ -351,7 +355,7 @@ impl InvocationStateMachine {
     }
 
     pub(super) fn notify_completion(&mut self, completion: Completion) {
-        if let InvocationState::InFlight {
+        if let AttemptState::InFlight {
             notifications_tx, ..
         } = &mut self.invocation_state
         {
@@ -361,7 +365,7 @@ impl InvocationStateMachine {
 
     pub(super) fn notify_entry(&mut self, entry: RawEntry) {
         match &mut self.invocation_state {
-            InvocationState::InFlight {
+            AttemptState::InFlight {
                 journal_tracker,
                 notifications_tx,
                 ..
@@ -372,7 +376,7 @@ impl InvocationStateMachine {
 
                 Self::try_send_notification(notifications_tx, Notification::Entry(entry));
             }
-            InvocationState::WaitingRetry {
+            AttemptState::WaitingRetry {
                 journal_tracker, ..
             } => {
                 if let journal_v2::raw::RawEntry::Notification(notif) = &entry {
@@ -397,7 +401,12 @@ impl InvocationStateMachine {
     }
 
     pub(super) fn notify_retry_timer_fired(&mut self) {
-        if let InvocationState::WaitingRetry { timer_fired, .. } = &mut self.invocation_state {
+        debug_assert!(matches!(
+            &self.invocation_state,
+            AttemptState::WaitingRetry { .. }
+        ));
+
+        if let AttemptState::WaitingRetry { timer_fired, .. } = &mut self.invocation_state {
             *timer_fired = true;
         }
     }
@@ -409,11 +418,11 @@ impl InvocationStateMachine {
         should_bump_start_message_retry_count_since_last_stored_command: bool,
     ) -> OnTaskError {
         let journal_tracker = match &self.invocation_state {
-            InvocationState::InFlight {
+            AttemptState::InFlight {
                 journal_tracker, ..
             } => journal_tracker.clone(),
-            InvocationState::New => JournalTracker::default(),
-            InvocationState::WaitingRetry {
+            AttemptState::New => JournalTracker::default(),
+            AttemptState::WaitingRetry {
                 journal_tracker,
                 timer_fired,
             } => {
@@ -428,6 +437,11 @@ impl InvocationStateMachine {
             }
         };
 
+        if self.requested_pause {
+            // Shortcircuit to pause, as this is what the user asked for
+            return OnTaskError::Pause;
+        }
+
         if error_is_transient
             && let Some(next_timer) =
                 next_retry_interval_override.or_else(|| self.retry_policy_state.retry_iter.next())
@@ -435,7 +449,7 @@ impl InvocationStateMachine {
             if should_bump_start_message_retry_count_since_last_stored_command {
                 self.start_message_retry_count_since_last_stored_command += 1;
             }
-            self.invocation_state = InvocationState::WaitingRetry {
+            self.invocation_state = AttemptState::WaitingRetry {
                 timer_fired: false,
                 journal_tracker,
             };
@@ -450,12 +464,39 @@ impl InvocationStateMachine {
 
     pub(super) fn is_ready_to_retry(&self) -> bool {
         match &self.invocation_state {
-            InvocationState::WaitingRetry {
+            AttemptState::WaitingRetry {
                 timer_fired,
                 journal_tracker,
             } => *timer_fired && journal_tracker.can_retry(),
             _ => false,
         }
+    }
+
+    pub(super) fn attempt_deployment_id(&self) -> AttemptDeploymentId {
+        AttemptDeploymentId(match &self.invocation_state {
+            AttemptState::InFlight {
+                using_deployment, ..
+            } => using_deployment.as_ref().map(|pd| pd.deployment_id),
+            _ => None,
+        })
+    }
+
+    // If returns true, we should pause now, otherwise we should wait for that.
+    pub(super) fn notify_pause(&mut self) -> bool {
+        self.requested_pause = true;
+        if let AttemptState::InFlight {
+            notifications_tx, ..
+        } = &mut self.invocation_state
+        {
+            // Close notifications_tx to trigger suspension
+            *notifications_tx = None;
+
+            // Invocation is still in-flight, pause will happen later on
+            return false;
+        }
+
+        // Invocation is not in-flight, all good we can pause now
+        true
     }
 
     pub(crate) fn should_emit_transient_error_event(
@@ -494,6 +535,17 @@ pub(super) enum OnTaskError {
     Kill,
 }
 
+pub(super) struct AttemptDeploymentId(Option<DeploymentId>);
+
+impl fmt::Display for AttemptDeploymentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(dp) => fmt::Display::fmt(&dp, f),
+            None => write!(f, "unknown"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,7 +564,7 @@ mod tests {
 
     impl InvocationStateMachine {
         pub(crate) fn is_waiting_retry(&self) -> bool {
-            matches!(self.invocation_state, InvocationState::WaitingRetry { .. })
+            matches!(self.invocation_state, AttemptState::WaitingRetry { .. })
         }
     }
 
@@ -529,7 +581,7 @@ mod tests {
             OnTaskError::ScheduleRetry(_) =
                 invocation_state_machine.handle_task_error(true, None, true)
         );
-        check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         invocation_state_machine.notify_retry_timer_fired();
 
@@ -538,7 +590,7 @@ mod tests {
             OnTaskError::ScheduleRetry(_) =
                 invocation_state_machine.handle_task_error(true, None, true)
         );
-        check!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
     }
 
     #[test(tokio::test)]
@@ -658,7 +710,7 @@ mod tests {
 
         // Still waiting retry timer fired
         assert!(!invocation_state_machine.is_ready_to_retry());
-        assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // After the retry timer fires, we're ready to retry
         invocation_state_machine.notify_retry_timer_fired();
@@ -687,7 +739,7 @@ mod tests {
 
         // Waiting notifications acks and retry timer fired
         assert!(!invocation_state_machine.is_ready_to_retry());
-        assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // Got signal 18
         invocation_state_machine.notify_entry(RawEntry::Notification(RawNotification::new(
@@ -701,7 +753,7 @@ mod tests {
 
         // Waiting notifications acks
         assert!(!invocation_state_machine.is_ready_to_retry());
-        assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // For whatever reason notification index 2
         invocation_state_machine.notify_entry(RawEntry::Notification(RawNotification::new(
@@ -712,7 +764,7 @@ mod tests {
 
         // Still waiting completion id 1
         assert!(!invocation_state_machine.is_ready_to_retry());
-        assert!(let InvocationState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // Send notification index 1
         invocation_state_machine.notify_entry(RawEntry::Notification(RawNotification::new(
