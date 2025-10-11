@@ -15,10 +15,9 @@ use restate_types::invocation::{
     InvocationTermination, NotifySignalRequest, PurgeInvocationRequest,
     RestartAsNewInvocationRequest, ResumeInvocationRequest, ServiceInvocation,
 };
-use restate_types::logs::{HasRecordKeys, Keys, MatchKeyQuery};
+use restate_types::logs::{self, HasRecordKeys, Keys, MatchKeyQuery};
 use restate_types::message::MessageIndex;
 use restate_types::state_mut::ExternalStateMutation;
-use restate_types::{flexbuffers_storage_encode_decode, logs};
 
 use crate::control::{AnnounceLeader, UpsertSchema, VersionBarrier};
 use crate::timer::TimerKeyValue;
@@ -36,7 +35,8 @@ pub struct Envelope {
     pub command: Command,
 }
 
-flexbuffers_storage_encode_decode!(Envelope);
+#[cfg(feature = "serde")]
+restate_types::flexbuffers_storage_encode_decode!(Envelope);
 
 impl Envelope {
     pub fn new(header: Header, command: Command) -> Self {
