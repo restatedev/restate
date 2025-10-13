@@ -41,6 +41,10 @@ pub struct Describe {
 
     #[clap(flatten)]
     watch: Watch,
+
+    /// Show draining status and invocation statistics per deployment
+    #[clap(long)]
+    extra: bool,
 }
 
 pub async fn run_describe(State(env): State<CliEnv>, opts: &Describe) -> Result<()> {
@@ -66,31 +70,40 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let (deployment_id, deployment, services) =
         Deployment::from_detailed_deployment_response(deployment);
 
-    let sql_client = crate::clients::DataFusionHttpClient::from(client);
-    let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment_id).await?;
-    let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
-
-    let service_rev_pairs: Vec<_> = services
-        .iter()
-        .map(|s| ServiceNameRevPair {
-            name: s.name.clone(),
-            revision: s.revision,
-        })
-        .collect();
-
-    let status = calculate_deployment_status(
-        &deployment_id,
-        &service_rev_pairs,
-        total_active_inv,
-        &latest_services,
-    );
-
     let mut table = Table::new_styled();
     table.add_kv_row("ID:", deployment_id);
 
     add_deployment_to_kv_table(&deployment, &mut table);
-    table.add_kv_row("Status:", render_deployment_status(status));
-    table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
+
+    let active_inv = if opts.extra {
+        let sql_client = crate::clients::DataFusionHttpClient::from(client);
+        let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment_id).await?;
+        Some(active_inv)
+    } else {
+        None
+    };
+
+    if opts.extra {
+        let total_active_inv = active_inv.iter().flatten().map(|x| x.inv_count).sum();
+
+        let service_rev_pairs: Vec<_> = services
+            .iter()
+            .map(|s| ServiceNameRevPair {
+                name: s.name.clone(),
+                revision: s.revision,
+            })
+            .collect();
+
+        let status = calculate_deployment_status(
+            &deployment_id,
+            &service_rev_pairs,
+            total_active_inv,
+            &latest_services,
+        );
+
+        table.add_kv_row("Status:", render_deployment_status(status));
+        table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
+    }
 
     c_title!("📜", "Deployment Information");
     c_println!("{}", table);
@@ -99,6 +112,11 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     c_println!();
 
     c_title!("🤖", "Services");
+    let mut methods_header = vec!["HANDLER", "INPUT", "OUTPUT"];
+    if opts.extra {
+        methods_header.push("ACTIVE-INVOCATIONS");
+    }
+
     for service in services {
         let Some(latest_service) = latest_services.get(&service.name) else {
             // if we can't find this service in the latest set of services, something is off. A
@@ -137,23 +155,30 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             latest_revision_message
         );
         let mut methods_table = Table::new_styled();
-        methods_table.set_styled_header(vec!["HANDLER", "INPUT", "OUTPUT", "ACTIVE-INVOCATIONS"]);
+
+        methods_table.set_styled_header(methods_header.clone());
 
         for handler in service.handlers.values() {
-            // how many inv pinned on this deployment+service+method.
-            let active_inv = active_inv
-                .iter()
-                .filter(|x| x.service == service.name && x.handler == handler.name)
-                .map(|x| x.inv_count)
-                .next()
-                .unwrap_or(0);
-
-            methods_table.add_row(vec![
+            let mut row = vec![
                 Cell::new(&handler.name),
                 Cell::new(&handler.input_description),
                 Cell::new(&handler.output_description),
-                render_active_invocations(active_inv),
-            ]);
+            ];
+
+            if opts.extra {
+                // how many inv pinned on this deployment+service+method.
+                let active_inv = active_inv
+                    .iter()
+                    .flatten()
+                    .filter(|x| x.service == service.name && x.handler == handler.name)
+                    .map(|x| x.inv_count)
+                    .next()
+                    .unwrap_or(0);
+
+                row.push(render_active_invocations(active_inv));
+            }
+
+            methods_table.add_row(row);
         }
         c_indent_table!(2, methods_table);
         c_println!();

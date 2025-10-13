@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
+use comfy_table::{Cell, Row, Table};
 
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
 use restate_cli_util::c_error;
@@ -26,6 +27,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::{AdminClientInterface, Deployment};
 use crate::console::c_println;
+use crate::ui::datetime::DateTimeExt;
 use crate::ui::deployments::{
     DeploymentStatus, calculate_deployment_status, render_active_invocations,
     render_deployment_status, render_deployment_type, render_deployment_url,
@@ -71,63 +73,80 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     for service in services {
         latest_services.insert(service.name.clone(), service);
     }
-    //
-    let mut table = Table::new_styled();
-    let mut header = vec![
-        "DEPLOYMENT",
-        "TYPE",
-        "STATUS",
-        "ACTIVE-INVOCATIONS",
-        "ID",
-        "CREATED-AT",
-    ];
-    if list_opts.extra {
-        header.push("SERVICES");
-    }
-    table.set_styled_header(header);
 
-    let mut enriched_deployments: Vec<(
-        DeploymentId,
-        Deployment,
-        Vec<ServiceNameRevPair>,
-        DeploymentStatus,
-        i64,
-    )> = Vec::with_capacity(deployments.len());
+    let mut table = Table::new_styled();
+
+    table.set_styled_header(DeploymentRow::headers(list_opts.extra));
+
+    let mut enriched_deployments: Vec<EnrichedDeployment> = Vec::with_capacity(deployments.len());
 
     for deployment in deployments {
         let (deployment_id, deployment, services) =
             Deployment::from_deployment_response(deployment);
 
+        let mut enriched_deployment = EnrichedDeployment {
+            deployment_id,
+            deployment,
+            services,
+            active_invocations: None,
+            status: None,
+        };
         // calculate status and counters.
-        let active_inv = count_deployment_active_inv(&sql_client, &deployment_id).await?;
-        let status =
-            calculate_deployment_status(&deployment_id, &services, active_inv, &latest_services);
-        enriched_deployments.push((deployment_id, deployment, services, status, active_inv));
-    }
-    // Sort by active, draining, then drained.
-    enriched_deployments.sort_unstable_by_key(|(_, _, _, status, _)| match status {
-        DeploymentStatus::Active => 0,
-        DeploymentStatus::Draining => 1,
-        DeploymentStatus::Drained => 2,
-    });
-
-    for (deployment_id, deployment, services, status, active_inv) in enriched_deployments {
-        let mut row = vec![
-            Cell::new(render_deployment_url(&deployment)),
-            Cell::new(render_deployment_type(&deployment)),
-            render_deployment_status(status),
-            render_active_invocations(active_inv),
-            Cell::new(deployment_id),
-            Cell::new(match &deployment {
-                Deployment::Http { created_at, .. } => created_at,
-                Deployment::Lambda { created_at, .. } => created_at,
-            }),
-        ];
         if list_opts.extra {
-            row.push(render_services(&deployment_id, &services, &latest_services));
+            let active_inv = count_deployment_active_inv(&sql_client, &deployment_id).await?;
+
+            enriched_deployment.active_invocations = Some(active_inv);
+
+            enriched_deployment.status = calculate_deployment_status(
+                &deployment_id,
+                &enriched_deployment.services,
+                active_inv,
+                &latest_services,
+            )
+            .into();
         }
 
-        table.add_row(row);
+        enriched_deployments.push(enriched_deployment);
+    }
+
+    // Sort by active, draining, drained, then newest by creation time within the same status.
+    enriched_deployments.sort_unstable_by_key(|endriched_deployment| {
+        let order = match endriched_deployment.status {
+            Some(DeploymentStatus::Active) => 0,
+            Some(DeploymentStatus::Draining) => 1,
+            Some(DeploymentStatus::Drained) => 2,
+            None => 3,
+        };
+        (order, Reverse(endriched_deployment.deployment.created_at()))
+    });
+
+    for EnrichedDeployment {
+        deployment_id,
+        deployment,
+        services,
+        status,
+        active_invocations,
+    } in enriched_deployments
+    {
+        let mut row = DeploymentRow::default();
+        row.with_id(deployment_id)
+            .with_url(render_deployment_url(&deployment))
+            .with_type(render_deployment_type(&deployment))
+            .with_created_at(match &deployment {
+                Deployment::Http { created_at, .. } => created_at.display(),
+                Deployment::Lambda { created_at, .. } => created_at.display(),
+            })
+            .with_services(render_services(&deployment_id, &services, &latest_services));
+
+        if let Some(status) = status {
+            row.with_status(render_deployment_status(status));
+        }
+
+        if let Some(active_inv) = active_invocations {
+            row.with_active_invocations(render_active_invocations(active_inv));
+        }
+
+        table.add_row(row.into_row(list_opts.extra));
     }
 
     c_println!("{}", table);
@@ -144,6 +163,10 @@ fn render_services(
 
     let mut out = String::new();
     for service in services {
+        if !out.is_empty() {
+            writeln!(&mut out).unwrap();
+        }
+
         if let Some(latest_service) = latest_services.get(&service.name) {
             let style = if &latest_service.deployment_id == deployment_id {
                 // We are hosting the latest revision of this service.
@@ -151,7 +174,7 @@ fn render_services(
             } else {
                 Style::Normal
             };
-            writeln!(
+            write!(
                 &mut out,
                 "- {} [{}]",
                 &service.name,
@@ -161,7 +184,7 @@ fn render_services(
         } else {
             // We couldn't find that service in latest_services? that's odd. We
             // highlight this with bright red to highlight the issue.
-            writeln!(
+            write!(
                 &mut out,
                 "- {} [{}]",
                 Styled(Style::Danger, &service.name),
@@ -171,4 +194,99 @@ fn render_services(
         }
     }
     Cell::new(out)
+}
+
+struct EnrichedDeployment {
+    deployment_id: DeploymentId,
+    deployment: Deployment,
+    services: Vec<ServiceNameRevPair>,
+    status: Option<DeploymentStatus>,
+    active_invocations: Option<i64>,
+}
+
+#[derive(Default)]
+struct DeploymentRow {
+    url: Option<Cell>,
+    deployment_type: Option<Cell>,
+    status: Option<Cell>,
+    active_invocations: Option<Cell>,
+    id: Option<Cell>,
+    created_at: Option<Cell>,
+    services: Option<Cell>,
+}
+
+impl DeploymentRow {
+    fn headers(extra: bool) -> Vec<&'static str> {
+        if extra {
+            vec![
+                "DEPLOYMENT",
+                "TYPE",
+                "STATUS",
+                "ACTIVE-INVOCATIONS",
+                "ID",
+                "CREATED-AT",
+                "SERVICES",
+            ]
+        } else {
+            vec!["DEPLOYMENT", "TYPE", "ID", "CREATED-AT"]
+        }
+    }
+
+    fn with_id<T: Into<Cell>>(&mut self, id: T) -> &mut Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    fn with_url<T: Into<Cell>>(&mut self, url: T) -> &mut Self {
+        self.url = Some(url.into());
+        self
+    }
+
+    fn with_type<T: Into<Cell>>(&mut self, deployment_type: T) -> &mut Self {
+        self.deployment_type = Some(deployment_type.into());
+        self
+    }
+
+    fn with_status<T: Into<Cell>>(&mut self, status: T) -> &mut Self {
+        self.status = Some(status.into());
+        self
+    }
+
+    fn with_active_invocations<T: Into<Cell>>(&mut self, active_invocations: T) -> &mut Self {
+        self.active_invocations = Some(active_invocations.into());
+        self
+    }
+
+    fn with_created_at<T: Into<Cell>>(&mut self, created_at: T) -> &mut Self {
+        self.created_at = Some(created_at.into());
+        self
+    }
+
+    fn with_services<T: Into<Cell>>(&mut self, services: T) -> &mut Self {
+        self.services = Some(services.into());
+        self
+    }
+
+    fn into_row(self, extra: bool) -> Row {
+        if extra {
+            vec![
+                self.url.expect("is set"),
+                self.deployment_type.expect("is set"),
+                self.status.expect("is set"),
+                self.active_invocations.expect("is set"),
+                self.id.expect("is set"),
+                self.created_at.expect("is set"),
+                self.services.expect("is set"),
+            ]
+        } else {
+            vec![
+                self.url.expect("is set"),
+                self.deployment_type.expect("is set"),
+                self.id.expect("is set"),
+                self.created_at.expect("is set"),
+                self.services.expect("is set"),
+            ]
+        }
+        .into()
+    }
 }
