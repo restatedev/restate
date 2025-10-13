@@ -109,6 +109,7 @@ impl SpawnPartitionProcessorTask {
             EntryEnricher<Schema, ProtobufRawEntryCodec>,
             Schema,
         > = InvokerService::from_options(
+            partition.partition_id,
             &config.common.service_client,
             &config.worker.invoker,
             EntryEnricher::new(schema.clone()),

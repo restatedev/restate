@@ -52,7 +52,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use crate::TokenBucket;
 use crate::error::InvokerError;
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
-use crate::metric_definitions::INVOKER_TASK_DURATION;
+use crate::metric_definitions::{ID_LOOKUP, INVOKER_TASK_DURATION};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -271,7 +271,8 @@ where
         };
 
         self.send_invoker_tx(inner);
-        histogram!(INVOKER_TASK_DURATION).record(start.elapsed());
+        histogram!(INVOKER_TASK_DURATION, "partition_id" => ID_LOOKUP.get(self.partition.0))
+            .record(start.elapsed());
     }
 
     async fn select_protocol_version_and_run(

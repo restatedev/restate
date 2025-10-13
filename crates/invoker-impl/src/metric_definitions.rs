@@ -8,9 +8,60 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::LazyLock;
+
+use dashmap::{DashMap, Entry};
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
 use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
+
+/// Lazily initialized cache that maps "partition" ids to their string representation for metric labels,
+/// avoiding fresh string allocations whenever a partition id is used as a metric dimension.
+pub(crate) static ID_LOOKUP: LazyLock<IdLookup> = LazyLock::new(IdLookup::new);
+
+pub(crate) struct IdLookup {
+    index: Vec<&'static str>,
+    extra: DashMap<u16, &'static str>,
+}
+
+impl IdLookup {
+    const SIZE: u16 = 512;
+
+    fn new() -> Self {
+        let mut index = Vec::with_capacity(Self::SIZE as usize);
+        for i in 0..Self::SIZE {
+            let s: &'static str = i.to_string().leak();
+            index.push(s);
+        }
+
+        Self {
+            index,
+            extra: DashMap::new(),
+        }
+    }
+
+    #[inline]
+    pub fn get(&'static self, id: impl Into<u16>) -> &'static str {
+        let id = id.into();
+        if id < Self::SIZE {
+            // fast access
+            return self.index[id as usize];
+        }
+
+        // We are running more that SIZE partitions
+        // it's a slower path but still better than doing a .to_string()
+        // on each metric
+        let entry = self.extra.entry(id);
+
+        match entry {
+            Entry::Occupied(entry) => entry.get(),
+            Entry::Vacant(entry) => {
+                let s: &'static str = id.to_string().leak();
+                entry.insert(s).value()
+            }
+        }
+    }
+}
 
 pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
 pub const INVOKER_INVOCATION_TASKS: &str = "restate.invoker.invocation_tasks.total";
