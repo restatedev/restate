@@ -645,4 +645,72 @@ mod tests {
 
         test_env.shutdown().await;
     }
+
+    #[restate_core::test]
+    async fn restart_index_out_of_range_non_empty_journal() {
+        let mut test_env = TestEnv::create().await;
+
+        // Start and complete an invocation with the journal retained
+        let invocation_target = InvocationTarget::mock_virtual_object();
+        let original_invocation_id = InvocationId::generate(&invocation_target, None);
+        let _ = test_env
+            .apply_multiple([
+                Command::Invoke(Box::new(ServiceInvocation {
+                    invocation_id: original_invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    completion_retention_duration: Duration::from_secs(120),
+                    journal_retention_duration: Duration::from_secs(120),
+                    ..ServiceInvocation::mock()
+                })),
+                fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
+                // Complete with an output so the journal has at least input+output
+                fixtures::invoker_entry_effect(
+                    original_invocation_id,
+                    OutputCommand {
+                        result: OutputResult::Success(Default::default()),
+                        name: Default::default(),
+                    },
+                ),
+                fixtures::invoker_end_effect(original_invocation_id),
+            ])
+            .await;
+
+        // Fetch completed status to get the exact journal length
+        let original_status = test_env
+            .storage
+            .get_invocation_status(&original_invocation_id)
+            .await
+            .unwrap()
+            .try_as_completed()
+            .unwrap();
+        let len = original_status.journal_metadata.length;
+        assert!(len > 0, "expected non-empty journal for this test");
+
+        // Using copy_prefix equal to the length must be out of range
+        let new_invocation_id = InvocationId::mock_generate(&invocation_target);
+        let request_id = PartitionProcessorRpcRequestId::new();
+        let actions = test_env
+            .apply(Command::RestartAsNewInvocation(
+                RestartAsNewInvocationRequest {
+                    invocation_id: original_invocation_id,
+                    new_invocation_id,
+                    copy_prefix_up_to_index_included: len,
+                    patch_deployment_id: None,
+                    response_sink: Some(InvocationMutationResponseSink::Ingress(
+                        IngressInvocationResponseSink { request_id },
+                    )),
+                },
+            ))
+            .await;
+
+        assert_that!(
+            actions,
+            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+                request_id: eq(request_id),
+                response: eq(RestartAsNewInvocationResponse::JournalIndexOutOfRange)
+            }))
+        );
+
+        test_env.shutdown().await;
+    }
 }
