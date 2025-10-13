@@ -12,6 +12,7 @@
 use enumset::{EnumSet, enum_set};
 use googletest::IntoTestResult;
 use googletest::internal::test_outcome::TestAssertionFailure;
+use restate_types::net::listener::AddressBook;
 use std::num::NonZeroU32;
 use std::{sync::Arc, time::Duration};
 
@@ -20,7 +21,7 @@ use restate_core::TaskCenter;
 use restate_core::{Metadata, MetadataWriter};
 use restate_local_cluster_runner::{
     cluster::{Cluster, MaybeTempDir, StartedCluster},
-    node::{BinarySource, Node},
+    node::{BinarySource, NodeSpec},
 };
 use restate_metadata_store::MetadataStoreClient;
 use restate_rocksdb::RocksDbManager;
@@ -36,7 +37,6 @@ use restate_types::{
     config::Configuration,
     live::Live,
     logs::{LogId, metadata::ProviderKind},
-    net::{AdvertisedAddress, BindAddress},
     nodes_config::Role,
     replicated_loglet::ReplicatedLogletParams,
     replication::ReplicationProperty,
@@ -56,7 +56,7 @@ async fn replicated_loglet_client(
     let node_name = "replicated-loglet-client".to_owned();
     let node_dir = cluster.base_dir().join(&node_name);
     std::fs::create_dir_all(&node_dir)?;
-    let node_socket = node_dir.join("node.sock");
+    let mut address_book = AddressBook::new(node_dir);
 
     config.common.roles = EnumSet::empty();
     config.common.auto_provision = false;
@@ -66,12 +66,17 @@ async fn replicated_loglet_client(
     config
         .common
         .set_cluster_name(cluster.cluster_name().to_owned());
-    config.common.advertised_address = AdvertisedAddress::Uds(node_socket.clone());
-    config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
     config.common.metadata_client = cluster.nodes[0].config().common.metadata_client.clone();
+    address_book.bind_from_config(&config).await?;
+
     restate_types::config::set_current_config(config.clone());
 
-    let node = restate_node::Node::create(Live::from_value(config), Prometheus::default()).await?;
+    let node = restate_node::Node::create(
+        Live::from_value(config),
+        Prometheus::default(),
+        address_book,
+    )
+    .await?;
 
     let bifrost = node.bifrost();
     let metadata_writer = node.metadata_writer();
@@ -111,7 +116,7 @@ where
 {
     // disable the cluster controller to allow us to manually set the logs configuration
     base_config.admin.disable_cluster_controller = true;
-    let nodes = Node::new_test_nodes(
+    let nodes = NodeSpec::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
         enum_set!(Role::MetadataServer | Role::LogServer),

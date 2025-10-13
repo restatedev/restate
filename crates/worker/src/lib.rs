@@ -132,10 +132,8 @@ impl Worker {
 
         // ingress_kafka
         let ingress_kafka = IngressKafkaService::new(bifrost.clone(), schema.clone());
-        let subscription_controller_handle = SubscriptionControllerHandle::new(
-            config.ingress.clone(),
-            ingress_kafka.create_command_sender(),
-        );
+        let subscription_controller_handle =
+            SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
 
         let snapshots_options = &config.worker.snapshots;
         if snapshots_options.snapshot_interval_num_records.is_some()

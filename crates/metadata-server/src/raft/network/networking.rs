@@ -8,23 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::raft::network::connection_manager::ConnectionManager;
-use crate::raft::network::grpc_svc::new_metadata_server_network_client;
-use crate::raft::network::{PEER_METADATA_KEY, grpc_svc};
-use bytes::{Buf, BufMut, BytesMut};
-use futures::FutureExt;
-use restate_core::network::net_util;
-use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
-use restate_types::PlainNodeId;
-use restate_types::config::{Configuration, NetworkingOptions};
-use restate_types::net::AdvertisedAddress;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+
+use bytes::{Buf, BufMut, BytesMut};
+use futures::FutureExt;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::IntoStreamingRequest;
 use tonic::metadata::MetadataValue;
 use tracing::{debug, trace};
+
+use restate_core::network::net_util;
+use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
+use restate_types::PlainNodeId;
+use restate_types::config::{Configuration, NetworkingOptions};
+use restate_types::net::address::{AdvertisedAddress, FabricPort};
+
+use crate::raft::network::connection_manager::ConnectionManager;
+use crate::raft::network::grpc_svc::new_metadata_server_network_client;
+use crate::raft::network::{PEER_METADATA_KEY, grpc_svc};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrySendError<T> {
@@ -52,7 +55,7 @@ impl<T> TrySendError<T> {
 #[derive(derive_more::Debug)]
 pub struct Networking<M> {
     connection_manager: ConnectionManager<M>,
-    addresses: HashMap<PlainNodeId, AdvertisedAddress>,
+    addresses: HashMap<PlainNodeId, AdvertisedAddress<FabricPort>>,
     #[debug(skip)]
     connection_attempts: HashMap<PlainNodeId, TaskHandle<anyhow::Result<()>>>,
     serde_buffer: BytesMut,
@@ -72,7 +75,11 @@ where
     }
 
     /// Makes the given address for the given peer known. Returns true if the address is new.
-    pub fn register_address(&mut self, peer: PlainNodeId, address: AdvertisedAddress) -> bool {
+    pub fn register_address(
+        &mut self,
+        peer: PlainNodeId,
+        address: AdvertisedAddress<FabricPort>,
+    ) -> bool {
         match self.addresses.entry(peer) {
             Entry::Occupied(mut entry) => {
                 if *entry.get() != address {
@@ -151,7 +158,7 @@ where
     fn try_connecting_to(
         connection_manager: ConnectionManager<M>,
         target: PlainNodeId,
-        address: AdvertisedAddress,
+        address: AdvertisedAddress<FabricPort>,
         networking_options: &NetworkingOptions,
     ) -> Result<TaskHandle<anyhow::Result<()>>, ShutdownError> {
         TaskCenter::spawn_unmanaged_child(

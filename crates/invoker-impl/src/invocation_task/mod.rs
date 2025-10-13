@@ -150,7 +150,6 @@ pub(super) struct InvocationTask<IR, EE, DMR> {
     message_size_warning: usize,
     message_size_limit: Option<usize>,
     retry_count_since_last_stored_entry: u32,
-    allow_protocol_v6: bool,
 
     // Invoker tx/rx
     invocation_reader: IR,
@@ -219,7 +218,6 @@ where
         deployment_metadata_resolver: Live<Schemas>,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
-        allow_protocol_v6: bool,
         action_token_bucket: Option<TokenBucket>,
     ) -> Self {
         Self {
@@ -239,7 +237,6 @@ where
             message_size_limit,
             message_size_warning,
             retry_count_since_last_stored_entry,
-            allow_protocol_v6,
             action_token_bucket,
         }
     }
@@ -348,16 +345,13 @@ where
                 );
 
                 let chosen_service_protocol_version = shortcircuit!(
-                    ServiceProtocolVersion::pick(
-                        &deployment.metadata.supported_protocol_versions,
-                        self.allow_protocol_v6
-                    )
-                    .ok_or_else(|| {
-                        InvokerError::IncompatibleServiceEndpoint(
-                            deployment.id,
-                            deployment.metadata.supported_protocol_versions.clone(),
-                        )
-                    })
+                    ServiceProtocolVersion::pick(&deployment.supported_protocol_versions,)
+                        .ok_or_else(|| {
+                            InvokerError::IncompatibleServiceEndpoint(
+                                deployment.id,
+                                deployment.supported_protocol_versions.clone(),
+                            )
+                        })
                 );
 
                 (

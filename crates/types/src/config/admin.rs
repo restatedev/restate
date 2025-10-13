@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
-use http::Uri;
+use http::HeaderName;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
 use restate_time_util::NonZeroFriendlyDuration;
 
-use super::QueryEngineOptions;
+use super::{CommonOptions, ListenerOptions, QueryEngineOptions};
+use crate::net::address::{AdminPort, AdvertisedAddress, BindAddress};
+use crate::net::listener::AddressBook;
 
 /// # Admin server options
 #[serde_as]
@@ -29,17 +30,29 @@ use super::QueryEngineOptions;
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct AdminOptions {
-    /// # Endpoint address
-    ///
     /// Address to bind for the Admin APIs.
-    pub bind_address: SocketAddr,
+    #[serde(flatten)]
+    admin_listener_options: ListenerOptions<AdminPort>,
 
     /// # Advertised Admin endpoint
     ///
     /// Optional advertised Admin API endpoint.
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String", url))]
-    pub advertised_admin_endpoint: Option<Uri>,
+    /// [Deprecated] Use `advertised-address` instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    advertised_admin_endpoint: Option<AdvertisedAddress<AdminPort>>,
+
+    /// # Deployment routing headers
+    ///
+    /// List of header names considered routing headers.
+    ///
+    /// These will be used during deployment creation to distinguish between an already existing deployment and a new deployment.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "serde_with::As::<Vec<restate_serde_util::HeaderNameSerde>>"
+    )]
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
+    pub deployment_routing_headers: Vec<HeaderName>,
 
     /// # Concurrency limit
     ///
@@ -65,6 +78,20 @@ pub struct AdminOptions {
 }
 
 impl AdminOptions {
+    pub fn bind_address(&self) -> BindAddress<AdminPort> {
+        self.admin_listener_options.bind_address()
+    }
+
+    pub fn admin_listener_options(&self) -> &ListenerOptions<AdminPort> {
+        &self.admin_listener_options
+    }
+
+    pub fn advertised_address(&self, address_book: &AddressBook) -> AdvertisedAddress<AdminPort> {
+        self.advertised_admin_endpoint
+            .clone()
+            .unwrap_or_else(|| self.admin_listener_options.advertised_address(address_book))
+    }
+
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("registry")
     }
@@ -86,33 +113,19 @@ impl AdminOptions {
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
-    pub fn set_derived_values(&mut self) {
-        // Only derive bind_address if it is not explicitly set
-        let bind_address = if self.bind_address.ip().is_unspecified() {
-            format!("127.0.0.1:{}", self.bind_address.port())
-        } else {
-            self.bind_address.to_string()
-        };
-
-        if self.advertised_admin_endpoint.is_none() {
-            self.advertised_admin_endpoint = Some(
-                Uri::builder()
-                    .scheme("http")
-                    .authority(bind_address)
-                    .path_and_query("/")
-                    .build()
-                    .expect("valid bind address"),
-            );
-        }
+    pub fn set_derived_values(&mut self, common: &CommonOptions) {
+        self.admin_listener_options
+            .merge(common.fabric_listener_options());
     }
 }
 
 impl Default for AdminOptions {
     fn default() -> Self {
         Self {
-            bind_address: "0.0.0.0:9070".parse().unwrap(),
             advertised_admin_endpoint: None,
+            admin_listener_options: Default::default(),
             // max is limited by Tower's LoadShedLayer.
+            deployment_routing_headers: vec![],
             concurrent_api_requests_limit: None,
             query_engine: Default::default(),
             heartbeat_interval: NonZeroFriendlyDuration::from_millis_unchecked(1500),

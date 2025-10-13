@@ -147,9 +147,26 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
     let remote_futs = futures::stream::FuturesUnordered::new();
     for remote_port in &opts.remote_port {
         let base_url = match remote_port {
-            remote::RemotePort::Ingress => env.ingress_base_url()?,
-            remote::RemotePort::Admin => env.admin_base_url()?,
-        };
+            remote::RemotePort::Ingress => {
+                let advertised_address = env.ingress_base_url()?.clone().into_address()?;
+                if advertised_address.is_unix_domain_socket() {
+                    return Err(anyhow::anyhow!(
+                        "Cannot tunnel to an ingress server running on a unix domain socket"
+                    ));
+                }
+                advertised_address.to_string()
+            }
+            remote::RemotePort::Admin => {
+                let advertised_address = env.admin_base_url()?.clone().into_address()?;
+                if advertised_address.is_unix_domain_socket() {
+                    return Err(anyhow::anyhow!(
+                        "Cannot tunnel to an admin server running on a unix domain socket"
+                    ));
+                }
+                advertised_address.to_string()
+            }
+        }
+        .parse()?;
 
         remote_futs.push(remote::run_remote(
             *remote_port,

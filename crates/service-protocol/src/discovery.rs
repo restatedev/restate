@@ -9,18 +9,16 @@
 // by the Apache License, Version 2.0.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fmt::Display;
-use std::ops::{Deref, RangeInclusive};
+use std::ops::Deref;
 use std::sync::LazyLock;
 
 use bytes::Bytes;
-use bytestring::ByteString;
 use codederror::CodedError;
 use http::header::{ACCEPT, CONTENT_TYPE};
 use http::response::Parts as ResponseParts;
-use http::uri::PathAndQuery;
-use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version};
+use http::uri::{PathAndQuery, Scheme};
+use http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Version};
 use http_body_util::BodyExt;
 use http_body_util::Empty;
 use itertools::Itertools;
@@ -29,11 +27,14 @@ use tracing::{debug, warn};
 
 use restate_errors::{META0003, META0012, META0013, META0014, META0015};
 use restate_service_client::{Endpoint, Method, Parts, Request, ServiceClient, ServiceClientError};
+use restate_types::deployment::DeploymentAddress;
 use restate_types::endpoint_manifest;
 use restate_types::errors::GenericError;
-use restate_types::identifiers::LambdaARN;
 use restate_types::retries::{RetryIter, RetryPolicy};
 use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType};
+use restate_types::schema::registry::{
+    DeploymentConnectionParameters, DiscoveryClient, DiscoveryRequest, DiscoveryResponse,
+};
 use restate_types::service_discovery::{
     MAX_SERVICE_DISCOVERY_PROTOCOL_VERSION, MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION,
     ServiceDiscoveryProtocolVersion,
@@ -92,60 +93,6 @@ fn parse_service_discovery_protocol_version_from_content_type(
         SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V4),
         _ => None,
     }
-}
-
-#[derive(Clone)]
-pub struct DiscoverEndpoint(Endpoint, HashMap<HeaderName, HeaderValue>);
-
-impl DiscoverEndpoint {
-    pub fn new(address: Endpoint, additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
-        Self(address, additional_headers)
-    }
-
-    pub fn into_inner(self) -> (Endpoint, HashMap<HeaderName, HeaderValue>) {
-        (self.0, self.1)
-    }
-
-    pub fn address(&self) -> &Endpoint {
-        &self.0
-    }
-
-    fn request(&self) -> Request<Empty<Bytes>> {
-        let mut headers = HeaderMap::from_iter([(
-            ACCEPT,
-            SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS
-                .deref()
-                .clone(),
-        )]);
-        headers.extend(self.1.clone());
-        let path = PathAndQuery::from_static(DISCOVER_PATH);
-        Request::new(
-            Parts::new(Method::GET, self.0.clone(), path, headers),
-            Empty::default(),
-        )
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum DiscoveredEndpoint {
-    Http(Uri, Version),
-    Lambda(
-        LambdaARN,
-        Option<ByteString>,
-        Option<EndpointLambdaCompression>,
-    ),
-}
-
-#[derive(Debug)]
-pub struct DiscoveredMetadata {
-    pub endpoint: DiscoveredEndpoint,
-    pub headers: HashMap<HeaderName, HeaderValue>,
-    pub protocol_type: ProtocolType,
-    pub services: Vec<endpoint_manifest::Service>,
-    // type is i32 because the generated ServiceProtocolVersion enum uses this as its representation
-    // and we need to represent unknown later versions
-    pub supported_protocol_versions: RangeInclusive<i32>,
-    pub sdk_version: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -237,16 +184,59 @@ impl ServiceDiscovery {
     }
 }
 
-impl ServiceDiscovery {
-    pub async fn discover(
+impl DiscoveryClient for ServiceDiscovery {
+    type Error = DiscoveryError;
+
+    async fn discover(
         &self,
-        endpoint: DiscoverEndpoint,
-    ) -> Result<DiscoveredMetadata, DiscoveryError> {
+        DiscoveryRequest {
+            address,
+            use_http_11,
+            additional_headers,
+        }: DiscoveryRequest,
+    ) -> Result<DiscoveryResponse, Self::Error> {
+        let endpoint = match address {
+            DeploymentAddress::Http(http) => {
+                let is_using_https = http.uri.scheme().unwrap() == &Scheme::HTTPS;
+                // Decide which HTTP version we should try
+                let version = if use_http_11 {
+                    Some(http::Version::HTTP_11)
+                } else if is_using_https {
+                    // ALPN will sort this out
+                    None
+                } else {
+                    // By default, we use h2c on HTTP
+                    Some(http::Version::HTTP_2)
+                };
+
+                Endpoint::Http(http.uri, version)
+            }
+            DeploymentAddress::Lambda(lambda) => {
+                Endpoint::Lambda(lambda.arn, lambda.assume_role_arn.map(Into::into), None)
+            }
+        };
+
+        let cloned_endpoint = endpoint.clone();
+        let build_request = || {
+            let mut headers = HeaderMap::from_iter([(
+                ACCEPT,
+                SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS
+                    .deref()
+                    .clone(),
+            )]);
+            headers.extend(additional_headers.clone());
+            let path = PathAndQuery::from_static(DISCOVER_PATH);
+            Request::new(
+                Parts::new(Method::GET, cloned_endpoint.clone(), path, headers),
+                Empty::default(),
+            )
+        };
+
         let retry_policy = self.retry_policy.iter();
         let (mut parts, body) = Self::invoke_discovery_endpoint(
             &self.client,
-            endpoint.address(),
-            || endpoint.request(),
+            endpoint.clone(),
+            build_request,
             retry_policy,
         )
         .await?;
@@ -271,11 +261,8 @@ impl ServiceDiscovery {
             }
         };
 
-        let (address, headers) = endpoint.into_inner();
-
         let discovery_response = Self::create_discovered_metadata_from_endpoint_response(
-            address,
-            headers,
+            endpoint,
             parts.version,
             response,
             x_restate_server,
@@ -284,14 +271,16 @@ impl ServiceDiscovery {
         if discovery_response.supported_protocol_versions.end() < &4i32 {
             warn!(
                 "The registered endpoint is using a service protocol version that will be removed in the future releases. \
-                Please update the SDK to the latest release and re-register the deployment. \
-                For more info, check https://docs.restate.dev/operate/versioning#deploying-new-service-versions",
+                     Please update the SDK to the latest release and re-register the deployment. \
+                     For more info, check https://docs.restate.dev/operate/versioning#deploying-new-service-versions",
             );
         }
 
         Ok(discovery_response)
     }
+}
 
+impl ServiceDiscovery {
     #[allow(clippy::result_large_err)]
     fn retrieve_service_discovery_protocol_version(
         content_type: Option<HeaderValue>,
@@ -336,11 +325,10 @@ impl ServiceDiscovery {
     #[allow(clippy::result_large_err)]
     fn create_discovered_metadata_from_endpoint_response(
         endpoint: Endpoint,
-        headers: HashMap<HeaderName, HeaderValue>,
         response_http_version: Version,
         endpoint_response: endpoint_manifest::Endpoint,
         x_restate_server: Option<HeaderValue>,
-    ) -> Result<DiscoveredMetadata, DiscoveryError> {
+    ) -> Result<DiscoveryResponse, DiscoveryError> {
         let protocol_type = match endpoint_response.protocol_mode {
             Some(endpoint_manifest::ProtocolMode::BidiStream) => ProtocolType::BidiStream,
             Some(endpoint_manifest::ProtocolMode::RequestResponse) => ProtocolType::RequestResponse,
@@ -419,23 +407,22 @@ impl ServiceDiscovery {
             });
         }
 
-        Ok(DiscoveredMetadata {
-            endpoint: match endpoint {
-                Endpoint::Http(uri, _) => DiscoveredEndpoint::Http(uri, response_http_version),
-                Endpoint::Lambda(arn, assume_role_arn, _) => DiscoveredEndpoint::Lambda(
-                    arn,
-                    assume_role_arn,
-                    endpoint_response
-                        .lambda_compression
-                        .map(|compression| match compression {
+        Ok(DiscoveryResponse {
+            deployment_type_parameters: match endpoint {
+                Endpoint::Http { .. } => DeploymentConnectionParameters::Http {
+                    protocol_type,
+                    http_version: response_http_version,
+                },
+                Endpoint::Lambda { .. } => DeploymentConnectionParameters::Lambda {
+                    compression: endpoint_response.lambda_compression.map(|compression| {
+                        match compression {
                             endpoint_manifest::EndpointLambdaCompression::Zstd => {
                                 EndpointLambdaCompression::Zstd
                             }
-                        }),
-                ),
+                        }
+                    }),
+                },
             },
-            headers,
-            protocol_type,
             services: endpoint_response.services,
             // we need to store the raw representation since the runtime might not know the latest
             // version yet.
@@ -522,7 +509,6 @@ mod tests {
     use restate_types::endpoint_manifest;
     use restate_types::service_discovery::ServiceDiscoveryProtocolVersion;
     use restate_types::service_protocol::MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION;
-    use std::collections::HashMap;
     use std::num::NonZeroU64;
 
     #[test]
@@ -538,7 +524,6 @@ mod tests {
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
                 Endpoint::Http(Uri::default(), None),
-                HashMap::default(),
                 Version::HTTP_2,
                 response,
                 None
@@ -566,7 +551,6 @@ mod tests {
                     None,
                     None
                 ),
-                HashMap::default(),
                 Version::HTTP_11,
                 response,
                 None
@@ -588,7 +572,6 @@ mod tests {
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
                 Endpoint::Http(Uri::default(), None),
-                HashMap::default(),
                 Version::HTTP_2,
                 response,
                 None
@@ -610,7 +593,6 @@ mod tests {
         assert!(matches!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
                 Endpoint::Http(Uri::default(), None),
-                HashMap::default(),
                 Version::HTTP_2,
                 response,
                 None
@@ -633,7 +615,6 @@ mod tests {
         assert_that!(
             ServiceDiscovery::create_discovered_metadata_from_endpoint_response(
                 Endpoint::Http(Uri::default(), None),
-                HashMap::default(),
                 Version::HTTP_2,
                 response,
                 None

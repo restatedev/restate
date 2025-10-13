@@ -20,9 +20,12 @@ use tonic::transport::Channel;
 
 use restate_cli_util::CliContext;
 use restate_core::network::net_util::create_tonic_channel;
-use restate_types::{logs::metadata::ProviderConfiguration, net::AdvertisedAddress};
+use restate_types::{
+    logs::metadata::ProviderConfiguration,
+    net::address::{AdvertisedAddress, GrpcPort, ListenerPort},
+};
 
-pub fn grpc_channel(address: AdvertisedAddress) -> Channel {
+pub fn grpc_channel<P: ListenerPort + GrpcPort>(address: AdvertisedAddress<P>) -> Channel {
     let ctx = CliContext::get();
     create_tonic_channel(address, &ctx.network)
 }

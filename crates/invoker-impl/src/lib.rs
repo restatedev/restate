@@ -17,22 +17,22 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::ops::RangeInclusive;
-use std::path::PathBuf;
-use std::pin::Pin;
-use std::time::SystemTime;
-use std::{cmp, panic};
-
 use futures::StreamExt;
 use gardal::futures::ThrottledStream;
 use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
 use metrics::counter;
 use restate_time_util::DurationExt;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::io::ErrorKind;
+use std::ops::RangeInclusive;
+use std::path::PathBuf;
+use std::pin::Pin;
+use std::time::SystemTime;
+use std::{cmp, panic};
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 use tracing::{error, instrument};
 
 use restate_core::cancellation_watcher;
@@ -155,7 +155,6 @@ where
                     self.schemas.clone(),
                     invoker_tx,
                     invoker_rx,
-                    opts.experimental_features_allow_protocol_v6(),
                     self.action_token_bucket.clone(),
                 )
                 .run(input_journal),
@@ -299,12 +298,27 @@ where
         });
 
         // Prepare the segmented queue
-        let mut segmented_input_queue = std::pin::pin!(
-            SegmentQueue::init(tmp_dir, in_memory_limit)
-                .await
-                .expect("Cannot initialize input spillable queue")
-                .throttle(invocation_token_bucket)
-        );
+        let mut segmented_input_queue = match SegmentQueue::init(tmp_dir.clone(), in_memory_limit)
+            .await
+        {
+            Ok(queue) => std::pin::pin!(queue.throttle(invocation_token_bucket)),
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                warn!(
+                    "Could not initialize the invoker spill queue, permission denied to write the directory '{}'\n\
+                Make sure restate-server has permissions to write that directory, or change the spill queue directory with the config option 'worker.invoker.tmp_dir' or the env RESTATE_WORKER__INVOKER__TMP_DIR.\n{e}",
+                    tmp_dir.display()
+                );
+                panic!("Could not initialize invoker spill queue: {e}");
+            }
+            Err(e) => {
+                warn!(
+                    "Could not initialize the invoker spill queue, error when trying to write directory '{}'\n\
+                If the error persists, change the spill queue directory with the config option 'worker.invoker.tmp_dir' or the env RESTATE_WORKER__INVOKER__TMP_DIR.\n{e}",
+                    tmp_dir.display()
+                );
+                panic!("Could not initialize invoker spill queue: {e}");
+            }
+        };
 
         loop {
             let options = updateable_options.live_load();
@@ -398,8 +412,11 @@ where
                     InputCommand::Abort { partition, invocation_id, invocation_epoch } => {
                         self.handle_abort_invocation(partition, invocation_id,invocation_epoch);
                     }
-                     InputCommand::RetryNow { partition, invocation_id, invocation_epoch } => {
+                    InputCommand::RetryNow { partition, invocation_id, invocation_epoch } => {
                         self.handle_retry_now_invocation(options, partition, invocation_id,invocation_epoch);
+                    }
+                    InputCommand::Pause { partition, invocation_id, invocation_epoch } => {
+                        self.handle_pause_invocation( partition, invocation_id,invocation_epoch).await;
                     }
                     InputCommand::AbortAllPartition { partition } => {
                         self.handle_abort_partition(partition);
@@ -708,17 +725,7 @@ where
                     self.schemas.live_load(),
                 );
 
-                // If we think this selected deployment has been freshly picked, otherwise
-                // we assume that we have stored it previously.
-                if has_changed {
-                    ism.notify_pinned_deployment(pinned_deployment);
-                } else {
-                    // The service protocol is selected only if this was the stored version already,
-                    // or if we send the pinned deployment through (see handle_new_command)
-                    ism.notify_selected_service_protocol(
-                        pinned_deployment.service_protocol_version,
-                    );
-                }
+                ism.notify_pinned_deployment(pinned_deployment, has_changed);
             },
         );
     }
@@ -1038,20 +1045,43 @@ where
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED).increment(1);
-            trace!(
-                restate.invocation.target = %ism.invocation_target,
-                "Suspending invocation");
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
-            let _ = sender
-                .send(Box::new(Effect {
-                    invocation_id,
-                    invocation_epoch,
-                    kind: EffectKind::Suspended {
-                        waiting_for_completed_entries: entry_indexes,
-                    },
-                }))
-                .await;
+
+            if ism.requested_pause {
+                // We should send pause instead
+                trace!(
+                    restate.invocation.target = %ism.invocation_target,
+                    "Pausing invocation after suspension"
+                );
+
+                let _ = sender
+                    .send(Box::new(Effect {
+                        invocation_id,
+                        invocation_epoch: ism.invocation_epoch,
+                        kind: EffectKind::Paused {
+                            paused_event: RawEvent::from(Event::Paused(PausedEvent {
+                                last_failure: None,
+                            })),
+                        },
+                    }))
+                    .await;
+            } else {
+                trace!(
+                    restate.invocation.target = %ism.invocation_target,
+                    "Suspending invocation"
+                );
+
+                let _ = sender
+                    .send(Box::new(Effect {
+                        invocation_id,
+                        invocation_epoch,
+                        kind: EffectKind::Suspended {
+                            waiting_for_completed_entries: entry_indexes,
+                        },
+                    }))
+                    .await;
+            }
         } else {
             // If no state machine, this might be a result for an aborted invocation.
             trace!("No state machine found for invocation task suspended signal");
@@ -1080,21 +1110,43 @@ where
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED).increment(1);
-            trace!(
-                restate.invocation.target = %ism.invocation_target,
-                "Suspending invocation"
-            );
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
-            let _ = sender
-                .send(Box::new(Effect {
-                    invocation_id,
-                    invocation_epoch: ism.invocation_epoch,
-                    kind: EffectKind::SuspendedV2 {
-                        waiting_for_notifications,
-                    },
-                }))
-                .await;
+
+            if ism.requested_pause {
+                // We should send pause instead
+                trace!(
+                    restate.invocation.target = %ism.invocation_target,
+                    "Pausing invocation after suspension"
+                );
+
+                let _ = sender
+                    .send(Box::new(Effect {
+                        invocation_id,
+                        invocation_epoch: ism.invocation_epoch,
+                        kind: EffectKind::Paused {
+                            paused_event: RawEvent::from(Event::Paused(PausedEvent {
+                                last_failure: None,
+                            })),
+                        },
+                    }))
+                    .await;
+            } else {
+                trace!(
+                    restate.invocation.target = %ism.invocation_target,
+                    "Suspending invocation"
+                );
+
+                let _ = sender
+                    .send(Box::new(Effect {
+                        invocation_id,
+                        invocation_epoch: ism.invocation_epoch,
+                        kind: EffectKind::SuspendedV2 {
+                            waiting_for_notifications,
+                        },
+                    }))
+                    .await;
+            }
         } else {
             // If no state machine, this might be a result for an aborted invocation.
             trace!("No state machine found for invocation task suspended signal");
@@ -1188,6 +1240,52 @@ where
         level = "trace",
         skip_all,
         fields(
+            restate.invocation.id = %invocation_id,
+            restate.invocation.epoch = %invocation_epoch,
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    async fn handle_pause_invocation(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+    ) {
+        if let Some((sender, _, mut ism)) = self
+            .invocation_state_machine_manager
+            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+        {
+            if ism.notify_pause() {
+                // If returns true, we need to pause now
+                let _ = sender
+                    .send(Box::new(Effect {
+                        invocation_id,
+                        invocation_epoch: ism.invocation_epoch,
+                        kind: EffectKind::Paused {
+                            paused_event: RawEvent::from(Event::Paused(PausedEvent {
+                                last_failure: ism.last_transient_error_event,
+                            })),
+                        },
+                    }))
+                    .await;
+            } else {
+                // Invocation still in flight, pause will happen later on
+                self.invocation_state_machine_manager.register_invocation(
+                    partition,
+                    invocation_id,
+                    ism,
+                );
+            }
+        } else {
+            // If no state machine, this might pause for an aborted invocation.
+            trace!("No state machine found for pause");
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1230,6 +1328,7 @@ where
         error: InvokerError,
         mut ism: InvocationStateMachine,
     ) {
+        let attempt_deployment_id = ism.attempt_deployment_id();
         match ism.handle_task_error(
             error.is_transient(),
             error.next_retry_interval_override(),
@@ -1249,6 +1348,7 @@ where
                         restate.invocation.id = %invocation_id,
                         restate.invocation.target = %ism.invocation_target,
                         restate.invocation.error.stacktrace = %error_stacktrace,
+                        restate.deployment.id = %attempt_deployment_id,
                         "Invocation error, retrying in {}.",
                         next_retry_timer_duration.friendly());
                 } else {
@@ -1256,6 +1356,7 @@ where
                         error,
                         restate.invocation.id = %invocation_id,
                         restate.invocation.target = %ism.invocation_target,
+                        restate.deployment.id = %attempt_deployment_id,
                         "Invocation error, retrying in {}.",
                         next_retry_timer_duration.friendly());
                 }
@@ -1335,6 +1436,7 @@ where
                     error,
                     restate.invocation.id = %invocation_id,
                     restate.invocation.target = %ism.invocation_target,
+                    restate.deployment.id = %attempt_deployment_id,
                     "Error when executing the invocation, pausing the invocation.");
                 self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &invocation_id);
@@ -1396,6 +1498,7 @@ where
                     error,
                     restate.invocation.id = %invocation_id,
                     restate.invocation.target = %ism.invocation_target,
+                    restate.deployment.id = %attempt_deployment_id,
                     "Error when executing the invocation, not going to retry.");
                 self.quota.unreserve_slot();
                 self.status_store.on_end(&partition, &invocation_id);
@@ -1526,6 +1629,7 @@ mod tests {
     use restate_test_util::{check, let_assert};
     use restate_time_util::FriendlyDuration;
     use restate_types::config::InvokerOptionsBuilder;
+    use restate_types::deployment::{DeploymentAddress, Headers};
     use restate_types::errors::{InvocationError, codes};
     use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
     use restate_types::invocation::ServiceType;
@@ -1701,6 +1805,14 @@ mod tests {
 
     impl DeploymentResolver for MockSchemas {
         fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
+            None
+        }
+
+        fn find_deployment(
+            &self,
+            _: &DeploymentAddress,
+            _: &Headers,
+        ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
             None
         }
 
@@ -2697,6 +2809,258 @@ mod tests {
                 invocation_id: eq(invocation_id),
                 invocation_epoch: eq(0),
                 kind: pat!(EffectKind::Failed(_))
+            })
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn manual_pause_while_waiting_retry() {
+        let invoker_options = InvokerOptionsBuilder::default()
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
+            .build()
+            .unwrap();
+
+        let invocation_id = InvocationId::mock_random();
+
+        // Use OnMaxAttempts::Kill to ensure pause is from manual request
+        let (_, _status_tx, mut service_inner) =
+            ServiceInner::mock((), MockSchemas(None, Some(OnMaxAttempts::Kill)), None);
+        let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        // Start invocation
+        service_inner.handle_invoke(
+            &invoker_options,
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+            InvocationTarget::mock_virtual_object(),
+            InvokeInputJournal::NoCachedJournal,
+        );
+
+        // Simulate a transient error to put invocation in WaitingRetry state
+        let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
+        service_inner
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error)
+            .await;
+        // Drain any proposed event
+        let _ = effects_rx.try_recv();
+
+        // Verify invocation is in WaitingRetry state
+        let (_, ism) = service_inner
+            .invocation_state_machine_manager
+            .resolve_invocation(MOCK_PARTITION, &invocation_id)
+            .unwrap();
+        assert!(ism.is_waiting_retry());
+
+        // Call manual pause while waiting for retry
+        service_inner
+            .handle_pause_invocation(MOCK_PARTITION, invocation_id, 0)
+            .await;
+
+        // Should emit Paused effect immediately with no last_failure
+        let effect = effects_rx
+            .try_recv()
+            .expect("expected Paused effect to be emitted");
+        assert_that!(
+            *effect,
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                invocation_epoch: eq(0),
+                kind: pat!(EffectKind::Paused {
+                    paused_event: predicate(|e: &RawEvent| e.ty() == EventType::Paused)
+                })
+            })
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn manual_pause_while_in_flight_then_suspended() {
+        let invoker_options = InvokerOptionsBuilder::default()
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
+            .build()
+            .unwrap();
+
+        let invocation_id = InvocationId::mock_random();
+
+        // Use OnMaxAttempts::Kill to ensure pause is from manual request
+        let (_, _status_tx, mut service_inner) =
+            ServiceInner::mock((), MockSchemas(None, Some(OnMaxAttempts::Kill)), None);
+        let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        // Start invocation (goes to InFlight state with pending task)
+        service_inner.handle_invoke(
+            &invoker_options,
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+            InvocationTarget::mock_virtual_object(),
+            InvokeInputJournal::NoCachedJournal,
+        );
+
+        // Call manual pause while in flight
+        service_inner
+            .handle_pause_invocation(MOCK_PARTITION, invocation_id, 0)
+            .await;
+
+        // State machine should still be registered with requested_pause = true
+        let (_, ism) = service_inner
+            .invocation_state_machine_manager
+            .resolve_invocation(MOCK_PARTITION, &invocation_id)
+            .unwrap();
+        assert!(ism.requested_pause);
+
+        // Simulate the invocation task suspending
+        service_inner
+            .handle_invocation_task_suspended(
+                MOCK_PARTITION,
+                invocation_id,
+                0,
+                HashSet::new(), // No pending entries
+            )
+            .await;
+
+        // Should emit Paused effect (not Suspended) with no last_failure
+        let effect = effects_rx
+            .try_recv()
+            .expect("expected Paused effect to be emitted");
+        assert_that!(
+            *effect,
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                invocation_epoch: eq(0),
+                kind: pat!(EffectKind::Paused {
+                    paused_event: predicate(|e: &RawEvent| e.ty() == EventType::Paused)
+                })
+            })
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn manual_pause_while_in_flight_then_error() {
+        let invoker_options = InvokerOptionsBuilder::default()
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
+            .build()
+            .unwrap();
+
+        let invocation_id = InvocationId::mock_random();
+
+        // Use OnMaxAttempts::Kill to ensure pause is from manual request
+        let (_, _status_tx, mut service_inner) =
+            ServiceInner::mock((), MockSchemas(None, Some(OnMaxAttempts::Kill)), None);
+        let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        // Start invocation (goes to InFlight state with pending task)
+        service_inner.handle_invoke(
+            &invoker_options,
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+            InvocationTarget::mock_virtual_object(),
+            InvokeInputJournal::NoCachedJournal,
+        );
+
+        // Call manual pause while in flight
+        service_inner
+            .handle_pause_invocation(MOCK_PARTITION, invocation_id, 0)
+            .await;
+
+        // State machine should still be registered with requested_pause = true
+        let (_, ism) = service_inner
+            .invocation_state_machine_manager
+            .resolve_invocation(MOCK_PARTITION, &invocation_id)
+            .unwrap();
+        assert!(ism.requested_pause);
+
+        // Simulate the invocation task failing with a transient error
+        let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
+        service_inner
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error)
+            .await;
+
+        // Should emit Paused effect (not Kill or ScheduleRetry) with last_failure set
+        let effect = effects_rx
+            .try_recv()
+            .expect("expected Paused effect to be emitted");
+        assert_that!(
+            *effect,
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                invocation_epoch: eq(0),
+                kind: pat!(EffectKind::Paused {
+                    paused_event: predicate(|e: &RawEvent| {
+                        e.ty() == EventType::Paused &&
+                        // Verify last_failure is present by checking the event contains error info
+                        e.clone().into_event_or_unknown().try_as_paused().unwrap().last_failure.is_some()
+                    })
+                })
+            })
+        );
+    }
+
+    #[test(restate_core::test)]
+    async fn manual_pause_while_waiting_retry_with_previous_failure() {
+        let invoker_options = InvokerOptionsBuilder::default()
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
+            .build()
+            .unwrap();
+
+        let invocation_id = InvocationId::mock_random();
+
+        // Use OnMaxAttempts::Kill to ensure pause is from manual request
+        let (_, _status_tx, mut service_inner) =
+            ServiceInner::mock((), MockSchemas(None, Some(OnMaxAttempts::Kill)), None);
+        let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        // Start invocation
+        service_inner.handle_invoke(
+            &invoker_options,
+            MOCK_PARTITION,
+            invocation_id,
+            0,
+            InvocationTarget::mock_virtual_object(),
+            InvokeInputJournal::NoCachedJournal,
+        );
+
+        // Simulate a transient error to put invocation in WaitingRetry state
+        let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
+        service_inner
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error)
+            .await;
+        // Drain any proposed event
+        let _ = effects_rx.try_recv();
+
+        // Verify invocation is in WaitingRetry state
+        let (_, ism) = service_inner
+            .invocation_state_machine_manager
+            .resolve_invocation(MOCK_PARTITION, &invocation_id)
+            .unwrap();
+        assert!(ism.is_waiting_retry());
+
+        // Call manual pause while waiting for retry (after error was notified)
+        service_inner
+            .handle_pause_invocation(MOCK_PARTITION, invocation_id, 0)
+            .await;
+
+        // Should emit Paused effect immediately with last_failure populated from the error
+        let effect = effects_rx
+            .try_recv()
+            .expect("expected Paused effect to be emitted");
+        assert_that!(
+            *effect,
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                invocation_epoch: eq(0),
+                kind: pat!(EffectKind::Paused {
+                    paused_event: predicate(|e: &RawEvent| {
+                        e.ty() == EventType::Paused &&
+                        // Verify last_failure is present since we paused while waiting retry after error
+                        e.clone().into_event_or_unknown().try_as_paused().unwrap().last_failure.is_some()
+                    })
+                })
             })
         );
     }

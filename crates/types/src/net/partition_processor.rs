@@ -17,8 +17,8 @@ use crate::identifiers::{
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PatchDeploymentId,
-    PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationResponse,
-    SubmittedInvocationNotification,
+    PauseInvocationResponse, PurgeInvocationResponse, RestartAsNewInvocationResponse,
+    ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
@@ -94,6 +94,9 @@ pub enum PartitionProcessorRpcRequestInner {
         invocation_id: InvocationId,
         deployment_id: PatchDeploymentId,
     },
+    PauseInvocation {
+        invocation_id: InvocationId,
+    },
 }
 
 impl WithPartitionKey for PartitionProcessorRpcRequestInner {
@@ -119,6 +122,9 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
                 invocation_id.partition_key()
             }
             PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id, .. } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id } => {
                 invocation_id.partition_key()
             }
         }
@@ -447,6 +453,42 @@ impl From<ResumeInvocationRpcResponse> for PartitionProcessorRpcResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PauseInvocationRpcResponse {
+    AlreadyPaused,
+    Accepted,
+    NotFound,
+    NotRunning,
+}
+
+impl From<PauseInvocationRpcResponse> for PauseInvocationResponse {
+    fn from(value: PauseInvocationRpcResponse) -> Self {
+        match value {
+            PauseInvocationRpcResponse::Accepted => PauseInvocationResponse::Accepted,
+            PauseInvocationRpcResponse::NotFound => PauseInvocationResponse::NotFound,
+            PauseInvocationRpcResponse::NotRunning => PauseInvocationResponse::NotRunning,
+            PauseInvocationRpcResponse::AlreadyPaused => PauseInvocationResponse::AlreadyPaused,
+        }
+    }
+}
+
+impl From<PauseInvocationResponse> for PauseInvocationRpcResponse {
+    fn from(value: PauseInvocationResponse) -> Self {
+        match value {
+            PauseInvocationResponse::Accepted => PauseInvocationRpcResponse::Accepted,
+            PauseInvocationResponse::NotFound => PauseInvocationRpcResponse::NotFound,
+            PauseInvocationResponse::NotRunning => PauseInvocationRpcResponse::NotRunning,
+            PauseInvocationResponse::AlreadyPaused => PauseInvocationRpcResponse::AlreadyPaused,
+        }
+    }
+}
+
+impl From<PauseInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(value: PauseInvocationRpcResponse) -> Self {
+        Self::PauseInvocation(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
     Appended,
     NotFound,
@@ -460,4 +502,5 @@ pub enum PartitionProcessorRpcResponse {
     PurgeJournal(PurgeInvocationRpcResponse),
     RestartAsNewInvocation(RestartAsNewInvocationRpcResponse),
     ResumeInvocation(ResumeInvocationRpcResponse),
+    PauseInvocation(PauseInvocationRpcResponse),
 }

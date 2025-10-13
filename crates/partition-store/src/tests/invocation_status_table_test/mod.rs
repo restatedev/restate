@@ -33,7 +33,7 @@ use restate_types::invocation::{
 };
 use restate_types::time::MillisSinceEpoch;
 
-use crate::fsm_table::get_schema_version;
+use crate::fsm_table::get_storage_version;
 use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
 use crate::migrations::{LATEST_VERSION, SchemaVersion};
 use crate::partition_store::StorageAccess;
@@ -211,7 +211,7 @@ async fn test_migration() {
     // Let's mock the old invocation statuses
     let mut txn = rocksdb.transaction();
     for (invocation_id, status) in &mocked_invocations {
-        txn.put_kv(
+        txn.put_kv_proto(
             InvocationStatusKeyV1::default()
                 .partition_key(invocation_id.partition_key())
                 .invocation_uuid(invocation_id.invocation_uuid()),
@@ -226,7 +226,7 @@ async fn test_migration() {
     let partition_id = rocksdb.partition_id();
     assert_eq!(
         SchemaVersion::from(
-            get_schema_version(&mut rocksdb, partition_id)
+            get_storage_version(&mut rocksdb, partition_id)
                 .await
                 .unwrap()
         ),

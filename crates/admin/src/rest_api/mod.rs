@@ -20,23 +20,26 @@ mod services;
 mod subscriptions;
 mod version;
 
-use axum_integration::put;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::okapi::openapi3::{ExternalDocs, Tag};
 use okapi_operation::*;
 use restate_types::identifiers::PartitionKey;
 use restate_types::invocation::client::InvocationClient;
-use restate_types::schema::subscriptions::SubscriptionValidator;
+use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
 use restate_wal_protocol::{Destination, Header, Source};
 
 use crate::state::AdminServiceState;
 
 pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 
-pub fn create_router<V, IC>(state: AdminServiceState<V, IC>) -> axum::Router<()>
+pub fn create_router<Metadata, Discovery, Telemetry, Invocations>(
+    state: AdminServiceState<Metadata, Discovery, Telemetry, Invocations>,
+) -> axum::Router<()>
 where
-    V: SubscriptionValidator + Send + Sync + Clone + 'static,
-    IC: InvocationClient + Send + Sync + Clone + 'static,
+    Metadata: MetadataService + Send + Sync + Clone + 'static,
+    Discovery: DiscoveryClient + Send + Sync + Clone + 'static,
+    Telemetry: TelemetryClient + Send + Sync + Clone + 'static,
+    Invocations: InvocationClient + Send + Sync + Clone + 'static,
 {
     let mut router = axum_integration::Router::new()
         .route(
@@ -57,7 +60,11 @@ where
         )
         .route(
             "/deployments/{deployment}",
-            put(openapi_handler!(deployments::update_deployment)),
+            patch(openapi_handler!(deployments::update_deployment)),
+        )
+        .route(
+            "/deployments/{deployment}",
+            axum::routing::put(deployments::update_deployment),
         )
         .route("/services", get(openapi_handler!(services::list_services)))
         .route(
@@ -111,6 +118,10 @@ where
         .route(
             "/invocations/{invocation_id}/resume",
             patch(openapi_handler!(invocations::resume_invocation)),
+        )
+        .route(
+            "/invocations/{invocation_id}/pause",
+            patch(openapi_handler!(invocations::pause_invocation)),
         )
         .route(
             "/subscriptions",

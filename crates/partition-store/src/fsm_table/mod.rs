@@ -17,6 +17,7 @@ use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::schema::Schema;
 
 use crate::TableKind::PartitionStateMachine;
 use crate::keys::{KeyKind, define_table_key};
@@ -37,7 +38,10 @@ pub(crate) mod fsm_variable {
     pub(crate) const PARTITION_DURABILITY: u64 = 4;
 
     /// Schema versions are represented as a strictly monotonically increasing number.
-    pub(crate) const SCHEMA_VERSION: u64 = 5;
+    /// This represent the partition storage schema version, not the user services schema.
+    pub(crate) const STORAGE_VERSION: u64 = 5;
+
+    pub(crate) const SERVICES_SCHEMA_METADATA: u64 = 6;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -51,7 +55,7 @@ where
     let key = PartitionStateMachineKey::default()
         .partition_id(partition_id.into())
         .state_id(state_id);
-    storage.get_value(key)
+    storage.get_value_proto(key)
 }
 
 /// Forces a read from persistent storage, bypassing memtables and block cache.
@@ -78,7 +82,7 @@ fn put<S: StorageAccess>(
     let key = PartitionStateMachineKey::default()
         .partition_id(partition_id.into())
         .state_id(state_id);
-    storage.put_kv(key, state_value)
+    storage.put_kv_proto(key, state_value)
 }
 
 pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Result<Option<Lsn>> {
@@ -90,15 +94,15 @@ pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Re
     .map(|opt| opt.map(|seq_number| Lsn::from(u64::from(seq_number))))
 }
 
-pub(crate) async fn get_schema_version<S: StorageAccess>(
+pub(crate) async fn get_storage_version<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
 ) -> Result<u16> {
-    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::SCHEMA_VERSION)
+    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::STORAGE_VERSION)
         .map(|opt| opt.map(|s| s.0 as u16).unwrap_or_default())
 }
 
-pub(crate) async fn put_schema_version<S: StorageAccess>(
+pub(crate) async fn put_storage_version<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
     last_executed_migration: u16,
@@ -106,7 +110,7 @@ pub(crate) async fn put_schema_version<S: StorageAccess>(
     put(
         storage,
         partition_id,
-        fsm_variable::SCHEMA_VERSION,
+        fsm_variable::STORAGE_VERSION,
         &SequenceNumber::from(last_executed_migration as u64),
     )
 }
@@ -142,6 +146,13 @@ impl ReadFsmTable for PartitionStore {
             self.partition_id(),
             fsm_variable::PARTITION_DURABILITY,
         )
+    }
+
+    async fn get_schema(&mut self) -> Result<Option<Schema>> {
+        let key = PartitionStateMachineKey::default()
+            .partition_id(self.partition_id().into())
+            .state_id(fsm_variable::SERVICES_SCHEMA_METADATA);
+        self.get_value_storage_codec(key)
     }
 }
 
@@ -189,5 +200,12 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
             fsm_variable::PARTITION_DURABILITY,
             durability,
         )
+    }
+
+    fn put_schema(&mut self, schema: &Schema) -> Result<()> {
+        let key = PartitionStateMachineKey::default()
+            .partition_id(self.partition_id().into())
+            .state_id(fsm_variable::SERVICES_SCHEMA_METADATA);
+        self.put_kv_storage_codec(key, schema)
     }
 }

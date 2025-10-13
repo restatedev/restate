@@ -22,7 +22,7 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
-    PurgeInvocationResponse, ResumeInvocationResponse,
+    PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_types::journal_v2::EntryIndex;
@@ -80,8 +80,8 @@ pub struct DeleteInvocationParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn delete_invocation<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(invocation_id): Path<String>,
     Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
 ) -> Result<StatusCode, MetaApiError> {
@@ -139,12 +139,12 @@ generate_meta_api_error!(KillInvocationError: [InvocationNotFoundError, Invocati
         schema = "std::string::String"
     ))
 )]
-pub async fn kill_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn kill_invocation<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(invocation_id): Path<String>,
 ) -> Result<(), KillInvocationError>
 where
-    IC: InvocationClient,
+    Invocations: InvocationClient,
 {
     let invocation_id = invocation_id
         .parse::<InvocationId>()
@@ -199,12 +199,12 @@ generate_meta_api_error!(CancelInvocationError: [InvocationNotFoundError, Invoca
         from_type = "CancelInvocationError",
     )
 )]
-pub async fn cancel_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn cancel_invocation<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(invocation_id): Path<String>,
 ) -> Result<StatusCode, CancelInvocationError>
 where
-    IC: InvocationClient,
+    Invocations: InvocationClient,
 {
     let invocation_id = invocation_id
         .parse::<InvocationId>()
@@ -241,12 +241,12 @@ generate_meta_api_error!(PurgeInvocationError: [InvocationNotFoundError, Invocat
         schema = "std::string::String"
     ))
 )]
-pub async fn purge_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn purge_invocation<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(invocation_id): Path<String>,
 ) -> Result<(), PurgeInvocationError>
 where
-    IC: InvocationClient,
+    Invocations: InvocationClient,
 {
     let invocation_id = invocation_id
         .parse::<InvocationId>()
@@ -284,12 +284,12 @@ generate_meta_api_error!(PurgeJournalError: [InvocationNotFoundError, Invocation
         schema = "std::string::String"
     ))
 )]
-pub async fn purge_journal<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn purge_journal<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(invocation_id): Path<String>,
 ) -> Result<(), PurgeJournalError>
 where
-    IC: InvocationClient,
+    Invocations: InvocationClient,
 {
     let invocation_id = invocation_id
         .parse::<InvocationId>()
@@ -398,15 +398,15 @@ generate_meta_api_error!(RestartInvocationError: [
         ),
     )
 )]
-pub async fn restart_as_new_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn restart_as_new_invocation<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(invocation_id): Path<String>,
     Query(RestartAsNewInvocationQueryParams { from, deployment }): Query<
         RestartAsNewInvocationQueryParams,
     >,
 ) -> Result<Json<RestartAsNewInvocationResponse>, RestartInvocationError>
 where
-    IC: InvocationClient,
+    Invocations: InvocationClient,
 {
     let invocation_id = invocation_id
         .parse::<InvocationId>()
@@ -510,13 +510,13 @@ generate_meta_api_error!(ResumeInvocationError: [
         )
     )
 )]
-pub async fn resume_invocation<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn resume_invocation<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(invocation_id): Path<String>,
     Query(ResumeInvocationQueryParams { deployment }): Query<ResumeInvocationQueryParams>,
 ) -> Result<(), ResumeInvocationError>
 where
-    IC: InvocationClient,
+    Invocations: InvocationClient,
 {
     let invocation_id = invocation_id
         .parse::<InvocationId>()
@@ -561,4 +561,67 @@ where
     };
 
     Ok(())
+}
+
+generate_meta_api_error!(PauseInvocationError: [
+    InvocationNotFoundError,
+    InvocationClientError,
+    InvalidFieldError,
+    PauseInvocationNotRunningError,
+]);
+
+/// Pause an invocation
+#[openapi(
+    summary = "Pause an invocation",
+    description = "Pause the given invocation. This applies only to running invocations, and will cause them to eventually pause.",
+    operation_id = "pause_invocation",
+    tags = "invocation",
+    parameters(path(
+        name = "invocation_id",
+        description = "Invocation identifier.",
+        schema = "std::string::String"
+    )),
+    responses(
+        ignore_return_type = true,
+        response(
+            status = "200",
+            description = "Already paused",
+            content = "okapi_operation::Empty",
+        ),
+        response(
+            status = "202",
+            description = "Accepted",
+            content = "okapi_operation::Empty",
+        ),
+        from_type = "PauseInvocationError",
+    )
+)]
+pub async fn pause_invocation<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+    Path(invocation_id): Path<String>,
+) -> Result<StatusCode, PauseInvocationError>
+where
+    Invocations: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+
+    match state
+        .invocation_client
+        .pause_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+        .await
+        .map_err(InvocationClientError)?
+    {
+        PauseInvocationResponse::Accepted => {}
+        PauseInvocationResponse::NotFound => {
+            Err(InvocationNotFoundError(invocation_id.to_string()))?
+        }
+        PauseInvocationResponse::NotRunning => {
+            Err(PauseInvocationNotRunningError(invocation_id.to_string()))?
+        }
+        PauseInvocationResponse::AlreadyPaused => return Ok(StatusCode::OK),
+    };
+
+    Ok(StatusCode::ACCEPTED)
 }

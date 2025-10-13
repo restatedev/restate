@@ -13,6 +13,7 @@ use std::future::Future;
 use restate_types::SemanticRestateVersion;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::schema::Schema;
 use restate_types::time::MillisSinceEpoch;
 
 use crate::Result;
@@ -32,6 +33,8 @@ pub trait ReadFsmTable {
     fn get_partition_durability(
         &mut self,
     ) -> impl Future<Output = Result<Option<PartitionDurability>>> + Send + '_;
+
+    fn get_schema(&mut self) -> impl Future<Output = Result<Option<Schema>>> + Send + '_;
 }
 
 pub trait WriteFsmTable {
@@ -44,6 +47,8 @@ pub trait WriteFsmTable {
     fn put_min_restate_version(&mut self, version: &SemanticRestateVersion) -> Result<()>;
 
     fn put_partition_durability(&mut self, durability: &PartitionDurability) -> Result<()>;
+
+    fn put_schema(&mut self, schema: &Schema) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]

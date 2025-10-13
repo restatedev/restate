@@ -8,14 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::bail;
-use reqwest::header::ACCEPT;
-use schemars::r#gen::SchemaSettings;
 use std::future::pending;
 use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
 use std::{env, io};
+
+use anyhow::bail;
+use reqwest::header::ACCEPT;
+use schemars::r#gen::SchemaSettings;
 
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
@@ -29,17 +29,17 @@ use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, S
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PatchDeploymentId, PurgeInvocationResponse, RestartAsNewInvocationResponse,
-    ResumeInvocationResponse, SubmittedInvocationNotification,
+    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
+    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{
     InvocationQuery, InvocationRequest, InvocationResponse, InvocationTermination,
 };
 use restate_types::journal_v2::{EntryIndex, Signal};
 use restate_types::live::Constant;
+use restate_types::net::listener::Listeners;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::Subscription;
-use restate_types::schema::subscriptions::SubscriptionValidator;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::SubscriptionController;
 use restate_worker::WorkerHandle;
@@ -93,14 +93,6 @@ impl SubscriptionController for Mock {
 
     async fn update_subscriptions(&self, _: Vec<Subscription>) -> Result<(), WorkerHandleError> {
         Ok(())
-    }
-}
-
-impl SubscriptionValidator for Mock {
-    type Error = WorkerHandleError;
-
-    fn validate(&self, _: Subscription) -> Result<Subscription, Self::Error> {
-        unimplemented!()
     }
 }
 
@@ -207,23 +199,29 @@ impl InvocationClient for Mock {
     ) -> impl Future<Output = Result<ResumeInvocationResponse, InvocationClientError>> + Send {
         pending()
     }
+
+    fn pause_invocation(
+        &self,
+        _: PartitionProcessorRpcRequestId,
+        _: InvocationId,
+    ) -> impl Future<Output = Result<PauseInvocationResponse, InvocationClientError>> + Send {
+        pending()
+    }
 }
 
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let config = Configuration::default();
-    let openapi_address = format!(
-        "http://localhost:{}/openapi",
-        config.admin.bind_address.port()
-    );
 
     // We start the Meta service, then download the openapi schema generated
     let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
     let bifrost = Bifrost::init_in_memory(node_env.metadata_writer.clone()).await;
 
+    let socket_dir = tempfile::tempdir()?;
+    let socket_path = socket_dir.path().join("admin.sock");
     let admin_service = AdminService::new(
+        Listeners::new_unix_listener(socket_path.clone())?,
         node_env.metadata_writer.clone(),
         bifrost,
-        Mock,
         Mock,
         ServiceDiscovery::new(
             RetryPolicy::default(),
@@ -239,19 +237,15 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         admin_service.run(Constant::new(config.admin)),
     )?;
 
-    let res = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(20))
-        .retry(|| async {
-            reqwest::Client::builder()
-                .build()?
-                .get(openapi_address.clone())
-                .header(ACCEPT, "application/json")
-                .send()
-                .await?
-                .text()
-                .await
-        })
-        .await
-        .unwrap();
+    let res = reqwest::Client::builder()
+        .unix_socket(socket_path)
+        .build()?
+        .get("http://localhost/openapi")
+        .header(ACCEPT, "application/json")
+        .send()
+        .await?
+        .text()
+        .await?;
 
     println!("{res}");
 

@@ -12,31 +12,44 @@ use super::error::*;
 use crate::state::AdminServiceState;
 use std::time::SystemTime;
 
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
-use http::uri::Scheme;
+use axum::{Extension, Json};
+use http::{Method, Uri};
 use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
+use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
-use restate_service_client::Endpoint;
-use restate_service_protocol::discovery::DiscoverEndpoint;
+use restate_types::deployment::{HttpDeploymentAddress, LambdaDeploymentAddress};
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
-use restate_types::schema::deployment::{Deployment, DeploymentMetadata, DeploymentType};
+use restate_types::schema;
+use restate_types::schema::deployment::{Deployment, DeploymentType};
+use restate_types::schema::registry::{
+    AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
+    Overwrite, TelemetryClient,
+};
 use restate_types::schema::service::ServiceMetadata;
-use restate_types::schema::updater;
 use serde::Deserialize;
 
 /// Create deployment and return discovered services.
 #[openapi(
     summary = "Create deployment",
-    description = "Create deployment. Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment. If the deployment is already registered, this method will fail unless `force` is set to `true`.",
+    description = "Create and register a new deployment. \
+    Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment. \
+    If the deployment is already registered, this method will return 200 and no changes will be made. \
+    If the deployment updates some already existing services, schema breaking changes checks will run. If you want to bypass them, use `breaking: true`. \
+    To overwrite an already existing deployment, use `force: true`",
     operation_id = "create_deployment",
     tags = "deployment",
     external_docs(url = "https://docs.restate.dev/operate/registration"),
     responses(
         ignore_return_type = true,
+        response(
+            status = "200",
+            description = "Already exists. No change if force = false, overwritten if force = true",
+            content = "Json<RegisterDeploymentResponse>",
+        ),
         response(
             status = "201",
             description = "Created",
@@ -45,105 +58,121 @@ use serde::Deserialize;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_deployment<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn create_deployment<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+    Extension(version): Extension<AdminApiVersion>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
-) -> Result<impl IntoResponse, MetaApiError> {
-    let (discover_endpoint, force, dry_run) = match payload {
+) -> Result<impl IntoResponse, MetaApiError>
+where
+    Metadata: MetadataService,
+    Discovery: DiscoveryClient,
+    Telemetry: TelemetryClient,
+{
+    // -- Bunch of data structures mapping back and forth
+    let (force, breaking, dry_run) = match &payload {
+        RegisterDeploymentRequest::Http {
+            breaking,
+            dry_run,
+            force,
+            ..
+        } => (*force, *breaking, *dry_run),
+        RegisterDeploymentRequest::Lambda {
+            breaking,
+            dry_run,
+            force,
+            ..
+        } => (*force, *breaking, *dry_run),
+    };
+    let (allow_breaking, overwrite) =
+        // Force defaults to true only in admin api version 1 or 2
+        if force.unwrap_or(version == AdminApiVersion::V1 || version == AdminApiVersion::V2) {
+            (AllowBreakingChanges::Yes, Overwrite::Yes)
+        } else if breaking {
+            (AllowBreakingChanges::Yes, Overwrite::No)
+        } else {
+            (AllowBreakingChanges::No, Overwrite::No)
+        };
+    let apply_mode = if dry_run {
+        ApplyMode::DryRun
+    } else {
+        ApplyMode::Apply
+    };
+    let request = match payload {
         RegisterDeploymentRequest::Http {
             uri,
             additional_headers,
+            metadata,
             use_http_11,
-            force,
-            dry_run,
+            ..
         } => {
-            // Verify URI is absolute!
-            if uri.scheme().is_none() || uri.authority().is_none() {
-                return Err(MetaApiError::InvalidField(
-                    "uri",
-                    format!(
-                        "The provided uri {uri} is not absolute, only absolute URIs can be used."
-                    ),
-                ));
+            validate_uri(&uri)?;
+
+            schema::registry::RegisterDeploymentRequest {
+                deployment_address: HttpDeploymentAddress::new(uri).into(),
+                additional_headers: additional_headers.unwrap_or_default().into(),
+                metadata,
+                use_http_11,
+                allow_breaking,
+                overwrite,
+                apply_mode,
             }
-
-            let is_using_https = uri.scheme().unwrap() == &Scheme::HTTPS;
-
-            (
-                DiscoverEndpoint::new(
-                    Endpoint::Http(
-                        uri,
-                        if use_http_11 {
-                            Some(http::Version::HTTP_11)
-                        } else if is_using_https {
-                            // ALPN will sort this out
-                            None
-                        } else {
-                            // By default, we use h2c on HTTP
-                            Some(http::Version::HTTP_2)
-                        },
-                    ),
-                    additional_headers.unwrap_or_default().into(),
-                ),
-                force,
-                dry_run,
-            )
         }
         RegisterDeploymentRequest::Lambda {
             arn,
             assume_role_arn,
             additional_headers,
-            force,
-            dry_run,
-        } => (
-            DiscoverEndpoint::new(
-                Endpoint::Lambda(
-                    arn.parse().map_err(|e: InvalidLambdaARN| {
-                        MetaApiError::InvalidField("arn", e.to_string())
-                    })?,
-                    assume_role_arn.map(Into::into),
-                    None,
-                ),
-                additional_headers.unwrap_or_default().into(),
-            ),
-            force,
-            dry_run,
-        ),
+            metadata,
+            ..
+        } => schema::registry::RegisterDeploymentRequest {
+            deployment_address: LambdaDeploymentAddress::new(
+                arn.parse().map_err(|e: InvalidLambdaARN| {
+                    MetaApiError::InvalidField("arn", e.to_string())
+                })?,
+                assume_role_arn,
+            )
+            .into(),
+            additional_headers: additional_headers.unwrap_or_default().into(),
+            metadata,
+            use_http_11: false,
+            allow_breaking,
+            overwrite,
+            apply_mode,
+        },
     };
 
-    let force = if force {
-        updater::Force::Yes
-    } else {
-        updater::Force::No
-    };
-
-    let apply_mode = if dry_run {
-        updater::ApplyMode::DryRun
-    } else {
-        updater::ApplyMode::Apply
-    };
-
-    let (deployment, services) = state
+    // -- Perform the registration with the schema registry
+    let (result, deployment, services) = state
         .schema_registry
-        .register_deployment(discover_endpoint, force, apply_mode)
+        .register_deployment(request)
         .await
         .inspect_err(|e| warn_it!(e))?;
 
-    let response_body = RegisterDeploymentResponse {
-        id: deployment.id,
-        services,
-        min_protocol_version: *deployment.metadata.supported_protocol_versions.start(),
-        max_protocol_version: *deployment.metadata.supported_protocol_versions.end(),
-        sdk_version: deployment.metadata.sdk_version,
+    // -- Map response
+    let status_code = match result {
+        AddDeploymentResult::Created => StatusCode::CREATED,
+        AddDeploymentResult::Unchanged => {
+            if version == AdminApiVersion::Unknown || version.as_repr() >= 3 {
+                StatusCode::OK
+            } else {
+                return Err(MetaApiError::Conflict(format!(
+                    "deployment {} already exists",
+                    deployment.id
+                )));
+            }
+        }
+        AddDeploymentResult::Overwritten => {
+            if version == AdminApiVersion::Unknown || version.as_repr() >= 3 {
+                StatusCode::OK
+            } else {
+                StatusCode::CREATED
+            }
+        }
     };
 
     Ok((
-        StatusCode::CREATED,
-        [(
-            header::LOCATION,
-            format!("deployments/{}", response_body.id),
-        )],
-        Json(response_body),
+        status_code,
+        [(header::LOCATION, format!("deployments/{}", deployment.id))],
+        Json(to_register_response(deployment, services)),
     ))
 }
 
@@ -159,10 +188,13 @@ pub async fn create_deployment<V, IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn get_deployment<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(deployment_id): Path<DeploymentId>,
-) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
+) -> Result<Json<DetailedDeploymentResponse>, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     let (deployment, services) = state
         .schema_registry
         .get_deployment(deployment_id)
@@ -178,9 +210,12 @@ pub async fn get_deployment<V, IC>(
     operation_id = "list_deployments",
     tags = "deployment"
 )]
-pub async fn list_deployments<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
-) -> Json<ListDeploymentsResponse> {
+pub async fn list_deployments<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+) -> Json<ListDeploymentsResponse>
+where
+    Metadata: MetadataService,
+{
     let deployments = state
         .schema_registry
         .list_deployments()
@@ -232,11 +267,14 @@ pub struct DeleteDeploymentParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_deployment<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn delete_deployment<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(deployment_id): Path<DeploymentId>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
-) -> Result<StatusCode, MetaApiError> {
+) -> Result<StatusCode, MetaApiError>
+where
+    Metadata: MetadataService,
+{
     if let Some(true) = force {
         state
             .schema_registry
@@ -252,7 +290,9 @@ pub async fn delete_deployment<V, IC>(
 /// Update a deployment
 #[openapi(
     summary = "Update deployment",
-    description = "Update deployment. Invokes the endpoint and replaces the existing deployment metadata with the discovered information. This is a dangerous operation that should be used only when there are failing invocations on the deployment that cannot be resolved any other way. Sense checks are applied to test that the new deployment is sufficiently similar to the old one.",
+    description = "Update an already existing deployment. \
+    This lets you update the address and options when invoking the deployment, such as the additional headers for HTTP or the assume role for Lambda. \
+    The registered services and handlers won't be overwritten, unless `overwrite: true`.",
     operation_id = "update_deployment",
     tags = "deployment",
     external_docs(url = "https://docs.restate.dev/operate/versioning"),
@@ -262,95 +302,153 @@ pub async fn delete_deployment<V, IC>(
         schema = "std::string::String"
     ))
 )]
-pub async fn update_deployment<V, IC>(
-    State(state): State<AdminServiceState<V, IC>>,
+pub async fn update_deployment<Metadata, Discovery, Telemetry, Invocations>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+    Extension(version): Extension<AdminApiVersion>,
+    method: Method,
     Path(deployment_id): Path<DeploymentId>,
     #[request_body(required = true)] Json(payload): Json<UpdateDeploymentRequest>,
-) -> Result<Json<DetailedDeploymentResponse>, MetaApiError> {
-    let (discover_endpoint, dry_run) = match payload {
+) -> Result<Json<DetailedDeploymentResponse>, MetaApiError>
+where
+    Metadata: MetadataService,
+    Discovery: DiscoveryClient,
+{
+    if (version >= AdminApiVersion::V3 || version == AdminApiVersion::Unknown)
+        && method == Method::PUT
+    {
+        return Err(MetaApiError::DeprecatedPutDeployment);
+    }
+
+    // -- Bunch of data structures mapping back and forth
+    let (overwrite, dry_run) = match &payload {
+        UpdateDeploymentRequest::Http {
+            overwrite, dry_run, ..
+        } => (*overwrite, *dry_run),
+        UpdateDeploymentRequest::Lambda {
+            overwrite, dry_run, ..
+        } => (*overwrite, *dry_run),
+    };
+    let overwrite = if overwrite {
+        Overwrite::Yes
+    } else {
+        Overwrite::No
+    };
+    let apply_mode = if dry_run {
+        ApplyMode::DryRun
+    } else {
+        ApplyMode::Apply
+    };
+    let (update_deployment_address, additional_headers) = match payload {
         UpdateDeploymentRequest::Http {
             uri,
             additional_headers,
             use_http_11,
-            dry_run,
+            ..
         } => {
-            // Verify URI is absolute!
-            if uri.scheme().is_none() || uri.authority().is_none() {
-                return Err(MetaApiError::InvalidField(
-                    "uri",
-                    format!(
-                        "The provided uri {uri} is not absolute, only absolute URIs can be used."
-                    ),
-                ));
+            if uri.is_none() && additional_headers.is_none() && use_http_11.is_none() {
+                // No changes to do, just return 200
+                let (deployment, services) = state
+                    .schema_registry
+                    .get_deployment(deployment_id)
+                    .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
+
+                return Ok(to_detailed_deployment_response(deployment, services).into());
             }
 
-            let is_using_https = uri.scheme().unwrap() == &Scheme::HTTPS;
+            if let Some(uri) = &uri {
+                validate_uri(uri)?;
+            }
 
             (
-                DiscoverEndpoint::new(
-                    Endpoint::Http(
-                        uri,
-                        if use_http_11 {
-                            Some(http::Version::HTTP_11)
-                        } else if is_using_https {
-                            // ALPN will sort this out
-                            None
-                        } else {
-                            // By default, we use h2c on HTTP
-                            Some(http::Version::HTTP_2)
-                        },
-                    ),
-                    additional_headers.unwrap_or_default().into(),
-                ),
-                dry_run,
+                if uri.is_none() && use_http_11.is_none() {
+                    None
+                } else {
+                    Some(schema::registry::UpdateDeploymentAddress::Http { uri, use_http_11 })
+                },
+                additional_headers,
             )
         }
         UpdateDeploymentRequest::Lambda {
             arn,
             assume_role_arn,
             additional_headers,
-            dry_run,
-        } => (
-            DiscoverEndpoint::new(
-                Endpoint::Lambda(
-                    arn.parse().map_err(|e: InvalidLambdaARN| {
-                        MetaApiError::InvalidField("arn", e.to_string())
-                    })?,
-                    assume_role_arn.map(Into::into),
-                    None,
-                ),
-                additional_headers.unwrap_or_default().into(),
-            ),
-            dry_run,
-        ),
-    };
+            ..
+        } => {
+            if arn.is_none() && additional_headers.is_none() && assume_role_arn.is_none() {
+                // No changes to do, just return 200
+                let (deployment, services) = state
+                    .schema_registry
+                    .get_deployment(deployment_id)
+                    .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
-    let apply_mode = if dry_run {
-        updater::ApplyMode::DryRun
-    } else {
-        updater::ApplyMode::Apply
+                return Ok(to_detailed_deployment_response(deployment, services).into());
+            }
+
+            (
+                if arn.is_none() && assume_role_arn.is_none() {
+                    None
+                } else {
+                    Some(schema::registry::UpdateDeploymentAddress::Lambda {
+                        arn: arn
+                            .map(|a| {
+                                a.parse().map_err(|e: InvalidLambdaARN| {
+                                    MetaApiError::InvalidField("arn", e.to_string())
+                                })
+                            })
+                            .transpose()?,
+                        assume_role_arn,
+                    })
+                },
+                additional_headers,
+            )
+        }
     };
 
     let (deployment, services) = state
         .schema_registry
-        .update_deployment(deployment_id, discover_endpoint, apply_mode)
+        .update_deployment(
+            deployment_id,
+            schema::registry::UpdateDeploymentRequest {
+                update_deployment_address,
+                additional_headers: additional_headers.map(Into::into),
+                overwrite,
+                apply_mode,
+            },
+        )
         .await
         .inspect_err(|e| warn_it!(e))?;
 
     Ok(Json(to_detailed_deployment_response(deployment, services)))
 }
 
+fn to_register_response(
+    Deployment {
+        id,
+        supported_protocol_versions,
+        sdk_version,
+        ..
+    }: Deployment,
+    services: Vec<ServiceMetadata>,
+) -> RegisterDeploymentResponse {
+    RegisterDeploymentResponse {
+        id,
+        services,
+        min_protocol_version: *supported_protocol_versions.start(),
+        max_protocol_version: *supported_protocol_versions.end(),
+        sdk_version,
+    }
+}
+
 fn to_deployment_response(
     Deployment {
         id,
-        metadata:
-            DeploymentMetadata {
-                ty,
-                delivery_options,
-                supported_protocol_versions,
-                sdk_version,
-                created_at,
-            },
+        ty,
+        additional_headers,
+        supported_protocol_versions,
+        sdk_version,
+        created_at,
+        metadata,
+        ..
     }: Deployment,
     services: Vec<(String, ServiceRevision)>,
 ) -> DeploymentResponse {
@@ -364,7 +462,8 @@ fn to_deployment_response(
             uri: address,
             protocol_type,
             http_version,
-            additional_headers: delivery_options.additional_headers.into(),
+            additional_headers: additional_headers.into(),
+            metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
             max_protocol_version: *supported_protocol_versions.end(),
@@ -383,7 +482,8 @@ fn to_deployment_response(
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
             compression,
-            additional_headers: delivery_options.additional_headers.into(),
+            additional_headers: additional_headers.into(),
+            metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
             max_protocol_version: *supported_protocol_versions.end(),
@@ -399,14 +499,13 @@ fn to_deployment_response(
 fn to_detailed_deployment_response(
     Deployment {
         id,
-        metadata:
-            DeploymentMetadata {
-                ty,
-                delivery_options,
-                supported_protocol_versions,
-                sdk_version,
-                created_at,
-            },
+        ty,
+        additional_headers,
+        supported_protocol_versions,
+        sdk_version,
+        created_at,
+        metadata,
+        ..
     }: Deployment,
     services: Vec<ServiceMetadata>,
 ) -> DetailedDeploymentResponse {
@@ -420,7 +519,8 @@ fn to_detailed_deployment_response(
             uri: address,
             protocol_type,
             http_version,
-            additional_headers: delivery_options.additional_headers.into(),
+            additional_headers: additional_headers.into(),
+            metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
             max_protocol_version: *supported_protocol_versions.end(),
@@ -436,7 +536,8 @@ fn to_detailed_deployment_response(
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
             compression,
-            additional_headers: delivery_options.additional_headers.into(),
+            additional_headers: additional_headers.into(),
+            metadata,
             created_at: SystemTime::from(created_at).into(),
             min_protocol_version: *supported_protocol_versions.start(),
             max_protocol_version: *supported_protocol_versions.end(),
@@ -444,4 +545,16 @@ fn to_detailed_deployment_response(
             services,
         },
     }
+}
+
+#[inline]
+#[allow(clippy::result_large_err)]
+fn validate_uri(uri: &Uri) -> Result<(), MetaApiError> {
+    if uri.scheme().is_none() || uri.authority().is_none() {
+        return Err(MetaApiError::InvalidField(
+            "uri",
+            format!("The provided uri {uri} is not absolute, only absolute URIs can be used."),
+        ));
+    }
+    Ok(())
 }

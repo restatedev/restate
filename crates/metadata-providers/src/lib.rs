@@ -34,10 +34,29 @@ pub async fn create_client(
     let backoff_policy = Some(metadata_client_options.backoff_policy.clone());
 
     match metadata_client_options.kind.clone() {
-        MetadataClientKind::Replicated { addresses } => {
+        MetadataClientKind::Replicated { mut addresses } => {
             #[cfg(feature = "replicated")]
             {
                 use std::sync::Arc;
+
+                // use restate_types::config::Configuration;
+                // use restate_types::nodes_config::Role;
+                // // make sure we include our own address in the list of addresses if we are hosting
+                // // a metadata server ourselves.
+                // if Configuration::pinned()
+                //     .common
+                //     .roles
+                //     .contains(Role::MetadataServer)
+                // {
+                //     use restate_core::TaskCenter;
+                //     use restate_types::config::Configuration;
+                //
+                //     addresses.push(TaskCenter::with_current(|tc| {
+                //         Configuration::pinned()
+                //             .common
+                //             .advertised_address(tc.address_book())
+                //     }));
+                // }
                 Ok(replicated::create_replicated_metadata_client(
                     addresses,
                     backoff_policy,

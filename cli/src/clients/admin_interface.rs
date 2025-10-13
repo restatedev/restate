@@ -11,6 +11,7 @@
 use super::AdminClient;
 use super::admin_client::Envelope;
 use http::{Uri, Version};
+use std::collections::HashMap;
 
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
@@ -55,6 +56,8 @@ pub trait AdminClientInterface {
     ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>>;
 
     async fn resume_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
+
+    async fn pause_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
 
     async fn patch_state(
         &self,
@@ -156,6 +159,11 @@ impl AdminClientInterface for AdminClient {
         self.run(reqwest::Method::PATCH, url).await
     }
 
+    async fn pause_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
+        let url = self.versioned_url(["invocations", id, "pause"]);
+        self.run(reqwest::Method::PATCH, url).await
+    }
+
     async fn patch_state(
         &self,
         service: &str,
@@ -182,6 +190,7 @@ pub enum Deployment {
         created_at: humantime::Timestamp,
         min_protocol_version: i32,
         max_protocol_version: i32,
+        metadata: HashMap<String, String>,
     },
     Lambda {
         arn: LambdaARN,
@@ -190,6 +199,7 @@ pub enum Deployment {
         created_at: humantime::Timestamp,
         min_protocol_version: i32,
         max_protocol_version: i32,
+        metadata: HashMap<String, String>,
     },
 }
 
@@ -208,6 +218,7 @@ impl Deployment {
                 min_protocol_version,
                 max_protocol_version,
                 services,
+                metadata,
                 ..
             } => (
                 id,
@@ -219,6 +230,7 @@ impl Deployment {
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
+                    metadata,
                 },
                 services,
             ),
@@ -231,6 +243,7 @@ impl Deployment {
                 min_protocol_version,
                 max_protocol_version,
                 services,
+                metadata,
                 ..
             } => (
                 id,
@@ -241,6 +254,7 @@ impl Deployment {
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
+                    metadata,
                 },
                 services,
             ),
@@ -261,6 +275,7 @@ impl Deployment {
                 min_protocol_version,
                 max_protocol_version,
                 services,
+                metadata,
                 ..
             } => (
                 id,
@@ -272,6 +287,7 @@ impl Deployment {
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
+                    metadata,
                 },
                 services,
             ),
@@ -284,6 +300,7 @@ impl Deployment {
                 min_protocol_version,
                 max_protocol_version,
                 services,
+                metadata,
                 ..
             } => (
                 id,
@@ -294,6 +311,7 @@ impl Deployment {
                     created_at,
                     min_protocol_version,
                     max_protocol_version,
+                    metadata,
                 },
                 services,
             ),

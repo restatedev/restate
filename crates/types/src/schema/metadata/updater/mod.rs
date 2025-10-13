@@ -8,10 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::{ActiveServiceRevision, Deployment, Handler, Schema, ServiceRevision};
+use super::{ActiveServiceRevision, DeliveryOptions, Deployment, Handler, Schema, ServiceRevision};
 
-use crate::config::Configuration;
-use crate::endpoint_manifest;
+use crate::config::{Configuration, IngressOptions};
+use crate::deployment::{DeploymentAddress, Headers};
 use crate::endpoint_manifest::HandlerType;
 use crate::errors::GenericError;
 use crate::identifiers::{DeploymentId, SubscriptionId};
@@ -19,17 +19,17 @@ use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use crate::live::Pinned;
-use crate::schema::deployment::{DeploymentMetadata, DeploymentType};
+use crate::schema::deployment::DeploymentType;
 use crate::schema::invocation_target::{
     BadInputContentType, DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION,
     InputRules, InputValidationRule, OnMaxAttempts, OutputContentTypeRule, OutputRules,
 };
-use crate::schema::subscriptions::{
-    EventInvocationTargetTemplate, Sink, Source, Subscription, SubscriptionValidator,
-};
+use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
+use crate::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Source, Subscription};
+use crate::time::MillisSinceEpoch;
+use crate::{deployment, endpoint_manifest, identifiers};
 use http::{HeaderValue, Uri};
 use serde_json::Value;
-use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::error::Error;
@@ -39,89 +39,26 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
-/// Whether to force the registration of an existing endpoint or not
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub enum Force {
+/// Whether to allow breaking schema changes between the existing service revision and the new service revision.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AllowBreakingChanges {
     Yes,
     No,
 }
 
-impl Force {
-    pub fn force_enabled(&self) -> bool {
-        *self == Self::Yes
-    }
-}
-
-/// Whether to apply the changes or not
-#[derive(Clone, Default, PartialEq, Eq, Debug)]
-pub enum ApplyMode {
-    DryRun,
-    #[default]
-    Apply,
-}
-
-impl ApplyMode {
-    pub fn should_apply(&self) -> bool {
-        *self == Self::Apply
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum ModifyServiceChange {
-    Public(bool),
-    IdempotencyRetention(Duration),
-    JournalRetention(Duration),
-    WorkflowCompletionRetention(Duration),
-    InactivityTimeout(Duration),
-    AbortTimeout(Duration),
-}
-
-/// Newtype for service names
-#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
-#[display("{}", _0)]
-struct ServiceName(String);
-
-impl TryFrom<String> for ServiceName {
-    type Error = ServiceError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.to_lowercase().starts_with("restate")
-            || value.to_lowercase().eq_ignore_ascii_case("openapi")
-        {
-            Err(ServiceError::ReservedName(value))
-        } else {
-            Ok(ServiceName(value))
-        }
-    }
-}
-
-impl AsRef<str> for ServiceName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl ServiceName {
-    fn into_inner(self) -> String {
-        self.0
-    }
-}
-
-impl Borrow<String> for ServiceName {
-    fn borrow(&self) -> &String {
-        &self.0
-    }
+/// Whether to overwrite the existing endpoint.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Overwrite {
+    Yes,
+    No,
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum SchemaError {
+pub(in crate::schema) enum SchemaError {
     // Those are generic and used by all schema resources
     #[error("not found in the schema registry: {0}")]
     #[code(unknown)]
     NotFound(String),
-    #[error("already exists in the schema registry: {0}")]
-    #[code(unknown)]
-    Override(String),
 
     // Specific resources errors
     #[error(transparent)]
@@ -145,12 +82,12 @@ pub enum SchemaError {
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum ServiceError {
+pub(in crate::schema) enum ServiceError {
     #[error("cannot insert/modify service '{0}' as it contains a reserved name")]
     #[code(restate_errors::META0005)]
     ReservedName(String),
     #[error(
-        "detected a new service '{0}' revision with a service type different from the previous revision. Service type cannot be changed across revisions"
+        "detected a new service revision for '{0}' changing the service type from previous revision. Service type cannot be changed across revisions."
     )]
     #[code(restate_errors::META0006)]
     DifferentType(String),
@@ -204,7 +141,10 @@ pub enum ServiceError {
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 #[code(restate_errors::META0009)]
-pub enum SubscriptionError {
+pub(in crate::schema) enum SubscriptionError {
+    #[error("subscription {0} already exists")]
+    Override(SubscriptionId),
+
     #[error(
         "invalid source URI '{0}': must have a scheme segment, with supported schemes: [kafka]."
     )]
@@ -231,17 +171,7 @@ pub enum SubscriptionError {
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
-pub enum DeploymentError {
-    #[error(
-        "an update deployment operation must provide an endpoint with the same services and handlers. The update tried to remove the services {0:?}"
-    )]
-    #[code(restate_errors::META0016)]
-    RemovedServices(Vec<String>),
-    #[error(
-        "multiple deployments ({0:?}) were found that reference the discovered endpoint. A deployment can only be force updated when it uniquely owns its endpoint. First delete one or more of the deployments"
-    )]
-    #[code(restate_errors::META0017)]
-    MultipleExistingDeployments(Vec<DeploymentId>),
+pub(in crate::schema) enum DeploymentError {
     #[error(
         "an update deployment operation must provide an endpoint with the same services and handlers. The update tried to change the supported protocol versions from {0:?} to {1:?}"
     )]
@@ -250,6 +180,7 @@ pub enum DeploymentError {
 }
 
 /// Behavior when a handler is removed during service update
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RemovedHandlerBehavior {
     /// Fail with an error when a handler is removed
     Fail,
@@ -258,6 +189,7 @@ enum RemovedHandlerBehavior {
 }
 
 /// Behavior when service type changes during update
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ServiceTypeMismatchBehavior {
     /// Fail with an error when service type changes
     Fail,
@@ -268,9 +200,9 @@ enum ServiceTypeMismatchBehavior {
 /// Behavior for service level settings during update
 enum ServiceLevelSettingsBehavior {
     /// Preserve existing service level settings
+    #[allow(dead_code)]
     Preserve,
     /// Reset to defaults
-    #[allow(dead_code)]
     UseDefaults,
 }
 
@@ -280,28 +212,53 @@ impl ServiceLevelSettingsBehavior {
     }
 }
 
-enum ServiceRevisionBehavior {
-    Bump,
-    KeepExisting,
+#[derive(Debug, Clone)]
+pub(in crate::schema) struct AddDeploymentRequest {
+    pub(in crate::schema) deployment_address: DeploymentAddress,
+    pub(in crate::schema) additional_headers: Headers,
+    pub(in crate::schema) metadata: deployment::Metadata,
+    pub(in crate::schema) discovery_response: DiscoveryResponse,
+    pub(in crate::schema) allow_breaking_changes: AllowBreakingChanges,
+    pub(in crate::schema) overwrite: Overwrite,
 }
 
-impl ServiceRevisionBehavior {
-    fn bump(&self) -> bool {
-        matches!(self, ServiceRevisionBehavior::Bump)
-    }
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum AddDeploymentResult {
+    Created,
+    Unchanged,
+    Overwritten,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateDeploymentRequest {
+    pub(in crate::schema) deployment_id: DeploymentId,
+    pub(in crate::schema) deployment_address: DeploymentAddress,
+    pub(in crate::schema) additional_headers: Headers,
+    pub(in crate::schema) discovery_response: DiscoveryResponse,
+    pub(in crate::schema) overwrite: Overwrite,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModifyServiceRequest {
+    pub public: Option<bool>,
+    pub idempotency_retention: Option<Duration>,
+    pub journal_retention: Option<Duration>,
+    pub workflow_completion_retention: Option<Duration>,
+    pub inactivity_timeout: Option<Duration>,
+    pub abort_timeout: Option<Duration>,
 }
 
 /// Responsible for updating the provided [`Schema`] with new
 /// schema information. It makes sure that the version of schema information
 /// is incremented on changes.
 #[derive(Debug, Default)]
-pub struct SchemaUpdater {
+pub(in crate::schema) struct SchemaUpdater {
     schema: Schema,
     modified: bool,
 }
 
 impl SchemaUpdater {
-    pub fn update<E>(
+    pub(in crate::schema) fn update<E>(
         schema: Schema,
         updater_fn: impl FnOnce(&mut SchemaUpdater) -> Result<(), E>,
     ) -> Result<Schema, E> {
@@ -310,7 +267,7 @@ impl SchemaUpdater {
         Ok(schema_updater.into_inner())
     }
 
-    pub fn update_and_return<T, E>(
+    pub(in crate::schema) fn update_and_return<T, E>(
         schema: Schema,
         updater_fn: impl FnOnce(&mut SchemaUpdater) -> Result<T, E>,
     ) -> Result<(T, Schema), E> {
@@ -319,16 +276,14 @@ impl SchemaUpdater {
         Ok((t, schema_updater.into_inner()))
     }
 
-    // TODO(slinkydeveloper) MAKE THIS PRIVATE, just expose update and update_and_return
-    pub fn new(schema: Schema) -> Self {
+    fn new(schema: Schema) -> Self {
         Self {
             schema,
             modified: false,
         }
     }
 
-    // TODO(slinkydeveloper) MAKE THIS PRIVATE, just expose update and update_and_return
-    pub fn into_inner(mut self) -> Schema {
+    fn into_inner(mut self) -> Schema {
         if self.modified {
             self.schema.version = self.schema.version.next()
         }
@@ -342,41 +297,53 @@ impl SchemaUpdater {
         self.modified = true;
     }
 
-    pub fn add_deployment(
+    pub(in crate::schema) fn add_deployment(
         &mut self,
-        deployment_metadata: DeploymentMetadata,
-        services: Vec<endpoint_manifest::Service>,
-        force: bool,
-    ) -> Result<DeploymentId, SchemaError> {
-        let proposed_services: HashMap<_, _> = services
+        AddDeploymentRequest {
+            deployment_address,
+            additional_headers,
+            metadata,
+            discovery_response,
+            allow_breaking_changes,
+            overwrite,
+        }: AddDeploymentRequest,
+    ) -> Result<(AddDeploymentResult, DeploymentId), SchemaError> {
+        let mut add_deployment_result = AddDeploymentResult::Created;
+
+        let proposed_services: HashMap<_, _> = discovery_response
+            .services
             .into_iter()
-            .map(|c| ServiceName::try_from(c.name.to_string()).map(|name| (name, c)))
+            .map(|svc| {
+                let service_name = svc.name.to_string();
+                validate_service_name(&service_name)?;
+                Ok::<_, ServiceError>((service_name, svc))
+            })
             .collect::<Result<HashMap<_, _>, _>>()?;
 
         // Did we find an existing deployment with a conflicting endpoint url?
-        let mut existing_deployments = self.schema.deployments.iter().filter(|(_, schemas)| {
-            schemas.ty.protocol_type() == deployment_metadata.ty.protocol_type()
-                && schemas.ty.normalized_address() == deployment_metadata.ty.normalized_address()
-        });
+        let existing_deployment = self
+            .schema
+            .deployments
+            .iter()
+            .filter(|(_, deployment)| {
+                deployment
+                    .semantic_eq_with_address_and_headers(&deployment_address, &additional_headers)
+            })
+            // There are few situations where we might have multiple deployments for the same endpoint:
+            // * If there is some different configuration of the Configuration.admin.deployment_routing_headers between nodes,
+            //   and some registration was previously accepted.
+            // * If update_deployment was used on at least one deployment, pointing to the same address of another deployment,
+            //   resulting in having two deployments pointing at the same address.
+            //
+            // We pick max_by created_at, because with force the user wants to override the last deployment version, and not old ones.
+            .max_by(|(_, x), (_, y)| x.created_at.cmp(&y.created_at));
 
         let mut services_to_remove = Vec::default();
 
         let deployment_id = if let Some((existing_deployment_id, existing_deployment)) =
-            existing_deployments.next()
+            existing_deployment
         {
-            if force {
-                // Even under force we will only accept exactly one existing deployment with this endpoint
-                if let Some((another_existing_deployment_id, _)) = existing_deployments.next() {
-                    let mut existing_deployment_ids =
-                        vec![*existing_deployment_id, *another_existing_deployment_id];
-                    existing_deployment_ids
-                        .extend(existing_deployments.map(|(deployment_id, _)| *deployment_id));
-
-                    return Err(SchemaError::Deployment(
-                        DeploymentError::MultipleExistingDeployments(existing_deployment_ids),
-                    ));
-                }
-
+            if overwrite == Overwrite::Yes {
                 for service in existing_deployment.services.values() {
                     // If a service is not available anymore in the new deployment, we need to remove it
                     if !proposed_services.contains_key(&service.name) {
@@ -390,11 +357,11 @@ impl SchemaUpdater {
                     }
                 }
 
+                add_deployment_result = AddDeploymentResult::Overwritten;
                 *existing_deployment_id
             } else {
-                return Err(SchemaError::Override(format!(
-                    "deployment with id '{existing_deployment_id}'"
-                )));
+                // Not going to perform any action here
+                return Ok((AddDeploymentResult::Unchanged, *existing_deployment_id));
             }
         } else {
             DeploymentId::new()
@@ -403,197 +370,122 @@ impl SchemaUpdater {
         let mut computed_services = HashMap::with_capacity(proposed_services.len());
 
         // Compute service schemas
-        for (service_name, service) in proposed_services {
+        for (service_name, new_service) in proposed_services {
             let previous_service_revision = self
                 .schema
                 .active_service_revisions
-                .get(service_name.as_ref())
+                .get(&service_name)
                 .map(|revision| revision.service_revision.as_ref());
+
+            // Validate changes with previous revision, if any
+            if let Some(previous_service_revision) = previous_service_revision {
+                self.validate_existing_service_revision_constraints(
+                    deployment_id,
+                    &deployment_address,
+                    &service_name,
+                    &new_service,
+                    previous_service_revision,
+                    if allow_breaking_changes == AllowBreakingChanges::Yes {
+                        RemovedHandlerBehavior::Warn
+                    } else {
+                        RemovedHandlerBehavior::Fail
+                    },
+                    if allow_breaking_changes == AllowBreakingChanges::Yes {
+                        ServiceTypeMismatchBehavior::Warn
+                    } else {
+                        ServiceTypeMismatchBehavior::Fail
+                    },
+                )?;
+            }
+
+            let new_revision = previous_service_revision
+                .map(|old_svc| old_svc.revision.wrapping_add(1))
+                .unwrap_or(1);
             let new_service_revision = self.create_service_revision(
-                deployment_id,
-                &deployment_metadata.ty,
                 &service_name,
-                service,
+                new_service,
+                new_revision,
                 previous_service_revision,
-                if force {
-                    RemovedHandlerBehavior::Warn
-                } else {
-                    RemovedHandlerBehavior::Fail
-                },
-                if force {
-                    ServiceTypeMismatchBehavior::Warn
-                } else {
-                    ServiceTypeMismatchBehavior::Fail
-                },
                 ServiceLevelSettingsBehavior::UseDefaults,
-                ServiceRevisionBehavior::Bump,
             )?;
             computed_services.insert(service_name.to_string(), Arc::new(new_service_revision));
         }
-
-        drop(existing_deployments);
 
         self.schema.deployments.insert(
             deployment_id,
             Deployment {
                 id: deployment_id,
-                ty: deployment_metadata.ty,
-                delivery_options: deployment_metadata.delivery_options,
-                supported_protocol_versions: deployment_metadata.supported_protocol_versions,
-                sdk_version: deployment_metadata.sdk_version,
-                created_at: deployment_metadata.created_at,
+                ty: Self::create_deployment_ty(
+                    deployment_address,
+                    discovery_response.deployment_type_parameters,
+                ),
+                delivery_options: DeliveryOptions::new(additional_headers),
+                supported_protocol_versions: discovery_response.supported_protocol_versions,
+                sdk_version: discovery_response.sdk_version,
+                created_at: MillisSinceEpoch::now(),
+                metadata,
                 services: computed_services,
             },
         );
 
         self.mark_updated();
 
-        Ok(deployment_id)
+        Ok((add_deployment_result, deployment_id))
     }
 
-    pub fn update_deployment(
-        &mut self,
-        deployment_id: DeploymentId,
-        deployment_metadata: DeploymentMetadata,
-        services: Vec<endpoint_manifest::Service>,
-    ) -> Result<(), SchemaError> {
-        let proposed_services: HashMap<_, _> = services
-            .into_iter()
-            .map(|c| ServiceName::try_from(c.name.to_string()).map(|name| (name, c)))
-            .collect::<Result<HashMap<_, _>, _>>()?;
-
-        // Look for an existing deployment with this ID
-        let Some(existing_deployment) = self.schema.deployments.get(&deployment_id) else {
-            return Err(SchemaError::NotFound(format!(
-                "deployment with id '{deployment_id}'"
-            )));
-        };
-
-        // Check protocol versions are equals
-        if existing_deployment.supported_protocol_versions
-            != deployment_metadata.supported_protocol_versions
-        {
-            return Err(SchemaError::Deployment(
-                DeploymentError::DifferentSupportedProtocolVersions(
-                    existing_deployment.supported_protocol_versions.clone(),
-                    deployment_metadata.supported_protocol_versions.clone(),
-                ),
-            ));
-        };
-
-        // Check we don't remove services
-        let mut services_to_remove = Vec::default();
-        for service in existing_deployment.services.values() {
-            if !proposed_services.contains_key(&service.name) {
-                services_to_remove.push(service.name.clone());
-            }
-        }
-        if !services_to_remove.is_empty() {
-            // we don't allow removing services as part of update deployment
-            return Err(SchemaError::Deployment(DeploymentError::RemovedServices(
-                services_to_remove,
-            )));
-        }
-
-        // Compute service schemas
-        let mut computed_services = HashMap::with_capacity(proposed_services.len());
-        for (service_name, service) in proposed_services {
-            let previous_service_revision = existing_deployment
-                .services
-                .get(service_name.as_ref())
-                .map(|arc| arc.deref());
-            let service_revision = self.create_service_revision(
-                deployment_id,
-                &deployment_metadata.ty,
-                &service_name,
-                service,
-                previous_service_revision,
-                RemovedHandlerBehavior::Fail,
-                ServiceTypeMismatchBehavior::Fail,
-                ServiceLevelSettingsBehavior::Preserve,
-                ServiceRevisionBehavior::KeepExisting,
-            )?;
-
-            computed_services.insert(service_name, Arc::new(service_revision));
-        }
-
-        let services_metadata = computed_services
-            .into_iter()
-            .map(|(name, schema)| {
-                match self.schema.active_service_revisions.get(name.as_ref()) {
-                    Some(ActiveServiceRevision {
-                             deployment_id: latest_deployment,
-                             ..
-                         }) if latest_deployment == &deployment_id => {
-                        info!(
-                            rpc.service = %name,
-                            "Overwriting existing service schemas for latest service"
-                        );
-                        // We let SchemaUpdater::into_inner do the index update
-                    },
-                    Some(_) => {
-                        debug!(
-                            rpc.service = %name,
-                            "Keeping existing service schema as this update operation affected a draining deployment"
-                        );
-                    },
-                    None => {
-                        // We let SchemaUpdater::into_inner do the index update
-                    }
-                }
-
-                (name.into_inner(), schema)
-            })
-            .collect();
-
-        self.schema.deployments.insert(
-            deployment_id,
-            Deployment {
-                id: deployment_id,
-                ty: deployment_metadata.ty,
-                delivery_options: deployment_metadata.delivery_options,
-                supported_protocol_versions: deployment_metadata.supported_protocol_versions,
-                sdk_version: deployment_metadata.sdk_version,
-                created_at: deployment_metadata.created_at,
-                services: services_metadata,
+    fn create_deployment_ty(
+        deployment_address: DeploymentAddress,
+        deployment_connection_params: DeploymentConnectionParameters,
+    ) -> DeploymentType {
+        match (deployment_address, deployment_connection_params) {
+            (
+                DeploymentAddress::Http(a),
+                DeploymentConnectionParameters::Http {
+                    http_version,
+                    protocol_type,
+                },
+            ) => DeploymentType::Http {
+                address: a.uri,
+                protocol_type,
+                http_version,
             },
-        );
-
-        self.mark_updated();
-
-        Ok(())
+            (
+                DeploymentAddress::Lambda(a),
+                DeploymentConnectionParameters::Lambda { compression },
+            ) => DeploymentType::Lambda {
+                arn: a.arn,
+                assume_role_arn: a.assume_role_arn.map(Into::into),
+                compression,
+            },
+            _ => unreachable!(
+                "deployment address and discovered deployment parameters are not of the same type"
+            ),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
     fn validate_existing_service_revision_constraints(
         &self,
         deployment_id: DeploymentId,
-        deployment_ty: &DeploymentType,
-        service_name: &ServiceName,
-        service: &endpoint_manifest::Service,
-        previous_revision_revision: Option<&ServiceRevision>,
+        deployment_address: &DeploymentAddress,
+        service_name: &String,
+        new_service_manifest: &endpoint_manifest::Service,
+        existing_service: &ServiceRevision,
         removed_handler_behavior: RemovedHandlerBehavior,
         service_type_mismatch_behavior: ServiceTypeMismatchBehavior,
     ) -> Result<(), SchemaError> {
-        let Some(existing_service) = previous_revision_revision else {
-            // New service, nothing to validate
-            return Ok(());
-        };
-
-        let service_type = ServiceType::from(service.ty);
+        let service_type = ServiceType::from(new_service_manifest.ty);
         if existing_service.ty != service_type {
-            if matches!(
-                service_type_mismatch_behavior,
-                ServiceTypeMismatchBehavior::Fail
-            ) {
+            if service_type_mismatch_behavior == ServiceTypeMismatchBehavior::Fail {
                 return Err(SchemaError::Service(ServiceError::DifferentType(
-                    service_name.clone().into_inner(),
+                    service_name.clone(),
                 )));
             } else {
                 warn!(
                     restate.deployment.id = %deployment_id,
-                    restate.deployment.address = %deployment_ty.address_display(),
-                    "Going to overwrite service type {} due to a forced deployment update: {:?} != {:?}. This is a potentially dangerous operation, and might result in data loss.",
+                    restate.deployment.address = %deployment_address,
+                    "Going to change service type for {} due to an update: {:?} != {:?}. \
+                    This is a potentially dangerous operation, and might result in data loss.",
                     service_name,
                     existing_service.ty,
                     service_type
@@ -605,7 +497,7 @@ impl SchemaUpdater {
             .handlers
             .keys()
             .filter(|name| {
-                !service
+                !new_service_manifest
                     .handlers
                     .iter()
                     .any(|new_handler| (*new_handler.name).eq(*name))
@@ -614,17 +506,17 @@ impl SchemaUpdater {
             .collect();
 
         if !removed_handlers.is_empty() {
-            if matches!(removed_handler_behavior, RemovedHandlerBehavior::Fail) {
+            if removed_handler_behavior == RemovedHandlerBehavior::Fail {
                 return Err(SchemaError::Service(ServiceError::RemovedHandlers(
-                    service_name.clone().into_inner(),
+                    service_name.clone(),
                     removed_handlers,
                 )));
             } else {
                 warn!(
                     restate.deployment.id = %deployment_id,
-                    restate.deployment.address = %deployment_ty.address_display(),
-                    "Going to remove the following methods from service type {} due to a forced deployment update: {:?}.",
-                    service.name.as_str(),
+                    restate.deployment.address = %deployment_address,
+                    "Going to remove the following methods from service type {} due to an update: {:?}.",
+                    new_service_manifest.name.as_str(),
                     removed_handlers
                 );
             }
@@ -633,29 +525,14 @@ impl SchemaUpdater {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn create_service_revision(
         &self,
-        deployment_id: DeploymentId,
-        deployment_ty: &DeploymentType,
-        service_name: &ServiceName,
+        service_name: &String,
         service: endpoint_manifest::Service,
+        new_revision: identifiers::ServiceRevision,
         previous_service_revision: Option<&ServiceRevision>,
-        removed_handler_behavior: RemovedHandlerBehavior,
-        service_type_mismatch_behavior: ServiceTypeMismatchBehavior,
         service_level_settings_behavior: ServiceLevelSettingsBehavior,
-        service_revision_behavior: ServiceRevisionBehavior,
     ) -> Result<ServiceRevision, SchemaError> {
-        self.validate_existing_service_revision_constraints(
-            deployment_id,
-            deployment_ty,
-            service_name,
-            &service,
-            previous_service_revision,
-            removed_handler_behavior,
-            service_type_mismatch_behavior,
-        )?;
-
         let service_type = ServiceType::from(service.ty);
 
         // --- Figure out service options
@@ -738,10 +615,10 @@ impl SchemaUpdater {
         let configuration = Configuration::pinned();
         if !configuration.is_pause_behavior_enabled()
             && retry_policy_on_max_attempts
-                .is_some_and(|on_max_attempts| matches!(on_max_attempts, OnMaxAttempts::Pause))
+                .is_some_and(|on_max_attempts| on_max_attempts == OnMaxAttempts::Pause)
         {
             return Err(SchemaError::Service(ServiceError::PauseBehaviorDisabled(
-                service_name.as_ref().to_owned(),
+                service_name.clone(),
             )));
         }
 
@@ -768,15 +645,7 @@ impl SchemaUpdater {
             ty: service_type,
             documentation: service.documentation,
             metadata: service.metadata,
-            revision: previous_service_revision
-                .map(|old_svc| {
-                    if service_revision_behavior.bump() {
-                        old_svc.revision.wrapping_add(1)
-                    } else {
-                        old_svc.revision
-                    }
-                })
-                .unwrap_or(1),
+            revision: new_revision,
             public,
             idempotency_retention,
             workflow_completion_retention,
@@ -793,7 +662,171 @@ impl SchemaUpdater {
         })
     }
 
-    pub fn remove_deployment(&mut self, deployment_id: DeploymentId) {
+    pub(in crate::schema) fn update_deployment(
+        &mut self,
+        UpdateDeploymentRequest {
+            deployment_id,
+            deployment_address,
+            additional_headers,
+            discovery_response,
+            overwrite,
+        }: UpdateDeploymentRequest,
+    ) -> Result<(), SchemaError> {
+        // Look for an existing deployment with this ID
+        let Some(existing_deployment) = self.schema.deployments.get(&deployment_id) else {
+            return Err(SchemaError::NotFound(format!(
+                "deployment with id '{deployment_id}'"
+            )));
+        };
+
+        // Check protocol versions are equals
+        if existing_deployment.supported_protocol_versions
+            != discovery_response.supported_protocol_versions
+        {
+            return Err(SchemaError::Deployment(
+                DeploymentError::DifferentSupportedProtocolVersions(
+                    existing_deployment.supported_protocol_versions.clone(),
+                    discovery_response.supported_protocol_versions.clone(),
+                ),
+            ));
+        };
+
+        // At this point there are two ways to go about this:
+        // * The user didn't ask for overwriting, and in this case we simply update the type and delivery options as requested
+        // * The user asked for the overwriting, just allow everything, and it's their business to not break things
+        if overwrite == Overwrite::No {
+            self.schema.deployments.insert(
+                deployment_id,
+                Deployment {
+                    // We update only these 3 fields
+                    ty: Self::create_deployment_ty(
+                        deployment_address,
+                        discovery_response.deployment_type_parameters,
+                    ),
+                    delivery_options: DeliveryOptions::new(additional_headers),
+                    sdk_version: discovery_response.sdk_version,
+
+                    // We keep these the same
+                    id: deployment_id,
+                    supported_protocol_versions: existing_deployment
+                        .supported_protocol_versions
+                        .clone(),
+                    created_at: existing_deployment.created_at,
+                    metadata: existing_deployment.metadata.clone(),
+                    services: existing_deployment.services.clone(),
+                },
+            );
+
+            self.mark_updated();
+
+            Ok(())
+        } else {
+            let proposed_services: HashMap<_, _> = discovery_response
+                .services
+                .into_iter()
+                .map(|svc| {
+                    let service_name = svc.name.to_string();
+                    validate_service_name(&service_name)?;
+                    Ok::<_, ServiceError>((service_name, svc))
+                })
+                .collect::<Result<HashMap<_, _>, _>>()?;
+
+            for service in existing_deployment.services.values() {
+                // If a service is not available anymore in the new deployment, we need to remove it
+                if !proposed_services.contains_key(&service.name) {
+                    warn!(
+                        restate.deployment.id = %deployment_id,
+                        restate.deployment.address = %existing_deployment.ty.address_display(),
+                        "Going to remove service {} due to a forced deployment update",
+                        service.name
+                    );
+                }
+            }
+
+            // Compute service schemas
+            let mut computed_services = HashMap::with_capacity(proposed_services.len());
+            for (service_name, new_service) in proposed_services {
+                let previous_service_revision = existing_deployment
+                    .services
+                    .get(&service_name)
+                    .map(|arc| arc.deref());
+
+                // Validate changes with previous revision, if any
+                if let Some(previous_service_revision) = previous_service_revision {
+                    self.validate_existing_service_revision_constraints(
+                        deployment_id,
+                        &deployment_address,
+                        &service_name,
+                        &new_service,
+                        previous_service_revision,
+                        RemovedHandlerBehavior::Warn,
+                        ServiceTypeMismatchBehavior::Warn,
+                    )?;
+                }
+
+                let service_revision = self.create_service_revision(
+                    &service_name,
+                    new_service,
+                    previous_service_revision
+                        .map(|old_svc| old_svc.revision)
+                        .unwrap_or(1),
+                    previous_service_revision,
+                    ServiceLevelSettingsBehavior::UseDefaults,
+                )?;
+
+                match self.schema.active_service_revisions.get(&service_name) {
+                    Some(ActiveServiceRevision {
+                        deployment_id: latest_deployment,
+                        ..
+                    }) if latest_deployment == &deployment_id => {
+                        info!(
+                            rpc.service = %service_name,
+                            "Overwriting existing service schemas for latest service"
+                        );
+                        // We let SchemaUpdater::into_inner do the index update
+                    }
+                    Some(_) => {
+                        debug!(
+                            rpc.service = %service_name,
+                            "Keeping existing service schema as this update operation affected a draining deployment"
+                        );
+                    }
+                    None => {
+                        // We let SchemaUpdater::into_inner do the index update
+                    }
+                }
+
+                computed_services.insert(service_name, Arc::new(service_revision));
+            }
+
+            self.schema.deployments.insert(
+                deployment_id,
+                Deployment {
+                    // We update all these fields
+                    ty: Self::create_deployment_ty(
+                        deployment_address,
+                        discovery_response.deployment_type_parameters,
+                    ),
+                    delivery_options: DeliveryOptions::new(additional_headers),
+                    supported_protocol_versions: discovery_response.supported_protocol_versions,
+                    sdk_version: discovery_response.sdk_version,
+                    services: computed_services,
+
+                    // We keep only these same as before
+                    id: deployment_id,
+                    created_at: existing_deployment.created_at,
+                    metadata: existing_deployment.metadata.clone(),
+                },
+            );
+
+            self.mark_updated();
+
+            Ok(())
+        }
+    }
+
+    /// Returns true if it was removed
+    pub fn remove_deployment(&mut self, deployment_id: DeploymentId) -> bool {
         if let Some(deployment) = self.schema.deployments.remove(&deployment_id) {
             for (_, service_metadata) in deployment.services {
                 match self
@@ -812,24 +845,23 @@ impl SchemaUpdater {
                 }
             }
             self.mark_updated();
+            return true;
         }
+        false
     }
 
-    pub fn add_subscription<V: SubscriptionValidator>(
+    pub(in crate::schema) fn add_subscription(
         &mut self,
         id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
-        validator: &V,
     ) -> Result<SubscriptionId, SchemaError> {
         // generate id if not provided
         let id = id.unwrap_or_default();
 
         if self.schema.subscriptions.contains_key(&id) {
-            return Err(SchemaError::Override(format!(
-                "subscription with id '{id}'"
-            )));
+            return Err(SchemaError::Subscription(SubscriptionError::Override(id)));
         }
 
         // TODO This logic to parse source and sink should be moved elsewhere to abstract over the known source/sink providers
@@ -922,8 +954,9 @@ impl SchemaUpdater {
             }
         };
 
-        let subscription = validator
-            .validate(Subscription::new(
+        let subscription = Configuration::pinned()
+            .ingress
+            .validate_subscription(Subscription::new(
                 id,
                 source,
                 sink,
@@ -937,49 +970,48 @@ impl SchemaUpdater {
         Ok(id)
     }
 
-    pub fn remove_subscription(&mut self, subscription_id: SubscriptionId) {
+    // Returns true if it was removed
+    pub fn remove_subscription(&mut self, subscription_id: SubscriptionId) -> bool {
         if self.schema.subscriptions.remove(&subscription_id).is_some() {
             self.mark_updated();
+            return true;
         }
+        false
     }
 
-    pub fn modify_service(
+    pub(in crate::schema) fn modify_service(
         &mut self,
         name: &str,
-        changes: Vec<ModifyServiceChange>,
+        modify_service_request: ModifyServiceRequest,
     ) -> Result<(), SchemaError> {
         self.apply_change_to_active_service_revision(name, |svc| {
-            for command in changes {
-                match command {
-                    ModifyServiceChange::Public(new_public_value) => {
-                        svc.public = new_public_value;
-                        // Cleanup generated OpenAPI
-                        svc.service_openapi_cache = Default::default();
-                    }
-                    ModifyServiceChange::IdempotencyRetention(new_idempotency_retention) => {
-                        svc.idempotency_retention = Some(new_idempotency_retention);
-                    }
-                    ModifyServiceChange::WorkflowCompletionRetention(
-                        new_workflow_completion_retention,
-                    ) => {
-                        // This applies only to workflow services
-                        if svc.ty != ServiceType::Workflow {
-                            return Err(SchemaError::Service(
-                                ServiceError::CannotModifyRetentionTime(svc.ty),
-                            ));
-                        }
-                        svc.workflow_completion_retention = Some(new_workflow_completion_retention);
-                    }
-                    ModifyServiceChange::JournalRetention(new_journal_retention) => {
-                        svc.journal_retention = Some(new_journal_retention);
-                    }
-                    ModifyServiceChange::InactivityTimeout(inactivity_timeout) => {
-                        svc.inactivity_timeout = Some(inactivity_timeout);
-                    }
-                    ModifyServiceChange::AbortTimeout(abort_timeout) => {
-                        svc.abort_timeout = Some(abort_timeout);
-                    }
+            if let Some(new_public_value) = modify_service_request.public {
+                svc.public = new_public_value;
+                // Cleanup generated OpenAPI
+                svc.service_openapi_cache = Default::default();
+            }
+            if let Some(new_idempotency_retention) = modify_service_request.idempotency_retention {
+                svc.idempotency_retention = Some(new_idempotency_retention);
+            }
+            if let Some(new_workflow_completion_retention) =
+                modify_service_request.workflow_completion_retention
+            {
+                // This applies only to workflow services
+                if svc.ty != ServiceType::Workflow {
+                    return Err(SchemaError::Service(
+                        ServiceError::CannotModifyRetentionTime(svc.ty),
+                    ));
                 }
+                svc.workflow_completion_retention = Some(new_workflow_completion_retention);
+            }
+            if let Some(new_journal_retention) = modify_service_request.journal_retention {
+                svc.journal_retention = Some(new_journal_retention);
+            }
+            if let Some(new_inactivity_timeout) = modify_service_request.inactivity_timeout {
+                svc.inactivity_timeout = Some(new_inactivity_timeout);
+            }
+            if let Some(new_abort_timeout) = modify_service_request.abort_timeout {
+                svc.abort_timeout = Some(new_abort_timeout);
             }
             Ok(())
         })?;
@@ -1223,6 +1255,75 @@ impl Handler {
                 json_schema: None,
             }
         })
+    }
+}
+
+fn validate_service_name(name: &str) -> Result<(), ServiceError> {
+    let lower_name = name.to_lowercase();
+    if lower_name.starts_with("restate") || lower_name.eq_ignore_ascii_case("openapi") {
+        Err(ServiceError::ReservedName(name.to_string()))
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("invalid option '{name}'. Reason: {reason}")]
+pub struct ValidationError {
+    name: &'static str,
+    reason: &'static str,
+}
+
+impl IngressOptions {
+    fn validate_subscription(
+        &self,
+        mut subscription: Subscription,
+    ) -> Result<Subscription, ValidationError> {
+        // Retrieve the cluster option and merge them with subscription metadata
+        let Source::Kafka { cluster, .. } = subscription.source();
+        let cluster_options = &self.get_kafka_cluster(cluster).ok_or(ValidationError {
+            name: "source",
+            reason: "specified cluster in the source URI does not exist. Make sure it is defined in the KafkaOptions",
+        })?.additional_options;
+
+        if cluster_options.contains_key("enable.auto.commit")
+            || subscription.metadata().contains_key("enable.auto.commit")
+        {
+            warn!(
+                "The configuration option enable.auto.commit should not be set and it will be ignored."
+            );
+        }
+        if cluster_options.contains_key("enable.auto.offset.store")
+            || subscription
+                .metadata()
+                .contains_key("enable.auto.offset.store")
+        {
+            warn!(
+                "The configuration option enable.auto.offset.store should not be set and it will be ignored."
+            );
+        }
+
+        // Set the group.id if unset
+        if !(cluster_options.contains_key("group.id")
+            || subscription.metadata().contains_key("group.id"))
+        {
+            let group_id = subscription.id().to_string();
+
+            subscription
+                .metadata_mut()
+                .insert("group.id".to_string(), group_id);
+        }
+
+        // Set client.id if unset
+        if !(cluster_options.contains_key("client.id")
+            || subscription.metadata().contains_key("client.id"))
+        {
+            subscription
+                .metadata_mut()
+                .insert("client.id".to_string(), "restate".to_string());
+        }
+
+        Ok(subscription)
     }
 }
 

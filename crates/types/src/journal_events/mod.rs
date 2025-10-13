@@ -36,7 +36,9 @@ pub enum EventType {
     Paused = 2,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::From)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Serialize, Deserialize, derive_more::From, strum::EnumTryAs,
+)]
 #[serde(tag = "ty")]
 pub enum Event {
     TransientError(TransientErrorEvent),

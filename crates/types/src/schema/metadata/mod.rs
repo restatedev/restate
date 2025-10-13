@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
+use http::{HeaderName, HeaderValue};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
 
@@ -17,13 +19,16 @@ use restate_serde_util::MapAsVecItem;
 use restate_time_util::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
+use crate::deployment::{
+    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+};
 use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::live::Pinned;
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
-use crate::schema::deployment::{DeliveryOptions, DeploymentResolver, DeploymentType};
+use crate::schema::deployment::{DeploymentResolver, DeploymentType};
 use crate::schema::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InputRules,
     InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver, OnMaxAttempts,
@@ -38,6 +43,9 @@ use crate::schema::{deployment, service};
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
 
+/// Serializable data structure representing the schema registry
+///
+/// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
 pub struct Schema {
@@ -125,6 +133,20 @@ impl ActiveServiceRevision {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct DeliveryOptions {
+    #[serde(
+        with = "serde_with::As::<serde_with::FromInto<restate_serde_util::SerdeableHeaderHashMap>>"
+    )]
+    pub additional_headers: HashMap<HeaderName, HeaderValue>,
+}
+
+impl DeliveryOptions {
+    fn new(additional_headers: HashMap<HeaderName, HeaderValue>) -> Self {
+        Self { additional_headers }
+    }
+}
+
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Deployment {
@@ -135,6 +157,10 @@ struct Deployment {
     /// Declared SDK during discovery
     sdk_version: Option<String>,
     created_at: MillisSinceEpoch,
+
+    /// User provided metadata during registration
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    metadata: HashMap<String, String>,
 
     #[serde_as(as = "restate_serde_util::MapAsVec")]
     services: HashMap<String, Arc<ServiceRevision>>,
@@ -152,13 +178,38 @@ impl Deployment {
     fn to_deployment(&self) -> deployment::Deployment {
         deployment::Deployment {
             id: self.id,
-            metadata: deployment::DeploymentMetadata {
-                ty: self.ty.clone(),
-                delivery_options: self.delivery_options.clone(),
-                supported_protocol_versions: self.supported_protocol_versions.clone(),
-                sdk_version: self.sdk_version.clone(),
-                created_at: self.created_at,
-            },
+            ty: self.ty.clone(),
+            supported_protocol_versions: self.supported_protocol_versions.clone(),
+            sdk_version: self.sdk_version.clone(),
+            created_at: self.created_at,
+            metadata: self.metadata.clone(),
+            additional_headers: self.delivery_options.additional_headers.clone(),
+        }
+    }
+    /// This returns true if the two deployments are to be considered the "same".
+    pub fn semantic_eq_with_address_and_headers(
+        &self,
+        other_addess: &DeploymentAddress,
+        other_additional_headers: &Headers,
+    ) -> bool {
+        match (&self.ty, other_addess) {
+            (
+                DeploymentType::Http {
+                    address: this_address,
+                    ..
+                },
+                DeploymentAddress::Http(HttpDeploymentAddress { uri: other_address }),
+            ) => deployment::Deployment::semantic_eq_http(
+                this_address,
+                other_address,
+                &self.delivery_options.additional_headers,
+                other_additional_headers,
+            ),
+            (
+                DeploymentType::Lambda { arn: this_arn, .. },
+                DeploymentAddress::Lambda(LambdaDeploymentAddress { arn: other_arn, .. }),
+            ) => deployment::Deployment::semantic_eq_lambda(this_arn, other_arn),
+            _ => false,
         }
     }
 }
@@ -357,14 +408,16 @@ impl ServiceRevision {
             }
         };
 
-        let advertised_ingress_endpoint = Configuration::pinned()
-            .ingress
-            .advertised_ingress_endpoint
-            .as_ref()
-            .map(|u| u.to_string());
+        // todo: Pass address book in
+        // let advertised_ingress_endpoint = Configuration::pinned()
+        //     .ingress
+        //     .advertised_ingress_endpoint()
+        //     .as_ref()
+        //     .map(|u| u.to_string());
         service_openapi.to_openapi_contract(
             &self.name,
-            advertised_ingress_endpoint.as_deref(),
+            // advertised_ingress_endpoint.as_deref(),
+            None,
             self.documentation.as_deref(),
             self.revision,
         )
@@ -469,6 +522,27 @@ impl DeploymentResolver for Schema {
         self.deployments
             .get(&active_service_revision.deployment_id)
             .map(|dp| dp.to_deployment())
+    }
+
+    fn find_deployment(
+        &self,
+        deployment_address: &DeploymentAddress,
+        additional_headers: &Headers,
+    ) -> Option<(deployment::Deployment, Vec<service::ServiceMetadata>)> {
+        self.deployments
+            .iter()
+            .find(|(_, d)| {
+                d.semantic_eq_with_address_and_headers(deployment_address, additional_headers)
+            })
+            .map(|(dp_id, dp)| {
+                (
+                    dp.to_deployment(),
+                    dp.services
+                        .values()
+                        .map(|s| s.to_service_metadata(*dp_id))
+                        .collect(),
+                )
+            })
     }
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<deployment::Deployment> {

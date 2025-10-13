@@ -15,7 +15,7 @@ mod metadata_api;
 mod metric_definitions;
 mod query_utils;
 mod rest_api;
-mod schema_registry;
+pub mod schema_registry_integration;
 pub mod service;
 mod state;
 mod storage_accounting;

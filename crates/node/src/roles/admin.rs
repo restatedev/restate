@@ -14,6 +14,7 @@ use std::time::Duration;
 use codederror::CodedError;
 use restate_admin::StorageAccountingTask;
 use restate_admin::cluster_controller;
+use restate_admin::schema_registry_integration::{MetadataService, TelemetryClient};
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::network::NetworkServerBuilder;
@@ -32,10 +33,11 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
 use restate_types::config::Configuration;
-use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
+use restate_types::net::address::AdminPort;
+use restate_types::net::listener::AddressBook;
 use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
@@ -60,7 +62,12 @@ pub enum AdminRoleBuildError {
 pub struct AdminRole<T> {
     updateable_config: Live<Configuration>,
     controller: Option<cluster_controller::Service<T>>,
-    admin: AdminService<IngressOptions, PartitionProcessorInvocationClient<T>>,
+    admin: AdminService<
+        MetadataService,
+        ServiceDiscovery,
+        TelemetryClient,
+        PartitionProcessorInvocationClient<T>,
+    >,
     storage_accounting_task: Option<StorageAccountingTask>,
 }
 
@@ -78,6 +85,7 @@ impl<T: TransportConnect> AdminRole<T> {
         metadata_writer: MetadataWriter,
         partition_store_manager: Arc<PartitionStoreManager>,
         server_builder: &mut NetworkServerBuilder,
+        address_book: &mut AddressBook,
         local_query_context: Option<QueryContext>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
@@ -115,7 +123,9 @@ impl<T: TransportConnect> AdminRole<T> {
             .await?
         };
 
+        let listeners = address_book.take_listeners::<AdminPort>();
         let admin = AdminService::new(
+            listeners,
             metadata_writer.clone(),
             bifrost.clone(),
             PartitionProcessorInvocationClient::new(
@@ -123,7 +133,6 @@ impl<T: TransportConnect> AdminRole<T> {
                 partition_table,
                 partition_routing,
             ),
-            config.ingress.clone(),
             service_discovery,
             telemetry_http_client,
         )
