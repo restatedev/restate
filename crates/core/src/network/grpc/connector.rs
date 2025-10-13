@@ -20,7 +20,7 @@ use tonic::transport::channel::Channel;
 use tracing::debug;
 
 use restate_types::config::{Configuration, NetworkingOptions};
-use restate_types::net::AdvertisedAddress;
+use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, PeerNetAddress};
 
 use super::MAX_MESSAGE_SIZE;
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
@@ -75,17 +75,18 @@ impl TransportConnect for GrpcConnector {
     }
 }
 
-fn create_channel(
-    address: AdvertisedAddress,
+fn create_channel<P: ListenerPort + GrpcPort>(
+    address: AdvertisedAddress<P>,
     _swimlane: Swimlane,
     options: &NetworkingOptions,
 ) -> Channel {
+    let address = address.into_address().expect("valid address");
     let endpoint = match &address {
-        AdvertisedAddress::Uds(_) => {
+        PeerNetAddress::Uds(_) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1").expect("/ should be a valid Uri")
         }
-        AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
+        PeerNetAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
     };
 
     let endpoint = endpoint
@@ -105,7 +106,7 @@ fn create_channel(
         .tcp_nodelay(true);
 
     match address {
-        AdvertisedAddress::Uds(uds_path) => {
+        PeerNetAddress::Uds(uds_path) => {
             endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
                 let uds_path = uds_path.clone();
                 async move {
@@ -113,7 +114,7 @@ fn create_channel(
                 }
             }))
         }
-        AdvertisedAddress::Http(_) => endpoint.connect_lazy()
+        PeerNetAddress::Http(_) => endpoint.connect_lazy()
     }
 }
 

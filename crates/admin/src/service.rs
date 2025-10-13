@@ -8,34 +8,39 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
-use crate::schema_registry_integration::{MetadataService, TelemetryClient};
-use crate::{rest_api, state};
+use std::time::Duration;
+
 use axum::error_handling::HandleErrorLayer;
 use http::{Request, Response, StatusCode};
+use tower::ServiceBuilder;
+use tower_http::classify::ServerErrorsFailureClass;
+use tower_http::trace::TraceLayer;
+use tracing::{Span, debug, error, info, info_span};
+
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_bifrost::Bifrost;
-use restate_core::MetadataWriter;
 use restate_core::network::net_util;
+use restate_core::{MetadataWriter, TaskCenter};
 use restate_service_client::HttpClient;
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_time_util::DurationExt;
 use restate_types::config::AdminOptions;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
-use restate_types::net::BindAddress;
+use restate_types::net::address::AdminPort;
+use restate_types::net::listener::Listeners;
 use restate_types::schema::registry::SchemaRegistry;
-use std::time::Duration;
-use tower::ServiceBuilder;
-use tower_http::classify::ServerErrorsFailureClass;
-use tower_http::trace::TraceLayer;
-use tracing::{Span, debug, error, info, info_span};
+
+use crate::rest_api::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
+use crate::schema_registry_integration::{MetadataService, TelemetryClient};
+use crate::{rest_api, state};
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not create the service client: {0}")]
 pub struct BuildError(#[from] restate_service_client::BuildError);
 
 pub struct AdminService<Metadata, Discovery, Telemetry, Invocations> {
+    listeners: Listeners<AdminPort>,
     bifrost: Bifrost,
     schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
     invocation_client: Invocations,
@@ -50,6 +55,7 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
 {
     pub fn new(
+        listeners: Listeners<AdminPort>,
         metadata_writer: MetadataWriter,
         bifrost: Bifrost,
         invocation_client: Invocations,
@@ -57,6 +63,7 @@ where
         telemetry_http_client: Option<HttpClient>,
     ) -> Self {
         Self {
+            listeners,
             bifrost,
             #[cfg(feature = "metadata-api")]
             metadata_writer: metadata_writer.clone(),
@@ -197,18 +204,12 @@ where
 
         info!(
             "Admin API starting on: {}",
-            opts.advertised_admin_endpoint.as_ref().expect("is set")
+            TaskCenter::with_current(|tc| opts.advertised_address(tc.address_book()))
         );
 
-        net_util::run_hyper_server(
-            &BindAddress::Socket(opts.bind_address),
-            service,
-            "admin-api-server",
-            || (),
-            || (),
-        )
-        .await
-        .map_err(Into::into)
+        net_util::run_hyper_server(self.listeners, service, || (), || ())
+            .await
+            .map_err(Into::into)
     }
 }
 

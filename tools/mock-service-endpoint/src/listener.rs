@@ -10,7 +10,6 @@
 
 use std::convert::Infallible;
 use std::error::Error;
-use std::net::SocketAddr;
 
 use bytes::Bytes;
 use http_body_util::{Either, Full};
@@ -18,16 +17,19 @@ use hyper::Response;
 use hyper::server::conn::http2;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use tokio::net::TcpListener;
+use tokio_util::net::Listener;
 use tracing::error;
 
 use crate::handler::serve;
 
-pub async fn run_listener(
-    address: SocketAddr,
+pub async fn run_listener<L>(
+    mut listener: L,
     on_bind: impl FnOnce(),
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let listener = TcpListener::bind(address).await?;
+) -> Result<(), Box<dyn Error + Send + Sync>>
+where
+    L: Listener,
+    L::Io: Unpin + Send + 'static,
+{
     on_bind();
 
     loop {

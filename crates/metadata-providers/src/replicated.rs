@@ -33,7 +33,7 @@ use restate_types::config::Configuration;
 use restate_types::errors::ConversionError;
 use restate_types::errors::SimpleStatus;
 use restate_types::metadata::{Precondition, VersionedValue};
-use restate_types::net::AdvertisedAddress;
+use restate_types::net::address::{AdvertisedAddress, FabricPort};
 use restate_types::net::connect_opts::CommonClientConnectionOptions;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
@@ -47,7 +47,7 @@ pub const KNOWN_LEADER_KEY: &str = "x-restate-known-leader";
 
 /// Creates the [`MetadataStoreClient`] for the replicated metadata server.
 pub fn create_replicated_metadata_client(
-    addresses: Vec<AdvertisedAddress>,
+    addresses: Vec<AdvertisedAddress<FabricPort>>,
     backoff_policy: Option<RetryPolicy>,
     connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
 ) -> MetadataStoreClient {
@@ -60,7 +60,7 @@ struct MetadataServerSvcClientWithAddress {
     #[deref]
     #[deref_mut]
     client: MetadataServerSvcClient<Channel>,
-    address: AdvertisedAddress,
+    address: AdvertisedAddress<FabricPort>,
 }
 
 impl MetadataServerSvcClientWithAddress {
@@ -72,7 +72,7 @@ impl MetadataServerSvcClientWithAddress {
         }
     }
 
-    fn address(&self) -> AdvertisedAddress {
+    fn address(&self) -> AdvertisedAddress<FabricPort> {
         self.address.clone()
     }
 }
@@ -80,7 +80,7 @@ impl MetadataServerSvcClientWithAddress {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct KnownLeader {
     pub node_id: PlainNodeId,
-    pub address: AdvertisedAddress,
+    pub address: AdvertisedAddress<FabricPort>,
 }
 
 impl KnownLeader {
@@ -124,7 +124,7 @@ pub struct GrpcMetadataServerClient {
 
 impl GrpcMetadataServerClient {
     pub fn new(
-        metadata_store_addresses: Vec<AdvertisedAddress>,
+        metadata_store_addresses: Vec<AdvertisedAddress<FabricPort>>,
         connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
     ) -> Self {
         let channel_manager = ChannelManager::new(metadata_store_addresses, connection_options);
@@ -360,16 +360,18 @@ impl MetadataStore for GrpcMetadataServerClient {
         // from the configuration and not from the NodesConfiguration.
         let config = Configuration::pinned();
 
+        let advertised_address =
+            TaskCenter::with_current(|tc| config.common.advertised_address(tc.address_book()));
         if !config.common.roles.contains(Role::MetadataServer) {
             return Err(ProvisionError::NotSupported(format!(
                 "Node '{}' does not run the metadata-server role. Try to provision a different node.",
-                config.common.advertised_address
+                advertised_address
             )));
         }
 
         let mut client = MetadataServerSvcClientWithAddress::new(ChannelWithAddress::new(
-            config.common.advertised_address.clone(),
-            create_tonic_channel(config.common.advertised_address.clone(), &config.networking),
+            advertised_address.clone(),
+            create_tonic_channel(advertised_address.clone(), &config.networking),
         ));
 
         let mut buffer = BytesMut::new();
@@ -396,7 +398,7 @@ impl MetadataStore for GrpcMetadataServerClient {
 #[error("No known metadata server")]
 struct NoKnownMetadataServer;
 
-fn map_status_to_read_error(address: AdvertisedAddress, status: Status) -> ReadError {
+fn map_status_to_read_error(address: AdvertisedAddress<FabricPort>, status: Status) -> ReadError {
     match &status.code() {
         // Transport errors manifest as unknown statuses, hence mark them as retryable
         // Killing a remote server that is connected via UDS sometimes results into a cancelled statuses, hence mark them as retryable
@@ -407,7 +409,7 @@ fn map_status_to_read_error(address: AdvertisedAddress, status: Status) -> ReadE
     }
 }
 
-fn map_status_to_write_error(address: AdvertisedAddress, status: Status) -> WriteError {
+fn map_status_to_write_error(address: AdvertisedAddress<FabricPort>, status: Status) -> WriteError {
     match &status.code() {
         // Transport errors manifest as unknown statuses, hence mark them as retryable
         // Killing a remote server that is connected via UDS sometimes results into a cancelled statuses, hence mark them as retryable
@@ -421,7 +423,10 @@ fn map_status_to_write_error(address: AdvertisedAddress, status: Status) -> Writ
     }
 }
 
-fn map_status_to_provision_error(address: AdvertisedAddress, status: Status) -> ProvisionError {
+fn map_status_to_provision_error(
+    address: AdvertisedAddress<FabricPort>,
+    status: Status,
+) -> ProvisionError {
     match &status.code() {
         // Transport errors manifest as unknown statuses, hence mark them as retryable
         // Killing a remote server that is connected via UDS sometimes results into a cancelled statuses, hence mark them as retryable
@@ -435,12 +440,12 @@ fn map_status_to_provision_error(address: AdvertisedAddress, status: Status) -> 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("[{address}] {status}")]
 struct StatusError {
-    address: AdvertisedAddress,
+    address: AdvertisedAddress<FabricPort>,
     status: SimpleStatus,
 }
 
 impl StatusError {
-    fn new(address: AdvertisedAddress, status: Status) -> Self {
+    fn new(address: AdvertisedAddress<FabricPort>, status: Status) -> Self {
         Self {
             address,
             status: SimpleStatus(status),
@@ -456,7 +461,7 @@ struct ChannelManager {
 
 impl ChannelManager {
     fn new(
-        initial_addresses: Vec<AdvertisedAddress>,
+        initial_addresses: Vec<AdvertisedAddress<FabricPort>>,
         connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
     ) -> Self {
         ChannelManager {
@@ -468,7 +473,7 @@ impl ChannelManager {
     fn register_address(
         &self,
         plain_node_id: PlainNodeId,
-        address: AdvertisedAddress,
+        address: AdvertisedAddress<FabricPort>,
     ) -> ChannelWithAddress {
         let channel = ChannelWithAddress::new(
             address.clone(),
@@ -554,11 +559,11 @@ impl ChannelManager {
 struct ChannelWithAddress {
     #[deref]
     channel: Channel,
-    address: AdvertisedAddress,
+    address: AdvertisedAddress<FabricPort>,
 }
 
 impl ChannelWithAddress {
-    fn new(address: AdvertisedAddress, inner: Channel) -> Self {
+    fn new(address: AdvertisedAddress<FabricPort>, inner: Channel) -> Self {
         Self {
             channel: inner,
             address,
@@ -568,7 +573,7 @@ impl ChannelWithAddress {
 
 #[derive(Clone, Debug, derive_more::From)]
 enum ChannelOrInitialAddress {
-    InitialAddress(#[from] AdvertisedAddress),
+    InitialAddress(#[from] AdvertisedAddress<FabricPort>),
     Channel(#[from] ChannelWithAddress),
 }
 
@@ -587,7 +592,7 @@ impl ChannelOrInitialAddress {
     }
 
     #[allow(dead_code)]
-    fn address(&self) -> &AdvertisedAddress {
+    fn address(&self) -> &AdvertisedAddress<FabricPort> {
         match self {
             ChannelOrInitialAddress::InitialAddress(address) => address,
             ChannelOrInitialAddress::Channel(channel) => &channel.address,
@@ -599,13 +604,13 @@ impl ChannelOrInitialAddress {
 struct Channels {
     // initial addresses we will keep in address form and resolve+connect every time they are used
     // this is to allow for the initial addresses being dns entries that resolve to multiple node IPs
-    initial_addresses: Vec<AdvertisedAddress>,
+    initial_addresses: Vec<AdvertisedAddress<FabricPort>>,
     channels: IndexMap<PlainNodeId, ChannelWithAddress>,
     channel_index: usize,
 }
 
 impl Channels {
-    fn new(initial_addresses: Vec<AdvertisedAddress>) -> Self {
+    fn new(initial_addresses: Vec<AdvertisedAddress<FabricPort>>) -> Self {
         assert!(!initial_addresses.is_empty());
         let initial_index = rand::rng().random_range(..initial_addresses.len());
         Channels {
@@ -665,7 +670,7 @@ impl Channels {
 
 #[cfg(test)]
 mod tests {
-    use restate_types::{PlainNodeId, net::AdvertisedAddress};
+    use restate_types::{PlainNodeId, net::address::AdvertisedAddress};
     use test_log::test;
     use tonic::transport::Channel;
 
@@ -679,15 +684,15 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn update_channels() {
-        let initial_addr: AdvertisedAddress = "http://localhost".parse().unwrap();
+        let initial_addr: AdvertisedAddress<_> = "http://localhost".parse().unwrap();
         let mut channels = Channels::new(vec![initial_addr.clone()]);
 
         assert!(channels.choose_next_round_robin().is_some());
 
         // Define node addresses for easier comparison later
-        let node1_addr: AdvertisedAddress = "http://node1".parse().unwrap();
-        let node2_addr: AdvertisedAddress = "http://node2".parse().unwrap();
-        let node3_addr: AdvertisedAddress = "http://node3".parse().unwrap();
+        let node1_addr: AdvertisedAddress<_> = "http://node1".parse().unwrap();
+        let node2_addr: AdvertisedAddress<_> = "http://node2".parse().unwrap();
+        let node3_addr: AdvertisedAddress<_> = "http://node3".parse().unwrap();
 
         channels.update_channels(vec![
             (

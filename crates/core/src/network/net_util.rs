@@ -10,8 +10,6 @@
 
 use std::fmt::Debug;
 use std::future::Future;
-use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,34 +18,40 @@ use hyper::body::{Body, Incoming};
 use hyper_util::rt::TokioIo;
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::io;
-use tokio::net::{TcpListener, UnixListener, UnixStream};
-use tokio_util::net::Listener;
+use tokio::net::UnixStream;
+use tokio_util::either::Either;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
 
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
+use restate_types::net::address::{AdvertisedAddress, GrpcPort};
+use restate_types::net::address::{ListenerPort, PeerNetAddress};
 use restate_types::net::connect_opts::CommonClientConnectionOptions;
-use restate_types::net::{AdvertisedAddress, BindAddress};
+use restate_types::net::listener::Listeners;
 
 use crate::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 
-pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
-    address: AdvertisedAddress,
+pub fn create_tonic_channel<
+    T: CommonClientConnectionOptions + Send + Sync + ?Sized,
+    P: ListenerPort + GrpcPort,
+>(
+    address: AdvertisedAddress<P>,
     options: &T,
 ) -> Channel {
+    let address = address.into_address().expect("valid address");
     let endpoint = match &address {
-        AdvertisedAddress::Uds(_) => {
+        PeerNetAddress::Uds(_) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1").expect("/ should be a valid Uri")
         }
-        AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()),
+        PeerNetAddress::Http(uri) => Channel::builder(uri.clone()),
     };
 
     let endpoint = apply_options(endpoint, options);
 
     match address {
-        AdvertisedAddress::Uds(uds_path) => {
+        PeerNetAddress::Uds(uds_path) => {
             endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
                 let uds_path = uds_path.clone();
                 async move {
@@ -55,7 +59,7 @@ pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Si
                 }
             }))
         }
-        AdvertisedAddress::Http(_) => endpoint.connect_lazy()
+        PeerNetAddress::Http(_) => endpoint.connect_lazy()
     }
 }
 
@@ -78,22 +82,10 @@ fn apply_options<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("failed binding to address '{address}': {source}")]
-    TcpBinding {
-        address: SocketAddr,
-        #[source]
-        source: io::Error,
-    },
-    #[error("failed opening uds '{uds_path}': {source}")]
-    UdsBinding {
-        uds_path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
+    #[error(transparent)]
+    Io(#[from] io::Error),
     #[error("failed handling hyper connection: {0}")]
     HandlingConnection(#[from] GenericError),
-    #[error("failed listening on incoming connections: {0}")]
-    Listening(#[from] io::Error),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }
@@ -102,12 +94,11 @@ pub enum Error {
     level = "error",
     name = "server",
     skip_all,
-    fields(server_name = %server_name, uds.path = tracing::field::Empty, server.address = tracing::field::Empty, server.port = tracing::field::Empty, network.transport = tracing::field::Empty)
+    fields(server_name = %P::NAME, uds.path = tracing::field::Empty, server.address = tracing::field::Empty, server.port = tracing::field::Empty)
 )]
-pub async fn run_hyper_server<S, B>(
-    bind_address: &BindAddress,
+pub async fn run_hyper_server<P: ListenerPort, S, B>(
+    listeners: Listeners<P>,
     service: S,
-    server_name: &'static str,
     on_bind: impl Fn(),
     on_stop: impl Fn(),
 ) -> Result<(), Error>
@@ -122,47 +113,18 @@ where
     B::Data: Send,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    match bind_address {
-        BindAddress::Uds(uds_path) => {
-            if uds_path.exists() {
-                // if this fails, the following bind will fail, so its safe to ignore this error
-                _ = std::fs::remove_file(uds_path);
-            }
-            let unix_listener = UnixListener::bind(uds_path).map_err(|err| Error::UdsBinding {
-                uds_path: uds_path.clone(),
-                source: err,
-            })?;
-
-            Span::current().record("uds.path", uds_path.display().to_string());
-            Span::current().record("network.transport", "unix");
-            info!("Server listening");
-            on_bind();
-
-            run_listener_loop(unix_listener, service, server_name).await?;
-        }
-        BindAddress::Socket(socket_addr) => {
-            let tcp_listener =
-                TcpListener::bind(socket_addr)
-                    .await
-                    .map_err(|err| Error::TcpBinding {
-                        address: *socket_addr,
-                        source: err,
-                    })?;
-
-            let local_addr = tcp_listener.local_addr().map_err(|err| Error::TcpBinding {
-                address: *socket_addr,
-                source: err,
-            })?;
-
-            Span::current().record("server.address", local_addr.ip().to_string());
-            Span::current().record("server.port", local_addr.port());
-            Span::current().record("network.transport", "tcp");
-            info!("Server listening");
-            on_bind();
-
-            run_listener_loop(tcp_listener, service, server_name).await?;
-        }
+    if let Some(uds_path) = listeners.uds_address() {
+        Span::current().record("uds.path", uds_path.display().to_string());
     }
+
+    if let Some(socket_addr) = listeners.tcp_address() {
+        Span::current().record("server.address", socket_addr.ip().to_string());
+        Span::current().record("server.port", socket_addr.port());
+    }
+
+    info!("Server listening");
+    on_bind();
+    run_listener_loop(listeners, service, P::NAME).await?;
     on_stop();
 
     info!("Stopped listening");
@@ -170,15 +132,12 @@ where
     Ok(())
 }
 
-async fn run_listener_loop<L, S, B>(
-    mut listener: L,
+async fn run_listener_loop<P: ListenerPort, S, B>(
+    mut listeners: Listeners<P>,
     service: S,
     server_name: &'static str,
 ) -> Result<(), Error>
 where
-    L: Listener,
-    L::Io: Send + Unpin + 'static,
-    L::Addr: Send + Debug + 'static,
     S: hyper::service::Service<http::Request<Incoming>, Response = hyper::Response<B>>
         + Send
         + Clone
@@ -199,12 +158,12 @@ where
             biased;
             _ = &mut shutdown => {
                 debug!("Shutdown requested, will stop listening to new connections");
-                drop(listener);
+                drop(listeners);
                 break;
             }
-            incoming_connection = listener.accept() => {
+            incoming_connection = listeners.accept() => {
                 let (stream, peer_addr) = incoming_connection?;
-                let io = TokioIo::new(stream);
+                let socket_span = error_span!("SocketHandler", ?peer_addr);
 
                 let network_options = &configuration.live_load().networking;
                 let mut builder = hyper_util::server::conn::auto::Builder::new(TaskCenterExecutor);
@@ -217,26 +176,51 @@ where
                     .keep_alive_interval(Some(network_options.http2_keep_alive_interval.into()))
                     .keep_alive_timeout(network_options.http2_keep_alive_timeout.into());
 
-
-                let socket_span = error_span!("SocketHandler", ?peer_addr);
-                let connection = graceful_shutdown.watch(builder
-                    .serve_connection(io, service.clone()).into_owned());
-
-                TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
-                    trace!("New connection accepted");
-                    if let Err(e) = connection.await {
-                        if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
-                            if hyper_error.is_incomplete_message() {
-                                debug!("Connection closed before request completed");
+                match stream {
+                    Either::Left(tcp_stream) => {
+                        // TCP SOCKET
+                        let io = TokioIo::new(tcp_stream);
+                        let connection = graceful_shutdown.watch(builder
+                            .serve_connection(io, service.clone()).into_owned());
+                        TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
+                            trace!("New tcp connection accepted");
+                            if let Err(e) = connection.await {
+                                if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
+                                    if hyper_error.is_incomplete_message() {
+                                        debug!("Connection closed before request completed");
+                                    }
+                                } else {
+                                    debug!("Connection terminated due to error: {e}");
+                                }
+                            } else {
+                                trace!("Connection completed cleanly");
                             }
-                        } else {
-                            debug!("Connection terminated due to error: {e}");
-                        }
-                    } else {
-                        trace!("Connection completed cleanly");
+                            Ok(())
+                        }.instrument(socket_span))?;
+
+                    },
+                    Either::Right(unix_stream) => {
+                        // UNIX SOCKET
+                        let io = TokioIo::new(unix_stream);
+                        let connection = graceful_shutdown.watch(builder
+                            .serve_connection(io, service.clone()).into_owned());
+                        TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
+                            trace!("New uds connection accepted");
+                            if let Err(e) = connection.await {
+                                if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
+                                    if hyper_error.is_incomplete_message() {
+                                        debug!("Connection closed before request completed");
+                                    }
+                                } else {
+                                    debug!("Connection terminated due to error: {e}");
+                                }
+                            } else {
+                                trace!("Connection completed cleanly");
+                            }
+                            Ok(())
+                        }.instrument(socket_span))?;
                     }
-                    Ok(())
-                }.instrument(socket_span))?;
+                }
             }
         }
     }

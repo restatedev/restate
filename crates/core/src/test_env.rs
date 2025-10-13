@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::marker::PhantomData;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use futures::Stream;
@@ -20,8 +19,9 @@ use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::{
     BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_TABLE_KEY,
 };
+use restate_types::net::Service;
+use restate_types::net::address::AdvertisedAddress;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::net::{AdvertisedAddress, Service};
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, Version};
@@ -237,7 +237,7 @@ impl<T: TransportConnect> TestCoreEnv<T> {
 
 pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfiguration {
     let mut nodes_config = NodesConfiguration::new_for_testing();
-    let address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
+    let address = AdvertisedAddress::default();
     let node_id = GenerationalNodeId::new(node_id, generation);
     let roles = Role::Admin | Role::Worker;
     let my_node = NodeConfig::builder()

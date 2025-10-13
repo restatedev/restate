@@ -275,6 +275,7 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
@@ -286,6 +287,7 @@ rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs",
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
@@ -297,6 +299,7 @@ rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs",
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
@@ -307,6 +310,7 @@ rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs",
 [target.aarch64-apple-darwin.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }

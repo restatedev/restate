@@ -1,0 +1,27 @@
+[package]
+name = "restate-hyper-uds"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true, features = ["http1", "http2", "client"] }
+hyper-rustls = { workspace = true }
+hyper-util = { workspace = true, features = ["client-legacy"] }
+pin-project = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-service = { version = "0.3" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

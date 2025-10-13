@@ -35,8 +35,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
 use restate_types::config::{CommonOptions, LogFormat};
-#[cfg(feature = "console-subscriber")]
-use restate_types::net::BindAddress;
 
 use crate::exporter::UserServiceModifierSpanExporter;
 use crate::pretty::PrettyFields;
@@ -279,22 +277,31 @@ pub fn init_tracing_and_logging(
     // Console subscriber layer
     #[cfg(feature = "console-subscriber")]
     let layers = {
-        let tokio_console_bind_address = match common_opts
-            .tokio_console_bind_address
-            .clone()
-            .expect("falls back to default value")
+        use restate_types::net::address::ListenerPort;
+        use restate_types::net::address::TokioConsolePort;
+
+        let listener_options = common_opts.tokio_listener_options();
+        // tokio console cannot listen on both UDS and TCP at the same time, so always prefer the
+        // unix domain socket unless the user explicitly configured us to use TCP only.
+        let address = if listener_options.listen_mode().is_all()
+            || listener_options.listen_mode().is_uds_enabled()
         {
-            BindAddress::Uds(uds_path) => {
-                // if this fails, the bind will fail, so its safe to ignore this error
-                _ = std::fs::remove_file(&uds_path);
-                console_subscriber::ServerAddr::Unix(uds_path)
-            }
-            BindAddress::Socket(s) => console_subscriber::ServerAddr::Tcp(s),
+            // use UDS
+            // if this fails, the bind will fail, so its safe to ignore this error
+            let uds_path =
+                restate_types::config::node_filepath("").join(TokioConsolePort::UDS_NAME);
+            // if this fails, the bind will fail, so its safe to ignore this error
+            _ = std::fs::remove_file(&uds_path);
+            console_subscriber::ServerAddr::Unix(uds_path)
+        } else {
+            // use TCP
+            let address = listener_options.bind_address();
+            console_subscriber::ServerAddr::Tcp(address.into_inner())
         };
 
         layers.with(
             console_subscriber::ConsoleLayer::builder()
-                .server_addr(tokio_console_bind_address)
+                .server_addr(address)
                 .spawn(),
         )
     };

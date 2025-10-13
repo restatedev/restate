@@ -24,6 +24,7 @@ use restate_types::SharedString;
 use restate_types::cluster_state::{ClusterState, ClusterStateUpdater};
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
+use restate_types::net::listener::AddressBook;
 
 use crate::{Metadata, ShutdownError};
 
@@ -70,6 +71,10 @@ impl Handle {
             .node_status()
             .merge(NodeStatus::StartingUp);
         self.inner.try_set_global_metadata(metadata)
+    }
+
+    pub fn try_set_address_book(&self, address_book: AddressBook) -> bool {
+        self.inner.try_set_address_book(address_book)
     }
 
     pub fn health(&self) -> &Health {
@@ -218,6 +223,14 @@ impl Handle {
 
     pub fn metadata(&self) -> Option<Metadata> {
         self.inner.metadata()
+    }
+
+    /// Panics if address_book is not set
+    #[track_caller]
+    pub fn address_book(&self) -> &AddressBook {
+        self.inner
+            .address_book()
+            .expect("address_book should be set")
     }
 
     /// Take control over the running task from task-center. This returns None if the task was not
