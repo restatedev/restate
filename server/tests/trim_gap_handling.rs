@@ -14,12 +14,9 @@ use std::time::Duration;
 use enumset::{EnumSet, enum_set};
 use futures_util::StreamExt;
 use googletest::{IntoTestResult, fail};
-use restate_core::protobuf::cluster_ctrl_svc::{
-    GetClusterConfigurationRequest, SetClusterConfigurationRequest,
-};
 use tempfile::TempDir;
+use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio::try_join;
 use tonic::transport::Channel;
 use tracing::info;
 use url::Url;
@@ -29,14 +26,18 @@ use restate_core::protobuf::cluster_ctrl_svc::{
     ClusterStateRequest, CreatePartitionSnapshotRequest,
     cluster_ctrl_svc_client::ClusterCtrlSvcClient, new_cluster_ctrl_client,
 };
+use restate_core::protobuf::cluster_ctrl_svc::{
+    GetClusterConfigurationRequest, SetClusterConfigurationRequest,
+};
 use restate_local_cluster_runner::{
     cluster::Cluster,
-    node::{BinarySource, Node},
+    node::{BinarySource, NodeSpec},
 };
-use restate_types::config::{LogFormat, MetadataClientKind, NetworkingOptions};
+use restate_types::config::{LogFormat, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::ProviderKind::Replicated;
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration, ReplicatedLogletConfig};
+use restate_types::net::address::PeerNetAddress;
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::replication::ReplicationProperty;
@@ -47,7 +48,7 @@ mod common;
 
 #[test_log::test(tokio::test)]
 async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
-    let mut base_config = Configuration::default();
+    let mut base_config = Configuration::new_unix_sockets();
     base_config.common.default_num_partitions = 1.try_into()?;
     base_config.bifrost.default_provider = Replicated;
     base_config.common.log_filter = "restate=debug,warn".to_owned();
@@ -63,7 +64,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
             .to_string(),
     );
 
-    let nodes = Node::new_test_nodes(
+    let nodes = NodeSpec::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
         EnumSet::all(),
@@ -107,7 +108,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     drop(worker_1_ready);
 
     let mut client = new_cluster_ctrl_client(create_tonic_channel(
-        cluster.nodes[0].node_address().clone(),
+        cluster.nodes[0].advertised_address().clone(),
         &NetworkingOptions::default(),
     ));
 
@@ -116,10 +117,14 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
 
     let (running_tx, running_rx) = oneshot::channel();
 
-    let addr: SocketAddr = "127.0.0.1:9080".parse()?;
+    let addr: SocketAddr = ([127, 0, 0, 1], 0).into();
+    let listener = TcpListener::bind(addr).await?;
+    let addr = listener.local_addr()?;
+    let mock_svc_port = addr.port();
+
     tokio::spawn(async move {
         info!("Starting mock service on http://{}", addr);
-        if let Err(e) = mock_service_endpoint::listener::run_listener(addr, || {
+        if let Err(e) = mock_service_endpoint::listener::run_listener(listener, || {
             let _ = running_tx.send(());
         })
         .await
@@ -131,28 +136,43 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     // await that the mock service endpoint is running
     running_rx.await?;
 
-    let http_client = reqwest::Client::new();
-    let registration_response = http_client
-        .post(format!(
-            "http://{}/deployments",
-            worker_1.config().admin.bind_address
-        ))
+    let admin_uds = worker_1
+        .admin_address()
+        .clone()
+        .unwrap()
+        .into_address()
+        .unwrap();
+    let PeerNetAddress::Uds(admin_uds) = admin_uds else {
+        panic!("admin address must be a unix domain socket");
+    };
+    let admin_http_client = reqwest::Client::builder().unix_socket(admin_uds).build()?;
+    let registration_response = admin_http_client
+        .post("http://localhost/deployments")
         .header("content-type", "application/json")
-        .json(&serde_json::json!({ "uri": "http://localhost:9080" }))
+        .json(&serde_json::json!({ "uri": format!("http://127.0.0.1:{mock_svc_port}") }))
         .send()
         .await?;
     assert!(registration_response.status().is_success());
 
-    let ingress_url = format!(
-        "http://{}/Counter/0/get",
-        worker_1.config().ingress.bind_address
-    );
+    let ingress_uds = worker_1
+        .ingress_address()
+        .clone()
+        .unwrap()
+        .into_address()
+        .unwrap();
+    let PeerNetAddress::Uds(ingress_uds) = ingress_uds else {
+        panic!("ingress address must be a unix domain socket");
+    };
+    let ingress_http_client = reqwest::Client::builder()
+        .unix_socket(ingress_uds)
+        .build()?;
+    let ingress_url = "http://localhost/Counter/0/get";
 
     info!("Send Counter/0/get request to node-1");
     // It takes a little bit for the service to become available for invocations
     let mut retry = RetryPolicy::fixed_delay(Duration::from_millis(500), None).into_iter();
     loop {
-        let invoke_response = http_client.post(ingress_url.clone()).send().await?;
+        let invoke_response = ingress_http_client.post(ingress_url).send().await?;
         if invoke_response.status().is_success() {
             break;
         }
@@ -176,15 +196,12 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         snapshot_response.min_applied_lsn
     );
 
-    let mut worker_2 = Node::new_test_node(
+    let worker_2 = NodeSpec::new_test_node(
         "node-2",
         no_snapshot_repository_config,
         BinarySource::CargoTest,
         enum_set!(Role::Worker | Role::HttpIngress),
     );
-    *worker_2.metadata_store_client_mut() = MetadataClientKind::Replicated {
-        addresses: vec![cluster.nodes[0].node_address().clone()],
-    };
 
     let mut trim_gap_encountered = worker_2.lines(
         "Partition processor stopped due to a log gap .*, and no snapshot repository is configured"
@@ -192,9 +209,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     );
     let mut joined_cluster = worker_2.lines("My Node ID is".parse()?);
 
-    let mut worker_2 = worker_2
-        .start_clustered(cluster.base_dir(), cluster.cluster_name())
-        .await?;
+    cluster.expand(worker_2).await?;
 
     info!("Waiting until node-2 has joined the cluster");
     assert!(
@@ -227,23 +242,18 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         trim_gap_encountered.next().await.is_some(),
         "Trim gap was never encountered"
     );
-    worker_2.graceful_shutdown(Duration::from_secs(30)).await?;
+    cluster
+        .shutdown_node("node-2", Duration::from_secs(30))
+        .await?;
 
     info!("Re-starting additional node with snapshot repository configured");
-    let mut worker_2 = Node::new_test_node(
+    let worker_2 = NodeSpec::new_test_node(
         "node-2",
         base_config.clone(),
         BinarySource::CargoTest,
         enum_set!(Role::Worker | Role::HttpIngress),
     );
-    *worker_2.metadata_store_client_mut() = MetadataClientKind::Replicated {
-        addresses: vec![cluster.nodes[0].node_address().clone()],
-    };
 
-    let ingress_url = format!(
-        "http://{}/Counter/0/get",
-        worker_2.config().ingress.bind_address
-    );
     let mut worker_2_imported_snapshot = worker_2.lines(
         format!(
             "Importing partition store snapshot.*{}",
@@ -251,9 +261,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
         )
         .parse()?,
     );
-    let mut worker_2 = worker_2
-        .start_clustered(cluster.base_dir(), cluster.cluster_name())
-        .await?;
+    cluster.expand(worker_2).await?;
 
     assert!(
         worker_2_imported_snapshot.next().await.is_some(),
@@ -261,10 +269,25 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     );
 
     info!("Send Counter/0/get request to node-2");
+    let ingress_uds = cluster
+        .node("node-2")
+        .unwrap()
+        .ingress_address()
+        .clone()
+        .unwrap()
+        .into_address()
+        .unwrap();
+    let PeerNetAddress::Uds(ingress_uds) = ingress_uds else {
+        panic!("ingress address must be a unix domain socket");
+    };
+    let ingress_http_client = reqwest::Client::builder()
+        .unix_socket(ingress_uds)
+        .build()?;
+    let ingress_url = "http://localhost/Counter/0/get";
     // todo(pavel): promote node 2 to be the leader for partition 0 and invoke the service again
     //  right now, all we are asserting is that the new node is applying newly appended log records
     assert!(
-        http_client
+        ingress_http_client
             .post(ingress_url)
             .send()
             .await?
@@ -274,10 +297,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
 
     applied_lsn_converged(&mut client, 2, PartitionId::from(0)).await?;
 
-    try_join!(
-        worker_2.graceful_shutdown(Duration::from_secs(10)),
-        cluster.graceful_shutdown(Duration::from_secs(10))
-    )?;
+    cluster.graceful_shutdown(Duration::from_secs(10)).await?;
 
     Ok(())
 }

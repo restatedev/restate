@@ -9,8 +9,9 @@
 // by the Apache License, Version 2.0.
 
 mod describe_log;
-#[cfg(feature = "dump-local-log")]
-mod dump_log;
+// -- disabled until migrated to become loglet-provider agnostic
+// #[cfg(feature = "dump-local-log")]
+// mod dump_log;
 mod find_tail;
 mod gen_metadata;
 pub mod list_logs;
@@ -33,10 +34,10 @@ pub enum Logs {
     GenerateMetadata(gen_metadata::GenerateLogMetadataOpts),
     /// Get the details of a specific log
     Describe(describe_log::DescribeLogIdOpts),
-    /// Dump the contents of a bifrost log
-    #[cfg(feature = "dump-local-log")]
-    #[clap(hide = true)]
-    Dump(dump_log::DumpLogOpts),
+    // /// Dump the contents of a bifrost log
+    // #[cfg(feature = "dump-local-log")]
+    // #[clap(hide = true)]
+    // Dump(dump_log::DumpLogOpts),
     /// Trim a log to a particular Log Sequence Number (LSN)
     Trim(trim_log::TrimLogOpts),
     /// Reconfigure a log manually by sealing the tail segment

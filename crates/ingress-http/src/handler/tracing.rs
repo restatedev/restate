@@ -43,16 +43,26 @@ pub(crate) fn prepare_tracing_span<B>(
         SpanRelation::None
     };
 
-    let span = instrumentation::info_invocation_span!(
-        relation = relation,
-        prefix = "ingress",
-        id = invocation_id,
-        target = invocation_target,
-        tags = (
-            client.socket.address = client_addr.to_string(),
-            client.socket.port = client_port as i64
+    let span = if let Some(port) = client_port {
+        instrumentation::info_invocation_span!(
+            relation = relation,
+            prefix = "ingress",
+            id = invocation_id,
+            target = invocation_target,
+            tags = (
+                client.socket.address = client_addr,
+                client.socket.port = port as i64
+            )
         )
-    );
+    } else {
+        instrumentation::info_invocation_span!(
+            relation = relation,
+            prefix = "ingress",
+            id = invocation_id,
+            target = invocation_target,
+            tags = (client.socket.address = client_addr)
+        )
+    };
 
     span.span_context().clone()
 }

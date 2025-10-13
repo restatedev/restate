@@ -17,19 +17,30 @@ use tower_http::trace::{DefaultOnFailure, TraceLayer};
 use tracing::{Level, debug};
 
 use restate_types::health::HealthStatus;
-use restate_types::net::BindAddress;
+use restate_types::net::address::FabricPort;
+use restate_types::net::listener::{AddressBook, Listeners};
 use restate_types::protobuf::common::NodeRpcStatus;
 
 use super::net_util::run_hyper_server;
 
-#[derive(Debug, Default)]
+// #[derive(Default)]
 pub struct NetworkServerBuilder {
     grpc_descriptors: Vec<&'static [u8]>,
     grpc_routes: Option<Routes>,
     axum_router: Option<axum::routing::Router>,
+    listeners: Listeners<FabricPort>,
 }
 
 impl NetworkServerBuilder {
+    pub fn new(address_book: &mut AddressBook) -> Self {
+        Self {
+            grpc_descriptors: Default::default(),
+            grpc_routes: None,
+            axum_router: None,
+            listeners: address_book.take_listeners::<FabricPort>(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.grpc_routes.is_none() && self.axum_router.is_none()
     }
@@ -65,7 +76,6 @@ impl NetworkServerBuilder {
     pub async fn run(
         self,
         node_rpc_health: HealthStatus<NodeRpcStatus>,
-        bind_address: &BindAddress,
     ) -> Result<(), anyhow::Error> {
         node_rpc_health.update(NodeRpcStatus::StartingUp);
 
@@ -105,9 +115,8 @@ impl NetworkServerBuilder {
         let service = TowerToHyperService::new(combined_router);
 
         run_hyper_server(
-            bind_address,
+            self.listeners,
             service,
-            "node-rpc-server",
             || node_rpc_health.update(NodeRpcStatus::Ready),
             || node_rpc_health.update(NodeRpcStatus::Stopping),
         )

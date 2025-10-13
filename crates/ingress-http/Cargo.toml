@@ -46,6 +46,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true, features = ["cors", "normalize-path", "trace"] }
 url = "2.5.0"
@@ -53,12 +54,14 @@ urlencoding = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
+restate-hyper-uds = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
-mockall = { workspace = true }
+googletest = { workspace = true }
 hyper = { workspace = true, features = ["full"] }
 hyper-util = { workspace = true, features = ["full"] }
-tracing-test = { workspace = true }
+mockall = { workspace = true }
+tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
-googletest = { workspace = true }
+tracing-test = { workspace = true }

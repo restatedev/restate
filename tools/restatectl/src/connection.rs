@@ -29,7 +29,7 @@ use restate_types::{
     Version, Versioned,
     errors::SimpleStatus,
     logs::metadata::Logs,
-    net::AdvertisedAddress,
+    net::address::{AdvertisedAddress, FabricPort},
     nodes_config::{NodesConfiguration, Role},
     protobuf::common::{MetadataKind, NodeStatus},
     storage::{StorageCodec, StorageDecode, StorageDecodeError},
@@ -54,7 +54,7 @@ pub struct ConnectionInfo {
         global = true,
         value_delimiter = ',',
     )]
-    pub address: Vec<AdvertisedAddress>,
+    pub address: Vec<AdvertisedAddress<FabricPort>>,
 
     /// Connect to a single address only, avoiding node enumeration.
     ///
@@ -68,7 +68,7 @@ pub struct ConnectionInfo {
         global = true,
         conflicts_with = "address",
     )]
-    pub single_address: Option<AdvertisedAddress>,
+    pub single_address: Option<AdvertisedAddress<FabricPort>>,
 
     #[clap(skip)]
     nodes_configuration: Arc<Mutex<Option<NodesConfiguration>>>,
@@ -80,10 +80,10 @@ pub struct ConnectionInfo {
     partition_table: Arc<Mutex<Option<PartitionTable>>>,
 
     #[clap(skip)]
-    open_connections: Arc<Mutex<HashMap<AdvertisedAddress, Channel>>>,
+    open_connections: Arc<Mutex<HashMap<AdvertisedAddress<FabricPort>, Channel>>>,
 
     #[clap(skip)]
-    dead_nodes: Arc<RwLock<HashSet<AdvertisedAddress>>>,
+    dead_nodes: Arc<RwLock<HashSet<AdvertisedAddress<FabricPort>>>>,
 }
 
 impl ConnectionInfo {
@@ -91,7 +91,7 @@ impl ConnectionInfo {
         self.single_address.is_some()
     }
 
-    fn get_effective_addresses(&self) -> Vec<&AdvertisedAddress> {
+    fn get_effective_addresses(&self) -> Vec<&AdvertisedAddress<FabricPort>> {
         if let Some(addr) = &self.single_address {
             vec![addr]
         } else {
@@ -128,7 +128,7 @@ impl ConnectionInfo {
     async fn get_majority_consensus_addresses<'a>(
         &self,
         nodes_config: &'a NodesConfiguration,
-    ) -> Vec<&'a AdvertisedAddress> {
+    ) -> Vec<&'a AdvertisedAddress<FabricPort>> {
         let mut nodes_addresses = nodes_config
             .iter()
             .map(|(_, node)| &node.address)
@@ -299,7 +299,7 @@ impl ConnectionInfo {
     /// respond, otherwise keeps trying until all addresses are exhausted.
     async fn get_latest_metadata<T, M>(
         &self,
-        addresses: impl Iterator<Item = &AdvertisedAddress>,
+        addresses: impl Iterator<Item = &AdvertisedAddress<FabricPort>>,
         mut stop_after_responses: usize,
         kind: MetadataKind,
         mut guard: MutexGuard<'_, Option<T>>,
@@ -498,7 +498,7 @@ impl ConnectionInfo {
 
     pub(crate) async fn connect(
         &self,
-        address: &AdvertisedAddress,
+        address: &AdvertisedAddress<FabricPort>,
     ) -> Result<Channel, ConnectionInfoError> {
         self.connect_internal(address, &mut self.open_connections.lock().await)
             .await
@@ -510,8 +510,8 @@ impl ConnectionInfo {
     /// address was previously flagged as unreachable.
     async fn connect_internal(
         &self,
-        address: &AdvertisedAddress,
-        open_connections: &mut MutexGuard<'_, HashMap<AdvertisedAddress, Channel>>,
+        address: &AdvertisedAddress<FabricPort>,
+        open_connections: &mut MutexGuard<'_, HashMap<AdvertisedAddress<FabricPort>, Channel>>,
     ) -> Option<Channel> {
         if self.dead_nodes.read().unwrap().contains(address) {
             debug!(
@@ -577,14 +577,14 @@ pub enum ConnectionInfoError {
     /// The servers which did respond are included in the error.
     #[error("Could not retrieve cluster metadata. Has the cluster been provisioned yet?")]
     MetadataValueNotAvailable {
-        contacted_nodes: HashMap<AdvertisedAddress, IdentResponse>,
+        contacted_nodes: HashMap<AdvertisedAddress<FabricPort>, IdentResponse>,
     },
 
     #[error("The cluster appears to not be provisioned. You can do so with `restatectl provision`")]
     ClusterNotProvisioned,
 
     #[error("Failed to decode metadata from node {0}: {1}")]
-    DecoderError(AdvertisedAddress, StorageDecodeError),
+    DecoderError(AdvertisedAddress<FabricPort>, StorageDecodeError),
 
     #[error(transparent)]
     NodesErrors(NodesErrors),
@@ -598,7 +598,7 @@ pub enum ConnectionInfoError {
         "Single address mode: node {address} does not have the required role '{required_role}'. Node has roles: [{available_roles}]"
     )]
     NodeRoleMismatch {
-        address: AdvertisedAddress,
+        address: AdvertisedAddress<FabricPort>,
         required_role: Role,
         available_roles: String,
     },
@@ -624,11 +624,11 @@ impl Display for NoRoleError {
 
 #[derive(Debug, Default)]
 pub struct NodesErrors {
-    node_status: Vec<(AdvertisedAddress, SimpleStatus)>,
+    node_status: Vec<(AdvertisedAddress<FabricPort>, SimpleStatus)>,
 }
 
 impl NodesErrors {
-    fn error(&mut self, node: AdvertisedAddress, simple_status: SimpleStatus) {
+    fn error(&mut self, node: AdvertisedAddress<FabricPort>, simple_status: SimpleStatus) {
         self.node_status.push((node, simple_status));
     }
 
