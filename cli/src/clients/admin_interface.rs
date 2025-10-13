@@ -191,6 +191,7 @@ pub enum Deployment {
         min_protocol_version: i32,
         max_protocol_version: i32,
         metadata: HashMap<String, String>,
+        sdk_version: Option<String>,
     },
     Lambda {
         arn: LambdaARN,
@@ -200,10 +201,18 @@ pub enum Deployment {
         min_protocol_version: i32,
         max_protocol_version: i32,
         metadata: HashMap<String, String>,
+        sdk_version: Option<String>,
     },
 }
 
 impl Deployment {
+    pub fn created_at(&self) -> humantime::Timestamp {
+        match self {
+            Self::Http { created_at, .. } => *created_at,
+            Self::Lambda { created_at, .. } => *created_at,
+        }
+    }
+
     pub fn from_deployment_response(
         deployment_response: DeploymentResponse,
     ) -> (DeploymentId, Self, Vec<ServiceNameRevPair>) {
@@ -219,6 +228,7 @@ impl Deployment {
                 max_protocol_version,
                 services,
                 metadata,
+                sdk_version,
                 ..
             } => (
                 id,
@@ -231,6 +241,7 @@ impl Deployment {
                     min_protocol_version,
                     max_protocol_version,
                     metadata,
+                    sdk_version,
                 },
                 services,
             ),
@@ -244,6 +255,7 @@ impl Deployment {
                 max_protocol_version,
                 services,
                 metadata,
+                sdk_version,
                 ..
             } => (
                 id,
@@ -255,6 +267,7 @@ impl Deployment {
                     min_protocol_version,
                     max_protocol_version,
                     metadata,
+                    sdk_version,
                 },
                 services,
             ),
@@ -276,6 +289,7 @@ impl Deployment {
                 max_protocol_version,
                 services,
                 metadata,
+                sdk_version,
                 ..
             } => (
                 id,
@@ -288,6 +302,7 @@ impl Deployment {
                     min_protocol_version,
                     max_protocol_version,
                     metadata,
+                    sdk_version,
                 },
                 services,
             ),
@@ -301,6 +316,7 @@ impl Deployment {
                 max_protocol_version,
                 services,
                 metadata,
+                sdk_version,
                 ..
             } => (
                 id,
@@ -312,6 +328,7 @@ impl Deployment {
                     min_protocol_version,
                     max_protocol_version,
                     metadata,
+                    sdk_version,
                 },
                 services,
             ),

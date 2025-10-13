@@ -12,6 +12,7 @@ use comfy_table::{Cell, Color, Table};
 use std::collections::HashMap;
 
 use crate::clients::Deployment;
+use crate::ui::datetime::DateTimeExt;
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::deployment;
@@ -100,66 +101,83 @@ pub fn render_active_invocations(active_inv: i64) -> Cell {
 }
 
 pub fn add_deployment_to_kv_table(deployment: &Deployment, table: &mut Table) {
-    let (additional_headers, metadata, created_at, min_protocol_version, max_protocol_version) =
-        match &deployment {
-            Deployment::Http {
-                uri,
-                protocol_type,
-                http_version: _,
-                additional_headers,
+    let (
+        additional_headers,
+        metadata,
+        created_at,
+        min_protocol_version,
+        max_protocol_version,
+        sdk_version,
+    ) = match &deployment {
+        Deployment::Http {
+            uri,
+            protocol_type,
+            http_version: _,
+            additional_headers,
+            created_at,
+            min_protocol_version,
+            max_protocol_version,
+            metadata,
+            sdk_version,
+            ..
+        } => {
+            table.add_kv_row("Transport:", render_transport_protocol(deployment));
+            table.add_kv_row("Protocol Style:", format!("{protocol_type}"));
+            table.add_kv_row("Endpoint:", uri);
+            (
+                additional_headers.clone(),
+                metadata.clone(),
                 created_at,
                 min_protocol_version,
                 max_protocol_version,
-                metadata,
-                ..
-            } => {
-                table.add_kv_row("Transport:", render_transport_protocol(deployment));
-                table.add_kv_row("Protocol Style:", format!("{protocol_type}"));
-                table.add_kv_row("Endpoint:", uri);
-                (
-                    additional_headers.clone(),
-                    metadata.clone(),
-                    created_at,
-                    min_protocol_version,
-                    max_protocol_version,
-                )
-            }
-            Deployment::Lambda {
-                arn,
-                assume_role_arn,
-                additional_headers,
-                created_at,
-                min_protocol_version,
-                max_protocol_version,
-                metadata,
-                ..
-            } => {
-                table.add_kv_row("Transport:", "AWS Lambda");
-                table.add_kv_row(
-                    "Protocol Style:",
-                    format!("{}", ProtocolType::RequestResponse),
-                );
-                table.add_kv_row_if(
-                    || assume_role_arn.is_some(),
-                    "Deployment Assume Role ARN:",
-                    || assume_role_arn.as_ref().unwrap(),
-                );
+                sdk_version,
+            )
+        }
+        Deployment::Lambda {
+            arn,
+            assume_role_arn,
+            additional_headers,
+            created_at,
+            min_protocol_version,
+            max_protocol_version,
+            metadata,
+            sdk_version,
+            ..
+        } => {
+            table.add_kv_row("Transport:", "AWS Lambda");
+            table.add_kv_row(
+                "Protocol Style:",
+                format!("{}", ProtocolType::RequestResponse),
+            );
+            table.add_kv_row_if(
+                || assume_role_arn.is_some(),
+                "Deployment Assume Role ARN:",
+                || assume_role_arn.as_ref().unwrap(),
+            );
 
-                table.add_kv_row("Endpoint:", arn);
-                (
-                    additional_headers.clone(),
-                    metadata.clone(),
-                    created_at,
-                    min_protocol_version,
-                    max_protocol_version,
-                )
-            }
-        };
+            table.add_kv_row("Endpoint:", arn);
+            (
+                additional_headers.clone(),
+                metadata.clone(),
+                created_at,
+                min_protocol_version,
+                max_protocol_version,
+                sdk_version,
+            )
+        }
+    };
 
     let additional_headers: HashMap<http::HeaderName, http::HeaderValue> =
         additional_headers.into();
 
-    table.add_kv_row("Created at:", created_at);
+    table.add_kv_row(
+        "SDK Version",
+        sdk_version
+            .as_ref()
+            .map(|v| v.as_ref())
+            .unwrap_or("unknown"),
+    );
+    table.add_kv_row("Created at:", created_at.display());
     for (header, value) in additional_headers.iter() {
         table.add_kv_row(
             "Deployment Additional Header:",
