@@ -11,6 +11,8 @@ publish = false
 default = []
 schemars = ["dep:schemars", "restate-serde-util/schema", "restate-time-util/schema"]
 unsafe-mutable-config = []
+# Enables the tokio console subscriber and exposes its configuration
+console = []
 test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util"]
 # Runs every partition in a separate rocksdb database
 # Note: this is currently backwards-incompatible with the production builds.
@@ -60,6 +62,7 @@ indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 jiff = { workspace = true }
 jsonschema = { workspace = true }
+listenfd = { version = "1" }
 metrics = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }
 notify = { version = "8.0.0" }
@@ -91,6 +94,7 @@ thiserror = { workspace = true }
 tiny-gradient = { version = "0.1.0" }
 tokio = { workspace = true, default-features = false, features = ["time", "sync"]}
 tokio-stream = { workspace = true, features = ["sync"] }
+tokio-util = { workspace = true, features = ["net"] }
 toml = { workspace = true }
 tonic = { workspace = true }
 tracing = { workspace = true }

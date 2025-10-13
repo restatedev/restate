@@ -11,27 +11,33 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    process::ExitStatus,
     sync::Arc,
     time::Duration,
 };
 
-use crate::node::{HealthCheck, HealthError, Node, NodeStartError, StartedNode};
 use futures::StreamExt;
 use futures::future::{self};
 use futures::stream::FuturesUnordered;
-use restate_metadata_server_grpc::MetadataServerConfiguration;
-use restate_types::PlainNodeId;
-use restate_types::errors::GenericError;
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use typed_builder::TypedBuilder;
+
+use restate_metadata_server_grpc::MetadataServerConfiguration;
+use restate_types::{
+    PlainNodeId,
+    net::address::{AdvertisedAddress, FabricPort},
+};
+use restate_types::{errors::GenericError, nodes_config::Role};
+
+use crate::node::{HealthCheck, HealthError, NodeSpec, NodeStartError, StartedNode};
 
 #[derive(Debug, Serialize, Deserialize, TypedBuilder)]
 pub struct Cluster {
     #[builder(setter(into), default = default_cluster_name())]
     #[serde(default = "default_cluster_name")]
     cluster_name: String,
-    nodes: Vec<Node>,
+    nodes: Vec<NodeSpec>,
     #[builder(setter(into), default = default_base_dir())]
     #[serde(default = "default_base_dir")]
     base_dir: MaybeTempDir,
@@ -101,7 +107,22 @@ impl Cluster {
             base_dir.as_path().display()
         );
 
-        for (i, node) in nodes.into_iter().enumerate() {
+        // todo: Add support for cluster address book to acquire tcp listeners for all servers
+        // prior to starting the nodes and keep a global registry of those file descriptors.
+
+        let metadata_server_addresses: Vec<_> = nodes
+            .iter()
+            .filter_map(|node| {
+                node.has_role(Role::MetadataServer).then_some(
+                    AdvertisedAddress::with_node_base_dir(
+                        &base_dir.as_path().join(node.node_name()),
+                    ),
+                )
+            })
+            .collect();
+
+        for (i, mut node) in nodes.into_iter().enumerate() {
+            node.set_metadata_servers(&metadata_server_addresses);
             let node = node
                 .start_clustered(base_dir.as_path(), &cluster_name)
                 .await
@@ -128,6 +149,17 @@ impl StartedCluster {
         self.base_dir.as_path()
     }
 
+    pub fn collect_metadata_server_addresses(&self) -> Vec<AdvertisedAddress<FabricPort>> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                node.has_role(Role::MetadataServer).then_some(
+                    AdvertisedAddress::with_node_base_dir(&self.base_dir().join(node.node_name())),
+                )
+            })
+            .collect()
+    }
+
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
     }
@@ -147,12 +179,33 @@ impl StartedCluster {
         Ok(())
     }
 
+    pub fn node(&self, name: &str) -> Option<&StartedNode> {
+        self.nodes.iter().find(|n| n.node_name() == name)
+    }
+
+    pub fn node_mut(&mut self, name: &str) -> Option<&mut StartedNode> {
+        self.nodes.iter_mut().find(|n| n.node_name() == name)
+    }
+
     /// Send a SIGTERM to every node in the cluster, then wait for `dur` for them to exit,
     /// otherwise send a SIGKILL to nodes that are still running.
     pub async fn graceful_shutdown(&mut self, dur: Duration) -> io::Result<()> {
         future::try_join_all(self.nodes.iter_mut().map(|n| n.graceful_shutdown(dur)))
             .await
             .map(drop)
+    }
+
+    pub async fn shutdown_node(&mut self, name: &str, dur: Duration) -> io::Result<ExitStatus> {
+        let node = self
+            .nodes
+            .iter_mut()
+            .find(|n| n.node_name() == name)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "node not found"))?;
+        let exit = node.graceful_shutdown(dur).await?;
+
+        self.nodes.retain(|n| n.node_name() != name);
+
+        Ok(exit)
     }
 
     /// For every relevant node in the cluster for this check, wait for up to dur for the check
@@ -185,7 +238,9 @@ impl StartedCluster {
         Ok(())
     }
 
-    pub async fn push_node(&mut self, node: Node) -> Result<(), NodeStartError> {
+    pub async fn expand(&mut self, mut node: NodeSpec) -> Result<(), NodeStartError> {
+        let addresses = self.collect_metadata_server_addresses();
+        node.set_metadata_servers(&addresses);
         self.nodes.push(
             node.start_clustered(self.base_dir.as_path(), self.cluster_name.clone())
                 .await?,

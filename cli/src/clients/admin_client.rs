@@ -10,16 +10,19 @@
 
 //! A wrapper client for admin HTTP service.
 
+use std::time::Duration;
+
 use anyhow::bail;
 use http::StatusCode;
-use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
-use restate_cli_util::{CliContext, c_warn};
-use restate_types::SemanticRestateVersion;
 use serde::{Serialize, de::DeserializeOwned};
-use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
+
+use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
+use restate_cli_util::{CliContext, c_warn};
+use restate_types::SemanticRestateVersion;
+use restate_types::net::address::PeerNetAddress;
 
 use crate::build_info;
 use crate::cli_env::CliEnv;
@@ -133,7 +136,9 @@ pub struct AdminClient {
 
 impl AdminClient {
     pub async fn new(env: &CliEnv) -> anyhow::Result<Self> {
-        let raw_client = reqwest::Client::builder()
+        let advertised_address = env.admin_base_url()?.clone();
+
+        let builder = reqwest::Client::builder()
             .user_agent(format!(
                 "{}/{} {}-{}",
                 env!("CARGO_PKG_NAME"),
@@ -142,10 +147,20 @@ impl AdminClient {
                 std::env::consts::ARCH,
             ))
             .connect_timeout(CliContext::get().connect_timeout())
-            .danger_accept_invalid_certs(CliContext::get().insecure_skip_tls_verify())
-            .build()?;
+            .danger_accept_invalid_certs(CliContext::get().insecure_skip_tls_verify());
 
-        let base_url = env.admin_base_url()?.clone();
+        let (raw_client, base_url) = match advertised_address.into_address()? {
+            PeerNetAddress::Uds(path_buf) => {
+                let client = builder.unix_socket(path_buf).build()?;
+                (client, "http://localhost/".parse().unwrap())
+            }
+            PeerNetAddress::Http(uri) => {
+                let client = builder.build()?;
+                // forced to go to string and back because those are two types (Uri vs. Url)
+                (client, uri.to_string().parse()?)
+            }
+        };
+
         let bearer_token = env.bearer_token()?.map(str::to_string);
 
         let client = Self {

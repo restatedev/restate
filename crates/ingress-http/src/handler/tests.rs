@@ -18,6 +18,7 @@ use futures::FutureExt;
 use http::StatusCode;
 use http::{HeaderValue, Method, Request, Response};
 use http_body_util::{BodyExt, Empty, Full};
+use restate_types::net::address::SocketAddress;
 use tower::ServiceExt;
 use tracing_test::traced_test;
 
@@ -1139,7 +1140,7 @@ where
     let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
     req.extensions_mut()
-        .insert(ConnectInfo::new("0.0.0.0:0".parse().unwrap()));
+        .insert(ConnectInfo::new(SocketAddress::Anonymous));
     req.extensions_mut().insert(opentelemetry::Context::new());
 
     let handler_fut = Handler::new(Live::from_value(schemas), Arc::new(dispatcher)).oneshot(req);
