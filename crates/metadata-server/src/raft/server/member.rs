@@ -33,7 +33,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
 
-use restate_core::{Metadata, MetadataWriter};
+use restate_core::{Metadata, MetadataWriter, TaskCenter};
 use restate_metadata_providers::replicated::KnownLeader;
 use restate_metadata_server_grpc::grpc::MetadataServerSnapshot;
 use restate_metadata_server_grpc::{MetadataServerConfiguration, grpc};
@@ -116,7 +116,11 @@ impl Member {
 
         networking.register_address(
             my_member_id.node_id,
-            Configuration::pinned().common.advertised_address.clone(),
+            TaskCenter::with_current(|tc| {
+                Configuration::pinned()
+                    .common
+                    .advertised_address(tc.address_book())
+            }),
         );
 
         // todo remove additional indirection from Arc

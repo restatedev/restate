@@ -8,27 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 
-use http::Uri;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
-use super::KafkaClusterOptions;
+use crate::net::address::{AdvertisedAddress, BindAddress, HttpIngressPort};
+use crate::net::listener::AddressBook;
+
+use super::{CommonOptions, KafkaClusterOptions, ListenerOptions};
 
 /// # Ingress options
-#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "IngressOptions"))]
 #[cfg_attr(feature = "schemars", schemars(default))]
 #[serde(rename_all = "kebab-case")]
 #[builder(default)]
 pub struct IngressOptions {
-    /// # Bind address
-    ///
-    /// The address to bind for the ingress.
-    pub bind_address: SocketAddr,
+    #[serde(flatten)]
+    ingress_listener_options: ListenerOptions<HttpIngressPort>,
 
     /// # Concurrency limit
     ///
@@ -40,15 +39,29 @@ pub struct IngressOptions {
 
     /// # Ingress endpoint
     ///
+    /// [Deprecated] Use `advertised-address` instead.
     /// Ingress endpoint that the Web UI should use to interact with.
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "String", url))]
-    pub advertised_ingress_endpoint: Option<Uri>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    advertised_ingress_endpoint: Option<AdvertisedAddress<HttpIngressPort>>,
 }
 
 impl IngressOptions {
-    pub fn set_bind_address(&mut self, bind_address: SocketAddr) {
-        self.bind_address = bind_address
+    pub fn bind_address(&self) -> BindAddress<HttpIngressPort> {
+        self.ingress_listener_options.bind_address()
+    }
+
+    pub fn ingress_listener_options(&self) -> &ListenerOptions<HttpIngressPort> {
+        &self.ingress_listener_options
+    }
+
+    pub fn advertised_address(
+        &self,
+        address_book: &AddressBook,
+    ) -> AdvertisedAddress<HttpIngressPort> {
+        self.advertised_ingress_endpoint.clone().unwrap_or_else(|| {
+            self.ingress_listener_options
+                .advertised_address(address_book)
+        })
     }
 
     pub fn get_kafka_cluster(&self, name: &str) -> Option<&KafkaClusterOptions> {
@@ -73,35 +86,8 @@ impl IngressOptions {
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
-    pub fn set_derived_values(&mut self) {
-        // Only derive bind_address if it is not explicitly set
-        let bind_address = if self.bind_address.ip().is_unspecified() {
-            format!("127.0.0.1:{}", self.bind_address.port())
-        } else {
-            self.bind_address.to_string()
-        };
-
-        if self.advertised_ingress_endpoint.is_none() {
-            self.advertised_ingress_endpoint = Some(
-                Uri::builder()
-                    .scheme("http")
-                    .authority(bind_address)
-                    .path_and_query("/")
-                    .build()
-                    .expect("valid bind address"),
-            );
-        }
-    }
-}
-
-impl Default for IngressOptions {
-    fn default() -> Self {
-        Self {
-            bind_address: "0.0.0.0:8080".parse().unwrap(),
-            // max is limited by Tower's LoadShedLayer.
-            concurrent_api_requests_limit: None,
-            kafka_clusters: Default::default(),
-            advertised_ingress_endpoint: None,
-        }
+    pub fn set_derived_values(&mut self, common: &CommonOptions) {
+        self.ingress_listener_options
+            .merge(common.fabric_listener_options());
     }
 }
