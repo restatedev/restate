@@ -81,6 +81,10 @@ const SERVICE_PROTOCOL_VERSION_V6: HeaderValue =
     HeaderValue::from_static("application/vnd.restate.invocation.v6");
 
 #[allow(clippy::declare_interior_mutable_const)]
+const SERVICE_PROTOCOL_VERSION_V7: HeaderValue =
+    HeaderValue::from_static("application/vnd.restate.invocation.v7");
+
+#[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 pub(super) struct InvocationTaskOutput {
@@ -150,6 +154,7 @@ pub(super) struct InvocationTask<IR, EE, DMR> {
     message_size_warning: usize,
     message_size_limit: Option<usize>,
     retry_count_since_last_stored_entry: u32,
+    allow_protocol_v7: bool,
 
     // Invoker tx/rx
     invocation_reader: IR,
@@ -218,6 +223,7 @@ where
         deployment_metadata_resolver: Live<Schemas>,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
+        allow_protocol_v7: bool,
         action_token_bucket: Option<TokenBucket>,
     ) -> Self {
         Self {
@@ -237,6 +243,7 @@ where
             message_size_limit,
             message_size_warning,
             retry_count_since_last_stored_entry,
+            allow_protocol_v7,
             action_token_bucket,
         }
     }
@@ -346,13 +353,16 @@ where
                 );
 
                 let chosen_service_protocol_version = shortcircuit!(
-                    ServiceProtocolVersion::pick(&deployment.supported_protocol_versions,)
-                        .ok_or_else(|| {
-                            InvokerError::IncompatibleServiceEndpoint(
-                                deployment.id,
-                                deployment.supported_protocol_versions.clone(),
-                            )
-                        })
+                    ServiceProtocolVersion::pick(
+                        &deployment.supported_protocol_versions,
+                        self.allow_protocol_v7
+                    )
+                    .ok_or_else(|| {
+                        InvokerError::IncompatibleServiceEndpoint(
+                            deployment.id,
+                            deployment.supported_protocol_versions.clone(),
+                        )
+                    })
                 );
 
                 (
@@ -447,6 +457,7 @@ fn service_protocol_version_to_header_value(
         ServiceProtocolVersion::V4 => SERVICE_PROTOCOL_VERSION_V4,
         ServiceProtocolVersion::V5 => SERVICE_PROTOCOL_VERSION_V5,
         ServiceProtocolVersion::V6 => SERVICE_PROTOCOL_VERSION_V6,
+        ServiceProtocolVersion::V7 => SERVICE_PROTOCOL_VERSION_V7,
     }
 }
 

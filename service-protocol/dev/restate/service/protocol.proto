@@ -37,6 +37,9 @@ enum ServiceProtocolVersion {
   // * StartMessage.random_seed
   // * Failure.metadata
   V6 = 6;
+  // Added:
+  // * AwaitingMessage
+  V7 = 7;
 }
 
 // --- Core frames ---
@@ -89,7 +92,7 @@ message StartMessage {
 //
 // These lists represent any of the notification_idx and/or notification_name the invocation is waiting on to progress.
 // The runtime will resume the invocation as soon as either one of the given notification_idx or notification_name is completed.
-// Between the two lists there MUST be at least one element.
+// Between the 3 lists there MUST be at least one element.
 message SuspensionMessage {
   repeated uint32 waiting_completions = 1;
   repeated uint32 waiting_signals = 2;
@@ -141,6 +144,18 @@ message ProposeRunCompletionMessage {
     bytes value = 14;
     Failure failure = 15;
   };
+}
+
+// Type: 0x0000 + 6
+// Implementations MAY send this message when awaiting an invocation.
+// This is not an end of stream message, it just notifies the runtime what the SDK is waiting on.
+// Actual suspension is represented through SuspensionMessage.
+//
+// Between the 3 lists there MUST be at least one element.
+message AwaitingMessage {
+  repeated uint32 waiting_completions = 1;
+  repeated uint32 waiting_signals = 2;
+  repeated string waiting_named_signals = 3;
 }
 
 // --- Commands and Notifications ---

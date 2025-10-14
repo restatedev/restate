@@ -166,6 +166,23 @@ jobs:
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
 
+  sdk-typescript-protocol-v7:
+    name: Run SDK-Typescript integration tests with Protocol V7
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: docker
+    uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      envVars: |
+        RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v7=true
+      testArtifactOutput: sdk-typescript-protocol-v7
+
   sdk-rust:
     name: Run SDK-Rust integration tests
     permissions:
