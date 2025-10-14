@@ -17,11 +17,6 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
-use futures::StreamExt;
-use gardal::futures::ThrottledStream;
-use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
-use metrics::counter;
-use restate_time_util::DurationExt;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::io::ErrorKind;
@@ -30,6 +25,12 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::SystemTime;
 use std::{cmp, panic};
+
+use futures::StreamExt;
+use gardal::futures::ThrottledStream;
+use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
+use metrics::counter;
+use restate_time_util::DurationExt;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace, warn};
@@ -47,8 +48,8 @@ use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_timer_queue::TimerQueue;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::PartitionLeaderEpoch;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
+use restate_types::identifiers::{PartitionId, PartitionLeaderEpoch};
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{Completion, EntryIndex};
@@ -69,8 +70,8 @@ use crate::invocation_state_machine::OnTaskError;
 use crate::invocation_task::InvocationTask;
 use crate::invocation_task::{InvocationTaskOutput, InvocationTaskOutputInner};
 use crate::metric_definitions::{
-    INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED, TASK_OP_STARTED,
-    TASK_OP_SUSPENDED,
+    ID_LOOKUP, INVOKER_ENQUEUE, INVOKER_INVOCATION_TASKS, TASK_OP_COMPLETED, TASK_OP_FAILED,
+    TASK_OP_STARTED, TASK_OP_SUSPENDED,
 };
 use crate::status_store::InvocationStatusStore;
 
@@ -163,6 +164,38 @@ where
     }
 }
 
+/// Currently the invoker id is mainly used with invoker specific
+/// metrics (not related to a particular partition)
+///
+/// Right now it exactly matches the partition id since
+/// we have one invoker per partition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvokerId(u16);
+
+impl From<PartitionId> for InvokerId {
+    fn from(value: PartitionId) -> Self {
+        Self(value.into())
+    }
+}
+
+impl From<InvokerId> for PartitionId {
+    fn from(value: InvokerId) -> PartitionId {
+        PartitionId::from(value.0)
+    }
+}
+
+impl From<u16> for InvokerId {
+    fn from(value: u16) -> Self {
+        Self(value)
+    }
+}
+
+impl From<InvokerId> for u16 {
+    fn from(value: InvokerId) -> Self {
+        value.0
+    }
+}
+
 // -- Service implementation
 pub struct Service<StorageReader, EntryEnricher, Schemas> {
     // Used for constructing the invoker sender and status reader
@@ -185,6 +218,7 @@ pub struct Service<StorageReader, EntryEnricher, Schemas> {
 impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnricher, Schemas> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
+        invoker_id: impl Into<InvokerId>,
         options: &InvokerOptions,
         schemas: Live<Schemas>,
         client: ServiceClient,
@@ -219,7 +253,10 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                 schemas,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
-                quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit()),
+                quota: quota::InvokerConcurrencyQuota::new(
+                    invoker_id,
+                    options.concurrent_invocations_limit(),
+                ),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             },
@@ -228,6 +265,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
     }
 
     pub fn from_options(
+        invoker_id: impl Into<InvokerId>,
         service_client_options: &ServiceClientOptions,
         invoker_options: &InvokerOptions,
         entry_enricher: TEntryEnricher,
@@ -245,6 +283,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
             ServiceClient::from_options(service_client_options, AssumeRoleCacheMode::Unbounded)?;
 
         Ok(Service::new(
+            invoker_id,
             invoker_options,
             schemas,
             client,
@@ -401,7 +440,7 @@ where
                 match input_message {
                     // --- Spillable queue loading/offloading
                     InputCommand::Invoke(invoke_command) => {
-                        counter!(INVOKER_ENQUEUE).increment(1);
+                        counter!(INVOKER_ENQUEUE, "partition_id" => invoke_command.partition.0.to_string()).increment(1);
                         segmented_input_queue.inner_pin_mut().enqueue(invoke_command).await;
                     },
                     // --- Other commands (they don't go through the segment queue)
@@ -1004,7 +1043,7 @@ where
             .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
-            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_COMPLETED).increment(1);
+            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_COMPLETED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 "Invocation task closed correctly");
@@ -1044,7 +1083,7 @@ where
             .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
-            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED).increment(1);
+            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
 
@@ -1109,7 +1148,8 @@ where
             .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
-            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED).increment(1);
+            counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0))
+                .increment(1);
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
 
@@ -1337,7 +1377,8 @@ where
             OnTaskError::ScheduleRetry(next_retry_timer_duration) => {
                 counter!(INVOKER_INVOCATION_TASKS,
                     "status" => TASK_OP_FAILED,
-                    "transient" => "true"
+                    "transient" => "true",
+                    "partition_id" => ID_LOOKUP.get(partition.0)
                 )
                 .increment(1);
                 if let Some(error_stacktrace) = error.error_stacktrace() {
@@ -1429,7 +1470,8 @@ where
             OnTaskError::Pause => {
                 counter!(INVOKER_INVOCATION_TASKS,
                     "status" => TASK_OP_FAILED,
-                    "transient" => "false"
+                    "transient" => "false",
+                    "partition_id" => ID_LOOKUP.get(partition.0)
                 )
                 .increment(1);
                 warn_it!(
@@ -1491,7 +1533,8 @@ where
             OnTaskError::Kill => {
                 counter!(INVOKER_INVOCATION_TASKS,
                     "status" => TASK_OP_FAILED,
-                    "transient" => "false"
+                    "transient" => "false",
+                    "partition_id" => ID_LOOKUP.get(partition.0)
                 )
                 .increment(1);
                 warn_it!(
@@ -1550,7 +1593,7 @@ where
             "Invocation task started state. Invocation state: {:?}",
             ism.invocation_state_debug()
         );
-        counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_STARTED).increment(1);
+        counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_STARTED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
         self.invocation_state_machine_manager
             .register_invocation(partition, invocation_id, ism);
     }
@@ -1626,7 +1669,7 @@ mod tests {
     use restate_invoker_api::entry_enricher;
     use restate_invoker_api::test_util::EmptyStorageReader;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-    use restate_test_util::{check, let_assert};
+    use restate_test_util::check;
     use restate_time_util::FriendlyDuration;
     use restate_types::config::InvokerOptionsBuilder;
     use restate_types::deployment::{DeploymentAddress, Headers};
@@ -1688,7 +1731,7 @@ mod tests {
                 schemas: Live::from_value(schemas),
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
-                quota: InvokerConcurrencyQuota::new(concurrency_limit),
+                quota: InvokerConcurrencyQuota::new(0, concurrency_limit),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
             };
@@ -1883,6 +1926,7 @@ mod tests {
             .build()
             .unwrap();
         let service = Service::new(
+            0,
             &invoker_options,
             // all invocations are unknown leading to immediate retries
             Live::from_value(MockSchemas(
@@ -2113,15 +2157,13 @@ mod tests {
         check!(let InvocationTaskOutputInner::NewEntry { .. } = invoker_effect.inner);
 
         // Check the quota
-        let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);
-        assert_eq!(*available_slots, 1);
+        assert_eq!(service_inner.quota.available_slots(), 1);
 
         // Abort the invocation
         service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 0);
 
         // Check the quota
-        let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);
-        assert_eq!(*available_slots, 2);
+        assert_eq!(service_inner.quota.available_slots(), 2);
 
         // Handle error coming after the abort (this should be noop)
         service_inner
@@ -2134,8 +2176,7 @@ mod tests {
             .await;
 
         // Check the quota, should not be changed
-        let_assert!(InvokerConcurrencyQuota::Limited { available_slots } = &service_inner.quota);
-        assert_eq!(*available_slots, 2);
+        assert_eq!(service_inner.quota.available_slots(), 2);
     }
 
     #[test(restate_core::test)]

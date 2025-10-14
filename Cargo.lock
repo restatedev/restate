@@ -7079,6 +7079,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "codederror",
+ "dashmap",
  "futures",
  "gardal",
  "googletest",
