@@ -434,6 +434,7 @@ mod tests {
     use std::num::{NonZeroU8, NonZeroU16};
 
     use googletest::prelude::*;
+    use restate_types::net::listener::AddressBook;
     use test_log::test;
 
     use restate_core::network::NetworkServerBuilder;
@@ -468,10 +469,11 @@ mod tests {
         let config = Live::from_value(config);
 
         RocksDbManager::init();
+        let mut address_book = AddressBook::new(restate_types::config::node_filepath(""));
 
         let mut node_env =
             TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();
-        let mut server_builder = NetworkServerBuilder::default();
+        let mut server_builder = NetworkServerBuilder::new(&mut address_book);
 
         let log_server = LogServerService::create(
             HealthStatus::default(),

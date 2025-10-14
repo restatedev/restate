@@ -20,6 +20,7 @@ console = [
     "tokio/full",
     "tokio/tracing",
     "restate-tracing-instrumentation/console-subscriber",
+    "restate-types/console",
 ]
 options_schema = [
     "dep:schemars",

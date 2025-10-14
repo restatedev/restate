@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use restate_cli_util::OsEnv;
+use restate_types::net::address::{AdminPort, AdvertisedAddress, HttpIngressPort};
 
 use crate::app::GlobalOpts;
 
@@ -47,8 +48,8 @@ pub const EDITOR_ENV: &str = "RESTATE_EDITOR";
 pub struct CliConfig {
     pub environment_type: EnvironmentType,
 
-    pub ingress_base_url: Option<Url>,
-    pub admin_base_url: Option<Url>,
+    pub ingress_base_url: Option<AdvertisedAddress<HttpIngressPort>>,
+    pub admin_base_url: Option<AdvertisedAddress<AdminPort>>,
     pub bearer_token: Option<String>,
 
     #[cfg(feature = "cloud")]
@@ -62,8 +63,8 @@ impl CliConfig {
         Self {
             environment_type: EnvironmentType::Default,
 
-            ingress_base_url: Some(Url::parse("http://localhost:8080/").unwrap()),
-            admin_base_url: Some(Url::parse("http://localhost:9070/").unwrap()),
+            ingress_base_url: Some(AdvertisedAddress::default()),
+            admin_base_url: Some(AdvertisedAddress::default()),
             bearer_token: None,
 
             #[cfg(feature = "cloud")]
@@ -251,7 +252,7 @@ impl CliEnv {
         }
     }
 
-    pub fn ingress_base_url(&self) -> Result<&Url> {
+    pub fn ingress_base_url(&self) -> Result<&AdvertisedAddress<HttpIngressPort>> {
         match self.config.ingress_base_url.as_ref() {
             Some(ingress_base_url) => Ok(ingress_base_url),
             None => Err(anyhow!(
@@ -262,7 +263,7 @@ impl CliEnv {
         }
     }
 
-    pub fn admin_base_url(&self) -> Result<&Url> {
+    pub fn admin_base_url(&self) -> Result<&AdvertisedAddress<AdminPort>> {
         match self.config.admin_base_url.as_ref() {
             Some(admin_base_url) => Ok(admin_base_url),
             None => Err(anyhow!(
@@ -380,7 +381,7 @@ mod tests {
                 .ingress_base_url
                 .expect("ingress_base_url must be provided")
                 .to_string(),
-            "http://localhost:8080/".to_string()
+            "http://127.0.0.1:8080/".to_string()
         );
         assert_eq!(
             cli_env
@@ -388,7 +389,7 @@ mod tests {
                 .admin_base_url
                 .expect("admin_base_url must be provided")
                 .to_string(),
-            "http://localhost:9070/".to_string()
+            "http://127.0.0.1:9070/".to_string()
         );
 
         // Defaults are templated over RESTATE_HOST

@@ -15,10 +15,12 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures::FutureExt;
+use restate_types::net::address::FabricPort;
 use tokio::sync::oneshot;
 
+use restate_types::net::address::AdvertisedAddress;
 use restate_types::net::metadata::MetadataKind;
-use restate_types::net::{AdvertisedAddress, ProtocolVersion, RpcResponse};
+use restate_types::net::{ProtocolVersion, RpcResponse};
 use restate_types::{GenerationalNodeId, Version};
 
 use super::protobuf::network::{Header, rpc_reply};
@@ -45,7 +47,7 @@ impl PartialEq for PeerAddress {
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug, derive_more::Display)]
 pub enum Destination {
-    Address(AdvertisedAddress),
+    Address(AdvertisedAddress<FabricPort>),
     Node(GenerationalNodeId),
 }
 

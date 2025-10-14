@@ -50,6 +50,7 @@ restate-encoding = { path = "crates/encoding" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
 restate-futures-util = { path = "crates/futures-util" }
+restate-hyper-uds = { path = "crates/hyper-uds" }
 restate-ingress-http = { path = "crates/ingress-http" }
 restate-ingress-kafka = { path = "crates/ingress-kafka" }
 restate-invoker-api = { path = "crates/invoker-api" }
@@ -190,7 +191,7 @@ rangemap = "1.5.1"
 rayon = { version = "1.10" }
 regex = { version = "1.11" }
 regress = { version = "0.10" }
-reqwest = { version = "0.12.5", default-features = false, features = [
+reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "rustls-tls",
     "stream",

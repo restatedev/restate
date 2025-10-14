@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::convert::Infallible;
+use std::net::SocketAddr;
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,7 @@ use http::header::CONTENT_TYPE;
 use rand::prelude::IndexedMutRandom;
 use rand::seq::IndexedRandom;
 use regex::Regex;
+use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
 use tracing::{debug, info};
 
@@ -27,25 +29,26 @@ use restate_core::{TaskCenter, TaskKind, cancellation_token};
 use restate_local_cluster_runner::cluster::StartedCluster;
 use restate_local_cluster_runner::{
     cluster::Cluster,
-    node::{BinarySource, Node},
+    node::{BinarySource, NodeSpec},
 };
 use restate_types::config::Configuration;
 use restate_types::config::RaftOptions;
 use restate_types::logs::metadata::{
     NodeSetSize, ProviderConfiguration, ProviderKind, ReplicatedLogletConfig,
 };
+use restate_types::net::address::PeerNetAddress;
 use restate_types::replication::ReplicationProperty;
 
 mod common;
 
 #[test_log::test(restate_core::test)]
 async fn replicated_loglet() -> googletest::Result<()> {
-    let mut base_config = Configuration::default();
+    let mut base_config = Configuration::new_unix_sockets();
     // require an explicit provision step to configure the replication property to 2
     base_config.common.auto_provision = false;
     base_config.common.default_num_partitions = 1;
 
-    let nodes = Node::new_test_nodes(
+    let nodes = NodeSpec::new_test_nodes(
         base_config.clone(),
         BinarySource::CargoTest,
         EnumSet::all(),
@@ -94,7 +97,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
     let num_nodes = 3;
     let chaos_duration = Duration::from_secs(20);
     let expected_recovery_interval = Duration::from_secs(10);
-    let mut base_config = Configuration::default();
+    let mut base_config = Configuration::new_unix_sockets();
     base_config.metadata_server.set_raft_options(RaftOptions {
         raft_election_tick: NonZeroUsize::new(5).expect("5 to be non zero"),
         raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
@@ -104,7 +107,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
     base_config.bifrost.default_provider = ProviderKind::Replicated;
     base_config.common.log_filter = "warn,restate=debug".to_owned();
 
-    let nodes = Node::new_test_nodes(
+    let nodes = NodeSpec::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
         EnumSet::all(),
@@ -133,22 +136,25 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
         .await
         .into_test_result()?;
 
+    let ingress_url = "http://localhost/Counter/1/add";
     let ingress_addresses: Vec<_> = cluster
         .nodes
         .iter()
-        .flat_map(|node| node.ingress_address().cloned())
-        .map(|socket_address| format!("http://{socket_address}/Counter/1/add"))
+        .flat_map(|node| node.ingress_address().clone())
         .collect();
     let admin_address = cluster
         .nodes
         .iter()
-        .flat_map(|node| node.admin_address().cloned())
+        .flat_map(|node| node.admin_address().clone())
         .next()
         .expect("at least one admin node to be present");
 
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
-    let service_endpoint_address = restate_local_cluster_runner::random_socket_address()?;
+    let addr: SocketAddr = ([127, 0, 0, 1], 0).into();
+    let listener = TcpListener::bind(addr).await?;
+    let addr = listener.local_addr()?;
+    let mock_svc_port = addr.port();
 
     let (running_tx, running_rx) = oneshot::channel();
 
@@ -157,7 +163,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
             info!("Running the mock service endpoint");
             cancellation_token()
                 .run_until_cancelled(mock_service_endpoint::listener::run_listener(
-                    service_endpoint_address,
+                    listener,
                     move || {
                         // if the test program is gone than this task will soon be stopped as well
                         let _ = running_tx.send(());
@@ -170,16 +176,19 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
     // await that the mock service endpoint is running
     running_rx.await?;
 
-    let client = reqwest::Client::builder()
+    let admin_uds = admin_address.into_address().unwrap();
+    let PeerNetAddress::Uds(admin_uds) = admin_uds else {
+        panic!("admin address must be a unix domain socket");
+    };
+    let admin_client = reqwest::Client::builder()
+        .unix_socket(admin_uds)
         .build()
         .expect("reqwest client should build");
 
-    let discovery_response = client
-        .post(format!("http://{admin_address}/deployments"))
+    let discovery_response = admin_client
+        .post("http://localhost/deployments")
         .header(CONTENT_TYPE, "application/json")
-        .body(
-            serde_json::json!({"uri": format!("http://{}", service_endpoint_address)}).to_string(),
-        )
+        .body(serde_json::json!({"uri": format!("http://127.0.0.1:{mock_svc_port}")}).to_string())
         .send()
         .await?;
 
@@ -242,11 +251,21 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
     while start_chaos.elapsed() < chaos_duration {
         let ingress = ingress_addresses
             .choose(&mut rng)
+            .cloned()
             .expect("at least one address to be present");
 
-        debug!("Send request {successes} to {ingress}");
-        match client
-            .post(ingress)
+        let ingress_uds = ingress.into_address().unwrap();
+        let PeerNetAddress::Uds(ingress_uds) = ingress_uds else {
+            panic!("ingress address must be a unix domain socket");
+        };
+        let ingress_client = reqwest::Client::builder()
+            .unix_socket(ingress_uds.clone())
+            .build()
+            .expect("reqwest client should build");
+
+        debug!("Send request {successes} to {}", ingress_uds.display());
+        match ingress_client
+            .post(ingress_url)
             .header(CONTENT_TYPE, "application/json")
             .header("idempotency-key", successes.to_string())
             .body("1")
@@ -267,7 +286,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
             Err(err) => {
                 failures += 1;
                 // request failed, let's retry
-                debug!(%err, "failed sending request {successes} to {ingress}");
+                debug!(%err, "failed sending request {successes} to {}", ingress_uds.display());
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }

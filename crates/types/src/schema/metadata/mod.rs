@@ -408,14 +408,16 @@ impl ServiceRevision {
             }
         };
 
-        let advertised_ingress_endpoint = Configuration::pinned()
-            .ingress
-            .advertised_ingress_endpoint
-            .as_ref()
-            .map(|u| u.to_string());
+        // todo: Pass address book in
+        // let advertised_ingress_endpoint = Configuration::pinned()
+        //     .ingress
+        //     .advertised_ingress_endpoint()
+        //     .as_ref()
+        //     .map(|u| u.to_string());
         service_openapi.to_openapi_contract(
             &self.name,
-            advertised_ingress_endpoint.as_deref(),
+            // advertised_ingress_endpoint.as_deref(),
+            None,
             self.documentation.as_deref(),
             self.revision,
         )
