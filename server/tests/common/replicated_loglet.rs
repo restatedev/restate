@@ -53,7 +53,7 @@ async fn replicated_loglet_client(
     MetadataWriter,
     MetadataStoreClient,
 )> {
-    let node_name = "replicated-loglet-client".to_owned();
+    let node_name = "n1".to_owned();
     let node_dir = cluster.base_dir().join(&node_name);
     std::fs::create_dir_all(&node_dir)?;
     let mut address_book = AddressBook::new(node_dir);
