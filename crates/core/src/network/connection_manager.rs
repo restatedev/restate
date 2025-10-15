@@ -430,7 +430,7 @@ impl ConnectionManager {
         let transport = PassthroughConnector(self.clone());
         let (conn, task_id) = Connection::connect_inner_with_node_id(
             Some(node_id),
-            Destination::Address(restate_types::net::AdvertisedAddress::Uds(
+            Destination::Address(restate_types::net::address::AdvertisedAddress::new_uds(
                 "/tmp/fake".into(),
             )),
             swimlane,
@@ -650,13 +650,13 @@ mod tests {
     use restate_test_util::assert_eq;
     use restate_types::Version;
     use restate_types::config::NetworkingOptions;
+    use restate_types::net::address::AdvertisedAddress;
     use restate_types::net::metadata::GetMetadataRequest;
     use restate_types::net::metadata::MetadataKind;
     use restate_types::net::metadata::MetadataManagerService;
     use restate_types::net::node::GetNodeState;
     use restate_types::net::{
-        AdvertisedAddress, CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION,
-        ProtocolVersion,
+        CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSION, ProtocolVersion,
     };
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 
@@ -846,7 +846,7 @@ mod tests {
         let node_config = NodeConfig::builder()
             .name("42".to_owned())
             .current_generation(node_id)
-            .address(AdvertisedAddress::Uds("foobar1".into()))
+            .address(AdvertisedAddress::default())
             .roles(Role::Worker.into())
             .build();
         nodes_config.upsert_node(node_config);

@@ -444,6 +444,7 @@ mod tests {
     use restate_types::health::HealthStatus;
     use restate_types::live::Live;
     use restate_types::logs::{Keys, LogletId};
+    use restate_types::net::listener::AddressBook;
     use restate_types::replication::{NodeSet, ReplicationProperty};
     use restate_types::{GenerationalNodeId, PlainNodeId};
 
@@ -468,10 +469,11 @@ mod tests {
         let config = Live::from_value(config);
 
         RocksDbManager::init();
+        let mut address_book = AddressBook::new(restate_types::config::node_filepath(""));
 
         let mut node_env =
             TestCoreEnvBuilder::with_incoming_only_connector().add_mock_nodes_config();
-        let mut server_builder = NetworkServerBuilder::default();
+        let mut server_builder = NetworkServerBuilder::new(&mut address_book);
 
         let log_server = LogServerService::create(
             HealthStatus::default(),

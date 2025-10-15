@@ -18,7 +18,7 @@ use restate_core::TaskCenterBuilder;
 use restate_local_cluster_runner::cluster::StartedCluster;
 use restate_local_cluster_runner::{
     cluster::Cluster,
-    node::{BinarySource, Node},
+    node::{BinarySource, NodeSpec},
     shutdown,
 };
 use restate_types::config::{Configuration, LogFormat};
@@ -27,7 +27,7 @@ use restate_types::logs::metadata::ProviderKind::Replicated;
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
-    let mut base_config = Configuration::default();
+    let mut base_config = Configuration::new_random_ports();
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_filter = "warn,restate=debug".to_string();
     base_config.common.default_num_partitions = 4;
@@ -47,7 +47,8 @@ fn main() -> anyhow::Result<()> {
         let roles = *config.roles();
         let auto_provision = config.common.auto_provision;
 
-        let nodes = Node::new_test_nodes(config, BinarySource::CargoTest, roles, 3, auto_provision);
+        let nodes =
+            NodeSpec::new_test_nodes(config, BinarySource::CargoTest, roles, 3, auto_provision);
 
         let mut shutdown_signal = pin!(shutdown());
 

@@ -26,6 +26,7 @@ use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::live::Pinned;
 use crate::metadata::GlobalMetadata;
+use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeploymentResolver, DeploymentType};
@@ -391,7 +392,10 @@ impl ServiceRevision {
         }
     }
 
-    fn as_openapi_spec(&self) -> serde_json::Value {
+    fn as_openapi_spec(
+        &self,
+        ingress_address: AdvertisedAddress<HttpIngressPort>,
+    ) -> serde_json::Value {
         let service_openapi = {
             let cached_openapi = self.service_openapi_cache.load();
             if let Some(result) = cached_openapi.as_ref() {
@@ -409,14 +413,9 @@ impl ServiceRevision {
             }
         };
 
-        let advertised_ingress_endpoint = Configuration::pinned()
-            .ingress
-            .advertised_ingress_endpoint
-            .as_ref()
-            .map(|u| u.to_string());
         service_openapi.to_openapi_contract(
             &self.name,
-            advertised_ingress_endpoint.as_deref(),
+            ingress_address,
             self.documentation.as_deref(),
             self.revision,
         )
@@ -722,10 +721,14 @@ impl ServiceMetadataResolver for Schema {
             .map(|revision| revision.as_service_metadata())
     }
 
-    fn resolve_latest_service_openapi(&self, service_name: impl AsRef<str>) -> Option<Value> {
+    fn resolve_latest_service_openapi(
+        &self,
+        service_name: impl AsRef<str>,
+        ingress_address: AdvertisedAddress<HttpIngressPort>,
+    ) -> Option<Value> {
         self.active_service_revisions
             .get(service_name.as_ref())
-            .map(|revision| revision.service_revision.as_openapi_spec())
+            .map(|revision| revision.service_revision.as_openapi_spec(ingress_address))
     }
 
     fn list_services(&self) -> Vec<service::ServiceMetadata> {

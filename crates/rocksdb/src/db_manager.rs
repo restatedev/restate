@@ -52,6 +52,10 @@ impl RocksDbManager {
         DB_MANAGER.get().expect("DBManager not initialized")
     }
 
+    pub fn maybe_get() -> Option<&'static RocksDbManager> {
+        DB_MANAGER.get()
+    }
+
     /// Create a new instance of the database manager. This should not be executed concurrently,
     /// only run it once on program startup.
     ///
