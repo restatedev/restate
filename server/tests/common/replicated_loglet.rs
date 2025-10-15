@@ -9,11 +9,13 @@
 // by the Apache License, Version 2.0.
 
 #![allow(dead_code)]
+use std::num::NonZeroU32;
+use std::{sync::Arc, time::Duration};
+
 use enumset::{EnumSet, enum_set};
 use googletest::IntoTestResult;
 use googletest::internal::test_outcome::TestAssertionFailure;
-use std::num::NonZeroU32;
-use std::{sync::Arc, time::Duration};
+use tracing::info;
 
 use restate_bifrost::{Bifrost, loglet::Loglet};
 use restate_core::TaskCenter;
@@ -22,7 +24,7 @@ use restate_local_cluster_runner::{
     cluster::{Cluster, MaybeTempDir, StartedCluster},
     node::{BinarySource, Node},
 };
-use restate_metadata_store::MetadataStoreClient;
+use restate_metadata_store::{MetadataStoreClient, retry_on_retryable_error};
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::logs::LogletId;
@@ -31,6 +33,7 @@ use restate_types::logs::metadata::{Chain, LogletParams, SegmentIndex};
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
+use restate_types::retries::RetryPolicy;
 use restate_types::{
     GenerationalNodeId, PlainNodeId, Version, Versioned,
     config::Configuration,
@@ -136,6 +139,8 @@ where
 
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
+    info!("Test cluster is healthy");
+
     let loglet_params = ReplicatedLogletParams {
         loglet_id: LogletId::new(LogId::MIN, SegmentIndex::OLDEST),
         sequencer,
@@ -158,9 +163,13 @@ where
         .await
         .map_err(|err| TestAssertionFailure::create(err.to_string()))?;
     let logs = logs_builder.build();
-    metadata_store_client
-        .put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None)
-        .await?;
+    retry_on_retryable_error(
+        RetryPolicy::fixed_delay(Duration::from_millis(500), Some(20)),
+        || metadata_store_client.put(BIFROST_CONFIG_KEY.clone(), &logs, Precondition::None),
+    )
+    .await?;
+
+    info!("Written initial logs configuration: {logs:?}");
 
     // join a new node to the cluster solely to act as a bifrost client
     // it will have node id log_server_count+2
@@ -171,6 +180,8 @@ where
         logs.version(),
     )
     .await?;
+
+    info!("Starting test");
 
     // global metadata should now be set, running in scope sets it in the task center context
     future(TestEnv {
