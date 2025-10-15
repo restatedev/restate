@@ -141,6 +141,7 @@ where
         )
         .route("/health", get(openapi_handler!(health::health)))
         .route("/version", get(openapi_handler!(version::version)))
+        // The cluster_health endpoint is deprecated in the OpenAPI spec in preparation for removing it
         .route(
             "/cluster-health",
             get(openapi_handler!(cluster_health::cluster_health)),
