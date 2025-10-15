@@ -34,7 +34,7 @@ use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
 use restate_types::live::Pinned;
 use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
-use restate_types::net::{AdvertisedAddress, BindAddress};
+use restate_types::net::address::AdvertisedAddress;
 use restate_types::protobuf::common::NodeRpcStatus;
 use restate_wal_protocol::Envelope;
 

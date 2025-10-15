@@ -79,16 +79,7 @@ impl NetworkServer {
             restate_core::network::protobuf::core_node_svc::FILE_DESCRIPTOR_SET,
         );
 
-        server_builder
-            .run(
-                node_rpc_health,
-                Configuration::pinned()
-                    .common
-                    .bind_address
-                    .as_ref()
-                    .unwrap(),
-            )
-            .await?;
+        server_builder.run(node_rpc_health).await?;
 
         Ok(())
     }

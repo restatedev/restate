@@ -14,6 +14,8 @@ use cling::prelude::*;
 use tracing::info;
 use url::Url;
 
+use restate_types::net::address::{AdminPort, HttpIngressPort, ListenerPort as _};
+
 use super::renderer::TunnelRenderer;
 
 #[derive(Copy, Clone)]
@@ -29,8 +31,8 @@ impl ValueEnum for RemotePort {
 
     fn to_possible_value(&self) -> Option<builder::PossibleValue> {
         Some(builder::PossibleValue::new(match self {
-            Self::Ingress => "8080",
-            Self::Admin => "9070",
+            Self::Ingress => HttpIngressPort::default_port_str(),
+            Self::Admin => AdminPort::default_port_str(),
         }))
     }
 }
@@ -63,7 +65,7 @@ pub(crate) enum ServeError {
 pub async fn run_remote(
     remote_port: RemotePort,
     client: reqwest::Client,
-    base_url: &Url,
+    base_url: Url,
     bearer_token: &str,
     tunnel_renderer: Arc<TunnelRenderer>,
 ) -> Result<(), ServeError> {

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use crate::cluster_marker::mark_cluster_as_provisioned;
-use restate_core::{MetadataWriter, ShutdownError, cancellation_token};
+use restate_core::{MetadataWriter, ShutdownError, TaskCenter, cancellation_token};
 use restate_metadata_store::{MetadataStoreClient, ReadWriteError};
 use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
@@ -187,6 +187,9 @@ impl<'a> NodeInit<'a> {
 
         let common = &config.common;
 
+        let my_advertised_address =
+            TaskCenter::with_current(|tc| common.advertised_address(tc.address_book()));
+
         metadata_store_client
             .read_modify_write::<NodesConfiguration, _, _>(
                 NODES_CONFIG_KEY.clone(),
@@ -267,7 +270,7 @@ impl<'a> NodeInit<'a> {
 
                         // update node_config
                         node_config.roles = common.roles;
-                        node_config.address = common.advertised_address.clone();
+                        node_config.address = my_advertised_address.clone();
                         node_config.current_generation.bump_generation();
 
                         node_config
@@ -296,7 +299,7 @@ impl<'a> NodeInit<'a> {
                             .name(common.node_name().to_owned())
                             .current_generation(my_node_id)
                             .location(common.location().clone())
-                            .address(common.advertised_address.clone())
+                            .address(my_advertised_address.clone())
                             .roles(common.roles)
                             .metadata_server_config(MetadataServerConfig {
                                 metadata_server_state,
@@ -323,34 +326,47 @@ impl<'a> NodeInit<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::init::NodeInit;
     use enumset::EnumSet;
     use googletest::assert_that;
     use googletest::matchers::{contains_substring, displays_as, err};
-    use restate_core::TestCoreEnvBuilder;
+
+    use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_types::config::{Configuration, set_current_config};
+    use restate_types::net::listener::AddressBook;
     use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration};
     use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+
+    use crate::init::NodeInit;
 
     #[test_log::test(restate_core::test)]
     async fn node_id_mismatch() -> googletest::Result<()> {
         let cluster_name = "node_id_mismatch".to_owned();
         let node_name = "node".to_owned();
-        let mut config = Configuration::default();
+        let mut config = Configuration::new_unix_sockets();
         config.common.set_cluster_name(&cluster_name);
         config.common.set_node_name(&node_name);
         config.common.force_node_id = Some(PlainNodeId::new(1337));
         set_current_config(config);
+        let mut address_book = AddressBook::new(restate_types::config::node_filepath(""));
+        address_book
+            .bind_from_config(&Configuration::pinned())
+            .await?;
 
         let node_config = NodeConfig::builder()
             .name(node_name)
             .current_generation(GenerationalNodeId::INITIAL_NODE_ID)
-            .address("http://localhost:1337".parse().unwrap())
+            .address(
+                Configuration::pinned()
+                    .common
+                    .advertised_address(&address_book),
+            )
             .roles(EnumSet::default())
             .build();
         let mut nodes_configuration =
             NodesConfiguration::new(Version::MIN, cluster_name, ClusterFingerprint::generate());
         nodes_configuration.upsert_node(node_config);
+
+        assert!(TaskCenter::try_set_address_book(address_book));
 
         let builder = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_nodes_config(nodes_configuration);
@@ -374,10 +390,14 @@ mod tests {
         let cluster_name = "cluster_name_mismatch".to_owned();
         let other_cluster_name = "other_cluster_name".to_owned();
         let node_name = "node".to_owned();
-        let mut config = Configuration::default();
+        let mut config = Configuration::new_unix_sockets();
         config.common.set_cluster_name(&cluster_name);
         config.common.set_node_name(&node_name);
         set_current_config(config);
+        let mut address_book = AddressBook::new(restate_types::config::node_filepath(""));
+        address_book
+            .bind_from_config(&Configuration::pinned())
+            .await?;
 
         let nodes_configuration = NodesConfiguration::new(
             Version::MIN,
@@ -388,6 +408,7 @@ mod tests {
         let builder = TestCoreEnvBuilder::with_incoming_only_connector()
             .set_nodes_config(nodes_configuration);
         let node_env = builder.build().await;
+        assert!(TaskCenter::try_set_address_book(address_book));
 
         let metadata_writer = node_env.metadata_writer.clone();
 

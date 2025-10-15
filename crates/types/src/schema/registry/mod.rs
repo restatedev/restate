@@ -8,6 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod discovery_client;
+mod metadata_service;
+mod telemetry_client;
+
+pub use discovery_client::*;
+pub use metadata_service::*;
+pub use telemetry_client::*;
+
 use std::collections::HashMap;
 
 use codederror::{BoxedCodedError, CodedError};
@@ -19,22 +27,16 @@ use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
+use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::metadata::updater;
 use crate::schema::metadata::updater::{SchemaError, SchemaUpdater, ServiceError};
 use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
 
-mod discovery_client;
-mod metadata_service;
-mod telemetry_client;
-
 pub use crate::schema::metadata::updater::{
     AddDeploymentResult, AllowBreakingChanges, ModifyServiceRequest, Overwrite,
 };
-pub use discovery_client::*;
-pub use metadata_service::*;
-pub use telemetry_client::*;
 
 // -- Schema registry error and other types
 
@@ -532,10 +534,14 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .resolve_latest_service(&service_name)
     }
 
-    pub fn get_service_openapi(&self, service_name: impl AsRef<str>) -> Option<serde_json::Value> {
+    pub fn get_service_openapi(
+        &self,
+        service_name: impl AsRef<str>,
+        ingress_address: AdvertisedAddress<HttpIngressPort>,
+    ) -> Option<serde_json::Value> {
         self.metadata_service
             .get()
-            .resolve_latest_service_openapi(&service_name)
+            .resolve_latest_service_openapi(&service_name, ingress_address)
     }
 
     pub fn get_deployment(

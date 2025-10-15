@@ -17,13 +17,13 @@ use std::time::Duration;
 
 use clap::Parser;
 use codederror::CodedError;
-use restate_core::TaskCenterFutureExt;
 use rustls::crypto::aws_lc_rs;
 use tracing::error;
 use tracing::{info, trace, warn};
 
 use restate_core::TaskCenter;
 use restate_core::TaskCenterBuilder;
+use restate_core::TaskCenterFutureExt;
 use restate_core::TaskKind;
 use restate_errors::fmt::RestateCode;
 use restate_rocksdb::RocksDbManager;
@@ -35,6 +35,7 @@ use restate_types::art::render_restate_logo;
 use restate_types::config::CommonOptionCliOverride;
 use restate_types::config::{Configuration, PRODUCTION_PROFILE_DEFAULTS};
 use restate_types::config_loader::ConfigLoaderBuilder;
+use restate_types::net::listener::AddressBook;
 use restate_types::nodes_config::Role;
 
 mod signal;
@@ -75,6 +76,10 @@ struct RestateArguments {
     /// Use default production configuration profile.
     #[clap(long)]
     production: bool,
+
+    /// Do not print the restate logo on startup
+    #[clap(long)]
+    no_logo: bool,
 
     #[clap(flatten)]
     opts_overrides: CommonOptionCliOverride,
@@ -131,57 +136,25 @@ fn main() {
     // Install the recorder as early as possible
     let mut prometheus = Prometheus::install(&config.common);
 
-    if std::io::stdout().is_terminal() {
-        let mut stdout = std::io::stdout().lock();
-        let _ = writeln!(
-            stdout,
-            "{}",
-            render_restate_logo(!config.common.log_disable_ansi_codes)
-        );
-        let _ = writeln!(
-            &mut stdout,
-            "{:^40}",
-            format!("Restate {}", build_info::RESTATE_SERVER_VERSION)
-        );
-        let _ = writeln!(&mut stdout, "{:^40}", "https://restate.dev/");
-        if config.has_role(Role::Admin) {
-            let _ = writeln!(
-                &mut stdout,
-                "{:^40}",
-                format!(
-                    "Admin: {}",
-                    config
-                        .admin
-                        .advertised_admin_endpoint
-                        .as_ref()
-                        .expect("is set")
-                )
-            );
-        }
-
-        if config.has_role(Role::HttpIngress) {
-            let _ = writeln!(
-                &mut stdout,
-                "{:^40}",
-                format!(
-                    "HTTP Ingress: {}",
-                    config
-                        .ingress
-                        .advertised_ingress_endpoint
-                        .as_ref()
-                        .expect("is set")
-                )
-            );
-        }
-
-        let _ = writeln!(&mut stdout);
-    }
-
     // Setting initial configuration as global current
     restate_types::config::set_current_config(config);
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }
+
+    // create the parent data directory if it doesn't exist
+    let data_dir = restate_types::config::node_filepath("");
+    if !data_dir.exists()
+        && let Err(err) = std::fs::create_dir_all(&data_dir)
+    {
+        // We cannot use tracing here as it's not configured yet
+        eprintln!(
+            "failed to create data directory at {}: {err}",
+            data_dir.display()
+        );
+        std::process::exit(EXIT_CODE_FAILURE);
+    }
+
     let tc = TaskCenterBuilder::default()
         .options(Configuration::pinned().common.clone())
         .build()
@@ -193,6 +166,34 @@ fn main() {
             let tracing_guard =
                 init_tracing_and_logging(&Configuration::pinned().common, "restate-server")
                     .expect("failed to configure logging and tracing");
+
+            let mut address_book = AddressBook::new(data_dir);
+
+            if std::io::stdout().is_terminal() && !cli_args.no_logo {
+                let mut stdout = std::io::stdout().lock();
+                let _ = writeln!(
+                    stdout,
+                    "{}",
+                    render_restate_logo(!Configuration::pinned().common.log_disable_ansi_codes)
+                );
+                let _ = writeln!(
+                    &mut stdout,
+                    "{:^40}",
+                    format!("Restate {}", build_info::RESTATE_SERVER_VERSION)
+                );
+                let _ = writeln!(&mut stdout, "{:^40}", "https://restate.dev/");
+                let _ = writeln!(&mut stdout);
+            }
+
+            // Attempts to bind on all configured ports as early as possible so we can detect
+            // if we can't bind to certain ports or if we can't open unix sockets before we
+            // do any serious work.
+            if let Err(err) = address_book.bind_from_config(&Configuration::pinned()).await {
+                eprintln!("Failed: {err}");
+                handle_error(err);
+            }
+
+            print_address_book(&address_book, &Configuration::pinned());
             // spawn checking latest release
             let _ = TaskCenter::spawn_unmanaged(
                 TaskKind::Background,
@@ -242,7 +243,7 @@ fn main() {
             let telemetry = telemetry::Telemetry::create(&Configuration::pinned().common);
             telemetry.start();
 
-            let node = Node::create(Configuration::live(), prometheus).await;
+            let node = Node::create(Configuration::live(), prometheus, address_book).await;
             if let Err(err) = node {
                 handle_error(err);
             }
@@ -309,6 +310,27 @@ fn main() {
     std::process::exit(exit_code);
 }
 
+fn print_address_book(address_book: &AddressBook, config: &Configuration) {
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
+
+    let mut stdout = std::io::stdout().lock();
+    if config.has_role(Role::Admin) {
+        let address = config.admin.advertised_address(address_book);
+        let _ = writeln!(&mut stdout, "Admin: {address}");
+    }
+
+    if config.has_role(Role::HttpIngress) {
+        let address = config.ingress.advertised_address(address_book);
+        let _ = writeln!(&mut stdout, "HTTP Ingress: {address}");
+    }
+
+    let address = config.common.advertised_address(address_book);
+    let _ = writeln!(&mut stdout, "Message Fabric: {address}");
+    let _ = writeln!(&mut stdout);
+}
+
 async fn shutdown_tracing(grace_period: Duration, tracing_guard: TracingGuard) {
     trace!("Shutting down tracing to flush pending spans");
 
@@ -327,6 +349,8 @@ fn handle_error<E: Error + CodedError>(err: E) -> ! {
     // We terminate the main here in order to avoid the destruction of the Tokio
     // runtime. If we did this, potentially running Tokio tasks might otherwise cause panics
     // which adds noise.
-    RocksDbManager::get().on_ungraceful_shutdown();
+    if let Some(db) = RocksDbManager::maybe_get() {
+        db.on_ungraceful_shutdown();
+    }
     std::process::exit(EXIT_CODE_FAILURE);
 }

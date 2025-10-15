@@ -23,12 +23,13 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
+use restate_types::net::listener::AddressBook;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::Status;
 use ulid::Ulid;
 
 use restate_core::network::NetworkServerBuilder;
-use restate_core::{MetadataWriter, ShutdownError};
+use restate_core::{MetadataWriter, ShutdownError, TaskCenter};
 use restate_metadata_providers::replicated::{KnownLeader, create_replicated_metadata_client};
 use restate_metadata_server_grpc::{MetadataServerConfiguration, grpc as protobuf};
 pub use restate_metadata_store::{
@@ -40,7 +41,7 @@ use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::nodes_config::{
-    MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
+    MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration, Role,
 };
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
@@ -202,6 +203,7 @@ pub async fn create_metadata_server_and_client(
     mut config: Live<Configuration>,
     health_status: HealthStatus<MetadataServerStatus>,
     server_builder: &mut NetworkServerBuilder,
+    address_book: &AddressBook,
 ) -> anyhow::Result<(BoxedMetadataServer, MetadataStoreClient)> {
     metric_definitions::describe_metrics();
     let config = config.live_load();
@@ -212,9 +214,14 @@ pub async fn create_metadata_server_and_client(
             let metadata_client_options = config.common.metadata_client.clone();
             let backoff_policy = metadata_client_options.backoff_policy.clone();
             let_assert!(
-                MetadataClientKind::Replicated { addresses } =
+                MetadataClientKind::Replicated { mut addresses } =
                     config.common.metadata_client.kind.clone()
             );
+            // make sure we include our own address in the list of addresses if we are hosting
+            // a metadata server ourselves.
+            if config.common.roles.contains(Role::MetadataServer) {
+                addresses.push(config.common.advertised_address(address_book));
+            }
             (
                 server.boxed(),
                 create_replicated_metadata_client(
@@ -610,11 +617,15 @@ fn nodes_configuration_for_metadata_cluster_seed(
             metadata_server_state: MetadataServerState::Provisioning,
         };
 
+        let advertised_address = TaskCenter::with_current(|tc| {
+            configuration.common.advertised_address(tc.address_book())
+        });
+
         let node_config = NodeConfig::builder()
             .name(configuration.common.node_name().to_owned())
             .current_generation(current_generation)
             .location(configuration.common.location().clone())
-            .address(configuration.common.advertised_address.clone())
+            .address(advertised_address)
             .roles(configuration.common.roles)
             .metadata_server_config(metadata_server_config)
             .build();
