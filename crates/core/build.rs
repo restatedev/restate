@@ -28,6 +28,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_prost_build::configure()
         .bytes(".")
+        .enum_attribute("AddressKind", "#[derive(::serde::Serialize)]")
+        .enum_attribute("AddressKind", "#[serde(rename_all = \"kebab-case\")]")
         .file_descriptor_set_path(out_dir.join("node_ctl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")

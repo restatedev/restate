@@ -390,11 +390,20 @@ impl Drop for ListenersErased {
     }
 }
 
-#[allow(dead_code)]
 pub struct Addresses<P: ListenerPort> {
     tcp_bind_address: Option<SocketAddr>,
     uds_path: Option<PathBuf>,
     _phantom: std::marker::PhantomData<P>,
+}
+
+impl<P: ListenerPort + 'static> Addresses<P> {
+    pub fn tcp_bind_address(&self) -> Option<SocketAddr> {
+        self.tcp_bind_address
+    }
+
+    pub fn uds_path(&self) -> Option<&PathBuf> {
+        self.uds_path.as_ref()
+    }
 }
 
 #[derive(Default)]
