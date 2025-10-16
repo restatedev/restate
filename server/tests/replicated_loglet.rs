@@ -57,11 +57,11 @@ mod tests {
     #[test(restate_core::test)]
     async fn test_append_local_sequencer_three_logserver() -> Result<()> {
         run_in_test_env(
-            Configuration::default(),
+            Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
-            "test_append_local_sequencer_three_logserver",
+            "test_sequencer",
             |env| async move {
                 let batch: Arc<[Record]> = vec![
                     record_from_keys("record-1", Keys::Single(1)),
@@ -85,11 +85,11 @@ mod tests {
     #[test(restate_core::test)]
     async fn test_seal_local_sequencer_three_logserver() -> Result<()> {
         run_in_test_env(
-            Configuration::default(),
+            Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
-            "test_seal_local_sequencer_three_logserver",
+            "test_seal",
             |env| async move {
                 let batch: Arc<[Record]> = vec![
                     record_from_keys("record-1", Keys::Single(1)),
@@ -124,11 +124,11 @@ mod tests {
     #[test(restate_core::test)]
     async fn three_logserver_gapless_smoke_test() -> googletest::Result<()> {
         run_in_test_env(
-            Configuration::default(),
+            Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
-            "three_logserver_gapless_smoke_test",
+            "logserver_smoke",
             |test_env| {
                 restate_bifrost::loglet::loglet_tests::gapless_loglet_smoke_test(test_env.loglet)
             },
@@ -139,11 +139,11 @@ mod tests {
     #[test(restate_core::test)]
     async fn three_logserver_readstream() -> googletest::Result<()> {
         run_in_test_env(
-            Configuration::default(),
+            Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
-            "three_logserver_readstream",
+            "logserver_readstream",
             |test_env| {
                 restate_bifrost::loglet::loglet_tests::single_loglet_readstream(test_env.loglet)
             },
@@ -155,7 +155,7 @@ mod tests {
     async fn three_logserver_readstream_with_trims() -> googletest::Result<()> {
         // For this test to work, we need to disable the record cache to ensure we
         // observe the moving trimpoint.
-        let mut config = Configuration::default();
+        let mut config = Configuration::new_unix_sockets();
         // disable read-ahead to avoid reading records from log-servers before the trim taking
         // place.
         config.bifrost.replicated_loglet.readahead_records = NonZeroU16::new(1).unwrap();
@@ -167,7 +167,7 @@ mod tests {
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
-            "three_logserver_readstream_with_trims",
+            "readstream_trims",
             |test_env| {
                 restate_bifrost::loglet::loglet_tests::single_loglet_readstream_with_trims(
                     test_env.loglet,
@@ -180,11 +180,11 @@ mod tests {
     #[test(restate_core::test)]
     async fn three_logserver_append_after_seal() -> googletest::Result<()> {
         run_in_test_env(
-            Configuration::default(),
+            Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
-            "three_logserver_append_after_seal",
+            "append_after_seal",
             |test_env| restate_bifrost::loglet::loglet_tests::append_after_seal(test_env.loglet),
         )
         .await
@@ -193,11 +193,11 @@ mod tests {
     #[test(restate_core::test(flavor = "multi_thread", worker_threads = 4))]
     async fn three_logserver_append_after_seal_concurrent() -> googletest::Result<()> {
         run_in_test_env(
-            Configuration::default(),
+            Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
-            "three_logserver_append_after_seal_concurrent",
+            "after_seal_concurrent",
             |test_env| {
                 restate_bifrost::loglet::loglet_tests::append_after_seal_concurrent(test_env.loglet)
             },
@@ -208,11 +208,11 @@ mod tests {
     #[test(restate_core::test)]
     async fn three_logserver_seal_empty() -> googletest::Result<()> {
         run_in_test_env(
-            Configuration::default(),
+            Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
-            "three_logserver_seal_empty",
+            "seal_empty",
             |test_env| restate_bifrost::loglet::loglet_tests::seal_empty(test_env.loglet),
         )
         .await
@@ -225,11 +225,11 @@ mod tests {
         const CONCURRENT_APPENDERS: usize = 400;
 
         run_in_test_env(
-            Configuration::default(),
+            Configuration::new_unix_sockets(),
             GenerationalNodeId::new(5, 1), // local sequencer
             ReplicationProperty::new(NonZeroU8::new(2).unwrap()),
             3,
-            "bifrost_append_and_seal_concurrent",
+            "seal_concurrent",
             |test_env| async move {
                 let log_id = LogId::new(0);
 

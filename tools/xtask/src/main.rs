@@ -11,7 +11,6 @@
 use std::future::pending;
 use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
 use std::{env, io};
 
 use anyhow::bail;
@@ -38,6 +37,7 @@ use restate_types::invocation::{
 };
 use restate_types::journal_v2::{EntryIndex, Signal};
 use restate_types::live::Constant;
+use restate_types::net::listener::Listeners;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::Subscription;
 use restate_types::state_mut::ExternalStateMutation;
@@ -211,16 +211,15 @@ impl InvocationClient for Mock {
 
 async fn generate_rest_api_doc() -> anyhow::Result<()> {
     let config = Configuration::default();
-    let openapi_address = format!(
-        "http://localhost:{}/openapi",
-        config.admin.bind_address.port()
-    );
 
     // We start the Meta service, then download the openapi schema generated
     let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
     let bifrost = Bifrost::init_in_memory(node_env.metadata_writer.clone()).await;
 
+    let socket_dir = tempfile::tempdir()?;
+    let socket_path = socket_dir.path().join("admin.sock");
     let admin_service = AdminService::new(
+        Listeners::new_unix_listener(socket_path.clone())?,
         node_env.metadata_writer.clone(),
         bifrost,
         Mock,
@@ -238,19 +237,15 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         admin_service.run(Constant::new(config.admin)),
     )?;
 
-    let res = RetryPolicy::fixed_delay(Duration::from_millis(100), Some(20))
-        .retry(|| async {
-            reqwest::Client::builder()
-                .build()?
-                .get(openapi_address.clone())
-                .header(ACCEPT, "application/json")
-                .send()
-                .await?
-                .text()
-                .await
-        })
-        .await
-        .unwrap();
+    let res = reqwest::Client::builder()
+        .unix_socket(socket_path)
+        .build()?
+        .get("http://localhost/openapi")
+        .header(ACCEPT, "application/json")
+        .send()
+        .await?
+        .text()
+        .await?;
 
     println!("{res}");
 

@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use http::Uri;
-use serde::{Deserialize, Serialize};
 use std::ops::RangeInclusive;
+
+use serde::{Deserialize, Serialize};
+
+use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
 
 /// Version of the admin API to allow CLIs to detect if they are incompatible with a server.
 ///
@@ -68,9 +70,7 @@ pub struct VersionInformation {
     /// # Ingress endpoint
     ///
     /// Ingress endpoint that the Web UI should use to interact with.
-    #[serde(with = "serde_with::As::<Option<serde_with::DisplayFromStr>>")]
-    #[cfg_attr(feature = "schema", schemars(with = "String", url))]
-    pub ingress_endpoint: Option<Uri>,
+    pub ingress_endpoint: Option<AdvertisedAddress<HttpIngressPort>>,
 }
 
 #[cfg(test)]

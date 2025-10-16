@@ -9,13 +9,21 @@
 // by the Apache License, Version 2.0.
 
 #![allow(clippy::async_yields_async)]
-
 //! Utilities for benchmarking the Restate runtime
+
+use std::net::SocketAddr;
+use std::time::Duration;
+
 use anyhow::anyhow;
 use futures_util::{TryFutureExt, future};
 use http::Uri;
 use http::header::CONTENT_TYPE;
 use pprof::flamegraph::Options;
+use tokio::net::TcpListener;
+use tokio::runtime::Runtime;
+use tokio::sync::oneshot;
+use tracing::warn;
+
 use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind, cancellation_token, task_center};
 use restate_node::Node;
 use restate_rocksdb::RocksDbManager;
@@ -26,11 +34,8 @@ use restate_types::config::{
 };
 use restate_types::config_loader::ConfigLoaderBuilder;
 use restate_types::logs::metadata::ProviderKind;
+use restate_types::net::listener::AddressBook;
 use restate_types::retries::RetryPolicy;
-use std::time::Duration;
-use tokio::runtime::Runtime;
-use tokio::sync::oneshot;
-use tracing::warn;
 
 pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
     let client = reqwest::Client::builder()
@@ -102,16 +107,23 @@ pub fn spawn_restate(config: Configuration) -> task_center::Handle {
         .build()
         .expect("task_center builds")
         .into_handle();
+
     let mut prometheus = Prometheus::install(&config.common);
     restate_types::config::set_current_config(config.clone());
+
+    let mut address_book = AddressBook::new(restate_types::config::node_filepath(""));
     let live_config = Configuration::live();
 
     tc.block_on(async {
         RocksDbManager::init();
         prometheus.start_upkeep_task();
 
+        if let Err(err) = address_book.bind_from_config(&live_config.pinned()).await {
+            panic!("Failed to bind address book: {err}");
+        }
+
         TaskCenter::spawn(TaskKind::SystemBoot, "restate", async move {
-            let node = Node::create(live_config, prometheus)
+            let node = Node::create(live_config, prometheus, address_book)
                 .await
                 .expect("Restate node must build");
             node.start().await
@@ -126,9 +138,12 @@ pub fn spawn_mock_service_endpoint(task_center_handle: &task_center::Handle) {
     task_center_handle.block_on(async {
         let (running_tx, running_rx) = oneshot::channel();
         TaskCenter::spawn(TaskKind::TestRunner, "mock-service-endpoint", async move {
+            let addr: SocketAddr = ([127, 0, 0, 1], 9080).into();
+            let listener = TcpListener::bind(addr).await?;
+
             cancellation_token()
                 .run_until_cancelled(mock_service_endpoint::listener::run_listener(
-                    "127.0.0.1:9080".parse().expect("valid socket addr"),
+                    listener,
                     || {
                         let _ = running_tx.send(());
                     },

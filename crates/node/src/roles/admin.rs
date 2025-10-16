@@ -36,6 +36,8 @@ use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
+use restate_types::net::address::AdminPort;
+use restate_types::net::listener::AddressBook;
 use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
@@ -83,6 +85,7 @@ impl<T: TransportConnect> AdminRole<T> {
         metadata_writer: MetadataWriter,
         partition_store_manager: Arc<PartitionStoreManager>,
         server_builder: &mut NetworkServerBuilder,
+        address_book: &mut AddressBook,
         local_query_context: Option<QueryContext>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
@@ -120,7 +123,9 @@ impl<T: TransportConnect> AdminRole<T> {
             .await?
         };
 
+        let listeners = address_book.take_listeners::<AdminPort>();
         let admin = AdminService::new(
+            listeners,
             metadata_writer.clone(),
             bifrost.clone(),
             PartitionProcessorInvocationClient::new(

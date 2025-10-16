@@ -51,6 +51,7 @@ use restate_types::cluster_state::ClusterState;
 use restate_types::config::Configuration;
 use restate_types::health::{Health, NodeStatus};
 use restate_types::identifiers::PartitionId;
+use restate_types::net::listener::AddressBook;
 use restate_types::{GenerationalNodeId, NodeId};
 
 const EXIT_CODE_FAILURE: i32 = 1;
@@ -127,6 +128,10 @@ impl TaskCenter {
     /// at the startup of the node.
     pub fn try_set_global_metadata(metadata: Metadata) -> bool {
         Self::with_current(|tc| tc.try_set_global_metadata(metadata))
+    }
+
+    pub fn try_set_address_book(address_book: AddressBook) -> bool {
+        Self::with_current(|tc| tc.try_set_address_book(address_book))
     }
 
     /// Set a future callback to be executed after task center finishes shutdown.
@@ -337,6 +342,7 @@ struct TaskCenterInner {
     current_exit_code: AtomicI32,
     managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
     global_metadata: OnceLock<Metadata>,
+    address_book: OnceLock<AddressBook>,
     health: Health,
     cluster_state: ClusterState,
     root_task_context: TaskContext,
@@ -370,6 +376,7 @@ impl TaskCenterInner {
             current_exit_code: AtomicI32::new(0),
             managed_tasks: Mutex::new(HashMap::new()),
             global_metadata: OnceLock::new(),
+            address_book: OnceLock::new(),
             managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
             root_task_context,
             #[cfg(any(test, feature = "test-util"))]
@@ -386,6 +393,14 @@ impl TaskCenterInner {
         self.global_metadata.set(metadata).is_ok()
     }
 
+    /// Attempt to set the global address book. This should be called once
+    /// at the startup of the node after all listeners have been taken.
+    ///
+    /// Once the address book is set in task-center, it becomes immutable.
+    pub fn try_set_address_book(self: &Arc<Self>, address_book: AddressBook) -> bool {
+        self.address_book.set(address_book).is_ok()
+    }
+
     pub fn set_on_shutdown(&self, on_shutdown: BoxFuture<'static, ()>) {
         let mut guard = self.on_shutdown.lock();
         guard.replace(on_shutdown);
@@ -393,6 +408,10 @@ impl TaskCenterInner {
 
     pub fn global_metadata(self: &Arc<Self>) -> Option<&Metadata> {
         self.global_metadata.get()
+    }
+
+    pub fn address_book(self: &Arc<Self>) -> Option<&AddressBook> {
+        self.address_book.get()
     }
 
     pub fn metadata(self: &Arc<Self>) -> Option<Metadata> {
