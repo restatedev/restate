@@ -7143,6 +7143,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-lite"
+version = "1.6.0-dev"
+dependencies = [
+ "anyhow",
+ "clap",
+ "parking_lot",
+ "restate-admin",
+ "restate-bifrost",
+ "restate-core",
+ "restate-errors",
+ "restate-metadata-server",
+ "restate-node",
+ "restate-rocksdb",
+ "restate-service-client",
+ "restate-types",
+ "restate-workspace-hack",
+ "rlimit",
+ "tikv-jemallocator",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "vergen",
+]
+
+[[package]]
 name = "restate-local-cluster-runner"
 version = "1.6.0-dev"
 dependencies = [
