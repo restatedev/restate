@@ -49,6 +49,10 @@ pub struct GlobalOpts {
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Command {
+    #[cfg(feature = "dev-cmd")]
+    #[clap(name = "dev", visible_alias = "up")]
+    Dev(dev::Dev),
+
     /// Prints general information about the configured environment
     #[clap(name = "whoami")]
     WhoAmI(whoami::WhoAmI),
