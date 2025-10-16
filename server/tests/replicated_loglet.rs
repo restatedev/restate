@@ -27,6 +27,7 @@ mod tests {
         loglet::{AppendError, FindTailOptions},
     };
     use restate_core::{Metadata, TaskCenterFutureExt};
+    use restate_types::config::LogFormat;
     use restate_types::live::{LiveLoad, LiveLoadExt};
     use restate_types::{
         GenerationalNodeId, Version,
@@ -153,13 +154,14 @@ mod tests {
     #[test(restate_core::test)]
     async fn three_logserver_readstream_with_trims() -> googletest::Result<()> {
         // For this test to work, we need to disable the record cache to ensure we
-        // observer the moving trimpoint.
+        // observe the moving trimpoint.
         let mut config = Configuration::default();
         // disable read-ahead to avoid reading records from log-servers before the trim taking
         // place.
         config.bifrost.replicated_loglet.readahead_records = NonZeroU16::new(1).unwrap();
         config.bifrost.replicated_loglet.readahead_trigger_ratio = 1.0;
         config.bifrost.record_cache_memory_size = 0_u64.into();
+        config.common.log_format = LogFormat::Compact;
         run_in_test_env(
             config,
             GenerationalNodeId::new(5, 1), // local sequencer

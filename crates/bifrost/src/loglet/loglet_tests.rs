@@ -394,24 +394,35 @@ pub async fn single_loglet_readstream_with_trims(
     }
 
     // When reading record 8, it's acceptable to observe the record, or the trim gap. Both are
-    // acceptable because replicated loglet read stream's read-head cannot be completely disabled.
+    // acceptable because replicated loglet read stream's read-ahead cannot be completely disabled.
     // Its minimum is to immediately read the next record after consuming the last one, so we'll
     // see record8 because it's already cached.
     //
-    // read stream should send a gap from 8->10
-    let record = read_stream.next().await.unwrap()?;
-    assert_that!(record.sequence_number(), eq(Lsn::new(8)));
-    if record.is_trim_gap() {
-        assert!(record.is_trim_gap());
-        assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
-    } else {
-        // data record.
-        assert_that!(record.decode_unchecked::<String>(), eq("record8"));
-        // next record should be the trim gap
+    // For record 9 and 10, we can either observe the records or a trim gap of arbitrary length since
+    // we don't guarantee that all log servers have seen all records and the same trim points. Hence,
+    // it could happen that we are reading from N1, whose local trim point is at 9 because it did not
+    // replicate record10, which delivers a TrimGap(9) record. When continuing reading from N2, we
+    // might read record10 because it did not receive the trim command (yet).
+    let mut lsn = Lsn::new(8);
+
+    while lsn <= Lsn::new(10) {
         let record = read_stream.next().await.unwrap()?;
-        assert_that!(record.sequence_number(), eq(Lsn::new(9)));
-        assert!(record.is_trim_gap());
-        assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
+        assert_that!(record.sequence_number(), eq(lsn));
+
+        if record.is_trim_gap() {
+            // update the expected read pointer
+            lsn = record
+                .trim_gap_to_sequence_number()
+                .expect("A trim gap should have a known end")
+                .next();
+        } else {
+            assert_that!(
+                record.decode_unchecked::<String>(),
+                eq(format!("record{}", lsn))
+            );
+            // update the expected read pointer
+            lsn = lsn.next();
+        }
     }
 
     for i in 11..=20 {
