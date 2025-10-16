@@ -6,6 +6,7 @@ members = [
     "crates/encoding/derive",
     "crates/codederror/derive",
     "server",
+    "lite",
     "benchmarks",
     "tools/bifrost-benchpress",
     "tools/mock-service-endpoint",
@@ -69,6 +70,7 @@ restate-queue = { path = "crates/queue" }
 restate-rocksdb = { path = "crates/rocksdb" }
 restate-serde-util = { path = "crates/serde-util" }
 restate-server = { path = "server" }
+restate-lite = { path = "lite" }
 restate-service-client = { path = "crates/service-client" }
 restate-service-protocol = { path = "crates/service-protocol" }
 restate-service-protocol-v4 = { path = "crates/service-protocol-v4" }
