@@ -9,6 +9,12 @@ publish = false
 
 [features]
 default = []
+all-metadata-providers = [
+    "restate-metadata-providers/replicated",
+    "restate-metadata-providers/etcd",
+    "restate-metadata-providers/objstore",
+]
+
 memory-loglet = ["restate-bifrost/memory-loglet"]
 options_schema = [
     "dep:schemars",
@@ -25,7 +31,7 @@ restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-log-server = { workspace = true }
-restate-metadata-providers = { workspace = true, features = ["replicated", "objstore", "etcd"] }
+restate-metadata-providers = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
 restate-metadata-store = { workspace = true, features = ["grpc-server"] }
