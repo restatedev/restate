@@ -23,6 +23,7 @@ use crate::replication::ReplicationProperty;
 use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
 
 const PARTITION_CF_PREFIX: &str = "data-";
+const IDX_CF_PREFIX: &str = "idx-";
 
 type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
@@ -243,20 +244,26 @@ impl AsRef<str> for DbName {
 #[derive(
     Clone, derive_more::Display, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
 )]
+#[serde(transparent)]
 pub struct CfName(SmartString);
 
 impl CfName {
-    pub fn for_partition(partition_id: PartitionId) -> Self {
+    pub fn new_data(partition_id: PartitionId) -> Self {
         Self(format!("{PARTITION_CF_PREFIX}{partition_id}").into())
     }
 
-    #[inline]
+    pub fn new_idx(partition_id: PartitionId) -> Self {
+        Self(format!("{IDX_CF_PREFIX}{partition_id}").into())
+    }
+
+    #[inline(always)]
     pub fn into_inner(self) -> SmartString {
         self.0
     }
 }
 
 impl From<CfName> for SmartString {
+    #[inline(always)]
     fn from(val: CfName) -> Self {
         val.0
     }
@@ -307,10 +314,14 @@ impl Partition {
         return self.db_name.clone().unwrap_or_else(|| DbName::from("db"));
     }
 
-    pub fn cf_name(&self) -> CfName {
+    pub fn data_cf_name(&self) -> CfName {
         self.cf_name
             .clone()
-            .unwrap_or_else(|| CfName::for_partition(self.partition_id))
+            .unwrap_or_else(|| CfName::new_data(self.partition_id))
+    }
+
+    pub fn idx_cf_name(&self) -> CfName {
+        CfName::new_idx(self.partition_id)
     }
 }
 
