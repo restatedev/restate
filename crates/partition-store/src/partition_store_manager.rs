@@ -30,6 +30,7 @@ use crate::snapshots::{LocalPartitionSnapshot, Snapshots};
 use crate::{BuildError, OpenError, PartitionStore, SnapshotErrorKind};
 
 const PARTITION_CF_PREFIX: &str = "data-";
+pub(crate) const IDX_CF_PREFIX: &str = "idx-";
 
 #[derive(Default)]
 pub(crate) struct SharedState {
@@ -84,18 +85,18 @@ impl SharedState {
         &self,
         partition: &Partition,
         rocksdb: &Arc<RocksDb>,
-    ) -> Arc<PartitionCell> {
+    ) -> Result<Arc<PartitionCell>, OpenError> {
         let cell = self.get_or_default(partition);
         let mut state_guard = cell.inner.write().await;
         if !state_guard.is_unknown() {
             drop(state_guard);
-            return cell;
+            return Ok(cell);
         }
 
-        cell.open_cf(&mut state_guard, rocksdb);
+        cell.open_cf(&mut state_guard, rocksdb).await?;
 
         drop(state_guard);
-        cell
+        Ok(cell)
     }
 
     /// Note: we only modify entries, never insert, from the event listener. If we don't find
@@ -165,9 +166,12 @@ impl PartitionStoreManager {
             Configuration::pinned().worker.storage.data_dir(&db_name),
             configurator.clone(),
         )
-        .add_cf_pattern(CfPrefixPattern::new(PARTITION_CF_PREFIX), configurator)
-        // This is added as an experiment. We might make this configurable to let users decide
-        // on the trade-off between shutdown time and startup catchup time.
+        .add_cf_pattern(
+            CfPrefixPattern::new(PARTITION_CF_PREFIX),
+            configurator.clone(),
+        )
+        // todo: use specialized configurator for index column families.
+        .add_cf_pattern(CfPrefixPattern::new(IDX_CF_PREFIX), configurator)
         .add_to_flush_on_shutdown(CfPrefixPattern::ANY)
         .build()
         .expect("valid spec");
@@ -208,7 +212,7 @@ impl PartitionStoreManager {
     ///
     /// If `target_lsn` is `None`, then the store will be opened from the local database
     /// regardless of whether there is a snapshot available or not.
-    #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
+    #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.data_cf_name()))]
     pub async fn open(
         &self,
         partition: &Partition,
@@ -218,7 +222,7 @@ impl PartitionStoreManager {
 
         // If we already have the partition locally and we don't have a fast-forward target, or the
         // store already meets the target LSN requirement, then we simply return it.
-        let cell = self.state.get_or_open(partition, &rocksdb).await;
+        let cell = self.state.get_or_open(partition, &rocksdb).await?;
 
         let mut state_guard = cell.inner.write().await;
 

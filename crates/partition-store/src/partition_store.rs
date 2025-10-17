@@ -191,7 +191,7 @@ impl std::fmt::Debug for PartitionStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PartitionStore")
             .field("partition_id", &self.db.partition().partition_id)
-            .field("cf", &self.db.partition().cf_name())
+            .field("cf", &self.db.partition().data_cf_name())
             .field("key_buffer", &self.key_buffer.len())
             .field("value_buffer", &self.value_buffer.len())
             .finish()
@@ -250,7 +250,7 @@ impl PartitionStore {
     }
 
     fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
-        self.db.cf_handle()
+        self.db.data_cf_handle()
     }
 
     fn new_prefix_iterator_opts(&self, _key_kind: KeyKind, prefix: Bytes) -> ReadOptions {
@@ -505,7 +505,7 @@ impl PartitionStore {
                 let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
                 self.db.rocksdb().clone().run_background_iterator(
                     // todo(asoli): Pass an owned cf handle instead of name
-                    self.db.partition().cf_name().into(),
+                    self.db.partition().data_cf_name().into(),
                     name,
                     priority,
                     IterAction::Seek(prefix),
@@ -519,7 +519,7 @@ impl PartitionStore {
                 let end = end.freeze();
                 let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
                 self.db.rocksdb().clone().run_background_iterator(
-                    self.db.partition().cf_name().as_ref().into(),
+                    self.db.partition().data_cf_name().as_ref().into(),
                     name,
                     priority,
                     IterAction::Seek(start),
@@ -545,7 +545,7 @@ impl PartitionStore {
                 let end = end.freeze();
                 let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
                 self.db.rocksdb().clone().run_background_iterator(
-                    self.db.partition().cf_name().into(),
+                    self.db.partition().data_cf_name().into(),
                     name,
                     priority,
                     IterAction::Seek(start),
@@ -596,7 +596,7 @@ impl PartitionStore {
     ) -> PartitionStoreTransaction<'_> {
         // An optimization to avoid looking up the cf handle everytime, if we split into more
         // column families, we will need to cache those cfs here as well.
-        let data_cf_handle = self.db.cf_handle();
+        let data_cf_handle = self.db.data_cf_handle();
         let snapshot = match isolation_level {
             IsolationLevel::Committed => None,
             IsolationLevel::RepeatableReads => {
@@ -654,12 +654,15 @@ impl PartitionStore {
             .db
             .rocksdb()
             .clone()
-            .export_cf(self.db.partition().cf_name().into(), snapshot_dir.clone())
+            .export_cf(
+                self.db.partition().data_cf_name().into(),
+                snapshot_dir.clone(),
+            )
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
         trace!(
-            cf_name = %self.db.partition().cf_name(),
+            cf_name = %self.db.partition().data_cf_name(),
             %applied_lsn,
             "Exported column family snapshot to {:?}",
             snapshot_dir

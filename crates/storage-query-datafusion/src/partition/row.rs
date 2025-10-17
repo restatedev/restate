@@ -24,7 +24,7 @@ pub(crate) fn append_partition_row(
     row.partition_id(partition.partition_id.into());
     row.start_key(*partition.key_range.start());
     row.end_key(*partition.key_range.end());
-    row.cf_name(partition.cf_name());
+    row.cf_name(partition.data_cf_name());
     row.db_name(partition.db_name());
     let leadership = membership.current_leader();
     if leadership.current_leader.is_valid() {
