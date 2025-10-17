@@ -8,15 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::Debug;
+use std::mem;
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use prost::Message;
+
 use restate_types::invocation::Header;
 use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
 use restate_types::journal::raw::*;
 use restate_types::journal::{CompletionResult, Entry, EntryType};
 use restate_types::service_protocol;
-use std::fmt::Debug;
-use std::mem;
 
 /// This macro generates the pattern matching with arms per entry.
 /// For each entry it first executes `Message#decode` and then `try_into()`.
@@ -53,8 +55,8 @@ impl RawEntryCodec for ProtobufRawEntryCodec {
                 headers: headers
                     .into_iter()
                     .map(|h| service_protocol::Header {
-                        key: h.name.to_string(),
-                        value: h.value.to_string(),
+                        key: h.name.into(),
+                        value: h.value.into(),
                     })
                     .collect(),
                 value,

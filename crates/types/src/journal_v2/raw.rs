@@ -100,6 +100,10 @@ impl RawCommand {
         self.serialized_content.clone()
     }
 
+    pub fn into_serialized_content(self) -> Bytes {
+        self.serialized_content
+    }
+
     pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
         Ok(<T as TryFromEntry>::try_from(D::decode_entry(
             &RawEntry::Command(self.clone()),
@@ -163,6 +167,10 @@ impl RawNotification {
 
     pub fn serialized_content(&self) -> Bytes {
         self.serialized_content.clone()
+    }
+
+    pub fn into_serialized_content(self) -> Bytes {
+        self.serialized_content
     }
 
     pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
