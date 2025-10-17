@@ -41,7 +41,8 @@ pub struct PartitionDb {
     archived_lsn: watch::Sender<Option<Lsn>>,
     // Note: Rust will drop the fields in the order they are declared in the struct.
     // It's crucial to keep the column family and the database in this exact order.
-    cf: PartitionBoundCfHandle,
+    data_cf: PartitionBoundCfHandle,
+    idx_cf: Option<PartitionBoundCfHandle>,
     rocksdb: Arc<RocksDb>,
 }
 
@@ -50,7 +51,8 @@ impl PartitionDb {
         meta: Arc<Partition>,
         archived_lsn: watch::Sender<Option<Lsn>>,
         rocksdb: Arc<RocksDb>,
-        cf: Arc<BoundColumnFamily<'_>>,
+        data_cf: Arc<BoundColumnFamily<'_>>,
+        idx_cf: Option<Arc<BoundColumnFamily<'_>>>,
     ) -> Self {
         Self {
             meta,
@@ -58,7 +60,10 @@ impl PartitionDb {
             archived_lsn,
             // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
             // it's safe to use here as long as rocksdb is dropped last.
-            cf: unsafe { PartitionBoundCfHandle::new(cf) },
+            data_cf: unsafe { PartitionBoundCfHandle::new(data_cf) },
+            // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
+            // it's safe to use here as long as rocksdb is dropped last.
+            idx_cf: idx_cf.map(|cf| unsafe { PartitionBoundCfHandle::new(cf) }),
             rocksdb,
         }
     }
@@ -76,22 +81,48 @@ impl PartitionDb {
         self.rocksdb
     }
 
-    pub fn cf_handle(&self) -> &Arc<BoundColumnFamily<'_>> {
-        &self.cf.0
+    pub fn data_cf_handle(&self) -> &Arc<BoundColumnFamily<'_>> {
+        &self.data_cf.0
+    }
+
+    pub fn idx_cf_handle(&self) -> Option<&Arc<BoundColumnFamily<'_>>> {
+        self.idx_cf.as_ref().map(|cf| &cf.0)
     }
 
     pub fn cf_names(&self) -> Vec<SmartString> {
-        vec![self.meta.cf_name().into_inner()]
+        if Configuration::pinned().worker.storage.enable_index_cf {
+            vec![
+                self.meta.data_cf_name().into_inner(),
+                CfName::new_idx(self.meta.partition_id).into(),
+            ]
+        } else {
+            vec![self.meta.data_cf_name().into_inner()]
+        }
     }
 
     pub async fn flush_memtables(&self, wait: bool) -> Result<(), RocksError> {
-        self.rocksdb
-            .clone()
-            .flush_memtables(
-                std::slice::from_ref(&restate_rocksdb::CfName::from(self.partition().cf_name())),
-                wait,
-            )
-            .await
+        if Configuration::pinned().worker.storage.enable_index_cf {
+            self.rocksdb
+                .clone()
+                .flush_memtables(
+                    &[
+                        restate_rocksdb::CfName::from(self.partition().data_cf_name()),
+                        restate_rocksdb::CfName::from(self.partition().idx_cf_name()),
+                    ],
+                    wait,
+                )
+                .await
+        } else {
+            self.rocksdb
+                .clone()
+                .flush_memtables(
+                    &[restate_rocksdb::CfName::from(
+                        self.partition().data_cf_name(),
+                    )],
+                    wait,
+                )
+                .await
+        }
     }
 
     pub(crate) fn note_archived_lsn(&self, lsn: Lsn) -> bool {
@@ -119,16 +150,38 @@ impl PartitionDb {
     }
 
     pub(crate) fn update_memory_budget(&self, memory_budget: usize) {
-        let max_bytes_for_level_base = memory_budget;
-        let single_memtable_budget = memory_budget / 4;
-        let target_file_size_base = memory_budget / 8;
-
-        let max_bytes_for_level_base_str = max_bytes_for_level_base.to_string();
-        let single_memtable_budget_str = single_memtable_budget.to_string();
-        let target_file_size_base_str = target_file_size_base.to_string();
+        // This is a very rudimentary approach to balancing the memory budget between the data-cf
+        // and the index-cf. In the future, we might want to revisit this and come up with a more
+        // sophisticated approach.
+        //
+        // We give 75% of the memory budget to the data-cf but ensure a reasonable minimum
+        // is still applied to the index-cf.
+        //
+        // NOTE: Changes to this code should also be reflected in CfConfigurator::get_cf_options() method.
+        let (data_memory_budget, index_memory_budget) =
+            if Configuration::pinned().worker.storage.enable_index_cf {
+                let idx = memory_budget.div_ceil(4);
+                let data = memory_budget - idx;
+                (data, idx)
+            } else {
+                (memory_budget, 0)
+            };
 
         // impacts only this partition's column-families
         for cf in self.cf_names() {
+            let memory_budget = if cf.starts_with(crate::IDX_CF_PREFIX) {
+                index_memory_budget
+            } else {
+                data_memory_budget
+            };
+
+            let max_bytes_for_level_base = memory_budget;
+            let single_memtable_budget = memory_budget / 4;
+            let target_file_size_base = memory_budget / 8;
+
+            let max_bytes_for_level_base_str = max_bytes_for_level_base.to_string();
+            let single_memtable_budget_str = single_memtable_budget.to_string();
+            let target_file_size_base_str = target_file_size_base.to_string();
             debug!(
                 "Updating memory budget for {}/{} to {}",
                 self.rocksdb.name(),
@@ -187,7 +240,7 @@ impl PartitionCell {
     }
 
     pub fn cf_name(&self) -> CfName {
-        self.meta.cf_name()
+        self.meta.data_cf_name()
     }
 
     fn open_local_cf(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>, db: PartitionDb) {
@@ -204,19 +257,21 @@ impl PartitionCell {
         }
     }
 
-    pub fn open_cf(
+    pub async fn open_cf(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         rocksdb: &Arc<RocksDb>,
-    ) {
+    ) -> Result<(), RocksError> {
         let cf_name = self.cf_name();
         match rocksdb.inner().cf_handle(cf_name.as_ref()) {
-            Some(handle) => {
+            Some(data_handle) => {
+                let idx_handle = open_or_create_index_cf(rocksdb, &self.meta).await?;
                 let db = PartitionDb::new(
                     self.meta.clone(),
                     self.archived_lsn.clone(),
                     rocksdb.clone(),
-                    handle,
+                    data_handle,
+                    idx_handle,
                 );
                 self.open_local_cf(guard, db);
             }
@@ -224,29 +279,33 @@ impl PartitionCell {
                 self.set_cf_missing(guard);
             }
         }
+
+        Ok(())
     }
 
     // low-level opening of a column famili(es) for the partition.
     //
     // Note: This doesn't check whether the column family exists or not
-    #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name()))]
+    #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.data_cf_name()))]
     pub async fn provision(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         rocksdb: Arc<RocksDb>,
     ) -> Result<PartitionDb, RocksError> {
-        let cf_name = self.meta.cf_name();
-        debug!("Creating new column family {}", cf_name);
-        rocksdb.clone().open_cf(self.meta.cf_name().into()).await?;
-        let handle = rocksdb
-            .inner()
-            .cf_handle(cf_name.as_ref())
-            .expect("cf must be open");
+        let data_cf_name = self.meta.data_cf_name();
+        debug!("Creating new column family {}", data_cf_name);
+        rocksdb
+            .clone()
+            .open_cf(self.meta.data_cf_name().into())
+            .await?;
+        let data_handle = rocksdb.inner().cf_handle(data_cf_name.as_ref()).unwrap();
+        let idx_handle = maybe_open_index_cf(&rocksdb, &self.meta).await?;
         let db = PartitionDb::new(
             self.meta.clone(),
             self.archived_lsn.clone(),
             rocksdb.clone(),
-            handle,
+            data_handle,
+            idx_handle,
         );
         self.open_local_cf(guard, db.clone());
         Ok(db)
@@ -255,7 +314,7 @@ impl PartitionCell {
     // low-level importing a column family from a locally downloaded a snapshot
     //
     // Note: This doesn't check whether the column family exists or not
-    #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.cf_name(), path = %snapshot.base_dir.display()))]
+    #[instrument(level = "error", skip_all, fields(partition_id = %self.meta.partition_id, cf_name = %self.meta.data_cf_name(), path = %snapshot.base_dir.display()))]
     pub async fn import_cf(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
@@ -286,7 +345,7 @@ impl PartitionCell {
 
         rocksdb
             .clone()
-            .import_cf(self.meta.cf_name().into(), import_metadata)
+            .import_cf(self.meta.data_cf_name().into(), import_metadata)
             .await?;
 
         if let Err(err) = tokio::fs::remove_dir_all(&snapshot.base_dir).await {
@@ -298,14 +357,16 @@ impl PartitionCell {
             );
         };
 
+        let idx_handle = maybe_open_index_cf(&rocksdb, &self.meta).await?;
         let db = PartitionDb::new(
             self.meta.clone(),
             self.archived_lsn.clone(),
             rocksdb.clone(),
             rocksdb
                 .inner()
-                .cf_handle(self.meta.cf_name().as_ref())
-                .expect("cf must exist after import"),
+                .cf_handle(self.meta.data_cf_name().as_ref())
+                .unwrap(),
+            idx_handle,
         );
 
         self.open_local_cf(guard, db.clone());
@@ -324,15 +385,18 @@ impl PartitionCell {
             State::CfMissing => { /* nothing to do.*/ }
             State::Open { db } | State::Closed { db, .. } => {
                 let db = Arc::clone(&db.rocksdb);
-                let cf_name = self.meta.cf_name().clone();
+                let data_cf_name = self.meta.data_cf_name().clone();
+                let idx_cf_name = self.meta.idx_cf_name().clone();
 
                 // if dropping failed. We leave the column family closed marked as "unknown"
                 tokio::task::spawn_blocking(move || {
-                    db.inner().as_raw_db().drop_cf(cf_name.as_ref())
+                    // ignore the case where the index cf doesn't exist.
+                    let _ = db.inner().as_raw_db().drop_cf(idx_cf_name.as_ref());
+                    db.inner().as_raw_db().drop_cf(data_cf_name.as_ref())
                 })
                 .await
                 .map_err(|_| RocksError::Shutdown(ShutdownError))??;
-                debug!("Column family {} dropped", self.meta.cf_name());
+                debug!("Column family {} dropped", self.meta.data_cf_name());
             }
         }
         self.set_cf_missing(guard);
@@ -486,10 +550,14 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
             write_buffer_manager,
         );
 
-        self.apply_db_opts_from_config(
-            &mut db_options,
-            &Configuration::pinned().worker.storage.rocksdb,
-        );
+        let storage_config = &Configuration::pinned().worker.storage;
+        self.apply_db_opts_from_config(&mut db_options, &storage_config.rocksdb);
+
+        if storage_config.enable_index_cf {
+            // Atomic flush is required to ensure that the index cf is in-sync with
+            // the data cf.
+            db_options.set_atomic_flush(true);
+        }
 
         let event_listener = DurableLsnEventListener::new(&self.shared_state);
         db_options.add_event_listener(event_listener);
@@ -541,7 +609,24 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
 
         // -- Initial Memory Configuration --
+        //
         let memtables_budget = self.memory_budget.current_per_partition_budget();
+        // NOTE: Changes to this code should also be reflected in update_memory_budget() method
+        let (data_memory_budget, index_memory_budget) =
+            if Configuration::pinned().worker.storage.enable_index_cf {
+                let idx = memtables_budget.div_ceil(4);
+                let data = memtables_budget - idx;
+                (data, idx)
+            } else {
+                (memtables_budget, 0)
+            };
+
+        let memtables_budget = if cf_name.starts_with(crate::IDX_CF_PREFIX) {
+            index_memory_budget
+        } else {
+            data_memory_budget
+        };
+
         tracing::debug!(
             "Configured {db_name}/{cf_name} with memtable budget={}",
             ByteCount::from(memtables_budget)
@@ -562,5 +647,55 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.set_max_bytes_for_level_base(memtables_budget as u64);
 
         cf_options
+    }
+}
+
+async fn maybe_open_index_cf<'a>(
+    rocksdb: &'a Arc<RocksDb>,
+    meta: &Arc<Partition>,
+) -> Result<Option<Arc<BoundColumnFamily<'a>>>, RocksError> {
+    if Configuration::pinned().worker.storage.enable_index_cf {
+        let idx_cf_name = meta.idx_cf_name();
+        debug!("Creating idx column family {}", idx_cf_name);
+        rocksdb.clone().open_cf(idx_cf_name.clone().into()).await?;
+        Ok(Some(
+            rocksdb.inner().cf_handle(idx_cf_name.as_ref()).unwrap(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn open_or_create_index_cf<'a>(
+    rocksdb: &'a Arc<RocksDb>,
+    meta: &Arc<Partition>,
+) -> Result<Option<Arc<BoundColumnFamily<'a>>>, RocksError> {
+    let idx_cf_name = meta.idx_cf_name();
+    if Configuration::pinned().worker.storage.enable_index_cf {
+        if let Some(handle) = rocksdb.inner().cf_handle(idx_cf_name.as_ref()) {
+            Ok(Some(handle))
+        } else {
+            debug!("Creating idx column family {}", idx_cf_name);
+            rocksdb.clone().open_cf(idx_cf_name.clone().into()).await?;
+            Ok(Some(
+                rocksdb.inner().cf_handle(idx_cf_name.as_ref()).unwrap(),
+            ))
+        }
+    } else {
+        // If the feature is disabled and the column family exists, we need to drop it.
+        // this is to ensure that the column family's contents are always consistent
+        // with the state of the partition. Therefore, the presence of the column family
+        // would be sufficient to indicate that the index can be used.
+        if rocksdb.inner().cf_handle(idx_cf_name.as_ref()).is_some() {
+            let cf = idx_cf_name.clone();
+            let rocksdb = rocksdb.clone();
+            // if dropping failed. We leave the column family closed marked as "unknown"
+            tokio::task::spawn_blocking(move || rocksdb.inner().as_raw_db().drop_cf(cf.as_ref()))
+                .await
+                .map_err(|_| RocksError::Shutdown(ShutdownError))??;
+            info!("Column family {} dropped", idx_cf_name);
+        }
+
+        Ok(None)
     }
 }

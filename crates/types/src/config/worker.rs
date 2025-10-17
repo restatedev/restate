@@ -376,6 +376,12 @@ pub struct StorageOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
+    // Introduced in v1.6.0.
+    // if true, the index column family is created.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub enable_index_cf: bool,
+
     /// The memory budget for rocksdb memtables in bytes
     ///
     /// The total is divided evenly across partitions. The server will rebalance the memory budget
@@ -445,8 +451,8 @@ impl Default for StorageOptions {
             .build()
             .expect("valid RocksDbOptions");
 
-        #[allow(deprecated)]
         StorageOptions {
+            enable_index_cf: false,
             rocksdb,
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
