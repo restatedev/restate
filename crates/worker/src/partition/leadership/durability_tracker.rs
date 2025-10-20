@@ -13,6 +13,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
+use restate_partition_store::snapshots::ArchivedLsn;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_stream::wrappers::{IntervalStream, WatchStream};
@@ -39,7 +40,7 @@ pub struct DurabilityTracker {
     partition_id: PartitionId,
     last_reported_durable_lsn: Lsn,
     replica_set_states: PartitionReplicaSetStates,
-    archived_lsn_watch: WatchStream<Option<Lsn>>,
+    archived_lsn_watch: WatchStream<Option<ArchivedLsn>>,
     check_timer: IntervalStream,
     last_warning_at: Instant,
     /// cache of the last archived_lsn
@@ -52,7 +53,7 @@ impl DurabilityTracker {
         partition_id: PartitionId,
         last_reported_durable_lsn: Option<Lsn>,
         replica_set_states: PartitionReplicaSetStates,
-        archived_lsn_watch: watch::Receiver<Option<Lsn>>,
+        archived_lsn_watch: watch::Receiver<Option<ArchivedLsn>>,
         check_interval: Duration,
     ) -> Self {
         let mut check_timer =
@@ -166,7 +167,9 @@ impl Stream for DurabilityTracker {
                 self.terminated = true;
                 return Poll::Ready(None);
             }
-            (Poll::Ready(Some(archived)), _) => archived.unwrap_or(Lsn::INVALID),
+            (Poll::Ready(Some(archived)), _) => archived
+                .map(|a| a.get_min_applied_lsn())
+                .unwrap_or(Lsn::INVALID),
             (_, Poll::Ready(_)) => self.last_archived,
             (Poll::Pending, Poll::Pending) => return Poll::Pending,
         };
