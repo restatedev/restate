@@ -221,15 +221,6 @@ pub const DEFAULT_ABORT_TIMEOUT: Duration = Duration::from_secs(60);
 #[builder(default)]
 #[serde(rename_all = "kebab-case")]
 pub struct InvokerOptions {
-    /// # Retry policy
-    ///
-    /// This is **deprecated** and will be removed in the next Restate releases.
-    ///
-    /// Please refer to `default-retry-policy` for the new configuration options.
-    #[deprecated]
-    #[serde(default)]
-    pub retry_policy: Option<RetryPolicy>,
-
     /// # Inactivity timeout
     ///
     /// This timer guards against stalled service/handler invocations. Once it expires,
@@ -333,24 +324,11 @@ impl InvokerOptions {
     pub fn message_size_limit(&self) -> Option<usize> {
         self.message_size_limit.map(Into::into)
     }
-
-    #[allow(deprecated)]
-    pub fn print_deprecation_warnings(&self) {
-        if self.retry_policy.is_some() {
-            eprintln!(
-                "Using the deprecated config option 'invoker.retry-policy' instead of 'default-retry-policy'. \
-                Please update the config to use 'default-retry-policy' instead. \
-                Note that using the new feature requires v1.5.x and after enabling, you won't be able to rollback to v1.4.x."
-            );
-        }
-    }
 }
 
 impl Default for InvokerOptions {
     fn default() -> Self {
         Self {
-            #[allow(deprecated)]
-            retry_policy: None,
             in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
             inactivity_timeout: FriendlyDuration::new(DEFAULT_INACTIVITY_TIMEOUT),
             abort_timeout: FriendlyDuration::new(DEFAULT_ABORT_TIMEOUT),

@@ -39,14 +39,13 @@ pub struct InvocationOptions {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_journal_retention: Option<FriendlyDuration>,
 
-    // TODO(slinkydeveloper) on v1.6 this option becomes mandatory, and serde should default to the values set below
     /// # Default retry policy
     ///
     /// The default retry policy to use for invocations.
     ///
     /// The retry policy can be customized on a service/handler basis, using the respective SDK APIs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_retry_policy: Option<InvocationRetryPolicyOptions>,
+    #[serde(default)]
+    pub default_retry_policy: InvocationRetryPolicyOptions,
 
     /// # Max configurable value for retry policy max attempts
     ///
@@ -63,7 +62,7 @@ impl Default for InvocationOptions {
         Self {
             default_journal_retention: FriendlyDuration::from_secs(60 * 60 * 24),
             max_journal_retention: None,
-            default_retry_policy: None,
+            default_retry_policy: InvocationRetryPolicyOptions::default(),
             max_retry_policy_max_attempts: None,
         }
     }
