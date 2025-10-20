@@ -44,6 +44,7 @@ pub struct InvocationOptions {
     /// The default retry policy to use for invocations.
     ///
     /// The retry policy can be customized on a service/handler basis, using the respective SDK APIs.
+    /// Check https://docs.restate.dev/services/configuration#retries for more details.
     #[serde(default)]
     pub default_retry_policy: InvocationRetryPolicyOptions,
 
@@ -99,6 +100,11 @@ pub struct InvocationRetryPolicyOptions {
     /// # On max attempts
     ///
     /// Behavior when max attempts are reached.
+    ///
+    /// Set to `pause` to pause invocations when max attempts are reached.
+    /// Set to `kill` to kill the invocation when max attempts are reached.
+    ///
+    /// For more details about the invocation lifecycle, check https://docs.restate.dev/services/invocation/managing-invocations
     #[serde(default)]
     pub(crate) on_max_attempts: OnMaxAttempts,
 
