@@ -995,10 +995,11 @@ mod tests {
     use restate_bifrost::{BifrostService, ErrorRecoveryStrategy};
     use restate_core::network::NetworkServerBuilder;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
-    use restate_types::config::Configuration;
+    use restate_types::config::{self, Configuration};
     use restate_types::health::HealthStatus;
     use restate_types::live::Live;
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
+    use restate_types::net::listener::AddressBook;
     use restate_types::partitions::state::PartitionReplicaSetStates;
 
     #[test(restate_core::test)]
@@ -1011,13 +1012,15 @@ mod tests {
 
         let replica_set_states = PartitionReplicaSetStates::default();
 
+        let mut address_book = AddressBook::new(config::node_filepath(""));
+
         let svc = Service::create(
             Live::from_value(Configuration::default()),
             HealthStatus::default(),
             replica_set_states,
             bifrost.clone(),
             builder.networking.clone(),
-            &mut NetworkServerBuilder::default(),
+            &mut NetworkServerBuilder::new(&mut address_book),
             builder.metadata_writer.clone(),
         )
         .await?;

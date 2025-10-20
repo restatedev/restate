@@ -19,7 +19,7 @@ use serde_with::serde_as;
 use crate::base62_util::base62_max_length_for_type;
 use crate::locality::NodeLocation;
 use crate::metadata::GlobalMetadata;
-use crate::net::AdvertisedAddress;
+use crate::net::address::{AdvertisedAddress, FabricPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::{
     GenerationalNodeId, NodeId, PlainNodeId, base62_util, flexbuffers_storage_encode_decode,
@@ -115,7 +115,11 @@ pub enum NodesConfigError {
 }
 
 // PartialEq+Eq+Clone+Copy are implemented by EnumSetType
-#[derive(Debug, Hash, EnumSetType, strum::Display, serde::Serialize, serde::Deserialize)]
+// Note that the order of the variants matter, the variants are ordered by the order
+// we'd bind their respective ports/sockets on startup.
+#[derive(
+    Debug, Hash, EnumSetType, Ord, PartialOrd, strum::Display, serde::Serialize, serde::Deserialize,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[enumset(serialize_repr = "list")]
 #[serde(rename_all = "kebab-case")]
@@ -123,19 +127,19 @@ pub enum NodesConfigError {
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[cfg_attr(feature = "clap", clap(rename_all = "kebab-case"))]
 pub enum Role {
-    /// A worker runs partition processor (journal, state, and drives invocations)
-    Worker,
+    /// Serves HTTP ingress requests
+    HttpIngress,
     /// Admin runs cluster controller and user-facing admin APIs
     Admin,
+    /// A worker runs partition processor (journal, state, and drives invocations)
+    Worker,
+    /// Serves a log-server for replicated loglets
+    LogServer,
     /// Serves the metadata store
     // For backwards-compatibility also accept the old name
     #[serde(alias = "metadata-store")]
     #[serde(rename(serialize = "metadata-server"))]
     MetadataServer,
-    /// Serves a log-server for replicated loglets
-    LogServer,
-    /// Serves HTTP ingress requests
-    HttpIngress,
 }
 
 #[serde_as]
@@ -207,7 +211,7 @@ enum MaybeNode {
 pub struct NodeConfig {
     pub name: String,
     pub current_generation: GenerationalNodeId,
-    pub address: AdvertisedAddress,
+    pub address: AdvertisedAddress<FabricPort>,
     pub roles: EnumSet<Role>,
     #[serde(default)]
     #[builder(default)]
@@ -229,7 +233,7 @@ impl NodeConfig {
         name: String,
         current_generation: GenerationalNodeId,
         location: NodeLocation,
-        address: AdvertisedAddress,
+        address: AdvertisedAddress<FabricPort>,
         roles: EnumSet<Role>,
         log_server_config: LogServerConfig,
         metadata_server_config: MetadataServerConfig,
@@ -726,7 +730,7 @@ mod tests {
     #[test]
     fn test_upsert_node() {
         let mut config = NodesConfiguration::new_for_testing();
-        let address: AdvertisedAddress = "unix:/tmp/my_socket".parse().unwrap();
+        let address: AdvertisedAddress<_> = "unix:/tmp/my_socket".parse().unwrap();
         let roles = EnumSet::only(Role::Worker);
         let current_gen = GenerationalNodeId::new(1, 1);
         let node = NodeConfig::builder()
@@ -810,7 +814,7 @@ mod tests {
     #[test]
     fn test_remove_node() {
         let mut config = NodesConfiguration::new_for_testing();
-        let address: AdvertisedAddress = "unix:/tmp/my_socket".parse().unwrap();
+        let address: AdvertisedAddress<_> = "unix:/tmp/my_socket".parse().unwrap();
         let node1 = NodeConfig::new(
             "node1".to_owned(),
             GenerationalNodeId::new(1, 1),

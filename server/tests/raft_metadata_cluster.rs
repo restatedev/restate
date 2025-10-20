@@ -18,7 +18,7 @@ use rand::Rng;
 use rand::seq::IndexedMutRandom;
 use restate_core::{TaskCenter, TaskKind, cancellation_token};
 use restate_local_cluster_runner::cluster::{Cluster, StartedCluster};
-use restate_local_cluster_runner::node::{BinarySource, HealthCheck, Node};
+use restate_local_cluster_runner::node::{BinarySource, HealthCheck, NodeSpec};
 use restate_metadata_providers::create_client;
 use restate_metadata_server::tests::Value;
 use restate_metadata_store::{MetadataStoreClient, WriteError, retry_on_retryable_error};
@@ -38,9 +38,9 @@ use tracing::{debug, info};
 
 #[test_log::test(restate_core::test)]
 async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
-    let base_config = Configuration::default();
+    let base_config = Configuration::new_unix_sockets();
 
-    let nodes = Node::new_test_nodes(
+    let nodes = NodeSpec::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
         enum_set!(Role::MetadataServer),
@@ -60,7 +60,7 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
     let addresses = cluster
         .nodes
         .iter()
-        .map(|node| node.node_address().clone())
+        .map(|node| node.advertised_address().clone())
         .collect();
 
     let metadata_store_client_options = MetadataClientOptions {
@@ -142,14 +142,14 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
     let num_nodes = 3;
     let chaos_duration = Duration::from_secs(20);
     let expected_recovery_duration = Duration::from_secs(10);
-    let mut base_config = Configuration::default();
+    let mut base_config = Configuration::new_unix_sockets();
     base_config.metadata_server.set_raft_options(RaftOptions {
         raft_election_tick: NonZeroUsize::new(5).expect("5 to be non zero"),
         raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
         ..RaftOptions::default()
     });
 
-    let nodes = Node::new_test_nodes(
+    let nodes = NodeSpec::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
         enum_set!(Role::MetadataServer),
@@ -169,7 +169,7 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
     let addresses = cluster
         .nodes
         .iter()
-        .map(|node| node.node_address().clone())
+        .map(|node| node.advertised_address().clone())
         .collect();
 
     let metadata_store_client_options = MetadataClientOptions {
@@ -323,14 +323,14 @@ async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
     let num_nodes = 3;
     let test_duration = Duration::from_secs(20);
     let expected_recovery_duration = Duration::from_secs(10);
-    let mut base_config = Configuration::default();
+    let mut base_config = Configuration::new_unix_sockets();
     base_config.metadata_server.set_raft_options(RaftOptions {
         raft_election_tick: NonZeroUsize::new(5).expect("5 to be non zero"),
         raft_heartbeat_tick: NonZeroUsize::new(2).expect("2 to be non zero"),
         ..RaftOptions::default()
     });
 
-    let nodes = Node::new_test_nodes(
+    let nodes = NodeSpec::new_test_nodes(
         base_config,
         BinarySource::CargoTest,
         // we need to run the admin role to exchange metadata information between nodes, this can
@@ -352,7 +352,7 @@ async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
     let addresses = cluster
         .nodes
         .iter()
-        .map(|node| node.node_address().clone())
+        .map(|node| node.advertised_address().clone())
         .collect();
 
     let metadata_store_client_options = MetadataClientOptions {

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::net::IpAddr;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
@@ -18,10 +19,11 @@ use restate_time_util::NonZeroFriendlyDuration;
 
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;
-use crate::net::{AdvertisedAddress, BindAddress};
+use crate::net::address::FabricPort;
+use crate::net::address::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
 
-use super::LogFormat;
+use super::{ListenMode, LogFormat};
 
 #[serde_as]
 #[skip_serializing_none]
@@ -30,6 +32,26 @@ use super::LogFormat;
 /// parse-compatible with CommonOptions.
 #[serde(rename_all = "kebab-case")]
 pub struct CommonOptionCliOverride {
+    /// Listen on unix-sockets, TCP sockets, or both.
+    #[clap(long, env = "RESTATE_LISTEN_MODE", global = true)]
+    pub listen_mode: Option<ListenMode>,
+
+    /// Use random ports instead of the default.
+    #[clap(long, env = "RESTATE_USE_RANDOM_PORTS", global = true)]
+    use_random_ports: Option<bool>,
+
+    /// Hostname to advertise for this service.
+    #[clap(long, env = "RESTATE_ADVERTISED_HOST", global = true)]
+    advertised_host: Option<String>,
+
+    /// Local interface IP address to listen on.
+    #[clap(long, env = "RESTATE_BIND_IP", global = true)]
+    bind_ip: Option<IpAddr>,
+
+    /// The port restate uses for internal node-to-node communication (message fabric)
+    #[clap(long, env = "RESTATE_BIND_PORT", global = true)]
+    bind_port: Option<u16>,
+
     /// Defines the roles which this Restate node should run, by default the node
     /// starts with all roles.
     ///
@@ -99,16 +121,17 @@ pub struct CommonOptionCliOverride {
 
     /// Address of the metadata store server to bootstrap the node from.
     #[clap(long, global = true)]
-    pub metadata_store_address: Option<AdvertisedAddress>,
+    pub metadata_store_address: Option<AdvertisedAddress<FabricPort>>,
 
-    /// Address to bind for the Node server. e.g. `0.0.0.0:5122`
-    #[clap(long, global = true)]
-    pub bind_address: Option<BindAddress>,
+    /// Address to bind for the node-to-node communication. e.g. `0.0.0.0:5122`.
+    /// This overrides bind-ip and bind-port if set.
+    #[clap(long, env = "RESTATE_BIND_ADDRESS", global = true)]
+    pub bind_address: Option<BindAddress<FabricPort>>,
 
     /// Address that other nodes will use to connect to this node. Defaults to use bind_address if
     /// unset. e.g. `http://127.0.0.1:5122/`
-    #[clap(long, global = true)]
-    pub advertised_address: Option<AdvertisedAddress>,
+    #[clap(long, env = "RESTATE_ADVERTISED_ADDRESS", global = true)]
+    pub advertised_address: Option<AdvertisedAddress<FabricPort>>,
 
     /// Default Number Of Partitions
     ///

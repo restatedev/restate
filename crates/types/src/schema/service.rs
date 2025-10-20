@@ -15,13 +15,16 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde::Serialize;
 
+use restate_time_util::FriendlyDuration;
+
 use crate::config::{DEFAULT_ABORT_TIMEOUT, DEFAULT_INACTIVITY_TIMEOUT};
 use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
+use crate::net::address::AdvertisedAddress;
+use crate::net::address::HttpIngressPort;
 use crate::schema::invocation_target::{DEFAULT_IDEMPOTENCY_RETENTION, OnMaxAttempts};
-use restate_time_util::FriendlyDuration;
 
 /// This API returns service metadata, as shown in the Admin API.
 ///
@@ -32,6 +35,7 @@ pub trait ServiceMetadataResolver {
     fn resolve_latest_service_openapi(
         &self,
         service_name: impl AsRef<str>,
+        ingress_address: AdvertisedAddress<HttpIngressPort>,
     ) -> Option<serde_json::Value>;
 
     fn list_services(&self) -> Vec<ServiceMetadata>;
@@ -517,7 +521,11 @@ pub mod test_util {
             self.0.get(service_name.as_ref()).cloned()
         }
 
-        fn resolve_latest_service_openapi(&self, _service_name: impl AsRef<str>) -> Option<Value> {
+        fn resolve_latest_service_openapi(
+            &self,
+            _service_name: impl AsRef<str>,
+            _ingress_address: AdvertisedAddress<HttpIngressPort>,
+        ) -> Option<Value> {
             Some(Value::Null)
         }
 

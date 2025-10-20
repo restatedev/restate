@@ -40,13 +40,17 @@ pub async fn run(State(env): State<CliEnv>) {
     table.add_row(vec![
         "Ingress base URL",
         env.ingress_base_url()
-            .map(|u| u.as_ref())
+            .map(|u| u.to_string())
+            .as_deref()
             .unwrap_or("(NONE)"),
     ]);
 
     table.add_row(vec![
         "Admin base URL",
-        env.admin_base_url().map(|u| u.as_ref()).unwrap_or("(NONE)"),
+        env.admin_base_url()
+            .map(|u| u.to_string())
+            .as_deref()
+            .unwrap_or("(NONE)"),
     ]);
 
     if env.config.bearer_token.is_some() {

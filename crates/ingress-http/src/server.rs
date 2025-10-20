@@ -8,63 +8,53 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::convert::Infallible;
+use std::future::Future;
+use std::time::Duration;
 
-use crate::handler::Handler;
 use codederror::CodedError;
 use http::{Request, Response};
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
-use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
-use restate_time_util::DurationExt;
-use restate_types::config::IngressOptions;
-use restate_types::health::HealthStatus;
-use restate_types::live::Live;
-use restate_types::protobuf::common::IngressStatus;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
-use std::convert::Infallible;
-use std::future::Future;
-use std::net::SocketAddr;
-use std::time::Duration;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::either::Either;
 use tower::{ServiceBuilder, ServiceExt};
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::cors::CorsLayer;
 use tower_http::normalize_path::NormalizePathLayer;
 use tower_http::trace::TraceLayer;
-use tracing::{Span, debug, info, info_span, warn};
+use tracing::{Span, debug, info, info_span, instrument};
 
-pub type StartSignal = oneshot::Receiver<SocketAddr>;
+use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
+use restate_time_util::DurationExt;
+use restate_types::config::IngressOptions;
+use restate_types::health::HealthStatus;
+use restate_types::live::Live;
+use restate_types::net::address::{HttpIngressPort, ListenerPort, SocketAddress};
+use restate_types::net::listener::Listeners;
+use restate_types::protobuf::common::IngressStatus;
+use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::schema::service::ServiceMetadataResolver;
+
+use super::*;
+use crate::handler::Handler;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum IngressServerError {
-    #[error(
-        "failed binding to address '{address}' specified in 'worker.ingress_http.bind_address'"
-    )]
-    #[code(restate_errors::RT0004)]
-    Binding {
-        address: SocketAddr,
-        #[source]
-        source: std::io::Error,
-    },
     #[error("error while running ingress http server: {0}")]
     #[code(unknown)]
     Running(#[from] hyper::Error),
 }
 
 pub struct HyperServerIngress<Schemas, Dispatcher> {
-    listening_addr: SocketAddr,
+    listeners: Listeners<HttpIngressPort>,
     concurrency_limit: usize,
 
     // Parameters to build the layers
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
 
-    // Signals
-    start_signal_tx: oneshot::Sender<SocketAddr>,
     health: HealthStatus<IngressStatus>,
 }
 
@@ -75,20 +65,19 @@ where
 {
     pub fn from_options(
         ingress_options: &IngressOptions,
+        listeners: Listeners<HttpIngressPort>,
         dispatcher: Dispatcher,
         schemas: Live<Schemas>,
         health: HealthStatus<IngressStatus>,
     ) -> HyperServerIngress<Schemas, Dispatcher> {
         crate::metric_definitions::describe_metrics();
-        let (hyper_ingress_server, _) = HyperServerIngress::new(
-            ingress_options.bind_address,
+        HyperServerIngress::new(
+            listeners,
             ingress_options.concurrent_api_requests_limit(),
             schemas,
             dispatcher,
             health,
-        );
-
-        hyper_ingress_server
+        )
     }
 }
 
@@ -98,51 +87,37 @@ where
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
-        listening_addr: SocketAddr,
+        listeners: Listeners<HttpIngressPort>,
         concurrency_limit: usize,
         schemas: Live<Schemas>,
         dispatcher: Dispatcher,
         health: HealthStatus<IngressStatus>,
-    ) -> (Self, StartSignal) {
+    ) -> Self {
         health.update(IngressStatus::StartingUp);
-        let (start_signal_tx, start_signal_rx) = oneshot::channel();
 
-        let ingress = Self {
-            listening_addr,
+        Self {
+            listeners,
             concurrency_limit,
             schemas,
             dispatcher,
             health,
-            start_signal_tx,
-        };
-
-        (ingress, start_signal_rx)
+        }
     }
 
+    #[instrument(
+        level = "error",
+        name = "server",
+        skip_all,
+        fields(server_name = %HttpIngressPort::NAME, uds.path = tracing::field::Empty, server.address = tracing::field::Empty, server.port = tracing::field::Empty)
+    )]
     pub async fn run(self) -> anyhow::Result<()> {
         let HyperServerIngress {
-            listening_addr,
+            mut listeners,
             concurrency_limit,
             schemas,
             dispatcher,
             health,
-            start_signal_tx,
         } = self;
-
-        // We create a TcpListener and bind it
-        let listener =
-            TcpListener::bind(listening_addr)
-                .await
-                .map_err(|err| IngressServerError::Binding {
-                    address: listening_addr,
-                    source: err,
-                })?;
-        let local_addr = listener
-            .local_addr()
-            .map_err(|err| IngressServerError::Binding {
-                address: listening_addr,
-                source: err,
-            })?;
 
         // Prepare the handler
         let service = ServiceBuilder::new()
@@ -199,25 +174,40 @@ where
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
             .service(Handler::new(schemas, dispatcher));
 
-        info!(
-            server.address = %local_addr.ip(),
-            server.port = %local_addr.port(),
-            "Ingress HTTP listening"
-        );
+        let mut shutdown = std::pin::pin!(cancellation_watcher());
 
-        let shutdown = cancellation_watcher();
-        tokio::pin!(shutdown);
-
-        // Send start signal
-        let _ = start_signal_tx.send(local_addr);
+        if let Some(uds_path) = listeners.uds_address() {
+            Span::current().record("uds.path", uds_path.display().to_string());
+        }
+        if let Some(socket_addr) = listeners.tcp_address() {
+            Span::current().record("server.address", socket_addr.ip().to_string());
+            Span::current().record("server.port", socket_addr.port());
+        }
+        info!("Ingress HTTP listening");
         health.update(IngressStatus::Ready);
 
-        // We start a loop to continuously accept incoming connections
+        // UDS
         loop {
             tokio::select! {
-                res = listener.accept() => {
-                    let (stream, remote_peer) = res?;
-                    Self::handle_connection(stream, remote_peer, service.clone())?;
+                res = listeners.accept() => {
+                    let (stream, peer_addr) = res?;
+                    match stream {
+                        Either::Left(tcp_stream) => {
+                            Self::handle_connection(
+                                tcp_stream,
+                                peer_addr,
+                                service.clone()
+                            )?;
+                        }
+                        Either::Right(unix_stream) => {
+                            Self::handle_connection(
+                                unix_stream,
+                                peer_addr,
+                                service.clone()
+                            )?;
+                        }
+
+                    }
                 }
                   _ = &mut shutdown => {
                     return Ok(());
@@ -226,12 +216,13 @@ where
         }
     }
 
-    fn handle_connection<T, F, B>(
-        stream: TcpStream,
-        remote_peer: SocketAddr,
+    fn handle_connection<S, T, F, B>(
+        stream: S,
+        remote_peer: SocketAddress,
         handler: T,
     ) -> anyhow::Result<()>
     where
+        S: AsyncWrite + AsyncRead + Unpin + Send + 'static,
         F: Send,
         B: http_body::Body + Send + 'static,
         <B as http_body::Body>::Data: Send + 'static,
@@ -249,7 +240,7 @@ where
         let io = TokioIo::new(stream);
         let handler = hyper_util::service::TowerToHyperService::new(handler.map_request(
             move |mut req: Request<Incoming>| {
-                req.extensions_mut().insert(connect_info);
+                req.extensions_mut().insert(connect_info.clone());
                 req
             },
         ));
@@ -263,7 +254,13 @@ where
             tokio::select! {
                 res = serve_connection_fut => {
                     if let Err(err) = res {
-                        warn!("Error when serving the connection: {:?}", err);
+                        if let Some(hyper_error) = err.downcast_ref::<hyper::Error>() {
+                            if hyper_error.is_incomplete_message() {
+                                debug!("Connection closed before request completed");
+                            }
+                        } else {
+                            debug!("Error when serving the connection: {:?}", err);
+                        }
                     }
                 }
                 _ = shutdown => {}
@@ -302,6 +299,7 @@ mod tests {
     use hyper_util::rt::TokioExecutor;
     use restate_core::TestCoreEnv;
     use restate_core::{TaskCenter, TaskKind};
+    use restate_hyper_uds::UnixSocketConnector;
     use restate_test_util::assert_eq;
     use restate_types::health::Health;
     use restate_types::identifiers::WithInvocationId;
@@ -309,7 +307,6 @@ mod tests {
     use restate_types::invocation::client::InvocationOutputResponse;
     use serde::{Deserialize, Serialize};
     use std::future::ready;
-    use std::net::SocketAddr;
     use std::sync::Arc;
     use tokio::sync::Semaphore;
     use tracing_test::traced_test;
@@ -357,15 +354,22 @@ mod tests {
                 })))
             });
 
-        let address = bootstrap_test(mock_dispatcher).await;
+        let socket_dir = tempfile::tempdir().unwrap();
+        let socket_path = socket_dir.path().join("ingress.sock");
+        bootstrap_test(
+            Listeners::new_unix_listener(socket_path.clone()).unwrap(),
+            mock_dispatcher,
+        )
+        .await;
 
         // Send the request
         let client = Client::builder(TokioExecutor::new())
             .http2_only(true)
-            .build_http::<Full<Bytes>>();
+            .build::<_, Full<Bytes>>(UnixSocketConnector::new(socket_path));
+
         let http_response = client
             .request(
-                http::Request::post(format!("http://{address}/greeter.Greeter/greet"))
+                http::Request::post("http://localhost/greeter.Greeter/greet")
                     .header(http::header::CONTENT_TYPE, "application/json")
                     .body(Full::new(
                         serde_json::to_vec(&GreetingRequest {
@@ -387,21 +391,21 @@ mod tests {
         restate_test_util::assert_eq!(response_value.greeting, "Igal");
     }
 
-    async fn bootstrap_test(mock_request_dispatcher: MockRequestDispatcher) -> SocketAddr {
+    async fn bootstrap_test(
+        listeners: Listeners<HttpIngressPort>,
+        mock_request_dispatcher: MockRequestDispatcher,
+    ) {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let health = Health::default();
 
         // Create the ingress and start it
-        let (ingress, start_signal) = HyperServerIngress::new(
-            "0.0.0.0:0".parse().unwrap(),
+        let ingress = HyperServerIngress::new(
+            listeners,
             Semaphore::MAX_PERMITS,
             Live::from_value(mock_schemas()),
             Arc::new(mock_request_dispatcher),
             health.ingress_status(),
         );
         TaskCenter::spawn(TaskKind::SystemService, "ingress", ingress.run()).unwrap();
-
-        // Wait server to start
-        start_signal.await.unwrap()
     }
 }

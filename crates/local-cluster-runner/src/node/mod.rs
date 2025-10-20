@@ -8,13 +8,41 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::random_socket_address;
+use std::{
+    ffi::OsString,
+    fmt::Display,
+    future::Future,
+    io::{self, ErrorKind},
+    num::NonZeroU16,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+    pin::Pin,
+    process::{ExitStatus, Stdio},
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
+
 use anyhow::bail;
 use arc_swap::ArcSwapOption;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt, stream};
 use itertools::Itertools;
 use regex::{Regex, RegexSet};
+use rev_lines::RevLines;
+use serde::{Deserialize, Serialize};
+use tokio::{
+    fs::File,
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    process::Command,
+    sync::mpsc,
+    sync::mpsc::Sender,
+    task::JoinHandle,
+};
+use tonic::Code;
+use tracing::{error, info, warn};
+use typed_builder::TypedBuilder;
+
 use restate_core::network::net_util::create_tonic_channel;
 use restate_core::protobuf::node_ctl_svc::{
     ProvisionClusterRequest as ProtoProvisionClusterRequest, new_node_ctl_client,
@@ -25,6 +53,9 @@ use restate_metadata_server_grpc::grpc::{
 use restate_metadata_store::ReadError;
 use restate_types::config::InvalidConfigurationError;
 use restate_types::logs::metadata::ProviderConfiguration;
+use restate_types::net::address::{
+    AdminPort, AdvertisedAddress, FabricPort, HttpIngressPort, ListenerPort, PeerNetAddress,
+};
 use restate_types::nodes_config::MetadataServerState;
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::replication::ReplicationProperty;
@@ -34,57 +65,12 @@ use restate_types::{
     config::{Configuration, MetadataClientKind},
     errors::GenericError,
     metadata_store::keys::NODES_CONFIG_KEY,
-    net::{AdvertisedAddress, BindAddress},
     nodes_config::{NodesConfiguration, Role},
 };
-use rev_lines::RevLines;
-use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
-use std::num::NonZeroU16;
-use std::{
-    ffi::OsString,
-    fmt::Display,
-    future::Future,
-    io::{self, ErrorKind},
-    net::SocketAddr,
-    ops::{Deref, DerefMut},
-    path::PathBuf,
-    pin::Pin,
-    process::{ExitStatus, Stdio},
-    sync::Arc,
-    task::{Context, Poll},
-    time::Duration,
-};
-use tokio::{
-    fs::File,
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    sync::mpsc,
-    task::JoinHandle,
-};
-use tokio::{process::Command, sync::mpsc::Sender};
-use tonic::Code;
-use tracing::{error, info, warn};
-use typed_builder::TypedBuilder;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TypedBuilder)]
-pub struct Node {
+pub struct NodeSpec {
     #[builder(mutators(
-            #[mutator(requires = [base_dir])]
-            pub fn with_node_socket(self) {
-                let node_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("node.sock");
-                let tokio_console_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("tokio_console.sock");
-                self.base_config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
-                self.base_config.common.tokio_console_bind_address = Some(BindAddress::Uds(tokio_console_socket));
-                self.base_config.common.advertised_address = AdvertisedAddress::Uds(node_socket);
-            }
-
-            pub fn with_random_ports(self) {
-                self.base_config.admin.bind_address =
-                    random_socket_address().expect("to find a random port for the admin server");
-                self.base_config.ingress.bind_address =
-                    random_socket_address().expect("to find a random port for the ingress server");
-            }
-
             pub fn with_node_name(self, node_name: impl Into<String>) {
                 self.base_config.common.set_node_name(node_name.into());
             }
@@ -130,13 +116,9 @@ pub enum NodeStartError {
     SpawnError(io::Error),
 }
 
-impl Node {
+impl NodeSpec {
     pub fn node_name(&self) -> &str {
         self.base_config.node_name()
-    }
-
-    pub fn advertised_address(&self) -> &AdvertisedAddress {
-        &self.base_config.common.advertised_address
     }
 
     pub fn metadata_store_client_mut(&mut self) -> &mut MetadataClientKind {
@@ -151,24 +133,19 @@ impl Node {
         &mut self.base_config
     }
 
-    // Creates a new Node that uses a node socket, a metadata socket, and random ports,
-    // suitable for running in a cluster. Node name, roles, bind/advertise addresses,
-    // and the metadata address from the base_config will all be overwritten.
+    /// Creates a test node
     pub fn new_test_node(
         node_name: impl Into<String>,
         base_config: Configuration,
         binary_source: BinarySource,
         roles: EnumSet<Role>,
     ) -> Self {
-        let builder = Self::builder()
+        Self::builder()
             .binary_source(binary_source)
             .base_config(base_config)
             .with_node_name(node_name)
-            .with_node_socket()
-            .with_random_ports()
-            .with_roles(roles);
-
-        builder.build()
+            .with_roles(roles)
+            .build()
     }
 
     /// Creates a set of [`Node`] that all run the [`Role::Admin`] and [`Role::MetadataServer`]
@@ -206,24 +183,15 @@ impl Node {
             nodes.push(node);
         }
 
-        let node_addresses = vec![
-            nodes
-                .first()
-                .expect("to have at least one node")
-                .advertised_address()
-                .clone(),
-        ];
-
-        if roles.contains(Role::MetadataServer) {
-            // if we are running the replicated metadata server, then update client addresses
-            for node in &mut nodes {
-                *node.metadata_store_client_mut() = MetadataClientKind::Replicated {
-                    addresses: node_addresses.clone(),
-                }
-            }
-        }
-
         nodes
+    }
+
+    pub fn set_metadata_servers(&mut self, all_servers: &[AdvertisedAddress<FabricPort>]) {
+        if let MetadataClientKind::Replicated { addresses } =
+            &mut self.base_config.common.metadata_client.kind
+        {
+            addresses.extend_from_slice(all_servers);
+        }
     }
 
     /// Start this Node, providing the base_dir and the cluster_name of the cluster it's
@@ -236,39 +204,6 @@ impl Node {
         cluster_name: impl Into<String>,
     ) -> Result<StartedNode, NodeStartError> {
         let base_dir = base_dir.into();
-
-        // ensure file paths are relative to the base dir
-        if let MetadataClientKind::Replicated { addresses } =
-            &mut self.base_config.common.metadata_client.kind
-        {
-            for advertised_address in addresses {
-                if let AdvertisedAddress::Uds(file) = advertised_address {
-                    *file = base_dir.join(&*file)
-                }
-            }
-        }
-        if self.base_config.common.bind_address.is_none() {
-            // Derive bind_address from advertised_address
-            self.base_config.common.bind_address = Some(
-                self.base_config
-                    .common
-                    .advertised_address
-                    .derive_bind_address()?,
-            );
-        }
-
-        if let Some(BindAddress::Uds(file)) = &mut self.base_config.common.bind_address {
-            *file = base_dir.join(&*file);
-        }
-
-        if let AdvertisedAddress::Uds(file) = &mut self.base_config.common.advertised_address {
-            *file = base_dir.join(&*file)
-        }
-        if let Some(BindAddress::Uds(file)) =
-            &mut self.base_config.common.tokio_console_bind_address
-        {
-            *file = base_dir.join(&*file)
-        }
 
         self.base_config.common.set_base_dir(base_dir);
         self.base_config.common.set_cluster_name(cluster_name);
@@ -295,6 +230,16 @@ impl Node {
                 .join(base_config.common.node_name()),
         )
         .map_err(NodeStartError::Absolute)?;
+
+        // set advertised addresses to make it easier to address this node from the test harness.
+        // todo: add tcp support
+        let fabric_advertised_address = AdvertisedAddress::with_node_base_dir(&node_base_dir);
+        let ingress_advertised_address = base_config
+            .has_role(Role::HttpIngress)
+            .then_some(AdvertisedAddress::with_node_base_dir(&node_base_dir));
+        let admin_advertised_address = base_config
+            .has_role(Role::Admin)
+            .then_some(AdvertisedAddress::with_node_base_dir(&node_base_dir));
 
         if !node_base_dir.exists() {
             std::fs::create_dir_all(&node_base_dir).map_err(NodeStartError::CreateDirectory)?;
@@ -348,22 +293,10 @@ impl Node {
         let mut child = cmd.spawn().map_err(NodeStartError::SpawnError)?;
         let pid = child.id().expect("child to have a pid");
 
-        let admin_address = if self.config().has_role(Role::Admin) {
-            Cow::Owned(self.config().admin.bind_address.to_string())
-        } else {
-            Cow::Borrowed("None")
-        };
-
-        let ingress_address = if self.config().has_role(Role::Worker) {
-            Cow::Owned(self.config().ingress.bind_address.to_string())
-        } else {
-            Cow::Borrowed("None")
-        };
-
         info!(
-            node_address = %self.config().common.advertised_address,
-            %admin_address,
-            %ingress_address,
+            %fabric_advertised_address,
+            admin_advertised_address = ?admin_advertised_address,
+            ingress_advertised_address = ?ingress_advertised_address,
             "Started node {} in {} (pid {pid})",
             base_config.node_name(),
             node_base_dir.display(),
@@ -373,8 +306,9 @@ impl Node {
 
         if self.config().has_role(Role::Admin) {
             info!(
-                "To connect to node {} using restate CLI:\nexport RESTATE_ADMIN_URL=http://{admin_address}",
-                base_config.node_name()
+                "To connect to node {} using restate CLI:\nexport RESTATE_ADMIN_URL={}",
+                base_config.node_name(),
+                admin_advertised_address.as_ref().unwrap(),
             );
         }
 
@@ -445,6 +379,9 @@ impl Node {
 
         Ok(StartedNode {
             log_file: node_log_filename,
+            fabric_advertised_address,
+            admin_advertised_address,
+            ingress_advertised_address,
             status: StartedNodeStatus::Running {
                 child_handle,
                 searcher: searcher.clone(),
@@ -458,6 +395,10 @@ impl Node {
     /// when the stdout and stderr files on the process close.
     pub fn lines(&self, pattern: Regex) -> impl Stream<Item = String> + 'static {
         self.searcher.search(pattern)
+    }
+
+    pub fn has_role(&self, role: Role) -> bool {
+        self.base_config.roles().contains(role)
     }
 }
 
@@ -535,8 +476,11 @@ impl TryInto<OsString> for BinarySource {
 
 pub struct StartedNode {
     log_file: PathBuf,
+    fabric_advertised_address: AdvertisedAddress<FabricPort>,
+    admin_advertised_address: Option<AdvertisedAddress<AdminPort>>,
+    ingress_advertised_address: Option<AdvertisedAddress<HttpIngressPort>>,
     status: StartedNodeStatus,
-    node: Option<Node>,
+    node: Option<NodeSpec>,
 }
 
 enum StartedNodeStatus {
@@ -573,6 +517,10 @@ impl Future for StartedNodeStatus {
 }
 
 impl StartedNode {
+    pub fn has_role(&self, role: Role) -> bool {
+        self.config().has_role(role)
+    }
+
     /// Send a SIGKILL to the current process, if it is running, and await for its exit
     pub async fn kill(&mut self) -> io::Result<ExitStatus> {
         match self.status {
@@ -682,8 +630,8 @@ impl StartedNode {
         self.config().common.node_name()
     }
 
-    pub fn node_address(&self) -> &AdvertisedAddress {
-        &self.config().common.advertised_address
+    pub fn advertised_address(&self) -> &AdvertisedAddress<FabricPort> {
+        &self.fabric_advertised_address
     }
 
     pub async fn last_n_lines(&self, n: usize) -> Result<Vec<String>, rev_lines::RevLinesError> {
@@ -700,20 +648,12 @@ impl StartedNode {
         .unwrap_or_else(|_| Err(io::Error::other("background task failed").into()))
     }
 
-    pub fn ingress_address(&self) -> Option<&SocketAddr> {
-        if self.config().has_role(Role::Worker) {
-            Some(&self.config().ingress.bind_address)
-        } else {
-            None
-        }
+    pub fn ingress_address(&self) -> &Option<AdvertisedAddress<HttpIngressPort>> {
+        &self.ingress_advertised_address
     }
 
-    pub fn admin_address(&self) -> Option<&SocketAddr> {
-        if self.config().has_role(Role::Admin) {
-            Some(&self.config().admin.bind_address)
-        } else {
-            None
-        }
+    pub fn admin_address(&self) -> &Option<AdvertisedAddress<AdminPort>> {
+        &self.admin_advertised_address
     }
 
     /// Obtain a stream of loglines matching this pattern. The stream will end
@@ -736,28 +676,62 @@ impl StartedNode {
             .await
     }
 
+    async fn probe_health<P: ListenerPort>(
+        address: &AdvertisedAddress<P>,
+        relative_url: &str,
+    ) -> bool {
+        let address = match address.clone().into_address() {
+            Ok(address) => address,
+            Err(err) => {
+                // if it's a unix socket, we might not have created the file yet
+                warn!("Error in address: {err}");
+                return false;
+            }
+        };
+
+        let result = match address {
+            PeerNetAddress::Uds(socket_path) => {
+                reqwest::Client::builder()
+                    .unix_socket(socket_path)
+                    .build()
+                    .unwrap()
+                    .get(format!("http://local/{relative_url}"))
+                    .header(http::header::ACCEPT, "application/json")
+                    .send()
+                    .await
+            }
+
+            PeerNetAddress::Http(base_url) => {
+                reqwest::Client::builder()
+                    .build()
+                    .unwrap()
+                    .get(format!("{base_url}/{relative_url}"))
+                    .header(http::header::ACCEPT, "application/json")
+                    .send()
+                    .await
+            }
+        };
+
+        match result {
+            Ok(resp) => resp.status().is_success(),
+            Err(_) => false,
+        }
+    }
+
     /// Check to see if the admin address is healthy. Returns false if this node has no admin role.
     pub async fn admin_healthy(&self) -> bool {
-        if let Some(address) = self.admin_address() {
-            match reqwest::get(format!("http://{address}/health")).await {
-                Ok(resp) => resp.status().is_success(),
-                Err(_) => false,
-            }
-        } else {
-            false
-        }
+        let Some(address) = self.admin_address() else {
+            return false;
+        };
+        Self::probe_health(address, "health").await
     }
 
     /// Check to see if the ingress address is healthy. Returns false if this node has no ingress role.
     pub async fn ingress_healthy(&self) -> bool {
-        if let Some(address) = self.ingress_address() {
-            match reqwest::get(format!("http://{address}/restate/health")).await {
-                Ok(resp) => resp.status().is_success(),
-                Err(_) => false,
-            }
-        } else {
-            false
-        }
+        let Some(address) = self.ingress_address() else {
+            return false;
+        };
+        Self::probe_health(address, "restate/health").await
     }
 
     /// Check to see if the logserver is provisioned.
@@ -829,7 +803,7 @@ impl StartedNode {
         }
 
         let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
-            self.config().common.advertised_address.clone(),
+            self.fabric_advertised_address.clone(),
             &self.config().networking,
         ));
 
@@ -853,7 +827,7 @@ impl StartedNode {
         provider_configuration: Option<ProviderConfiguration>,
     ) -> anyhow::Result<bool> {
         let channel = create_tonic_channel(
-            self.node_address().clone(),
+            self.advertised_address().clone(),
             &Configuration::default().networking,
         );
 
@@ -904,7 +878,7 @@ impl StartedNode {
                 } else {
                     bail!(
                         "failed to provision the cluster at node {}: {status}",
-                        self.node_address()
+                        self.advertised_address()
                     );
                 }
             }
@@ -913,7 +887,7 @@ impl StartedNode {
 
     pub async fn add_as_metadata_member(&self) -> anyhow::Result<()> {
         let mut client = new_metadata_server_client(create_tonic_channel(
-            self.node_address().clone(),
+            self.advertised_address().clone(),
             &self.config().networking,
         ));
 
@@ -924,7 +898,7 @@ impl StartedNode {
 
     pub async fn remove_metadata_member(&self, node_to_remove: PlainNodeId) -> anyhow::Result<()> {
         let mut client = new_metadata_server_client(create_tonic_channel(
-            self.node_address().clone(),
+            self.advertised_address().clone(),
             &self.config().networking,
         ));
 
@@ -940,7 +914,7 @@ impl StartedNode {
 
     pub async fn get_metadata_server_status(&self) -> anyhow::Result<StatusResponse> {
         let mut client = new_metadata_server_client(create_tonic_channel(
-            self.node_address().clone(),
+            self.advertised_address().clone(),
             &self.config().networking,
         ));
         let response = client.status(()).await?.into_inner();

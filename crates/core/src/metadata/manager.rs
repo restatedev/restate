@@ -337,15 +337,13 @@ impl MetadataManager {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
 
     use googletest::prelude::*;
     use test_log::test;
 
     use restate_test_util::assert_eq;
-    use restate_types::net::AdvertisedAddress;
+    use restate_types::net::address::AdvertisedAddress;
     use restate_types::nodes_config::{NodeConfig, Role};
     use restate_types::{GenerationalNodeId, Version};
 
@@ -508,7 +506,7 @@ mod tests {
 
     fn create_mock_nodes_config() -> NodesConfiguration {
         let mut nodes_config = NodesConfiguration::new_for_testing();
-        let address = AdvertisedAddress::from_str("http://127.0.0.1:5122/").unwrap();
+        let address = AdvertisedAddress::default();
         let node_id = GenerationalNodeId::new(1, 1);
         let roles = Role::Admin | Role::Worker;
         let my_node = NodeConfig::builder()

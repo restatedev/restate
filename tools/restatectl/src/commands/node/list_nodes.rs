@@ -24,7 +24,7 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::{Tense, duration_to_human_rough};
 use restate_core::protobuf::node_ctl_svc::{IdentResponse, new_node_ctl_client};
 use restate_types::health::MetadataServerStatus;
-use restate_types::net::AdvertisedAddress;
+use restate_types::net::address::{AdvertisedAddress, FabricPort, ListenerPort};
 use restate_types::nodes_config::NodesConfiguration;
 
 use crate::connection::{ConnectionInfo, ConnectionInfoError};
@@ -137,8 +137,8 @@ async fn list_nodes_configuration(
     Ok(())
 }
 
-pub fn list_nodes_lite(
-    ident_responses: &HashMap<AdvertisedAddress, IdentResponse>,
+pub fn list_nodes_lite<P: ListenerPort>(
+    ident_responses: &HashMap<AdvertisedAddress<P>, IdentResponse>,
     opts: &ListNodesOpts,
 ) {
     let mut nodes_table = Table::new_styled();
@@ -234,8 +234,9 @@ fn render_ident_extras(ident_response: &IdentResponse) -> Vec<Cell> {
 
 async fn fetch_extra_info(
     nodes_configuration: &NodesConfiguration,
-) -> anyhow::Result<HashMap<AdvertisedAddress, IdentResponse>> {
-    let mut get_ident_tasks = JoinSet::<anyhow::Result<(AdvertisedAddress, IdentResponse)>>::new();
+) -> anyhow::Result<HashMap<AdvertisedAddress<FabricPort>, IdentResponse>> {
+    let mut get_ident_tasks =
+        JoinSet::<anyhow::Result<(AdvertisedAddress<FabricPort>, IdentResponse)>>::new();
 
     for (node_id, node_config) in nodes_configuration.iter() {
         let address = node_config.address.clone();
