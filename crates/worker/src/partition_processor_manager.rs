@@ -1483,7 +1483,7 @@ mod tests {
     use restate_types::identifiers::PartitionId;
     use restate_types::live::Live;
     use restate_types::logs::{Lsn, SequenceNumber};
-    use restate_types::net::AdvertisedAddress;
+    use restate_types::net::address::AdvertisedAddress;
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
     use restate_types::partitions::state::{
         MemberState, PartitionReplicaSetStates, ReplicaSetState,
@@ -1503,7 +1503,7 @@ mod tests {
         let node_config = NodeConfig::builder()
             .name("42".to_owned())
             .current_generation(node_id)
-            .address(AdvertisedAddress::Uds("foobar1".into()))
+            .address(AdvertisedAddress::default())
             .roles(Role::Worker | Role::Admin)
             .build();
         nodes_config.upsert_node(node_config);

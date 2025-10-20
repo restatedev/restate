@@ -184,6 +184,25 @@ pub struct Configuration {
 }
 
 impl Configuration {
+    /// A default configuration that exclusively uses unix sockets.
+    pub fn new_unix_sockets() -> Self {
+        let mut config = Configuration::default();
+        config.common.fabric_listener_options.listen_mode = Some(ListenMode::Unix);
+        config.common.set_derived_values().unwrap();
+        config.admin.set_derived_values(&config.common);
+        config.ingress.set_derived_values(&config.common);
+        config
+    }
+
+    pub fn new_random_ports() -> Self {
+        let mut config = Configuration::default();
+        config.common.fabric_listener_options.use_random_ports = Some(true);
+        config.common.set_derived_values().unwrap();
+        config.admin.set_derived_values(&config.common);
+        config.ingress.set_derived_values(&config.common);
+        config
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn set(c: Configuration) {
         set_current_config(c);

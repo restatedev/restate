@@ -8,26 +8,30 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::create_envelope_header;
-use super::error::*;
-use crate::state::AdminServiceState;
 use std::sync::Arc;
+use tracing::{debug, warn};
 
 use axum::Json;
 use axum::extract::{Path, State};
 use bytes::Bytes;
 use http::StatusCode;
 use okapi_operation::*;
+
 use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
+use restate_core::TaskCenter;
 use restate_errors::warn_it;
+use restate_types::config::Configuration;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::schema;
 use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::ServiceMetadata;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::{Command, Envelope};
-use tracing::{debug, warn};
+
+use super::create_envelope_header;
+use super::error::*;
+use crate::state::AdminServiceState;
 
 /// List services
 #[openapi(
@@ -103,9 +107,14 @@ where
 {
     // TODO return correct vnd type
     // TODO accept content negotiation for yaml
+    let ingress_address = TaskCenter::with_current(|tc| {
+        Configuration::pinned()
+            .ingress
+            .advertised_address(tc.address_book())
+    });
     state
         .schema_registry
-        .get_service_openapi(&service_name)
+        .get_service_openapi(&service_name, ingress_address)
         .map(Into::into)
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
 }

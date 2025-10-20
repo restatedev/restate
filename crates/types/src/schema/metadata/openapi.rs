@@ -12,6 +12,7 @@ use super::Handler;
 
 use crate::identifiers::ServiceRevision;
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
+use crate::net::address::{AdvertisedAddress, HttpIngressPort, PeerNetAddress};
 use crate::schema::invocation_target::{InputValidationRule, OutputContentTypeRule};
 use restate_utoipa::openapi::extensions::Extensions;
 use restate_utoipa::openapi::path::{Operation, Parameter, ParameterIn};
@@ -315,7 +316,7 @@ impl ServiceOpenAPI {
     pub(super) fn to_openapi_contract(
         &self,
         service_name: &str,
-        ingress_url: Option<&str>,
+        ingress_url: AdvertisedAddress<HttpIngressPort>,
         documentation: Option<&str>,
         revision: ServiceRevision,
     ) -> Value {
@@ -334,14 +335,16 @@ impl ServiceOpenAPI {
         paths.merge(self.attach_paths.clone());
         paths.merge(self.get_output_paths.clone());
 
-        let servers = ingress_url.map(|ingress_url| {
-            vec![
+        let servers = match ingress_url.into_address().unwrap() {
+            // we are not going to expose the unix-socket address via openapi
+            PeerNetAddress::Uds(_) => None,
+            PeerNetAddress::Http(uri) => Some(vec![
                 Server::builder()
                     .description(Some("Restate Ingress URL"))
-                    .url(ingress_url)
+                    .url(uri.to_string())
                     .build(),
-            ]
-        });
+            ]),
+        };
 
         serde_json::to_value(
             OpenApi::builder()

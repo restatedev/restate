@@ -34,10 +34,11 @@ pub async fn create_client(
     let backoff_policy = Some(metadata_client_options.backoff_policy.clone());
 
     match metadata_client_options.kind.clone() {
-        MetadataClientKind::Replicated { addresses } => {
+        MetadataClientKind::Replicated { mut addresses } => {
             #[cfg(feature = "replicated")]
             {
                 use std::sync::Arc;
+
                 Ok(replicated::create_replicated_metadata_client(
                     addresses,
                     backoff_policy,

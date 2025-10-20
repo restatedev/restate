@@ -45,6 +45,7 @@ use restate_types::live::LiveLoadExt;
 use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration, ProviderKind};
 use restate_types::metadata::{GlobalMetadata, Precondition};
+use restate_types::net::listener::AddressBook;
 use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::{PartitionReplication, PartitionTable, PartitionTableBuilder};
 use restate_types::partitions::state::PartitionReplicaSetStates;
@@ -138,15 +139,17 @@ pub struct Node {
     networking: Networking<GrpcConnector>,
     is_provisioned: bool,
     prometheus: Prometheus,
+    address_book: AddressBook,
 }
 
 impl Node {
     pub async fn create(
         updateable_config: Live<Configuration>,
         prometheus: Prometheus,
+        mut address_book: AddressBook,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
-        let mut server_builder = NetworkServerBuilder::default();
+        let mut server_builder = NetworkServerBuilder::new(&mut address_book);
         let config = updateable_config.pinned();
 
         let metadata_builder = MetadataBuilder::default();
@@ -187,6 +190,7 @@ impl Node {
                 updateable_config.clone(),
                 tc.health().metadata_server_status(),
                 &mut server_builder,
+                &address_book,
             )
             .await
             .map(|(server, client)| (Some(server), client))?
@@ -275,6 +279,7 @@ impl Node {
                     .clone()
                     .map(|config| &config.ingress)
                     .boxed(),
+                &mut address_book,
                 tc.health().ingress_status(),
                 networking.clone(),
                 metadata.updateable_schema(),
@@ -299,6 +304,7 @@ impl Node {
                     metadata_manager.writer(),
                     partition_store_manager.clone(),
                     &mut server_builder,
+                    &mut address_book,
                     worker_role
                         .as_ref()
                         .map(|worker_role| worker_role.storage_query_context().clone()),
@@ -340,10 +346,12 @@ impl Node {
             networking,
             is_provisioned,
             prometheus,
+            address_book,
         })
     }
 
     pub async fn start(self) -> Result<(), anyhow::Error> {
+        assert!(TaskCenter::try_set_address_book(self.address_book));
         let config = self.updateable_config.pinned();
 
         let metadata_writer = self.metadata_manager.writer();
@@ -651,6 +659,9 @@ fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfi
         common_opts.cluster_name().to_owned(),
         ClusterFingerprint::generate(),
     );
+    let my_advertised_address =
+        TaskCenter::with_current(|tc| common_opts.advertised_address(tc.address_book()));
+
     let node_config = NodeConfig::builder()
         .name(common_opts.node_name().to_owned())
         .current_generation(
@@ -660,7 +671,7 @@ fn create_initial_nodes_configuration(common_opts: &CommonOptions) -> NodesConfi
                 .unwrap_or(GenerationalNodeId::INITIAL_NODE_ID),
         )
         .location(common_opts.location().clone())
-        .address(common_opts.advertised_address.clone())
+        .address(my_advertised_address)
         .roles(common_opts.roles)
         .build();
     initial_nodes_configuration.upsert_node(node_config);

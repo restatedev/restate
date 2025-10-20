@@ -10,6 +10,7 @@
 
 use std::net::SocketAddr;
 
+use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::filter::LevelFilter;
 
@@ -29,6 +30,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .init();
 
     let addr: SocketAddr = ([127, 0, 0, 1], 9080).into();
+    let listener = TcpListener::bind(addr).await?;
 
-    run_listener(addr, || info!("Listening on http://{}", addr)).await
+    run_listener(listener, || info!("Listening on http://{}", addr)).await
 }

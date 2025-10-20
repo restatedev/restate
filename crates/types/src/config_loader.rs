@@ -75,9 +75,10 @@ impl ConfigLoader {
 
         let mut config: Configuration = figment.extract()?;
 
+        // network base options need to be propagated downstream
         config.common.set_derived_values()?;
-        config.admin.set_derived_values();
-        config.ingress.set_derived_values();
+        config.admin.set_derived_values(&config.common);
+        config.ingress.set_derived_values(&config.common);
 
         #[cfg(test)]
         let config = if !self.disable_apply_cascading_values {
