@@ -301,6 +301,14 @@ impl OwnedHandle {
         }
     }
 
+    pub fn address_book(&self) -> Option<&AddressBook> {
+        self.inner.address_book()
+    }
+
+    pub fn try_set_address_book(&self, address_book: AddressBook) -> bool {
+        self.inner.try_set_address_book(address_book)
+    }
+
     pub fn to_handle(&self) -> Handle {
         Handle::new(&self.inner)
     }

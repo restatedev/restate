@@ -1,0 +1,56 @@
+[package]
+name = "restate-lite"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Restate Lite"
+build = "build.rs"
+
+[package.metadata.dist]
+dist = true
+
+[features]
+default = ["no-trace-logging"]
+no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-bifrost = { workspace = true }
+restate-core = { workspace = true }
+restate-errors = { workspace = true }
+restate-metadata-server = { workspace = true }
+restate-node = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-service-client = { workspace = true }
+restate-types = { workspace = true }
+restate-admin = { workspace = true }
+
+anyhow = { workspace = true }
+http = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+rlimit = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+tempfile = { workspace = true }
+
+[target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
+tikv-jemallocator = { workspace = true }
+
+[build-dependencies]
+vergen = { version = "8.0.0", default-features = false, features = [
+    "build",
+    "git",
+    "gitcl",
+    "cargo",
+] }
