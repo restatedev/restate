@@ -139,10 +139,18 @@ impl KeyKind {
 pub trait TableKey: Sized + std::fmt::Debug + Send + 'static {
     const TABLE: TableKind;
     const KEY_KIND: KeyKind;
-    fn is_complete(&self) -> bool;
-    fn serialize_key_kind<B: BufMut>(bytes: &mut B);
+
     fn serialize_to<B: BufMut>(&self, bytes: &mut B);
     fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::Result<Self>;
+    fn serialized_length(&self) -> usize;
+}
+
+pub trait TableKeyPrefix: Sized + std::fmt::Debug + Send + 'static {
+    const TABLE: TableKind;
+    const KEY_KIND: KeyKind;
+
+    fn serialize_to<B: BufMut>(&self, bytes: &mut B);
+    fn serialize_key_kind<B: bytes::BufMut>(bytes: &mut B);
 
     fn serialize(&self) -> BytesMut {
         let mut buf = BytesMut::with_capacity(self.serialized_length());
@@ -153,6 +161,29 @@ pub trait TableKey: Sized + std::fmt::Debug + Send + 'static {
     fn serialized_length(&self) -> usize;
 }
 
+impl<T> TableKeyPrefix for T
+where
+    T: TableKey,
+{
+    const TABLE: TableKind = T::TABLE;
+    const KEY_KIND: KeyKind = T::KEY_KIND;
+
+    #[inline]
+    fn serialize_key_kind<B: bytes::BufMut>(bytes: &mut B) {
+        Self::KEY_KIND.serialize(bytes);
+    }
+
+    #[inline]
+    fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
+        TableKey::serialize_to(self, bytes);
+    }
+
+    #[inline]
+    fn serialized_length(&self) -> usize {
+        TableKey::serialized_length(self)
+    }
+}
+
 /// The following macro defines an ordered, named key tuple, that is used as a rocksdb key.
 ///
 /// Given the following definition
@@ -160,83 +191,21 @@ pub trait TableKey: Sized + std::fmt::Debug + Send + 'static {
 /// define_table_key!(FooBarTable, KeyKind::Foobar, FooBarKey(foo: u32, bar: Bytes));
 /// ```
 ///
-/// This macro expands to:
+/// This macro expands and generates two types. A concrete key type and a prefix builder
+/// that can be used in iterators.
 /// ```ignore
 /// use bytes::{Buf, BufMut, Bytes};
 /// use restate_partition_store::TableKind;
 /// #[derive(Debug, Eq, PartialEq)]
 /// pub struct FooBarKey {
+///     pub foo: u32,
+///     pub bar: Bytes,
+/// }
+///
+/// #[derive(Default, Debug, Eq, PartialEq)]
+/// pub struct FooBarKeyBuilder {
 ///     pub foo: Option<u32>,
 ///     pub bar: Option<Bytes>,
-/// }
-///
-/// impl Default for FooBarKey {
-///     fn default() -> Self {
-///         Self {
-///             foo: Option::default(),
-///             bar: Option::default(),
-///         }
-///     }
-/// }
-///
-/// impl FooBarKey {
-///     pub const KEY_KIND: KeyKind = KeyKind::Foobar;
-///
-///     pub fn foo(&mut self, foo: u32) -> &mut Self {
-///         self.foo = Some(foo);
-///         self
-///     }
-///
-///     pub fn bar(&mut self, bar: Bytes) -> &mut Self {
-///         self.bar = Some(bar);
-///         self
-///     }
-///
-///     pub fn into_inner(self) -> (Option<u32>, Option<Bytes>) {
-///         return (self.foo, self.bar);
-///     }
-/// }
-///
-/// impl crate::keys::TableKey for FooBarKey {
-///     fn is_complete(&self) -> bool {
-///                 if self.foo.is_none() {
-///                     return false;
-///                 }
-///                 if self.bar.is_none() {
-///                     return false;
-///                 }
-///                 return true;
-///     }
-///
-///      #[inline]
-///      fn serialize_key_kind<B: bytes::BufMut>(bytes: &mut B) {
-///            Self::KEY_KIND.serialize(bytes);
-///      }
-///
-///      fn serialize_to<B: BufMut>(&self, bytes: &mut B) {
-///                 Self::serialize_key_kind(bytes);
-///                 crate::keys::serialize(&self.foo, bytes);
-///                 crate::keys::serialize(&self.bar, bytes);
-///       }
-///
-///       fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::Result<Self> {
-///                 let mut this: Self = Default::default();
-///
-///                 let key_kind = $crate::keys::KeyKind::deserialize(bytes)?;
-///
-///                 if key_kind != FooBarKey::KEY_KIND {
-///                     return Err(restate_storage_api::StorageError::Generic(anyhow::anyhow!("supported key kind '{}' but found key kind '{}'", Self::KEY_KIND, key_kind)))
-///                 }
-///
-///                 this.foo = crate::keys::deserialize(bytes)?;
-///                 this.bar = crate::keys::deserialize(bytes)?;
-///
-///                 return Ok(this);
-///       }
-///
-///     fn table() -> TableKind {
-///         FooBarTable
-///     }
 /// }
 ///```
 ///
@@ -245,34 +214,15 @@ macro_rules! define_table_key {
     ($table_kind:expr, $key_kind:path, $key_name:ident ( $($element: ident: $ty: ty),+ $(,)? ) ) => (paste::paste! {
         // main key holder
         #[derive(Default, Debug, Eq, PartialEq, Clone)]
-        pub struct $key_name { $(pub $element: Option<$ty>),+ }
+        pub struct [< $key_name Builder >] { $(pub $element: Option<$ty>),+ }
 
-        // builder
-        impl $key_name {
-            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
-
+        // prefix builder impl
+        #[allow(dead_code)]
+        impl [< $key_name Builder >] {
             $(pub fn $element(mut self, $element: $ty) -> Self {
                 self.$element = Some($element);
                 self
             })+
-
-             $(pub fn [< $element _ok_or >](&self) -> crate::Result<& $ty> {
-                    self.$element.as_ref().ok_or_else(|| restate_storage_api::StorageError::DataIntegrityError)
-             })+
-
-            pub fn into_inner(self) -> ($(Option<$ty>,)+) {
-                 return ( $(self.$element,)+ )
-            }
-
-            pub fn into_inner_ok_or(self) -> crate::Result<($($ty,)+)> {
-                 return crate::Result::Ok(( $(self.$element.ok_or_else(|| restate_storage_api::StorageError::DataIntegrityError)?,)+ ))
-            }
-        }
-
-        // serde
-        impl crate::keys::TableKey for $key_name {
-            const TABLE: crate::TableKind = $table_kind;
-            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
 
             fn is_complete(&self) -> bool {
                 $(
@@ -283,14 +233,84 @@ macro_rules! define_table_key {
                 return true;
             }
 
+            /// Converts this prefix builder into a complete key if all the required fields are
+            /// set.
+            pub fn into_complete(self) -> crate::Result<$key_name> {
+                if !self.is_complete() {
+                    return Err(restate_storage_api::StorageError::DataIntegrityError);
+                }
+                Ok($key_name {
+                    $($element: self.$element.unwrap(),)+
+                })
+            }
+
+
+        }
+
+        #[derive(Debug, Eq, PartialEq, Clone)]
+        pub struct $key_name { $(pub $element: $ty),+ }
+
+        #[allow(dead_code)]
+        impl $key_name {
+            pub fn builder() -> [< $key_name Builder >] {
+                [< $key_name Builder >]::default()
+            }
+
+            $(pub fn $element(&self) -> &$ty {
+                &self.$element
+            })+
+
+            /// Splits this key into its constituent parts.
+            pub fn split(self) -> ($($ty,)+) {
+                 ( $(self.$element,)+ )
+            }
+
+            /// Converts this key into a prefix builder.
+            pub fn into_builder(self) -> [< $key_name Builder >] {
+                [< $key_name Builder >] {
+                    $($element: Some(self.$element),)+
+                }
+            }
+        }
+
+
+        impl crate::keys::TableKeyPrefix for [<$key_name Builder>] {
+            const TABLE: crate::TableKind = $table_kind;
+            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
+
             #[inline]
             fn serialize_key_kind<B: bytes::BufMut>(bytes: &mut B) {
-                Self::KEY_KIND.serialize(bytes);
+                $key_kind.serialize(bytes);
             }
 
             #[inline]
             fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
-                Self::serialize_key_kind(bytes);
+                $key_kind.serialize(bytes);
+                $(
+                $crate::keys::serialize(&self.$element, bytes);
+                )+
+            }
+
+            #[inline]
+            fn serialized_length(&self) -> usize {
+                // we always need space for the key kind
+                let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
+                $(
+                    serialized_length += $crate::keys::KeyCodec::serialized_length(&self.$element);
+                )+
+                serialized_length
+            }
+
+        }
+
+        // serde
+        impl crate::keys::TableKey for $key_name {
+            const TABLE: crate::TableKind = $table_kind;
+            const KEY_KIND: $crate::keys::KeyKind = $key_kind;
+
+            #[inline]
+            fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
+                $key_kind.serialize(bytes);
                 $(
                 $crate::keys::serialize(&self.$element, bytes);
                 )+
@@ -298,19 +318,21 @@ macro_rules! define_table_key {
 
             #[inline]
             fn deserialize_from<B: bytes::Buf>(bytes: &mut B) -> crate::Result<Self> {
-                let mut this: Self = Default::default();
+                {
+                    let key_kind = $crate::keys::KeyKind::deserialize(bytes)?;
 
-                let key_kind = $crate::keys::KeyKind::deserialize(bytes)?;
-
-                if key_kind != Self::KEY_KIND {
-                    return Err(restate_storage_api::StorageError::Generic(anyhow::anyhow!("supported key kind '{}' but found key kind '{}'", Self::KEY_KIND, key_kind)))
+                    if key_kind != $key_kind {
+                        return Err(restate_storage_api::StorageError::Generic(anyhow::anyhow!("supported key kind '{}' but found key kind '{}'", $key_kind, key_kind)))
+                    }
                 }
 
                 $(
-                    this.$element = $crate::keys::deserialize(bytes)?;
-                )+
+                    let $element = $crate::keys::deserialize(bytes)?;
+                 )+
 
-                return Ok(this);
+                Ok(Self {
+                    $($element,)+
+                })
             }
 
             #[inline]
@@ -712,7 +734,6 @@ pub(crate) fn deserialize<T: KeyCodec, B: Buf>(source: &mut B) -> crate::Result<
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 mod tests {
     use super::*;
     use bytes::BytesMut;
@@ -764,7 +785,7 @@ mod tests {
 
     #[test]
     fn key_prefix_mismatch() {
-        let mut buffer = DeduplicationTestKey::default().value(42).serialize();
+        let mut buffer = DeduplicationTestKey { value: 42 }.serialize();
         // overwrite the key prefix
         KeyKind::Fsm.serialize(
             &mut buffer
@@ -787,7 +808,7 @@ mod tests {
 
     #[test]
     fn unknown_key_prefix() {
-        let mut buffer = DeduplicationTestKey::default().value(42).serialize();
+        let mut buffer = DeduplicationTestKey { value: 42 }.serialize();
         // overwrite the key prefix with an unknown value
         let unknown_key_prefix = b"ZZ";
         buffer

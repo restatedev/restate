@@ -17,7 +17,5 @@ pub use self::interface::CloudClientInterface;
 pub mod generated {
     #![allow(clippy::to_string_trait_impl)]
 
-    use serde::{Deserialize, Serialize};
-
     typify::import_types!(schema = "src/clients/cloud/schema.json");
 }

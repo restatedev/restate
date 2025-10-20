@@ -212,9 +212,10 @@ async fn test_migration() {
     let mut txn = rocksdb.transaction();
     for (invocation_id, status) in &mocked_invocations {
         txn.put_kv_proto(
-            InvocationStatusKeyV1::default()
-                .partition_key(invocation_id.partition_key())
-                .invocation_uuid(invocation_id.invocation_uuid()),
+            InvocationStatusKeyV1 {
+                partition_key: invocation_id.partition_key(),
+                invocation_uuid: invocation_id.invocation_uuid(),
+            },
             &InvocationStatusV1(status.clone()),
         )
         .unwrap();
@@ -252,9 +253,10 @@ async fn test_migration() {
         assert!(
             rocksdb
                 .get_kv_raw(
-                    InvocationStatusKeyV1::default()
-                        .partition_key(invocation_id.partition_key())
-                        .invocation_uuid(invocation_id.invocation_uuid()),
+                    InvocationStatusKeyV1 {
+                        partition_key: invocation_id.partition_key(),
+                        invocation_uuid: invocation_id.invocation_uuid()
+                    },
                     |_, v| Ok(v.is_none())
                 )
                 .unwrap()
@@ -263,9 +265,10 @@ async fn test_migration() {
         assert!(
             rocksdb
                 .get_kv_raw(
-                    InvocationStatusKey::default()
-                        .partition_key(invocation_id.partition_key())
-                        .invocation_uuid(invocation_id.invocation_uuid()),
+                    InvocationStatusKey {
+                        partition_key: invocation_id.partition_key(),
+                        invocation_uuid: invocation_id.invocation_uuid()
+                    },
                     |_, v| Ok(v.is_some())
                 )
                 .unwrap()

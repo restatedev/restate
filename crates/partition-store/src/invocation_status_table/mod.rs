@@ -48,23 +48,20 @@ define_table_key!(
     )
 );
 
+#[inline]
 fn create_invocation_status_key(invocation_id: &InvocationId) -> InvocationStatusKey {
-    InvocationStatusKey::default()
-        .partition_key(invocation_id.partition_key())
-        .invocation_uuid(invocation_id.invocation_uuid())
+    InvocationStatusKey {
+        partition_key: invocation_id.partition_key(),
+        invocation_uuid: invocation_id.invocation_uuid(),
+    }
 }
 
+#[inline]
 fn invocation_id_from_key_bytes<B: bytes::Buf>(bytes: &mut B) -> crate::Result<InvocationId> {
-    let mut key = InvocationStatusKey::deserialize_from(bytes)?;
-    let partition_key = key
-        .partition_key
-        .take()
-        .ok_or(StorageError::DataIntegrityError)?;
+    let key = InvocationStatusKey::deserialize_from(bytes)?;
     Ok(InvocationId::from_parts(
-        partition_key,
-        key.invocation_uuid
-            .take()
-            .ok_or(StorageError::DataIntegrityError)?,
+        key.partition_key,
+        key.invocation_uuid,
     ))
 }
 
@@ -144,7 +141,7 @@ pub(crate) async fn run_invocation_status_v1_migration(storage: &mut PartitionSt
         let (key, value) = res?;
         put_invocation_status(
             &mut tx,
-            &InvocationId::from_parts(*key.partition_key_ok_or()?, *key.invocation_uuid_ok_or()?),
+            &InvocationId::from_parts(key.partition_key, key.invocation_uuid),
             &value.0,
         )?;
         tx.delete_key(&key)?;
@@ -196,7 +193,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                 let state_key = InvocationStatusKey::deserialize_from(&mut key)?;
                 let state_value = InvocationStatus::decode(&mut value)?;
 
-                let (partition_key, invocation_uuid) = state_key.into_inner_ok_or()?;
+                let (partition_key, invocation_uuid) = state_key.split();
                 Ok((
                     InvocationId::from_parts(partition_key, invocation_uuid),
                     state_value,
@@ -226,7 +223,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
                 {
                     move |(mut key, mut value)| {
-                        let state_key =
+                        let status_key =
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
 
                         if value.len() < std::mem::size_of::<u8>() {
@@ -246,8 +243,7 @@ impl ScanInvocationStatusTable for PartitionStore {
 
                         let inv_status_v2_lazy = break_on_err(restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value).map_err(|e| StorageError::Conversion(e.into())))?;
 
-                        let (partition_key, invocation_uuid) =
-                            break_on_err(state_key.into_inner_ok_or())?;
+                        let (partition_key, invocation_uuid) = status_key.split();
 
                         let result = f((
                             InvocationId::from_parts(partition_key, invocation_uuid),
@@ -294,6 +290,8 @@ impl WriteInvocationStatusTable for PartitionStoreTransaction<'_> {
 
 #[cfg(test)]
 mod tests {
+    use crate::keys::TableKeyPrefix;
+
     use super::*;
 
     #[test]

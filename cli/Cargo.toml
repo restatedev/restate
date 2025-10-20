@@ -77,7 +77,7 @@ tokio-util = { workspace = true }
 toml = "0.8.15"
 toml_edit = "0.22.12"
 tracing = { workspace = true }
-typify = "0.1.0"
+typify = "0.5.0"
 url = { workspace = true }
 uuid = { workspace = true }
 zip = "0.6"

@@ -20,7 +20,6 @@ use prost::{DecodeError, EncodeError, Message as ProstMessage};
 use protobuf::ProtobufError;
 use raft::prelude::{ConfState, Message};
 use raft_proto::eraftpb::Snapshot;
-use thiserror::__private::AsDisplay;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
@@ -308,7 +307,7 @@ impl RaftMetadataServer {
                 .map_err(|err| {
                     error!(%err, "Failed to migrate local to replicated metadata. Please make sure \
                     that {} exists and has not been corrupted. If the directory does not contain \
-                    local metadata you want to migrate from, then please remove it", local::storage::RocksDbStorage::data_dir().as_display());
+                    local metadata you want to migrate from, then please remove it", local::storage::RocksDbStorage::data_dir().display());
                     Error::ProvisionFromLocal(err.into())
                 })?;
 

@@ -220,7 +220,7 @@ impl InvocationUuid {
         Self::from_u128(u128::from_be_bytes(b))
     }
 
-    pub fn to_bytes(&self) -> [u8; Self::RAW_BYTES_LEN] {
+    pub const fn to_bytes(&self) -> [u8; Self::RAW_BYTES_LEN] {
         self.0.to_be_bytes()
     }
 
@@ -456,6 +456,7 @@ impl InvocationId {
         )
     }
 
+    #[inline]
     pub const fn from_parts(partition_key: PartitionKey, invocation_uuid: InvocationUuid) -> Self {
         Self {
             partition_key,

@@ -39,12 +39,14 @@ define_table_key!(
     )
 );
 
+#[inline]
 fn create_key(service_id: &ServiceId, key: &ByteString) -> PromiseKey {
-    PromiseKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.as_bytes().clone())
-        .key(key.clone())
+    PromiseKey {
+        partition_key: service_id.partition_key(),
+        service_name: service_id.service_name.clone(),
+        service_key: service_id.key.as_bytes().clone(),
+        key: key.clone(),
+    }
 }
 
 fn get_promise<S: StorageAccess>(
@@ -66,14 +68,14 @@ fn put_promise<S: StorageAccess>(
 }
 
 fn delete_all_promises<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) -> Result<()> {
-    let prefix_key = PromiseKey::default()
+    let prefix_key = PromiseKey::builder()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.as_bytes().clone());
 
     let keys = storage.for_each_key_value_in_place(
         TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), prefix_key),
-        |k, _| TableScanIterationDecision::Emit(Ok(Bytes::copy_from_slice(k))),
+        |k, _| TableScanIterationDecision::Emit(Ok(Box::from(k))),
     )?;
 
     for k in keys {
@@ -110,8 +112,7 @@ impl ScanPromiseTable for PartitionStore {
                 let key = break_on_err(PromiseKey::deserialize_from(&mut k))?;
                 let metadata = break_on_err(Promise::decode(&mut v))?;
 
-                let (partition_key, service_name, service_key, promise_key) =
-                    break_on_err(key.into_inner_ok_or())?;
+                let (partition_key, service_name, service_key, promise_key) = key.split();
 
                 let service_id = ServiceId::with_partition_key(
                     partition_key,

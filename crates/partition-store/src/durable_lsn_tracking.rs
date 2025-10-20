@@ -157,10 +157,8 @@ fn extract_partition_applied_lsn(
     }
 
     let fsm_key = PartitionStateMachineKey::deserialize_from(&mut key)?;
-    if fsm_key.state_id == Some(fsm_variable::APPLIED_LSN)
-        && let Some(padded_partition_id) = fsm_key.partition_id
-    {
-        let partition_id = PartitionId::from(padded_partition_id);
+    if fsm_key.state_id == fsm_variable::APPLIED_LSN {
+        let partition_id = PartitionId::from(fsm_key.partition_id);
         let applied_lsn = SequenceNumber::decode(&mut value).map(u64::from)?.into();
         return Ok(Some((partition_id, applied_lsn)));
     }
@@ -184,8 +182,8 @@ mod tests {
         let lsn = Lsn::from(12345);
 
         let applied_lsn_key = PartitionStateMachineKey {
-            partition_id: Some(partition_id.into()),
-            state_id: Some(fsm_variable::APPLIED_LSN),
+            partition_id: partition_id.into(),
+            state_id: fsm_variable::APPLIED_LSN,
         };
 
         let mut key_buf = BytesMut::new();
@@ -224,8 +222,8 @@ mod tests {
         let lsn = Lsn::from(12345);
 
         let other_fsm_key = PartitionStateMachineKey {
-            partition_id: Some(partition_id.into()),
-            state_id: Some(fsm_variable::INBOX_SEQ_NUMBER),
+            partition_id: partition_id.into(),
+            state_id: fsm_variable::INBOX_SEQ_NUMBER,
         };
 
         let mut key_buf = BytesMut::new();

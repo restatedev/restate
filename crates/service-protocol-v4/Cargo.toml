@@ -10,12 +10,13 @@ publish = false
 [features]
 default = []
 entry-codec = ["dep:bytestring", "dep:assert2"]
-message-codec = ["dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:size", "dep:tracing", "dep:paste"]
+message-codec = ["dep:bytes-utils", "dep:codederror", "dep:restate-errors", "dep:tracing", "dep:paste"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
 restate-errors = { workspace = true, optional = true }
+restate-serde-util = { workspace = true }
 restate-types = { workspace = true }
 
 assert2 = { workspace = true, optional = true }
@@ -25,7 +26,6 @@ bytes-utils = { workspace = true, optional = true }
 codederror = { workspace = true, optional = true }
 paste = { workspace = true, optional = true }
 prost = { workspace = true }
-size = { version = "0.4.1", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true, optional = true }
 
