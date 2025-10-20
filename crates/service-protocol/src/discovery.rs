@@ -98,7 +98,6 @@ fn parse_service_discovery_protocol_version_from_content_type(
 #[derive(Debug, thiserror::Error)]
 #[allow(clippy::large_enum_variant)]
 pub enum DiscoveryError {
-    // Errors most likely related to SDK bugs
     #[error("received a bad response from the SDK: {0}")]
     BadResponse(Cow<'static, str>),
     #[error(
@@ -106,9 +105,11 @@ pub enum DiscoveryError {
         e = String::from_utf8_lossy(.1)
     )]
     Decode(#[source] serde_json::Error, Bytes),
-
-    // Network related retryable errors
-    #[error("bad status code '{0}'. Response headers: {1:?}. Body: {2}")]
+    #[error(
+        "got status code '404'. Make sure the provided URI has the correct path where the Restate SDK endpoint is mounted. Response headers: {0:?}. Body: {1}"
+    )]
+    NotFound(HeaderMap, Cow<'static, str>),
+    #[error("got status code '{0}'. Response headers: {1:?}. Body: {2}")]
     BadStatusCode(StatusCode, HeaderMap, Cow<'static, str>),
     #[error(transparent)]
     Client(#[from] ServiceClientError),
@@ -131,7 +132,9 @@ impl CodedError for DiscoveryError {
         match self {
             DiscoveryError::BadResponse(_) => Some(&META0013),
             DiscoveryError::Decode(_, _) => None,
-            DiscoveryError::BadStatusCode(_, _, _) => Some(&META0003),
+            DiscoveryError::BadStatusCode { .. } | DiscoveryError::NotFound { .. } => {
+                Some(&META0003)
+            }
             // special code for possible http1.1 errors
             DiscoveryError::Client(ServiceClientError::Http(
                 _,
@@ -165,6 +168,7 @@ impl DiscoveryError {
             | DiscoveryError::UnsupportedServiceProtocol { .. }
             | DiscoveryError::BidirectionalNotSupported => false,
             DiscoveryError::BodyError(_) => true,
+            DiscoveryError::NotFound(_, _) => false,
         }
     }
 }
@@ -453,6 +457,9 @@ impl ServiceDiscovery {
                             String::from_utf8_lossy(b.to_bytes().to_vec().as_slice()).to_string()
                         })
                         .unwrap_or_else(|err| format!("Failed to read body {err}"));
+                    if parts.status == StatusCode::NOT_FOUND {
+                        return Err(DiscoveryError::NotFound(parts.headers, body_message.into()));
+                    }
                     return Err(DiscoveryError::BadStatusCode(
                         parts.status,
                         parts.headers,
