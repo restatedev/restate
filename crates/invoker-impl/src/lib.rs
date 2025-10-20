@@ -1840,7 +1840,7 @@ mod tests {
     async fn quota_allows_one_concurrent_invocation() {
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure
-            .retry_policy(Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))))
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
@@ -1955,7 +1955,7 @@ mod tests {
     async fn reclaim_quota_after_abort() {
         let invoker_options = InvokerOptionsBuilder::default()
             // fixed amount of retries so that an invocation eventually completes with a failure
-            .retry_policy(Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))))
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
@@ -2226,7 +2226,7 @@ mod tests {
     #[test(restate_core::test)]
     async fn notification_triggers_retry() {
         let invoker_options = InvokerOptionsBuilder::default()
-            .retry_policy(Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))))
+            .retry_policy(RetryPolicy::fixed_delay(Duration::ZERO, Some(1)))
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
@@ -2395,10 +2395,7 @@ mod tests {
     async fn transient_error_event_deduplication() {
         // Enable proposing events and keep timers short for the test
         let invoker_options = InvokerOptionsBuilder::default()
-            .retry_policy(Some(RetryPolicy::fixed_delay(
-                Duration::from_millis(1),
-                Some(3),
-            )))
+            .retry_policy(RetryPolicy::fixed_delay(Duration::from_millis(1), Some(3)))
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
