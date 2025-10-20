@@ -794,41 +794,34 @@ impl Configuration {
         }
 
         #[allow(deprecated)]
-        match self.worker.invoker.retry_policy.as_ref() {
-            Some(RetryPolicy::None) => ComputedRetryPolicy {
+        match &self.worker.invoker.retry_policy {
+            RetryPolicy::None => ComputedRetryPolicy {
                 initial_interval: Default::default(),
                 exponentiation_factor: 1.0,
                 max_attempts: Some(NonZeroUsize::MIN),
                 max_interval: None,
                 on_max_attempts: OnMaxAttempts::Kill,
             },
-            Some(RetryPolicy::FixedDelay {
+            RetryPolicy::FixedDelay {
                 max_attempts,
                 interval,
-            }) => ComputedRetryPolicy {
+            } => ComputedRetryPolicy {
                 initial_interval: *interval,
                 exponentiation_factor: 1.0,
                 max_attempts: *max_attempts,
                 max_interval: Some(*interval),
                 on_max_attempts: OnMaxAttempts::Kill,
             },
-            Some(RetryPolicy::Exponential {
+            RetryPolicy::Exponential {
                 max_attempts,
                 initial_interval,
                 factor,
                 max_interval,
-            }) => ComputedRetryPolicy {
+            } => ComputedRetryPolicy {
                 initial_interval: *initial_interval,
                 exponentiation_factor: *factor,
                 max_attempts: *max_attempts,
                 max_interval: *max_interval,
-                on_max_attempts: OnMaxAttempts::Kill,
-            },
-            None => ComputedRetryPolicy {
-                initial_interval: Duration::from_millis(50),
-                exponentiation_factor: 2.0,
-                max_attempts: None,
-                max_interval: Some(Duration::from_secs(10)),
                 on_max_attempts: OnMaxAttempts::Kill,
             },
         }
@@ -913,7 +906,7 @@ mod tests {
                 WorkerOptionsBuilder::default()
                     .invoker(
                         InvokerOptionsBuilder::default()
-                            .retry_policy(Some(RetryPolicy::None))
+                            .retry_policy(RetryPolicy::None)
                             .build()
                             .unwrap(),
                     )
@@ -937,12 +930,12 @@ mod tests {
                 WorkerOptionsBuilder::default()
                     .invoker(
                         InvokerOptionsBuilder::default()
-                            .retry_policy(Some(RetryPolicy::exponential(
+                            .retry_policy(RetryPolicy::exponential(
                                 Duration::from_millis(10),
                                 2.0,
                                 Some(1),
                                 None,
-                            )))
+                            ))
                             .build()
                             .unwrap(),
                     )
@@ -966,12 +959,12 @@ mod tests {
                 WorkerOptionsBuilder::default()
                     .invoker(
                         InvokerOptionsBuilder::default()
-                            .retry_policy(Some(RetryPolicy::exponential(
+                            .retry_policy(RetryPolicy::exponential(
                                 Duration::from_millis(10),
                                 2.0,
                                 Some(2),
                                 None,
-                            )))
+                            ))
                             .build()
                             .unwrap(),
                     )

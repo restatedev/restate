@@ -240,8 +240,7 @@ pub struct InvokerOptions {
     ///
     /// Please refer to `default-retry-policy` for the new configuration options.
     #[deprecated]
-    #[serde(default)]
-    pub retry_policy: Option<RetryPolicy>,
+    pub retry_policy: RetryPolicy,
 
     /// # Inactivity timeout
     ///
@@ -365,7 +364,7 @@ impl InvokerOptions {
 
     #[allow(deprecated)]
     pub fn print_deprecation_warnings(&self) {
-        if self.retry_policy.is_some() {
+        if self.retry_policy != default_retry_policy() {
             eprintln!(
                 "Using the deprecated config option 'invoker.retry-policy' instead of 'default-retry-policy'. \
                 Please update the config to use 'default-retry-policy' instead. \
@@ -375,11 +374,21 @@ impl InvokerOptions {
     }
 }
 
+fn default_retry_policy() -> RetryPolicy {
+    RetryPolicy::exponential(
+        Duration::from_millis(50),
+        2.0,
+        // see https://github.com/toml-rs/toml/issues/705
+        None,
+        Some(Duration::from_secs(10)),
+    )
+}
+
 impl Default for InvokerOptions {
     fn default() -> Self {
         Self {
             #[allow(deprecated)]
-            retry_policy: None,
+            retry_policy: default_retry_policy(),
             in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
             inactivity_timeout: FriendlyDuration::new(DEFAULT_INACTIVITY_TIMEOUT),
             abort_timeout: FriendlyDuration::new(DEFAULT_ABORT_TIMEOUT),
