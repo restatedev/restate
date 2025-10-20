@@ -4,14 +4,17 @@
 // Use of this software is governed by the Business Source License
 // included in the LICENSE file.
 //
-// As of the Change Date specified in that file, in accordance with
-// the Business Source License, use of this software will be governed
+// As of the Change Date specified in that file, in accordance with the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
 //! Build information
 #![allow(dead_code)]
 
+use std::str::FromStr;
 use std::sync::OnceLock;
+
+use restate_cli_util::c_println;
+use restate_types::SemanticRestateVersion;
 
 /// The version of restate CLI.
 pub const RESTATE_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,4 +53,41 @@ const RESTATE_CLI_DEBUG: &str = env!("VERGEN_CARGO_DEBUG");
 /// Was the binary compiled with debug symbols
 pub fn is_debug() -> bool {
     RESTATE_CLI_DEBUG == "true" && RESTATE_CLI_DEBUG_STRIPPED != Some("true")
+}
+
+pub async fn check_if_latest_version() {
+    let octocrab = octocrab::instance();
+    let Ok(mut latest) = octocrab
+        .repos("restatedev", "restate")
+        .releases()
+        .get_latest()
+        .await
+    else {
+        return;
+    };
+
+    let current_version = SemanticRestateVersion::current().clone();
+    if latest.tag_name.starts_with("v") {
+        // ignore if the tag is not a version
+        let version_str = latest.tag_name.split_off(1);
+        let Ok(latest_release) = SemanticRestateVersion::from_str(&version_str) else {
+            return;
+        };
+
+        if matches!(
+            latest_release.cmp_precedence(&current_version),
+            std::cmp::Ordering::Greater
+        ) {
+            c_println!(
+                "📣⬆️A newer version was released at {}, v{}->v{}. Check it out at {}.",
+                current_version.to_string(),
+                latest_release.to_string(),
+                latest
+                    .published_at
+                    .map(|d| d.to_string())
+                    .unwrap_or("<unknown>".to_owned()),
+                latest.html_url.to_string()
+            );
+        }
+    }
 }
