@@ -123,6 +123,7 @@ jobs:
     uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      serviceImage: "ghcr.io/restatedev/test-services-java:main"
 
   sdk-python:
     name: Run SDK-Python integration tests
@@ -137,6 +138,7 @@ jobs:
     uses: restatedev/sdk-python/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      serviceImage: "ghcr.io/restatedev/test-services-python:main"
 
   sdk-go:
     name: Run SDK-Go integration tests
@@ -165,6 +167,7 @@ jobs:
     uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      serviceImage: "ghcr.io/restatedev/test-services-node:main"
 
   sdk-rust:
     name: Run SDK-Rust integration tests
