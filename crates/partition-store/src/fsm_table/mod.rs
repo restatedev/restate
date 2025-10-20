@@ -29,6 +29,17 @@ define_table_key!(
     PartitionStateMachineKey(partition_id: PaddedPartitionId, state_id: u64)
 );
 
+#[inline]
+fn create_key(
+    partition_id: impl Into<PaddedPartitionId>,
+    state_id: u64,
+) -> PartitionStateMachineKey {
+    PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id,
+    }
+}
+
 pub(crate) mod fsm_variable {
     pub(crate) const INBOX_SEQ_NUMBER: u64 = 0;
     pub(crate) const OUTBOX_SEQ_NUMBER: u64 = 1;
@@ -52,10 +63,7 @@ fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
 where
     <<T as PartitionStoreProtobufValue>::ProtobufType as TryInto<T>>::Error: Into<anyhow::Error>,
 {
-    let key = PartitionStateMachineKey::default()
-        .partition_id(partition_id.into())
-        .state_id(state_id);
-    storage.get_value_proto(key)
+    storage.get_value_proto(create_key(partition_id, state_id))
 }
 
 /// Forces a read from persistent storage, bypassing memtables and block cache.
@@ -67,10 +75,7 @@ fn get_durable<T: PartitionStoreProtobufValue, S: StorageAccess>(
 where
     <<T as PartitionStoreProtobufValue>::ProtobufType as TryInto<T>>::Error: Into<anyhow::Error>,
 {
-    let key = PartitionStateMachineKey::default()
-        .partition_id(partition_id.into())
-        .state_id(state_id);
-    storage.get_durable_value(key)
+    storage.get_durable_value(create_key(partition_id, state_id))
 }
 
 fn put<S: StorageAccess>(
@@ -79,9 +84,10 @@ fn put<S: StorageAccess>(
     state_id: u64,
     state_value: &(impl PartitionStoreProtobufValue + Clone + 'static),
 ) -> Result<()> {
-    let key = PartitionStateMachineKey::default()
-        .partition_id(partition_id.into())
-        .state_id(state_id);
+    let key = PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id,
+    };
     storage.put_kv_proto(key, state_value)
 }
 
@@ -149,9 +155,7 @@ impl ReadFsmTable for PartitionStore {
     }
 
     async fn get_schema(&mut self) -> Result<Option<Schema>> {
-        let key = PartitionStateMachineKey::default()
-            .partition_id(self.partition_id().into())
-            .state_id(fsm_variable::SERVICES_SCHEMA_METADATA);
+        let key = create_key(self.partition_id(), fsm_variable::SERVICES_SCHEMA_METADATA);
         self.get_value_storage_codec(key)
     }
 }
@@ -203,9 +207,7 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
     }
 
     fn put_schema(&mut self, schema: &Schema) -> Result<()> {
-        let key = PartitionStateMachineKey::default()
-            .partition_id(self.partition_id().into())
-            .state_id(fsm_variable::SERVICES_SCHEMA_METADATA);
+        let key = create_key(self.partition_id(), fsm_variable::SERVICES_SCHEMA_METADATA);
         self.put_kv_storage_codec(key, schema)
     }
 }

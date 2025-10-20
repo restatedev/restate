@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::Cursor;
 use std::ops::RangeInclusive;
 
 use futures::Stream;
@@ -42,10 +41,11 @@ define_table_key!(
 );
 
 fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> JournalKey {
-    JournalKey::default()
-        .partition_key(invocation_id.partition_key())
-        .invocation_uuid(invocation_id.invocation_uuid())
-        .journal_index(journal_index)
+    JournalKey {
+        partition_key: invocation_id.partition_key(),
+        invocation_uuid: invocation_id.invocation_uuid(),
+        journal_index,
+    }
 }
 
 fn put_journal_entry<S: StorageAccess>(
@@ -75,19 +75,16 @@ fn get_journal<S: StorageAccess>(
     journal_length: EntryIndex,
 ) -> Result<Vec<Result<(EntryIndex, JournalEntry)>>> {
     let _x = RocksDbPerfGuard::new("get-journal");
-    let key = JournalKey::default()
+    let key = JournalKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
     let mut n = 0;
     storage.for_each_key_value_in_place(
         TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), key),
-        move |k, mut v| {
-            let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
-                journal_key
-                    .journal_index
-                    .expect("The journal index must be part of the journal key.")
-            });
+        move |mut k, mut v| {
+            let key =
+                JournalKey::deserialize_from(&mut k).map(|journal_key| journal_key.journal_index);
             let entry = JournalEntry::decode(&mut v);
             let result = key.and_then(|key| entry.map(|entry| (key, entry)));
 
@@ -109,7 +106,7 @@ fn delete_journal<S: StorageAccess>(
     let mut key = write_journal_entry_key(invocation_id, 0);
     let k = &mut key;
     for journal_index in 0..journal_length {
-        k.journal_index = Some(journal_index);
+        k.journal_index = journal_index;
         storage.delete_key(k)?;
     }
     Ok(())
@@ -156,8 +153,7 @@ impl ScanJournalTable for PartitionStore {
                 let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
                 let journal_entry = break_on_err(JournalEntry::decode(&mut value))?;
 
-                let (partition_key, invocation_uuid, entry_index) =
-                    break_on_err(journal_key.into_inner_ok_or())?;
+                let (partition_key, invocation_uuid, entry_index) = journal_key.split();
 
                 let journal_entry_id = JournalEntryId::from_parts(
                     InvocationId::from_parts(partition_key, invocation_uuid),
@@ -221,7 +217,7 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
 #[cfg(test)]
 mod tests {
     use crate::journal_table::write_journal_entry_key;
-    use crate::keys::TableKey;
+    use crate::keys::TableKeyPrefix;
     use bytes::Bytes;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
 

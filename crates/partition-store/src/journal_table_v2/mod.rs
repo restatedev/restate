@@ -67,10 +67,11 @@ define_table_key!(
 );
 
 fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> JournalKey {
-    JournalKey::default()
-        .partition_key(invocation_id.partition_key())
-        .invocation_uuid(invocation_id.invocation_uuid())
-        .journal_index(journal_index)
+    JournalKey {
+        partition_key: invocation_id.partition_key(),
+        invocation_uuid: invocation_id.invocation_uuid(),
+        journal_index,
+    }
 }
 
 fn put_journal_entry<S: StorageAccess>(
@@ -82,19 +83,21 @@ fn put_journal_entry<S: StorageAccess>(
 ) -> Result<()> {
     if let RawEntry::Notification(notification) = &journal_entry.inner {
         storage.put_kv_proto(
-            JournalNotificationIdToNotificationIndexKey::default()
-                .partition_key(invocation_id.partition_key())
-                .invocation_uuid(invocation_id.invocation_uuid())
-                .notification_id(notification.id()),
+            JournalNotificationIdToNotificationIndexKey {
+                partition_key: invocation_id.partition_key(),
+                invocation_uuid: invocation_id.invocation_uuid(),
+                notification_id: notification.id(),
+            },
             &JournalEntryIndex(journal_index),
         )?;
     } else if let RawEntry::Command(_) = &journal_entry.inner {
         for completion_id in related_completion_ids {
             storage.put_kv_proto(
-                JournalCompletionIdToCommandIndexKey::default()
-                    .partition_key(invocation_id.partition_key())
-                    .invocation_uuid(invocation_id.invocation_uuid())
-                    .completion_id(*completion_id),
+                JournalCompletionIdToCommandIndexKey {
+                    partition_key: invocation_id.partition_key(),
+                    invocation_uuid: invocation_id.invocation_uuid(),
+                    completion_id: *completion_id,
+                },
                 &JournalEntryIndex(journal_index),
             )?;
         }
@@ -122,7 +125,7 @@ fn get_journal<S: StorageAccess>(
     journal_length: EntryIndex,
 ) -> Result<Vec<Result<(EntryIndex, StoredRawEntry)>>> {
     let _x = RocksDbPerfGuard::new("get-journal");
-    let key = JournalKey::default()
+    let key = JournalKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
@@ -130,11 +133,8 @@ fn get_journal<S: StorageAccess>(
     storage.for_each_key_value_in_place(
         TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), key),
         move |k, mut v| {
-            let key = JournalKey::deserialize_from(&mut Cursor::new(k)).map(|journal_key| {
-                journal_key
-                    .journal_index
-                    .expect("The journal index must be part of the journal key.")
-            });
+            let key = JournalKey::deserialize_from(&mut Cursor::new(k))
+                .map(|journal_key| journal_key.journal_index);
             let entry =
                 StoredEntry::decode(&mut v).map_err(|error| StorageError::Generic(error.into()));
 
@@ -160,13 +160,13 @@ fn delete_journal<S: StorageAccess>(
     let mut key = write_journal_entry_key(invocation_id, 0);
     let k = &mut key;
     for journal_index in 0..journal_length {
-        k.journal_index = Some(journal_index);
+        k.journal_index = journal_index;
         storage.delete_key(k)?;
     }
 
     // Delete the indexes
     let notification_id_to_notification_index =
-        JournalNotificationIdToNotificationIndexKey::default()
+        JournalNotificationIdToNotificationIndexKey::builder()
             .partition_key(invocation_id.partition_key())
             .invocation_uuid(invocation_id.invocation_uuid());
     let notification_id_index = OwnedIterator::new(storage.iterator_from(
@@ -177,7 +177,7 @@ fn delete_journal<S: StorageAccess>(
     )?)
     .map(|(mut key, _)| {
         let journal_key = JournalNotificationIdToNotificationIndexKey::deserialize_from(&mut key)?;
-        let (_, _, notification_id) = journal_key.into_inner_ok_or()?;
+        let (_, _, notification_id) = journal_key.split();
         Ok(notification_id)
     })
     .collect::<Result<Vec<_>>>()?;
@@ -185,11 +185,13 @@ fn delete_journal<S: StorageAccess>(
         storage.delete_key(
             &notification_id_to_notification_index
                 .clone()
-                .notification_id(notification_id),
+                .notification_id(notification_id)
+                .into_complete()
+                .unwrap(),
         )?;
     }
 
-    let completion_id_to_command_index = JournalCompletionIdToCommandIndexKey::default()
+    let completion_id_to_command_index = JournalCompletionIdToCommandIndexKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
     let notification_id_index =
@@ -199,7 +201,7 @@ fn delete_journal<S: StorageAccess>(
         ))?)
         .map(|(mut key, _)| {
             let journal_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key)?;
-            let (_, _, completion_id) = journal_key.into_inner_ok_or()?;
+            let (_, _, completion_id) = journal_key.split();
             Ok(completion_id)
         })
         .collect::<Result<Vec<_>>>()?;
@@ -207,7 +209,9 @@ fn delete_journal<S: StorageAccess>(
         storage.delete_key(
             &completion_id_to_command_index
                 .clone()
-                .completion_id(notification_id),
+                .completion_id(notification_id)
+                .into_complete()
+                .unwrap(),
         )?;
     }
 
@@ -218,7 +222,7 @@ fn get_notifications_index<S: StorageAccess>(
     storage: &mut S,
     invocation_id: InvocationId,
 ) -> Result<HashMap<NotificationId, EntryIndex>> {
-    let key = JournalNotificationIdToNotificationIndexKey::default()
+    let key = JournalNotificationIdToNotificationIndexKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
     let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
@@ -232,7 +236,7 @@ fn get_notifications_index<S: StorageAccess>(
             let index = JournalEntryIndex::decode(&mut value)
                 .map_err(|err| StorageError::Conversion(err.into()))?;
 
-            let (_, _, notification_id) = journal_key.into_inner_ok_or()?;
+            let (_, _, notification_id) = journal_key.split();
 
             Ok((notification_id, index.0))
         })
@@ -247,10 +251,11 @@ fn get_command_by_completion_id<S: StorageAccess>(
     let _x = RocksDbPerfGuard::new("get-command-by-completion-id");
 
     // Access the index
-    let completion_id_to_command_index = JournalCompletionIdToCommandIndexKey::default()
-        .partition_key(invocation_id.partition_key())
-        .invocation_uuid(invocation_id.invocation_uuid())
-        .completion_id(completion_id);
+    let completion_id_to_command_index = JournalCompletionIdToCommandIndexKey {
+        partition_key: invocation_id.partition_key(),
+        invocation_uuid: invocation_id.invocation_uuid(),
+        completion_id,
+    };
     let opt: Option<JournalEntryIndex> = storage.get_value_proto(completion_id_to_command_index)?;
     if opt.is_none() {
         return Ok(None);
@@ -283,10 +288,11 @@ fn has_completion<S: StorageAccess>(
     let _x = RocksDbPerfGuard::new("has-completion");
 
     // Access the index
-    let key = JournalNotificationIdToNotificationIndexKey::default()
-        .partition_key(invocation_id.partition_key())
-        .invocation_uuid(invocation_id.invocation_uuid())
-        .notification_id(NotificationId::CompletionId(completion_id));
+    let key = JournalNotificationIdToNotificationIndexKey {
+        partition_key: invocation_id.partition_key(),
+        invocation_uuid: invocation_id.invocation_uuid(),
+        notification_id: NotificationId::CompletionId(completion_id),
+    };
     Ok(storage
         .get_value_proto::<_, JournalEntryIndex>(key)?
         .is_some())
@@ -364,8 +370,7 @@ impl ScanJournalTable for PartitionStore {
                         .map_err(|err| StorageError::Conversion(err.into())),
                 )?;
 
-                let (partition_key, invocation_uuid, entry_index) =
-                    break_on_err(journal_key.into_inner_ok_or())?;
+                let (partition_key, invocation_uuid, entry_index) = journal_key.split();
 
                 let journal_entry_id = JournalEntryId::from_parts(
                     InvocationId::from_parts(partition_key, invocation_uuid),
@@ -455,7 +460,7 @@ mod tests {
 
     use super::write_journal_entry_key;
 
-    use crate::keys::TableKey;
+    use crate::keys::TableKeyPrefix;
     use bytes::Bytes;
     use restate_types::identifiers::{InvocationId, InvocationUuid};
 

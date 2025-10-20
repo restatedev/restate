@@ -8,14 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::TableKind::{JournalEvent, State};
-use crate::error::break_on_err;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
-};
+use std::ops::RangeInclusive;
+
 use futures::Stream;
 use futures_util::stream;
+
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_events::{
     EventView, ReadJournalEventsTable, ScanJournalEventsTable, WriteJournalEventsTable,
@@ -27,7 +24,13 @@ use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, Wit
 use restate_types::journal_events::EventType;
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::time::MillisSinceEpoch;
-use std::ops::RangeInclusive;
+
+use crate::TableKind::{JournalEvent, State};
+use crate::error::break_on_err;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
+};
 
 define_table_key!(
     JournalEvent,
@@ -65,12 +68,13 @@ fn write_journal_event_key(
     timestamp: u64,
     lsn: u64,
 ) -> JournalEventKey {
-    JournalEventKey::default()
-        .partition_key(invocation_id.partition_key())
-        .invocation_uuid(invocation_id.invocation_uuid())
-        .event_type(event_type)
-        .timestamp(timestamp)
-        .lsn(lsn)
+    JournalEventKey {
+        partition_key: invocation_id.partition_key(),
+        invocation_uuid: invocation_id.invocation_uuid(),
+        event_type,
+        timestamp,
+        lsn,
+    }
 }
 
 fn put_journal_event<S: StorageAccess>(
@@ -99,7 +103,7 @@ fn get_journal_events<S: StorageAccess>(
     invocation_id: &InvocationId,
 ) -> Result<Vec<Result<EventView>>> {
     let _x = RocksDbPerfGuard::new("get-journal-events");
-    let key = JournalEventKey::default()
+    let key = JournalEventKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
@@ -108,7 +112,7 @@ fn get_journal_events<S: StorageAccess>(
         move |mut k, mut v| {
             TableScanIterationDecision::Emit(
                 JournalEventKey::deserialize_from(&mut k)
-                    .and_then(|k| k.into_inner_ok_or())
+                    .map(|k| k.split())
                     .and_then(|k_elements| {
                         EventWrapper::decode(&mut v).map(|value| (k_elements, value.0))
                     })
@@ -139,7 +143,7 @@ fn delete_journal_events<S: StorageAccess>(
 ) -> Result<()> {
     let _x = RocksDbPerfGuard::new("delete-journal-events");
 
-    let prefix_key = JournalEventKey::default()
+    let prefix_key = JournalEventKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
@@ -179,8 +183,7 @@ impl ScanJournalEventsTable for PartitionStore {
             TableScan::FullScanPartitionKeyRange::<JournalEventKey>(range),
             move |(mut key, mut value)| {
                 let event_key = break_on_err(JournalEventKey::deserialize_from(&mut key))?;
-                let (pk, inv_uuid, event_type, timestamp, _) =
-                    break_on_err(event_key.into_inner_ok_or())?;
+                let (pk, inv_uuid, event_type, timestamp, _) = event_key.split();
                 let stored_event = break_on_err(EventWrapper::decode(&mut value))?.0;
 
                 f((

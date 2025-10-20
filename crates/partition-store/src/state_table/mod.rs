@@ -38,21 +38,17 @@ define_table_key!(
 
 #[inline]
 fn write_state_entry_key(service_id: &ServiceId, state_key: impl AsRef<[u8]>) -> StateKey {
-    StateKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone())
-        .state_key(state_key.as_ref().to_vec().into())
+    StateKey {
+        partition_key: service_id.partition_key(),
+        service_name: service_id.service_name.clone(),
+        service_key: service_id.key.clone(),
+        state_key: state_key.as_ref().to_vec().into(),
+    }
 }
 
-fn user_state_key_from_slice(key: &[u8]) -> Result<Bytes> {
-    let mut key = Bytes::copy_from_slice(key);
-    let key = StateKey::deserialize_from(&mut key)?;
-    let key = key
-        .state_key
-        .ok_or_else(|| StorageError::DataIntegrityError)?;
-
-    Ok(key)
+#[inline]
+fn user_state_key_from_slice(mut key: &[u8]) -> Result<Bytes> {
+    Ok(StateKey::deserialize_from(&mut key)?.state_key)
 }
 
 fn put_user_state<S: StorageAccess>(
@@ -75,7 +71,7 @@ fn delete_user_state<S: StorageAccess>(
 }
 
 fn delete_all_user_state<S: StorageAccess>(storage: &mut S, service_id: &ServiceId) -> Result<()> {
-    let prefix_key = StateKey::default()
+    let prefix_key = StateKey::builder()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
@@ -108,7 +104,7 @@ fn get_all_user_states_for_service<S: StorageAccess>(
     service_id: &ServiceId,
 ) -> Result<Vec<Result<(Bytes, Bytes)>>> {
     let _x = RocksDbPerfGuard::new("get-all-user-state");
-    let key = StateKey::default()
+    let key = StateKey::builder()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
@@ -154,8 +150,7 @@ impl ScanStateTable for PartitionStore {
             TableScan::FullScanPartitionKeyRange::<StateKey>(range),
             move |(mut key, value)| {
                 let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
-                let (partition_key, service_name, service_key, state_key) =
-                    break_on_err(row_key.into_inner_ok_or())?;
+                let (partition_key, service_name, service_key, state_key) = row_key.split();
 
                 let service_id = ServiceId::from_parts(partition_key, service_name, service_key);
 
@@ -221,7 +216,7 @@ fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::keys::TableKey;
+    use crate::keys::TableKeyPrefix;
     use crate::state_table::{user_state_key_from_slice, write_state_entry_key};
     use bytes::{Bytes, BytesMut};
     use restate_types::identifiers::ServiceId;

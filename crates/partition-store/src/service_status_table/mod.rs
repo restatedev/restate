@@ -35,11 +35,13 @@ define_table_key!(
     )
 );
 
+#[inline]
 fn write_status_key(service_id: &ServiceId) -> ServiceStatusKey {
-    ServiceStatusKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone())
+    ServiceStatusKey {
+        partition_key: service_id.partition_key(),
+        service_name: service_id.service_name.clone(),
+        service_key: service_id.key.clone(),
+    }
 }
 
 fn put_virtual_object_status<S: StorageAccess>(
@@ -47,10 +49,7 @@ fn put_virtual_object_status<S: StorageAccess>(
     service_id: &ServiceId,
     status: &VirtualObjectStatus,
 ) -> Result<()> {
-    let key = ServiceStatusKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone());
+    let key = write_status_key(service_id);
     if *status == VirtualObjectStatus::Unlocked {
         storage.delete_key(&key)
     } else {
@@ -63,10 +62,7 @@ fn get_virtual_object_status<S: StorageAccess>(
     service_id: &ServiceId,
 ) -> Result<VirtualObjectStatus> {
     let _x = RocksDbPerfGuard::new("get-virtual-obj-status");
-    let key = ServiceStatusKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone());
+    let key = write_status_key(service_id);
 
     storage
         .get_value_proto(key)
@@ -110,8 +106,7 @@ impl ScanVirtualObjectStatusTable for PartitionStore {
                 let state_key = break_on_err(ServiceStatusKey::deserialize_from(&mut key))?;
                 let state_value = break_on_err(VirtualObjectStatus::decode(&mut value))?;
 
-                let (partition_key, service_name, service_key) =
-                    break_on_err(state_key.into_inner_ok_or())?;
+                let (partition_key, service_name, service_key) = state_key.split();
 
                 let service_id = ServiceId::from_parts(partition_key, service_name, service_key);
 

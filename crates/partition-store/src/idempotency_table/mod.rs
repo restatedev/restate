@@ -37,20 +37,21 @@ define_table_key!(
     )
 );
 
+#[inline]
 fn create_key(idempotency_id: &IdempotencyId) -> IdempotencyKey {
-    IdempotencyKey::default()
-        .partition_key(idempotency_id.partition_key())
-        .service_name(idempotency_id.service_name.clone())
-        .service_key(
-            idempotency_id
-                .service_key
-                .as_ref()
-                .cloned()
-                .unwrap_or_default()
-                .into_bytes(),
-        )
-        .service_handler(idempotency_id.service_handler.clone())
-        .idempotency_key(idempotency_id.idempotency_key.clone())
+    IdempotencyKey {
+        partition_key: idempotency_id.partition_key(),
+        service_name: idempotency_id.service_name.clone(),
+        service_key: idempotency_id
+            .service_key
+            .as_ref()
+            .cloned()
+            .unwrap_or_default()
+            .into_bytes(),
+
+        service_handler: idempotency_id.service_handler.clone(),
+        idempotency_key: idempotency_id.idempotency_key.clone(),
+    }
 }
 
 fn get_idempotency_metadata<S: StorageAccess>(
@@ -103,17 +104,13 @@ impl ScanIdempotencyTable for PartitionStore {
                 let idempotency_metadata = break_on_err(IdempotencyMetadata::decode(&mut value))?;
 
                 let idempotency_id = IdempotencyId::new(
-                    break_on_err(key.service_name_ok_or())?.clone(),
-                    break_on_err(
-                        key.service_key
-                            .clone()
-                            .map(|b| {
-                                ByteString::try_from(b).map_err(|e| StorageError::Generic(e.into()))
-                            })
-                            .transpose(),
-                    )?,
-                    break_on_err(key.service_handler_ok_or())?.clone(),
-                    break_on_err(key.idempotency_key_ok_or())?.clone(),
+                    key.service_name,
+                    Some(break_on_err(
+                        ByteString::try_from(key.service_key)
+                            .map_err(|e| StorageError::Generic(e.into())),
+                    )?),
+                    key.service_handler,
+                    key.idempotency_key,
                 );
 
                 f((idempotency_id, idempotency_metadata)).map_break(Ok)
