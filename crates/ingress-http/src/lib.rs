@@ -15,11 +15,10 @@ mod rpc_request_dispatcher;
 mod server;
 
 pub use rpc_request_dispatcher::InvocationClientRequestDispatcher;
-pub use server::{HyperServerIngress, IngressServerError, StartSignal};
+pub use server::{HyperServerIngress, IngressServerError};
 
 use bytes::Bytes;
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use restate_types::identifiers::InvocationId;
@@ -29,22 +28,32 @@ use restate_types::invocation::client::{
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
+use restate_types::net::address::SocketAddress;
 
 /// Client connection information for a given RPC request
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ConnectInfo {
-    remote: SocketAddr,
+    remote: SocketAddress,
 }
 
 impl ConnectInfo {
-    fn new(remote: SocketAddr) -> Self {
+    fn new(remote: SocketAddress) -> Self {
         Self { remote }
     }
-    fn address(&self) -> IpAddr {
-        self.remote.ip()
+
+    fn address(&self) -> String {
+        match self.remote {
+            SocketAddress::Socket(socket_addr) => socket_addr.ip().to_string(),
+            SocketAddress::Uds(ref path) => path.display().to_string(),
+            SocketAddress::Anonymous => "<anonymous>".to_string(),
+        }
     }
-    fn port(&self) -> u16 {
-        self.remote.port()
+
+    fn port(&self) -> Option<u16> {
+        match self.remote {
+            SocketAddress::Socket(socket_addr) => Some(socket_addr.port()),
+            SocketAddress::Uds(_) | SocketAddress::Anonymous => None,
+        }
     }
 }
 
@@ -106,6 +115,7 @@ mod mocks {
     use restate_types::invocation::{
         InvocationQuery, InvocationTargetType, ServiceType, VirtualObjectHandlerType,
     };
+    use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
     use restate_types::retries::RetryIter;
     use restate_types::schema::invocation_target::test_util::MockInvocationTargetResolver;
     use restate_types::schema::invocation_target::{
@@ -203,8 +213,13 @@ mod mocks {
             self.0.resolve_latest_service(service_name)
         }
 
-        fn resolve_latest_service_openapi(&self, service_name: impl AsRef<str>) -> Option<Value> {
-            self.0.resolve_latest_service_openapi(service_name)
+        fn resolve_latest_service_openapi(
+            &self,
+            service_name: impl AsRef<str>,
+            ingress_address: AdvertisedAddress<HttpIngressPort>,
+        ) -> Option<Value> {
+            self.0
+                .resolve_latest_service_openapi(service_name, ingress_address)
         }
 
         fn list_services(&self) -> Vec<ServiceMetadata> {

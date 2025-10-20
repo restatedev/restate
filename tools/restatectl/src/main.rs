@@ -55,19 +55,16 @@ mod tests {
     use restate_futures_util::overdue::OverdueLoggingExt;
     use restate_local_cluster_runner::{
         cluster::Cluster,
-        node::{BinarySource, Node},
+        node::{BinarySource, NodeSpec},
     };
-    use restate_test_util::let_assert;
-    use restate_types::config::MetadataClientKind;
     use restate_types::{
-        config::Configuration, logs::metadata::ProviderKind, net::AdvertisedAddress,
-        replication::ReplicationProperty,
+        config::Configuration, logs::metadata::ProviderKind, replication::ReplicationProperty,
     };
     use tracing::info;
 
     #[test_log::test(tokio::test)]
     async fn restatectl_smoke_test() -> googletest::Result<()> {
-        let mut config = Configuration::default();
+        let mut config = Configuration::new_unix_sockets();
         config.common.default_num_partitions = 1.try_into()?;
         config.common.auto_provision = true;
         config.bifrost.default_provider = ProviderKind::Replicated;
@@ -78,7 +75,7 @@ mod tests {
 
         let mut cluster = Cluster::builder()
             .temp_base_dir("restatectl_smoke_test")
-            .nodes(Node::new_test_nodes(
+            .nodes(NodeSpec::new_test_nodes(
                 config,
                 BinarySource::CargoTest,
                 roles,
@@ -115,12 +112,7 @@ mod tests {
             drop(node);
         }
 
-        let_assert!(
-            MetadataClientKind::Replicated { addresses } =
-                &cluster.nodes[0].config().common.metadata_client.kind
-        );
-        let_assert!(AdvertisedAddress::Uds(sock_path) = &addresses[0]);
-        let node_address = format!("unix:{}", cluster.base_dir().join(sock_path).display());
+        let node_address = cluster.nodes[0].advertised_address().to_string();
 
         info!("Running restatectl....");
 

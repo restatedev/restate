@@ -12,18 +12,14 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use super::context::QueryContext;
-use crate::context::SelectPartitions;
-use crate::remote_query_scanner_client::{RemoteScanner, RemoteScannerService};
-use crate::remote_query_scanner_manager::{
-    PartitionLocation, PartitionLocator, RemoteScannerManager,
-};
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use googletest::matcher::{Matcher, MatcherResult};
+use serde_json::Value;
+
 use restate_invoker_api::StatusHandle;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -34,13 +30,20 @@ use restate_types::deployment::{DeploymentAddress, Headers};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, PartitionKey, ServiceRevision};
 use restate_types::live::Live;
+use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
 use restate_types::net::remote_query_scanner::RemoteQueryScannerOpen;
 use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
-use serde_json::Value;
+
+use super::context::QueryContext;
+use crate::context::SelectPartitions;
+use crate::remote_query_scanner_client::{RemoteScanner, RemoteScannerService};
+use crate::remote_query_scanner_manager::{
+    PartitionLocation, PartitionLocator, RemoteScannerManager,
+};
 
 #[derive(Default, Clone, Debug)]
 pub(crate) struct MockSchemas(
@@ -53,7 +56,11 @@ impl ServiceMetadataResolver for MockSchemas {
         self.0.resolve_latest_service(service_name)
     }
 
-    fn resolve_latest_service_openapi(&self, _: impl AsRef<str>) -> Option<Value> {
+    fn resolve_latest_service_openapi(
+        &self,
+        _: impl AsRef<str>,
+        _ingress_address: AdvertisedAddress<HttpIngressPort>,
+    ) -> Option<Value> {
         todo!()
     }
 

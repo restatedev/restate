@@ -27,7 +27,7 @@ use restate_types::config::{
 use restate_types::health::Health;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::net::{AdvertisedAddress, BindAddress};
+use restate_types::net::listener::AddressBook;
 use restate_types::nodes_config::{MetadataServerState, NodeConfig, NodesConfiguration, Role};
 use restate_types::{PlainNodeId, Version};
 
@@ -36,15 +36,25 @@ use crate::tests::Value;
 
 #[test_log::test(restate_core::test)]
 async fn migration_local_to_replicated() -> googletest::Result<()> {
-    let mut configuration = Configuration::default();
+    let mut configuration = Configuration::new_unix_sockets();
     let raft_options = RaftOptions::default();
 
     configuration.metadata_server.set_raft_options(raft_options);
     set_current_config(configuration);
+    let config = Configuration::pinned();
 
-    let uds = tempfile::tempdir()?.keep().join("server.sock");
-    let bind_address = BindAddress::Uds(uds.clone());
-    let advertised_address = AdvertisedAddress::Uds(uds);
+    let uds = tempfile::tempdir()?.keep();
+    let mut address_book = AddressBook::new(uds);
+    address_book.bind_from_config(&config).await?;
+
+    let advertised_address = config.common.advertised_address(&address_book);
+    assert!(
+        advertised_address
+            .clone()
+            .into_address()
+            .expect("valid address")
+            .is_unix_domain_socket()
+    );
 
     RocksDbManager::init();
 
@@ -102,16 +112,15 @@ async fn migration_local_to_replicated() -> googletest::Result<()> {
     ));
 
     // start the replicated metadata store and let it migrate from local metadata
-    let mut server_builder = NetworkServerBuilder::default();
+    let mut server_builder = NetworkServerBuilder::new(&mut address_book);
+    assert!(TaskCenter::try_set_address_book(address_book));
     let health = Health::default();
 
     let metadata_server =
         RaftMetadataServer::create(health.metadata_server_status(), &mut server_builder).await?;
 
     TaskCenter::spawn_child(TaskKind::NodeRpcServer, "node-rpc-server", async move {
-        server_builder
-            .run(health.node_rpc_status(), &bind_address)
-            .await
+        server_builder.run(health.node_rpc_status()).await
     })?;
     TaskCenter::spawn_child(
         TaskKind::MetadataServer,

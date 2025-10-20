@@ -55,6 +55,17 @@ message ProvisionClusterResponse {
 }
 
 message IdentResponse {
+  enum AddressKind {
+    UNKNOWN = 0;
+    TCP = 1;
+    HTTP = 2;
+    UNIX = 3;
+  }
+  message NetAddress {
+    string name = 1;
+    string address = 2;
+    AddressKind kind = 3;
+  }
   restate.common.NodeStatus status = 1;
   // node id may be unset if the node hasn't yet joined a cluster
   optional restate.common.NodeId node_id = 2;
@@ -72,6 +83,8 @@ message IdentResponse {
   uint32 logs_version = 11;
   uint32 schema_version = 12;
   uint32 partition_table_version = 13;
+  repeated NetAddress bound_addresses = 14;
+  repeated NetAddress advertised_addresses = 15;
 }
 
 message GetMetadataRequest {
