@@ -368,6 +368,8 @@ impl InvokerOptions {
             eprintln!(
                 "Using the deprecated config option 'invoker.retry-policy' instead of 'default-retry-policy'. \
                 Please update the config to use 'default-retry-policy' instead. \
+                If you used 'invoker.retry-policy.max-attempts', you can get the same behavior as before setting 'default-retry-policy.max-attempts' and 'default-retry-policy.on-max-attempts' = 'kill'. \
+                Check https://docs.restate.dev/references/server-config#param-default-retry-policy for more details. \
                 Note that using the new feature requires v1.5.x and after enabling, you won't be able to rollback to v1.4.x."
             );
         }
