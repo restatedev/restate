@@ -49,7 +49,7 @@ use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::{
-    PartitionSnapshotMetadata, SnapshotPartitionTask, SnapshotRepository,
+    ArchivedLsn, PartitionSnapshotMetadata, SnapshotPartitionTask, SnapshotRepository,
 };
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_time_util::DurationExt;
@@ -123,7 +123,7 @@ pub struct PartitionProcessorManager {
 
     replica_set_states: PartitionReplicaSetStates,
     target_tail_lsns: HashMap<PartitionId, Lsn>,
-    archived_lsns: HashMap<PartitionId, Lsn>,
+    archived_lsns: HashMap<PartitionId, ArchivedLsn>,
     invokers_status_reader: MultiplexedInvokerStatusReader,
 
     asynchronous_operations: JoinSet<AsynchronousEvent>,
@@ -806,7 +806,8 @@ impl PartitionProcessorManager {
 
                 // it is a bit unfortunate that we share PartitionProcessorStatus between the
                 // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
-                status.last_archived_log_lsn = self.archived_lsns.get(partition_id).cloned();
+                let archived_lsn = self.archived_lsns.get(partition_id);
+                status.last_archived_log_lsn = archived_lsn.map(|a| a.get_min_applied_lsn());
                 let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
 
                 let target_tail_lsn = if current_tail_lsn > status.target_tail_lsn {
@@ -937,7 +938,7 @@ impl PartitionProcessorManager {
         let (partition_id, response) = match result {
             Ok(metadata) => {
                 self.archived_lsns
-                    .insert(metadata.partition_id, metadata.min_applied_lsn);
+                    .insert(metadata.partition_id, ArchivedLsn::from(&metadata));
 
                 let response = SnapshotCreated::from(&metadata);
                 self.latest_snapshots
@@ -971,13 +972,10 @@ impl PartitionProcessorManager {
             return;
         };
 
-        let Some(records_per_snapshot) = self
-            .updateable_config
-            .live_load()
-            .worker
-            .snapshots
-            .snapshot_interval_num_records
-        else {
+        let snapshots_options = &self.updateable_config.live_load().worker.snapshots;
+        let snapshot_interval = snapshots_options.snapshot_interval;
+        let records_per_snapshot = snapshots_options.snapshot_interval_num_records;
+        if snapshot_interval.is_none() && records_per_snapshot.is_none() {
             return;
         };
 
@@ -1019,7 +1017,16 @@ impl PartitionProcessorManager {
         let snapshot_partitions = known_archived_lsn
             .into_iter()
             .filter_map(|(partition_id, applied_lsn, archived_lsn)| {
-                if applied_lsn >= archived_lsn.add(Lsn::from(records_per_snapshot.get())) {
+                // At this point, at least one of time-based or record-based interval is set; if
+                // both requirements are configured, then both must be met.
+                if records_per_snapshot.is_none_or(|num_records| {
+                    applied_lsn
+                        >= archived_lsn
+                            .get_min_applied_lsn()
+                            .add(Lsn::from(num_records.get()))
+                }) && snapshot_interval.is_none_or(|interval| {
+                    archived_lsn.get_age() > with_jitter(interval.into(), 0.1)
+                }) {
                     Some(partition_id)
                 } else {
                     None
@@ -1465,7 +1472,7 @@ enum EventKind {
         tail: Option<Lsn>,
     },
     NewArchivedLsn {
-        archived_lsn: Lsn,
+        archived_lsn: ArchivedLsn,
     },
 }
 

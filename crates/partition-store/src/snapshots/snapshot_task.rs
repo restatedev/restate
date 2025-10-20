@@ -24,6 +24,7 @@ use super::{
     SnapshotFormatVersion, SnapshotRepository,
 };
 use crate::PartitionStoreManager;
+use crate::snapshots::ArchivedLsn;
 
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
@@ -91,7 +92,7 @@ impl SnapshotPartitionTask {
             .get_partition_db(self.partition_id)
             .await
         {
-            db.note_archived_lsn(metadata.min_applied_lsn);
+            db.note_archived_lsn(ArchivedLsn::from(&metadata));
         }
 
         Ok(metadata)

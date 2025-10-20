@@ -126,7 +126,8 @@ impl Worker {
             SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
 
         let snapshots_options = &config.worker.snapshots;
-        if snapshots_options.snapshot_interval_num_records.is_some()
+        if (snapshots_options.snapshot_interval.is_some()
+            || snapshots_options.snapshot_interval_num_records.is_some())
             && snapshots_options.destination.is_none()
         {
             return Err(BuildError::SnapshotRepository(anyhow::anyhow!(

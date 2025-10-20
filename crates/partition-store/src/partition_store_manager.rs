@@ -26,7 +26,7 @@ use restate_types::partitions::Partition;
 use crate::SnapshotError;
 use crate::memory::MemoryController;
 use crate::partition_db::{AllDataCf, PartitionCell, PartitionDb, RocksConfigurator};
-use crate::snapshots::{LocalPartitionSnapshot, Snapshots};
+use crate::snapshots::{ArchivedLsn, LocalPartitionSnapshot, Snapshots};
 use crate::{BuildError, OpenError, PartitionStore, SnapshotErrorKind};
 
 const PARTITION_CF_PREFIX: &str = "data-";
@@ -183,7 +183,10 @@ impl PartitionStoreManager {
         self.snapshots.is_repository_configured()
     }
 
-    pub async fn refresh_latest_archived_lsn(&self, partition_id: PartitionId) -> Option<Lsn> {
+    pub async fn refresh_latest_archived_lsn(
+        &self,
+        partition_id: PartitionId,
+    ) -> Option<ArchivedLsn> {
         let db = self.get_partition_db(partition_id).await?;
         self.snapshots.refresh_latest_archived_lsn(db).await
     }
