@@ -76,7 +76,7 @@ prost-dto = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
-regress = { workspace = true }
+regress = { version = "0.10" }
 schemars = { workspace = true, optional = true }
 semver = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
@@ -120,7 +120,7 @@ prettyplease = "0.2"
 schemars = { workspace = true }
 serde_json = { workspace = true }
 syn = "2.0"
-typify = { version = "0.4.1" }
+typify = { version = "0.5.0" }
 jsonptr = "0.7.1"
 
 [[bench]]

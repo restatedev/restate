@@ -18,6 +18,8 @@ use futures::{Stream, StreamExt, pin_mut};
 use http_body_util::{BodyStream, Either, Empty, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::{Request, Response};
+use tracing::{debug, error};
+
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::Message;
 use restate_service_protocol_v4::message_codec::proto::start_message::StateEntry;
@@ -30,7 +32,6 @@ use restate_types::errors::codes;
 use restate_types::journal_v2::raw::{RawCommand, RawEntryError};
 use restate_types::journal_v2::{CommandType, InputCommand, SetStateCommand};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use tracing::{debug, error};
 
 #[derive(Debug, thiserror::Error)]
 enum FrameError {
@@ -83,7 +84,7 @@ pub async fn serve(
 
     let req_body = BodyStream::new(req_body);
     let mut decoder = Decoder::new(ServiceProtocolVersion::V5, usize::MAX, None);
-    let encoder = Encoder::new(ServiceProtocolVersion::V5);
+    let mut encoder = Encoder::new(ServiceProtocolVersion::V5);
 
     let incoming = stream! {
         for await frame in req_body {
