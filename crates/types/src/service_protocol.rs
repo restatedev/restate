@@ -37,6 +37,10 @@ impl ServiceProtocolVersion {
             && max_version >= i32::from(MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION)
     }
 
+    pub fn is_acceptable_for_new_invocations(min_version: i32, max_version: i32) -> bool {
+        Self::is_acceptable_for_discovery(min_version, max_version)
+    }
+
     pub fn is_supported_for_inflight_invocation(&self) -> bool {
         MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION <= *self
             && *self <= MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION

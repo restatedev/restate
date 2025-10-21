@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::borrow::Borrow;
-use std::sync::Arc;
-
+use anyhow::bail;
 use bytes::Bytes;
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::{Span, SpanContext, TraceContextExt};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
+use std::borrow::Borrow;
+use std::sync::Arc;
 use tracing::debug;
 
 use restate_bifrost::Bifrost;
@@ -25,7 +25,7 @@ use restate_types::live;
 use restate_types::message::MessageIndex;
 use restate_types::partition_table::PartitionTableError;
 use restate_types::schema::Schema;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
@@ -102,13 +102,21 @@ impl KafkaIngressEvent {
         };
 
         // Compute the retention values
-        let invocation_retention = schema
+        let target = schema
             .resolve_latest_invocation_target(
                 invocation_target.service_name(),
                 invocation_target.handler_name(),
             )
-            .ok_or_else(|| anyhow::anyhow!("Service and handler are not registered"))?
-            .compute_retention(false);
+            .ok_or_else(|| anyhow::anyhow!("Service and handler are not registered"))?;
+
+        if let DeploymentStatus::Deprecated(dp_id) = target.deployment_status {
+            bail!(
+                "the service {} is exposed by the deprecated deployment {dp_id}, please upgrade the SDK.",
+                invocation_target.service_name()
+            )
+        }
+
+        let invocation_retention = target.compute_retention(false);
 
         // Time to generate invocation id
         let invocation_id = InvocationId::generate(&invocation_target, None);

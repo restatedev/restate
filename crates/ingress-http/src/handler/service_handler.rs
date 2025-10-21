@@ -34,7 +34,7 @@ use restate_types::invocation::{
     SpanRelation, WorkflowHandlerType,
 };
 use restate_types::schema::invocation_target::{
-    InvocationTargetMetadata, InvocationTargetResolver,
+    DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver,
 };
 use restate_types::time::MillisSinceEpoch;
 
@@ -101,6 +101,9 @@ where
                 handler_name.clone(),
             ));
         };
+        if let DeploymentStatus::Deprecated(dp_id) = invocation_target_meta.deployment_status {
+            return Err(HandlerError::DeploymentDeprecated(service_name, dp_id));
+        }
 
         // Check if Idempotency-Key is available
         let idempotency_key = parse_idempotency(req.headers())?;
