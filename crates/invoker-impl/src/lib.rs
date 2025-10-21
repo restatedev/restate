@@ -1989,8 +1989,6 @@ mod tests {
     #[test(restate_core::test)]
     async fn quota_allows_one_concurrent_invocation() {
         let invoker_options = InvokerOptionsBuilder::default()
-            // fixed amount of retries so that an invocation eventually completes with a failure
-            .retry_policy(Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))))
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
@@ -2011,7 +2009,11 @@ mod tests {
 
         let (_invoker_tx, _status_tx, mut service_inner) = ServiceInner::mock(
             |_, _, _, _, _, _, _| ready(()),
-            MockSchemas::default(),
+            MockSchemas(
+                // fixed amount of retries so that an invocation eventually completes with a failure
+                Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
+                Some(OnMaxAttempts::Kill),
+            ),
             Some(1),
         );
         let _ = service_inner.register_mock_partition(EmptyStorageReader);
@@ -2104,8 +2106,6 @@ mod tests {
     #[test(restate_core::test)]
     async fn reclaim_quota_after_abort() {
         let invoker_options = InvokerOptionsBuilder::default()
-            // fixed amount of retries so that an invocation eventually completes with a failure
-            .retry_policy(Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))))
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
@@ -2136,7 +2136,11 @@ mod tests {
                 });
                 pending() // Never ends
             },
-            MockSchemas::default(),
+            MockSchemas(
+                // fixed amount of retries so that an invocation eventually completes with a failure
+                Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
+                Some(OnMaxAttempts::Kill),
+            ),
             Some(2),
         );
         let _ = service_inner.register_mock_partition(EmptyStorageReader);
@@ -2371,7 +2375,6 @@ mod tests {
     #[test(restate_core::test)]
     async fn notification_triggers_retry() {
         let invoker_options = InvokerOptionsBuilder::default()
-            .retry_policy(Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))))
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
@@ -2403,7 +2406,11 @@ mod tests {
                     pending::<()>().await
                 }
             },
-            MockSchemas::default(),
+            MockSchemas(
+                // fixed amount of retries so that an invocation eventually completes with a failure
+                Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
+                Some(OnMaxAttempts::Kill),
+            ),
             None,
         );
 
@@ -2539,10 +2546,6 @@ mod tests {
     async fn transient_error_event_deduplication() {
         // Enable proposing events and keep timers short for the test
         let invoker_options = InvokerOptionsBuilder::default()
-            .retry_policy(Some(RetryPolicy::fixed_delay(
-                Duration::from_millis(1),
-                Some(3),
-            )))
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
@@ -2552,8 +2555,15 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         // Mock service and register partition
-        let (_, _status_tx, mut service_inner) =
-            ServiceInner::mock((), MockSchemas::default(), None);
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock(
+            (),
+            MockSchemas(
+                // fixed amount of retries so that an invocation eventually completes with a failure
+                Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(3))),
+                Some(OnMaxAttempts::Kill),
+            ),
+            None,
+        );
         let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
 
         // Start invocation epoch 0

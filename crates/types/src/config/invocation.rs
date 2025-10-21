@@ -39,14 +39,14 @@ pub struct InvocationOptions {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub max_journal_retention: Option<FriendlyDuration>,
 
-    // TODO(slinkydeveloper) on v1.6 this option becomes mandatory, and serde should default to the values set below
     /// # Default retry policy
     ///
     /// The default retry policy to use for invocations.
     ///
     /// The retry policy can be customized on a service/handler basis, using the respective SDK APIs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_retry_policy: Option<InvocationRetryPolicyOptions>,
+    /// Check https://docs.restate.dev/services/configuration#retries for more details.
+    #[serde(default)]
+    pub default_retry_policy: InvocationRetryPolicyOptions,
 
     /// # Max configurable value for retry policy max attempts
     ///
@@ -63,7 +63,7 @@ impl Default for InvocationOptions {
         Self {
             default_journal_retention: FriendlyDuration::from_secs(60 * 60 * 24),
             max_journal_retention: None,
-            default_retry_policy: None,
+            default_retry_policy: InvocationRetryPolicyOptions::default(),
             max_retry_policy_max_attempts: None,
         }
     }
@@ -100,6 +100,11 @@ pub struct InvocationRetryPolicyOptions {
     /// # On max attempts
     ///
     /// Behavior when max attempts are reached.
+    ///
+    /// Set to `pause` to pause invocations when max attempts are reached.
+    /// Set to `kill` to kill the invocation when max attempts are reached.
+    ///
+    /// For more details about the invocation lifecycle, check https://docs.restate.dev/services/invocation/managing-invocations
     #[serde(default)]
     pub(crate) on_max_attempts: OnMaxAttempts,
 
@@ -131,7 +136,7 @@ fn default_exponentiation_factor() -> f32 {
 }
 
 fn default_max_interval() -> NonZeroFriendlyDuration {
-    NonZeroFriendlyDuration::from_secs_unchecked(20)
+    NonZeroFriendlyDuration::from_secs_unchecked(60)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -161,7 +166,7 @@ pub enum MaxAttempts {
 
 impl Default for MaxAttempts {
     fn default() -> Self {
-        Self::Bounded(NonZeroUsize::new(200).unwrap())
+        Self::Bounded(NonZeroUsize::new(70).unwrap())
     }
 }
 
