@@ -81,7 +81,7 @@ where
             return Err(InvocationError::new(
                 codes::INTERNAL,
                 format!(
-                    "the service {} is exposed by the deprecated deployment {dp_id}. Upgrade the SDK used by {}.",
+                    "The service {} is exposed by the deprecated deployment {dp_id}. Upgrade the SDK used by {} and register a new deployment.",
                     request.service_name, request.service_name
                 ),
             ));

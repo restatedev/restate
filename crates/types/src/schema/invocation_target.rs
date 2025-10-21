@@ -76,7 +76,7 @@ pub enum OnMaxAttempts {
 pub enum DeploymentStatus {
     #[default]
     Enabled,
-    /// If de, deployment is disabled, and new requests should not be accepted.
+    /// Deployment is disabled, and new requests should not be accepted.
     Deprecated(DeploymentId),
 }
 
