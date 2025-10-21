@@ -333,6 +333,7 @@ gen_message!(
     End Control = 0x0003,
     CommandAck Control = 0x0004,
     ProposeRunCompletion Control = 0x0005,
+    Awaiting Control = 0x0006,
 
     Input Command noparse allows_ack = 0x0400,
     Output Command noparse allows_ack = 0x0401,

@@ -37,6 +37,9 @@ enum ServiceProtocolVersion {
   // * StartMessage.random_seed
   // * Failure.metadata
   V6 = 6;
+  // Added:
+  // * AwaitingMessage
+  V7 = 7;
 }
 
 // --- Core frames ---

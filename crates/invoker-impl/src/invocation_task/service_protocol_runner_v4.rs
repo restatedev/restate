@@ -628,6 +628,7 @@ where
             Message::CommandAck(_) => TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
                 MessageType::CommandAck,
             )),
+            Message::Awaiting(awaiting) => self.handle_awaiting_message(awaiting),
             Message::Suspension(suspension) => self.handle_suspension_message(suspension),
             Message::Error(e) => self.handle_error_message(e),
             Message::End(_) => TerminalLoopState::Closed,
@@ -955,7 +956,7 @@ where
         &mut self,
         suspension: proto::SuspensionMessage,
     ) -> TerminalLoopState<()> {
-        let suspension_indexes: HashSet<_> = suspension
+        let suspension_notification_ids: HashSet<_> = suspension
             .waiting_completions
             .into_iter()
             .map(NotificationId::for_completion)
@@ -975,10 +976,40 @@ where
             )
             .collect();
         // We currently don't support empty suspension_indexes set
-        if suspension_indexes.is_empty() {
+        if suspension_notification_ids.is_empty() {
             return TerminalLoopState::Failed(InvokerError::EmptySuspensionMessage);
         }
-        TerminalLoopState::SuspendedV2(suspension_indexes)
+        TerminalLoopState::SuspendedV2(suspension_notification_ids)
+    }
+
+    fn handle_awaiting_message(
+        &mut self,
+        awaiting: proto::AwaitingMessage,
+    ) -> TerminalLoopState<()> {
+        #[allow(unused_variables)]
+        let awaiting_notification_ids: HashSet<_> = awaiting
+            .waiting_completions
+            .into_iter()
+            .map(NotificationId::for_completion)
+            .chain(
+                awaiting
+                    .waiting_signals
+                    .into_iter()
+                    .map(SignalId::for_index)
+                    .map(NotificationId::for_signal),
+            )
+            .chain(
+                awaiting
+                    .waiting_named_signals
+                    .into_iter()
+                    .map(|s| SignalId::for_name(s.into()))
+                    .map(NotificationId::for_signal),
+            )
+            .collect();
+
+        // TODO(till) fill here the business logic to deal with the awaiting message
+
+        TerminalLoopState::Continue(())
     }
 
     fn handle_error_message(&mut self, error: proto::ErrorMessage) -> TerminalLoopState<()> {
