@@ -456,6 +456,7 @@ impl InvocationId {
         )
     }
 
+    #[inline]
     pub const fn from_parts(partition_key: PartitionKey, invocation_uuid: InvocationUuid) -> Self {
         Self {
             partition_key,

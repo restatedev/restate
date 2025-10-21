@@ -25,15 +25,24 @@ define_table_key!(
     DeduplicationKey(partition_id: PaddedPartitionId, producer_id: ProducerId)
 );
 
+#[inline]
+fn create_key(
+    partition_id: impl Into<PaddedPartitionId>,
+    producer_id: ProducerId,
+) -> DeduplicationKey {
+    DeduplicationKey {
+        partition_id: partition_id.into(),
+        producer_id,
+    }
+}
+
 fn get_dedup_sequence_number<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
     producer_id: &ProducerId,
 ) -> Result<Option<DedupSequenceNumber>> {
     let _x = RocksDbPerfGuard::new("get-dedup-seq");
-    let key = DeduplicationKey::default()
-        .partition_id(partition_id.into())
-        .producer_id(producer_id.clone());
+    let key = create_key(partition_id, producer_id.clone());
 
     storage.get_value_proto(key)
 }
@@ -62,9 +71,7 @@ impl WriteDeduplicationTable for PartitionStoreTransaction<'_> {
         producer_id: ProducerId,
         dedup_sequence_number: &DedupSequenceNumber,
     ) -> Result<()> {
-        let key = DeduplicationKey::default()
-            .partition_id(self.partition_id().into())
-            .producer_id(producer_id);
+        let key = create_key(self.partition_id(), producer_id);
 
         self.put_kv_proto(key, dedup_sequence_number)
     }

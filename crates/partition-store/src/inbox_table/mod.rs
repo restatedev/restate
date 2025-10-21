@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::Cursor;
 use std::ops::ControlFlow;
 
 use bytestring::ByteString;
@@ -46,7 +45,7 @@ fn peek_inbox<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
 ) -> Result<Option<SequenceNumberInboxEntry>> {
-    let key = InboxKey::default()
+    let key = InboxKey::builder()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
@@ -67,7 +66,7 @@ fn inbox<S: StorageAccess>(
     storage: &mut S,
     service_id: &ServiceId,
 ) -> Result<impl Stream<Item = Result<SequenceNumberInboxEntry>> + Send> {
-    let key = InboxKey::default()
+    let key = InboxKey::builder()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
@@ -113,10 +112,13 @@ impl ScanInboxTable for PartitionStore {
             TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
             move |(mut key, mut value)| {
                 let key = break_on_err(InboxKey::deserialize_from(&mut key))?;
-                let sequence_number = *break_on_err(key.sequence_number_ok_or())?;
                 let inbox_entry = break_on_err(InboxEntry::decode(&mut value))?;
 
-                f(SequenceNumberInboxEntry::new(sequence_number, inbox_entry)).map_break(Ok)
+                f(SequenceNumberInboxEntry::new(
+                    key.sequence_number,
+                    inbox_entry,
+                ))
+                .map_break(Ok)
             },
         )
         .map_err(|_| StorageError::OperationalError)
@@ -150,11 +152,12 @@ impl WriteInboxTable for PartitionStoreTransaction<'_> {
         let service_id = inbox_entry.service_id();
         self.assert_partition_key(service_id)?;
 
-        let key = InboxKey::default()
-            .partition_key(service_id.partition_key())
-            .service_name(service_id.service_name.clone())
-            .service_key(service_id.key.clone())
-            .sequence_number(inbox_sequence_number);
+        let key = InboxKey {
+            partition_key: service_id.partition_key(),
+            service_name: service_id.service_name.clone(),
+            service_key: service_id.key.clone(),
+            sequence_number: inbox_sequence_number,
+        };
 
         self.put_kv_proto(key, inbox_entry)
     }
@@ -185,50 +188,48 @@ fn delete_inbox_entry(
     service_id: &ServiceId,
     sequence_number: u64,
 ) -> Result<()> {
-    let key = InboxKey::default()
-        .partition_key(service_id.partition_key())
-        .service_name(service_id.service_name.clone())
-        .service_key(service_id.key.clone())
-        .sequence_number(sequence_number);
+    let key = InboxKey {
+        partition_key: service_id.partition_key(),
+        service_name: service_id.service_name.clone(),
+        service_key: service_id.key.clone(),
+        sequence_number,
+    };
 
     txn.delete_key(&key)
 }
 
-fn decode_inbox_key_value(k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxEntry> {
-    let key = InboxKey::deserialize_from(&mut Cursor::new(k))?;
-    let sequence_number = *key.sequence_number_ok_or()?;
-
+fn decode_inbox_key_value(mut k: &[u8], mut v: &[u8]) -> Result<SequenceNumberInboxEntry> {
+    let key = InboxKey::deserialize_from(&mut k)?;
     let inbox_entry = InboxEntry::decode(&mut v)?;
 
-    Ok(SequenceNumberInboxEntry::new(sequence_number, inbox_entry))
+    Ok(SequenceNumberInboxEntry::new(
+        key.sequence_number,
+        inbox_entry,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::inbox_table::InboxKey;
-    use crate::keys::TableKey;
-    use bytes::{Bytes, BytesMut};
+    use crate::keys::TableKeyPrefix;
+    use bytes::Bytes;
     use restate_types::identifiers::{ServiceId, WithPartitionKey};
 
     fn message_key(service_id: &ServiceId, sequence_number: u64) -> Bytes {
         let key = InboxKey {
-            partition_key: Some(service_id.partition_key()),
-            service_name: Some(service_id.service_name.clone()),
-            service_key: Some(service_id.key.clone()),
-            sequence_number: Some(sequence_number),
+            partition_key: service_id.partition_key(),
+            service_name: service_id.service_name.clone(),
+            service_key: service_id.key.clone(),
+            sequence_number,
         };
-        let mut buf = BytesMut::new();
-        key.serialize_to(&mut buf);
-        buf.freeze()
+        key.serialize().freeze()
     }
 
     fn inbox_key(service_id: &ServiceId) -> Bytes {
-        let key = InboxKey {
-            partition_key: Some(service_id.partition_key()),
-            service_name: Some(service_id.service_name.clone()),
-            service_key: Some(service_id.key.clone()),
-            sequence_number: None,
-        };
+        let key = InboxKey::builder()
+            .partition_key(service_id.partition_key())
+            .service_name(service_id.service_name.clone())
+            .service_key(service_id.key.clone());
 
         key.serialize().freeze()
     }

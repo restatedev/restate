@@ -44,6 +44,7 @@ use restate_types::storage::StorageEncode;
 use crate::fsm_table::{get_locally_durable_lsn, get_storage_version, put_storage_version};
 use crate::keys::KeyKind;
 use crate::keys::TableKey;
+use crate::keys::TableKeyPrefix;
 use crate::migrations::{LATEST_VERSION, SchemaVersion};
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
@@ -273,7 +274,7 @@ impl PartitionStore {
     }
 
     #[track_caller]
-    fn iterator_from<K: TableKey>(
+    fn iterator_from<K: TableKeyPrefix>(
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, DB>> {
@@ -713,7 +714,7 @@ impl StorageAccess for PartitionStore {
     where
         Self: 'a;
 
-    fn iterator_from<K: TableKey>(
+    fn iterator_from<K: TableKeyPrefix>(
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
@@ -936,7 +937,7 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     where
         Self: 'b;
 
-    fn iterator_from<K: TableKey>(
+    fn iterator_from<K: TableKeyPrefix>(
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
@@ -1033,7 +1034,7 @@ pub(crate) trait StorageAccess {
     where
         Self: 'a;
 
-    fn iterator_from<K: TableKey>(
+    fn iterator_from<K: TableKeyPrefix>(
         &self,
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>>;
@@ -1178,7 +1179,7 @@ pub(crate) trait StorageAccess {
     #[inline]
     fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
     where
-        K: TableKey,
+        K: TableKeyPrefix,
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
     {
         let iterator = self.iterator_from(scan)?;
@@ -1211,7 +1212,7 @@ pub(crate) trait StorageAccess {
         mut op: F,
     ) -> Result<Vec<Result<R>>>
     where
-        K: TableKey,
+        K: TableKeyPrefix,
         F: FnMut(&[u8], &[u8]) -> TableScanIterationDecision<R>,
     {
         let mut res = Vec::new(); // TODO: this should be passed in.
@@ -1257,16 +1258,8 @@ mod tests {
         const TABLE: TableKind = TableKind::State;
         const KEY_KIND: KeyKind = KeyKind::State;
 
-        fn is_complete(&self) -> bool {
-            true
-        }
-
-        fn serialize_key_kind<B: BufMut>(bytes: &mut B) {
-            Self::KEY_KIND.serialize(bytes);
-        }
-
         fn serialize_to<B: BufMut>(&self, bytes: &mut B) {
-            Self::serialize_key_kind(bytes);
+            Self::KEY_KIND.serialize(bytes);
             bytes.put_u32(self.len() as u32);
             bytes.put_slice(self.as_bytes());
         }

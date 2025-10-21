@@ -12,11 +12,11 @@ use futures::Stream;
 use futures_util::stream;
 
 use restate_rocksdb::RocksDbPerfGuard;
+use restate_storage_api::Result;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::timer_table::{
     ReadTimerTable, Timer, TimerKey, TimerKeyKind, WriteTimerTable,
 };
-use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationUuid, PartitionId};
 
 use crate::TableKind::Timers;
@@ -39,25 +39,19 @@ define_table_key!(
 
 #[inline]
 fn write_timer_key(partition_id: PartitionId, timer_key: &TimerKey) -> TimersKey {
-    TimersKey::default()
-        .partition_id(partition_id.into())
-        .timestamp(timer_key.timestamp)
-        .kind(timer_key.kind.clone())
+    TimersKey {
+        partition_id: partition_id.into(),
+        timestamp: timer_key.timestamp,
+        kind: timer_key.kind.clone(),
+    }
 }
 
 #[inline]
-fn timer_key_from_key_slice(slice: &[u8]) -> Result<TimerKey> {
-    let mut buf = std::io::Cursor::new(slice);
-    let key = TimersKey::deserialize_from(&mut buf)?;
-    if !key.is_complete() {
-        return Err(StorageError::DataIntegrityError);
-    }
-    let timer_key = TimerKey {
-        timestamp: key.timestamp.unwrap(),
-        kind: key.kind.unwrap(),
-    };
-
-    Ok(timer_key)
+fn timer_key_from_key_slice(mut buf: &[u8]) -> Result<TimerKey> {
+    TimersKey::deserialize_from(&mut buf).map(|tk| TimerKey {
+        timestamp: tk.timestamp,
+        kind: tk.kind,
+    })
 }
 
 fn decode_seq_timer_key_value(k: &[u8], mut v: &[u8]) -> Result<(TimerKey, Timer)> {
@@ -72,7 +66,7 @@ fn decode_seq_timer_key_value(k: &[u8], mut v: &[u8]) -> Result<(TimerKey, Timer
 fn exclusive_start_key_range(
     partition_id: PartitionId,
     timer_key: Option<&TimerKey>,
-) -> TableScan<TimersKey> {
+) -> TableScan<TimersKeyBuilder> {
     if let Some(timer_key) = timer_key {
         let next_timer_key = match timer_key.kind {
             TimerKeyKind::NeoInvoke { invocation_uuid } => {
@@ -118,11 +112,15 @@ fn exclusive_start_key_range(
 
         let lower_bound = write_timer_key(partition_id, &next_timer_key);
 
-        let upper_bound = TimersKey::default()
+        let upper_bound = TimersKey::builder()
             .partition_id(partition_id.into())
             .timestamp(u64::MAX);
 
-        TableScan::KeyRangeInclusiveInSinglePartition(partition_id, lower_bound, upper_bound)
+        TableScan::KeyRangeInclusiveInSinglePartition(
+            partition_id,
+            lower_bound.into_builder(),
+            upper_bound,
+        )
     } else {
         TableScan::SinglePartition(partition_id)
     }
@@ -219,6 +217,7 @@ impl WriteTimerTable for PartitionStoreTransaction<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::TableKeyPrefix;
     use crate::timer_table::TimerKey;
     use rand::Rng;
     use restate_storage_api::timer_table::TimerKeyKindDiscriminants;
