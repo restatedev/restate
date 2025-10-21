@@ -136,7 +136,7 @@ fn default_exponentiation_factor() -> f32 {
 }
 
 fn default_max_interval() -> NonZeroFriendlyDuration {
-    NonZeroFriendlyDuration::from_secs_unchecked(20)
+    NonZeroFriendlyDuration::from_secs_unchecked(60)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -166,7 +166,7 @@ pub enum MaxAttempts {
 
 impl Default for MaxAttempts {
     fn default() -> Self {
-        Self::Bounded(NonZeroUsize::new(200).unwrap())
+        Self::Bounded(NonZeroUsize::new(70).unwrap())
     }
 }
 
