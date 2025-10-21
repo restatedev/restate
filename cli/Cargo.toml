@@ -18,6 +18,8 @@ formula = "restate"
 
 [features]
 default = ["cloud", "no-trace-logging"]
+# enables restate dev/up command
+dev-cmd = ["restate-lite", "mock-service-endpoint"]
 cloud = []
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
@@ -30,6 +32,8 @@ restate-cloud-tunnel-client = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-time-util = { workspace = true }
 restate-types = { workspace = true }
+restate-lite = { workspace = true, optional = true }
+mock-service-endpoint = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }

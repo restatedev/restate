@@ -13,6 +13,8 @@ pub mod cloud;
 pub mod completions;
 pub mod config;
 pub mod deployments;
+#[cfg(feature = "dev-cmd")]
+pub mod dev;
 pub mod examples;
 pub mod invocations;
 pub mod services;
