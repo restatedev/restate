@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::header::UnknownMessageType;
-use super::*;
-
 use std::mem;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
+use tracing::warn;
+
+use restate_serde_util::ByteCount;
 use restate_types::journal::raw::{PlainEntryHeader, RawEntry};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use size::Size;
-use tracing::warn;
+
+use super::header::UnknownMessageType;
+use super::*;
 
 #[derive(Debug, codederror::CodedError, thiserror::Error)]
 #[code(restate_errors::RT0012)]
@@ -34,7 +35,9 @@ pub enum EncodingError {
 
 // --- Input message encoder
 
-pub struct Encoder {}
+pub struct Encoder {
+    arena: BytesMut,
+}
 
 impl Encoder {
     pub fn new(service_protocol_version: ServiceProtocolVersion) -> Self {
@@ -43,18 +46,20 @@ impl Encoder {
             ServiceProtocolVersion::Unspecified,
             "A protocol version should be specified"
         );
-        Self {}
+        Self {
+            arena: BytesMut::with_capacity(1024),
+        }
     }
 
     /// Encodes a message to bytes
-    pub fn encode(&self, msg: ProtocolMessage) -> Bytes {
-        let mut buf = BytesMut::with_capacity(self.encoded_len(&msg));
-        self.encode_to_buf_mut(&mut buf, msg).expect(
+    pub fn encode(&mut self, msg: ProtocolMessage) -> Bytes {
+        self.arena.reserve(self.encoded_len(&msg));
+        self.encode_to_arena(msg).expect(
             "Encoding messages should be infallible, \
             this error indicates a bug in the invoker code. \
             Please contact the Restate developers.",
         );
-        buf.freeze()
+        self.arena.split().freeze()
     }
 
     /// Includes header len
@@ -62,22 +67,20 @@ impl Encoder {
         8 + msg.encoded_len()
     }
 
-    pub fn encode_to_buf_mut(
-        &self,
-        mut buf: impl BufMut,
-        msg: ProtocolMessage,
-    ) -> Result<(), prost::EncodeError> {
+    #[inline(always)]
+    fn encode_to_arena(&mut self, msg: ProtocolMessage) -> Result<(), prost::EncodeError> {
         let header = generate_header(&msg);
-        buf.put_u64(header.into());
+        self.arena.put_u64(header.into());
 
         // Note:
         // prost::EncodeError can be triggered only by a buffer smaller than required,
         // but because we create the buffer a couple of lines above using the size computed by prost,
         // this can happen only if there is a very bad bug in prost.
-        encode_msg(&msg, &mut buf)
+        encode_msg(&msg, &mut self.arena)
     }
 }
 
+#[inline(always)]
 fn generate_header(msg: &ProtocolMessage) -> MessageHeader {
     let len: u32 = msg
         .encoded_len()
@@ -101,6 +104,7 @@ fn generate_header(msg: &ProtocolMessage) -> MessageHeader {
     }
 }
 
+#[inline(always)]
 fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost::EncodeError> {
     match msg {
         ProtocolMessage::Start(m) => m.encode(buf),
@@ -211,8 +215,8 @@ impl DecoderState {
                     Generating very large messages can make the system unstable if configured with too little memory. \
                     You can increase the threshold to avoid this warning by changing the worker.invoker.message_size_warning config option",
                         header.message_type(),
-                        Size::from_bytes(message_length),
-                        Size::from_bytes(message_size_warning),
+                        ByteCount::from(message_length),
+                        ByteCount::from(message_size_warning),
                     );
                 }
                 if message_length >= message_size_limit {
@@ -378,7 +382,7 @@ mod tests {
 
     #[test]
     fn fill_decoder_with_several_messages() {
-        let encoder = Encoder::new(ServiceProtocolVersion::V1);
+        let mut encoder = Encoder::new(ServiceProtocolVersion::V1);
         let mut decoder = Decoder::new(ServiceProtocolVersion::V1, usize::MAX, None);
 
         let expected_msg_0 = ProtocolMessage::new_start_message(
@@ -435,7 +439,7 @@ mod tests {
     }
 
     fn partial_decoding_test(split_index: usize) {
-        let encoder = Encoder::new(ServiceProtocolVersion::V1);
+        let mut encoder = Encoder::new(ServiceProtocolVersion::V1);
         let mut decoder = Decoder::new(ServiceProtocolVersion::V1, usize::MAX, None);
 
         let expected_msg: ProtocolMessage = ProtobufRawEntryCodec::serialize_as_input_entry(
@@ -467,7 +471,7 @@ mod tests {
             Some(u8::MAX as usize),
         );
 
-        let encoder = Encoder::new(ServiceProtocolVersion::V1);
+        let mut encoder = Encoder::new(ServiceProtocolVersion::V1);
         let message = ProtocolMessage::from(
             ProtobufRawEntryCodec::serialize_as_input_entry(
                 vec![],

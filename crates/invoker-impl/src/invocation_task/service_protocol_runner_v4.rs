@@ -491,7 +491,7 @@ where
                 self.write_raw(
                     http_stream_tx,
                     cmd.command_type().into(),
-                    cmd.serialized_content(),
+                    cmd.into_serialized_content(),
                 )
                 .await?;
                 self.command_index += 1;
@@ -500,7 +500,7 @@ where
                 self.write_raw(
                     http_stream_tx,
                     notif.ty().into(),
-                    notif.serialized_content(),
+                    notif.into_serialized_content(),
                 )
                 .await?;
             }
