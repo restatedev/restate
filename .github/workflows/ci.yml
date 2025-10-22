@@ -287,6 +287,13 @@ jobs:
           envVars: |
             RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
             RESTATE_EXPERIMENTAL_FEATURE__USE_JOURNAL_V2_BY_DEFAULT=true
+          # Disable BackCompatibilityTest. But why this test is disabled?
+          # In restate 1.5 the invoker storage reader will not handle correctly the case where there's no pinned deployment yet
+          # and the journal table used is v2. This doesn't show in the logs, but will simply hang badly the invocation task loop!
+          exclusions: |
+            exclusions:
+              "versionCompat":
+                - "dev.restate.sdktesting.tests.BackCompatibilityTest"
 
   jepsen:
     if: github.event.repository.fork == false && github.event.pull_request.head.repo.full_name == 'restatedev/restate' && github.ref == 'refs/heads/main'

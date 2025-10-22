@@ -119,6 +119,11 @@ pub(crate) enum InvokerError {
         actual: InvocationEpoch,
         expected: InvocationEpoch,
     },
+    #[error(
+        "error when reading the journal: expected to read {expected} entries, but read only {expected}. This indicates a bug or a storage corruption."
+    )]
+    #[code(unknown)]
+    UnexpectedEntryCount { actual: u32, expected: u32 },
 
     #[error(transparent)]
     #[code(restate_errors::RT0010)]
