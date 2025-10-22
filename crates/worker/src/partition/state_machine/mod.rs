@@ -1150,6 +1150,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 in_flight_invocation_metadata
                     .random_seed
                     .unwrap_or_else(|| invocation_id.to_random_seed()),
+                false,
             ),
             vec![
                 restate_invoker_api::invocation_reader::JournalEntry::JournalV1(

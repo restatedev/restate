@@ -32,6 +32,8 @@ pub struct JournalMetadata {
     /// and the max time difference between two replicas applying the journal append command.
     pub last_modification_date: MillisSinceEpoch,
     pub random_seed: u64,
+    /// If true, the entries are stored in journal table v2
+    pub using_journal_table_v2: bool,
 }
 
 impl JournalMetadata {
@@ -42,6 +44,7 @@ impl JournalMetadata {
         invocation_epoch: InvocationEpoch,
         last_modification_date: MillisSinceEpoch,
         random_seed: u64,
+        using_journal_table_v2: bool,
     ) -> Self {
         Self {
             pinned_deployment,
@@ -50,6 +53,7 @@ impl JournalMetadata {
             last_modification_date,
             invocation_epoch,
             random_seed,
+            using_journal_table_v2,
         }
     }
 }

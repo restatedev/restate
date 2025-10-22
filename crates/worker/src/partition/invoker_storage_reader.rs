@@ -108,6 +108,7 @@ where
                         invoked_status.current_invocation_epoch,
                         invoked_status.timestamps.modification_time(),
                         random_seed,
+                        true,
                     ),
                     entries,
                 )
@@ -122,6 +123,7 @@ where
                         invoked_status.current_invocation_epoch,
                         invoked_status.timestamps.modification_time(),
                         random_seed,
+                        false,
                     ),
                     journal_table_v1::ReadJournalTable::get_journal(
                         &mut self.txn,
