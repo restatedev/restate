@@ -73,6 +73,7 @@ pub mod test_util {
                     None,
                     MillisSinceEpoch::UNIX_EPOCH,
                     0,
+                    true,
                 ),
                 futures::stream::empty(),
             )))

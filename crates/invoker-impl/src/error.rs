@@ -8,7 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashSet;
+use std::error::Error as StdError;
+use std::fmt;
+use std::ops::RangeInclusive;
+use std::time::Duration;
+
 use http::{HeaderName, HeaderValue};
+use tokio::task::JoinError;
+
 use restate_invoker_api::InvocationErrorReport;
 use restate_service_client::ServiceClientError;
 use restate_service_protocol::message::{EncodingError, MessageType};
@@ -23,12 +31,6 @@ use restate_types::service_protocol::{
     MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION, MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION,
     ServiceProtocolVersion,
 };
-use std::collections::HashSet;
-use std::error::Error as StdError;
-use std::fmt;
-use std::ops::RangeInclusive;
-use std::time::Duration;
-use tokio::task::JoinError;
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub(crate) enum InvokerError {
@@ -110,6 +112,11 @@ pub(crate) enum InvokerError {
     #[error("error when trying to read the service instance state: {0}")]
     #[code(restate_errors::RT0006)]
     StateReader(anyhow::Error),
+    #[error(
+        "error when reading the journal: expected to read {expected} entries, but read only {actual}. This indicates a bug or a storage corruption."
+    )]
+    #[code(unknown)]
+    UnexpectedEntryCount { actual: u32, expected: u32 },
     #[error(transparent)]
     #[code(restate_errors::RT0010)]
     Client(Box<ServiceClientError>),
@@ -162,6 +169,12 @@ pub(crate) enum InvokerError {
     #[error("service is temporary unavailable '{0}'")]
     #[code(restate_errors::RT0010)]
     ServiceUnavailable(http::StatusCode),
+
+    #[error(
+        "service {0} is exposed by the deprecated deployment {1}, please upgrade the SDK used by the service."
+    )]
+    #[code(restate_errors::RT0020)]
+    DeploymentDeprecated(String, DeploymentId),
 }
 
 impl InvokerError {

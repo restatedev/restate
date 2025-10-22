@@ -14,6 +14,7 @@ use assert2::assert;
 use assert2::let_assert;
 use googletest::any;
 use prost::Message;
+use restate_storage_api::journal_table;
 use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::timer_table::{
     ReadTimerTable, Timer, TimerKey, TimerKeyKind, WriteTimerTable,
@@ -27,9 +28,14 @@ use restate_types::service_protocol;
 use rstest::rstest;
 use test_log::test;
 
+#[rstest]
 #[restate_core::test]
-async fn kill_inboxed_invocation() -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create().await;
+async fn kill_inboxed_invocation(
+    #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
+        Feature,
+    >,
+) -> anyhow::Result<()> {
+    let mut test_env = TestEnv::create_with_features(features).await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -84,6 +90,20 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
 
     // assert that invocation status was removed
     assert!(let InvocationStatus::Free = current_invocation_status);
+
+    // Both journal table v1 and v2 are empty
+    assert!(
+        journal_table::ReadJournalTable::get_journal_entry(&mut test_env.storage, &inboxed_id, 0)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        journal_table_v2::ReadJournalTable::get_journal_entry(&mut test_env.storage, inboxed_id, 0)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     assert_that!(
         actions,
@@ -290,6 +310,27 @@ async fn kill_call_tree() -> anyhow::Result<()> {
             .try_collect::<Vec<_>>()
             .await?,
         empty()
+    );
+    // Both journal table v1 and v2 are empty
+    assert!(
+        journal_table::ReadJournalTable::get_journal_entry(
+            &mut test_env.storage,
+            &invocation_id,
+            0
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        journal_table_v2::ReadJournalTable::get_journal_entry(
+            &mut test_env.storage,
+            invocation_id,
+            0
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
 
     test_env.shutdown().await;

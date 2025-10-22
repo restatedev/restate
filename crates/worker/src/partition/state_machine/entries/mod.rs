@@ -408,9 +408,11 @@ impl<CMD> ApplyJournalCommandEffect<'_, CMD> {
 
 #[cfg(test)]
 mod tests {
+    use crate::partition::state_machine::Feature;
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
+    use enumset::EnumSet;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
     use restate_types::identifiers::{InvocationId, ServiceId};
@@ -419,10 +421,16 @@ mod tests {
     };
     use restate_types::journal_v2::{CallCommand, CallRequest};
     use restate_wal_protocol::Command;
+    use rstest::rstest;
 
+    #[rstest]
     #[restate_core::test]
-    async fn update_journal_and_commands_length() {
-        let mut test_env = TestEnv::create().await;
+    async fn update_journal_and_commands_length(
+        #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
+            Feature,
+        >,
+    ) {
+        let mut test_env = TestEnv::create_with_features(features).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
         fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 

@@ -385,6 +385,16 @@ where
             EagerState::<Empty<_>>::default().map(itertools::Either::Right)
         };
 
+        if chosen_service_protocol_version < ServiceProtocolVersion::V4
+            && journal_metadata.using_journal_table_v2
+        {
+            // We don't support migrating from journal v2 to journal v1!
+            shortcircuit!(Err(InvokerError::DeploymentDeprecated(
+                self.invocation_target.service_name().to_string(),
+                deployment.id
+            )));
+        }
+
         // No need to read from Rocksdb anymore
         drop(txn);
 

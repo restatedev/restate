@@ -85,19 +85,17 @@ impl TestEnv {
     }
 
     pub async fn create() -> Self {
-        Self::create_with_experimental_features(Default::default()).await
+        Self::create_with_features(EnumSet::default()).await
     }
 
-    pub async fn create_with_experimental_features(
-        experimental_features: EnumSet<ExperimentalFeature>,
-    ) -> Self {
+    pub async fn create_with_features(experimental_features: impl Into<EnumSet<Feature>>) -> Self {
         Self::create_with_state_machine(StateMachine::new(
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
             SemanticRestateVersion::unknown().clone(),
-            experimental_features,
+            experimental_features.into(),
             None,
         ))
         .await
@@ -230,7 +228,6 @@ impl TestEnv {
         .collect()
     }
 
-    #[allow(unused)]
     pub async fn read_journal_entry<E: TryFromEntry>(
         &mut self,
         invocation_id: InvocationId,
@@ -312,6 +309,10 @@ impl TestEnv {
                 .await,
             ok(none())
         );
+    }
+
+    pub fn set_features(&mut self, features: impl Into<EnumSet<Feature>>) {
+        self.state_machine.features = features.into()
     }
 }
 
