@@ -173,7 +173,9 @@ pub(crate) enum InvokerError {
     #[code(restate_errors::RT0010)]
     ServiceUnavailable(http::StatusCode),
 
-    #[error("the service {0} is exposed by the deprecated deployment {1}.")]
+    #[error(
+        "service {0} is exposed by the deprecated deployment {1}, please upgrade the SDK used by the service."
+    )]
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
 }
