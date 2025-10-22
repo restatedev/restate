@@ -172,6 +172,10 @@ pub(crate) enum InvokerError {
     #[error("service is temporary unavailable '{0}'")]
     #[code(restate_errors::RT0010)]
     ServiceUnavailable(http::StatusCode),
+
+    #[error("the service {0} is exposed by the deprecated deployment {1}.")]
+    #[code(restate_errors::RT0020)]
+    DeploymentDeprecated(String, DeploymentId),
 }
 
 impl InvokerError {
