@@ -267,8 +267,9 @@ mod tests {
     #[rstest]
     #[restate_core::test]
     async fn notify_signal_received_before_pinned_deployment(
-        #[values(ExperimentalFeature::UseJournalTableV2AsDefault.into(), EnumSet::empty())]
-        features: EnumSet<Feature>,
+        #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
+            Feature,
+        >,
     ) {
         let mut test_env = TestEnv::create_with_experimental_features(features).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
