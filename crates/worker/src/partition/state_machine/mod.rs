@@ -1368,52 +1368,57 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
 
-        match status.get_invocation_metadata().and_then(|meta| {
+        let pinned_service_protocol = status.get_invocation_metadata().and_then(|meta| {
             meta.pinned_deployment
                 .as_ref()
                 .map(|pd| pd.service_protocol_version)
-        }) {
-            Some(sp_version) if sp_version >= ServiceProtocolVersion::V4 => {
-                OnCancelCommand {
-                    invocation_id,
-                    invocation_status: status,
-                    response_sink,
-                }
-                .apply(self)
-                .await?;
-                return Ok(());
+        });
+
+        if pinned_service_protocol
+            .is_some_and(|sp_version| sp_version >= ServiceProtocolVersion::V4)
+            || journal_table_v2::ReadJournalTable::get_journal_entry(self.storage, invocation_id, 0)
+                .await?
+                .is_some()
+        {
+            // If we got protocol 4 already pinned, or we're using anyway the journal table v2, then process using the new cancellation command
+            OnCancelCommand {
+                invocation_id,
+                invocation_status: status,
+                response_sink,
             }
-            None if matches!(
+            .apply(self)
+            .await?;
+            return Ok(());
+        } else if pinned_service_protocol.is_none()
+            && matches!(
                 status,
                 InvocationStatus::Invoked(_) | InvocationStatus::Suspended { .. }
-            ) =>
-            {
-                // We need to apply a corner case fix here.
-                // We don't know yet what's the protocol version being used, but we know the status is either invoker or suspended.
-                // To sort this out, we write a field in invocation status to make sure that after pinning the deployment, we run the cancellation.
-                // See OnPinnedDeploymentCommand for more info.
-                trace!(
-                    "Storing hotfix for cancellation when invocation doesn't have a pinned service protocol, but is invoked/suspended"
-                );
+            )
+        {
+            // We need to apply a corner case fix here.
+            // We don't know yet what's the protocol version being used, but we know the status is either invoker or suspended.
+            // To sort this out, we write a field in invocation status to make sure that after pinning the deployment, we run the cancellation.
+            // See OnPinnedDeploymentCommand for more info.
+            trace!(
+                "Storing hotfix for cancellation when invocation doesn't have a pinned service protocol, but is invoked/suspended"
+            );
 
-                match &mut status {
-                    InvocationStatus::Invoked(metadata)
-                    | InvocationStatus::Suspended { metadata, .. } => {
-                        metadata.hotfix_apply_cancellation_after_deployment_is_pinned = true;
-                    }
-                    _ => {
-                        unreachable!("It's checked above")
-                    }
-                };
+            match &mut status {
+                InvocationStatus::Invoked(metadata)
+                | InvocationStatus::Suspended { metadata, .. } => {
+                    metadata.hotfix_apply_cancellation_after_deployment_is_pinned = true;
+                }
+                _ => {
+                    unreachable!("It's checked above")
+                }
+            };
 
-                self.storage
-                    .put_invocation_status(&invocation_id, &status)?;
-                self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
-                return Ok(());
-            }
-            _ => {
-                // Continue below
-            }
+            self.storage
+                .put_invocation_status(&invocation_id, &status)?;
+            self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
+            return Ok(());
+        } else {
+            // Continue below
         };
 
         match status {
@@ -1557,14 +1562,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             pinned_deployment,
         }) = &input
         {
-            let should_remove_journal_table_v2 =
-                pinned_deployment.as_ref().is_some_and(|pinned_deployment| {
-                    pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
-                });
+            let pinned_service_protocol_version = pinned_deployment
+                .as_ref()
+                .map(|pd| pd.service_protocol_version);
+
             self.do_drop_journal(
                 invocation_id,
                 journal_metadata.length,
-                should_remove_journal_table_v2,
+                pinned_service_protocol_version,
             )
             .await?;
         }
@@ -1641,14 +1646,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             pinned_deployment,
         }) = &input
         {
-            let should_remove_journal_table_v2 =
-                pinned_deployment.as_ref().is_some_and(|pinned_deployment| {
-                    pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
-                });
+            let pinned_service_protocol_version = pinned_deployment
+                .as_ref()
+                .map(|pd| pd.service_protocol_version);
+
             self.do_drop_journal(
                 invocation_id,
                 journal_metadata.length,
-                should_remove_journal_table_v2,
+                pinned_service_protocol_version,
             )
             .await?;
         }
@@ -2303,12 +2308,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         let completion_retention = invocation_metadata.completion_retention_duration;
         let journal_retention = invocation_metadata.journal_retention_duration;
 
-        let should_remove_journal_table_v2 = invocation_metadata
+        let pinned_service_protocol_version = invocation_metadata
             .pinned_deployment
             .as_ref()
-            .is_some_and(|pinned_deployment| {
-                pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
-            });
+            .map(|pd| pd.service_protocol_version);
 
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
@@ -2390,7 +2393,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.do_drop_journal(
                 invocation_id,
                 journal_length,
-                should_remove_journal_table_v2,
+                pinned_service_protocol_version,
             )
             .await?;
         }
@@ -4252,7 +4255,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-        should_remove_journal_table_v2: bool,
+        pinned_protocol_version: Option<ServiceProtocolVersion>,
     ) -> Result<(), Error>
     where
         S: WriteJournalTable + journal_table_v2::WriteJournalTable + WriteJournalEventsTable,
@@ -4263,17 +4266,18 @@ impl<S> StateMachineApplyContext<'_, S> {
             "Effect: Drop journal"
         );
 
-        if should_remove_journal_table_v2 {
+        if pinned_protocol_version.is_none_or(|sp| sp < ServiceProtocolVersion::V4) {
+            WriteJournalTable::delete_journal(self.storage, &invocation_id, journal_length)
+                .map_err(Error::Storage)?;
+        };
+        if pinned_protocol_version.is_none_or(|sp| sp >= ServiceProtocolVersion::V4) {
             journal_table_v2::WriteJournalTable::delete_journal(
                 self.storage,
                 invocation_id,
                 journal_length,
             )
             .map_err(Error::Storage)?
-        } else {
-            WriteJournalTable::delete_journal(self.storage, &invocation_id, journal_length)
-                .map_err(Error::Storage)?;
-        }
+        };
         WriteJournalEventsTable::delete_journal_events(self.storage, invocation_id)
             .map_err(Error::Storage)?;
         Ok(())

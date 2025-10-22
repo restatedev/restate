@@ -280,6 +280,7 @@ where
 mod tests {
     use super::*;
 
+    use crate::partition::state_machine::ExperimentalFeature;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
@@ -291,8 +292,8 @@ mod tests {
     };
     use restate_types::invocation::client::RestartAsNewInvocationResponse;
     use restate_types::invocation::{
-        IngressInvocationResponseSink, InvocationTarget, NotifySignalRequest,
-        RestartAsNewInvocationRequest, ServiceInvocation,
+        IngressInvocationResponseSink, InvocationTarget, InvocationTermination,
+        NotifySignalRequest, RestartAsNewInvocationRequest, ServiceInvocation, TerminationFlavor,
     };
     use restate_types::journal_v2::{
         CommandType, CompletionType, NotificationType, OutputCommand, OutputResult, Signal,
@@ -372,6 +373,82 @@ mod tests {
                     response: eq(RestartAsNewInvocationResponse::JournalIndexOutOfRange)
                 }
             )))
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn restart_killed_invocation() {
+        // This works only when using journal table v2 as default!
+        // The corner case with journal table v1 is handled by the rpc handler instead.
+        let mut test_env = TestEnv::create_with_experimental_features(
+            ExperimentalFeature::UseJournalTableV2AsDefault.into(),
+        )
+        .await;
+
+        // Start invocation, then kill it
+        let invocation_target = InvocationTarget::mock_virtual_object();
+        let original_invocation_id = InvocationId::generate(&invocation_target, None);
+        let _ = test_env
+            .apply_multiple([
+                Command::Invoke(Box::new(ServiceInvocation {
+                    invocation_id: original_invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    completion_retention_duration: Duration::from_secs(120),
+                    journal_retention_duration: Duration::from_secs(120),
+                    ..ServiceInvocation::mock()
+                })),
+                Command::TerminateInvocation(InvocationTermination {
+                    invocation_id: original_invocation_id,
+                    flavor: TerminationFlavor::Kill,
+                    response_sink: None,
+                }),
+            ])
+            .await;
+
+        // Restart as new with copy_prefix_up_to_index_included = 0
+        let new_id = InvocationId::mock_generate(&invocation_target);
+        let request_id = PartitionProcessorRpcRequestId::new();
+        let actions = test_env
+            .apply(Command::RestartAsNewInvocation(
+                RestartAsNewInvocationRequest {
+                    invocation_id: original_invocation_id,
+                    new_invocation_id: new_id,
+                    copy_prefix_up_to_index_included: 0,
+                    patch_deployment_id: None,
+                    response_sink: Some(InvocationMutationResponseSink::Ingress(
+                        IngressInvocationResponseSink { request_id },
+                    )),
+                },
+            ))
+            .await;
+
+        // We should invoke the new invocation and send OK back
+        assert_that!(
+            actions,
+            all!(
+                contains(matchers::actions::invoke_for_id(new_id)),
+                contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+                    request_id: eq(request_id),
+                    response: eq(RestartAsNewInvocationResponse::Ok {
+                        new_invocation_id: new_id
+                    })
+                }))
+            )
+        );
+
+        assert_that!(
+            test_env
+                .storage
+                .get_invocation_status(&new_id)
+                .await
+                .unwrap(),
+            all!(
+                matchers::storage::is_variant(InvocationStatusDiscriminants::Invoked),
+                matchers::storage::has_journal_length(1),
+                matchers::storage::has_commands(1)
+            )
         );
 
         test_env.shutdown().await;
