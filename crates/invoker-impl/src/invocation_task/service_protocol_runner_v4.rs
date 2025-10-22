@@ -184,8 +184,13 @@ where
 
         // Execute the replay
         crate::shortcircuit!(
-            self.replay_loop(&mut http_stream_tx, &mut decoder_stream, journal_stream)
-                .await
+            self.replay_loop(
+                &mut http_stream_tx,
+                &mut decoder_stream,
+                journal_stream,
+                journal_metadata.length
+            )
+            .await
         );
 
         // If we have the invoker_rx and the protocol type is bidi stream,
@@ -305,6 +310,7 @@ where
         http_stream_tx: &mut InvokerRequestStreamSender,
         http_stream_rx: &mut S,
         journal_stream: JournalStream,
+        expected_entries_count: u32,
     ) -> TerminalLoopState<()>
     where
         JournalStream: Stream<Item = JournalEntry> + Unpin,
@@ -312,6 +318,7 @@ where
     {
         let mut journal_stream = journal_stream.fuse();
         let mut got_headers = false;
+        let mut sent_entries = 0;
 
         loop {
             tokio::select! {
@@ -334,10 +341,11 @@ where
                 opt_je = journal_stream.next() => {
                     match opt_je {
                         Some(JournalEntry::JournalV2(entry)) => {
+                            sent_entries += 1;
                             crate::shortcircuit!(self.write_entry(http_stream_tx, entry.inner).await);
-
                         }
                         Some(JournalEntry::JournalV1(old_entry)) => {
+                            sent_entries += 1;
                             if let journal::Entry::Input(input_entry) = crate::shortcircuit!(old_entry.deserialize_entry::<ProtobufRawEntryCodec>()) {
                                 crate::shortcircuit!(self.write_entry(
                                     http_stream_tx,
@@ -352,6 +360,14 @@ where
                             }
                         },
                         None => {
+                            // Let's verify if we sent all the entries we promised, otherwise the stream will hang in a bad way!
+                            if sent_entries < expected_entries_count {
+                                return TerminalLoopState::Failed(InvokerError::UnexpectedEntryCount {
+                                    actual: sent_entries,
+                                    expected: expected_entries_count,
+                                })
+                            }
+
                             // No need to wait for the headers to continue
                             trace!("Finished to replay the journal");
                             return TerminalLoopState::Continue(())
