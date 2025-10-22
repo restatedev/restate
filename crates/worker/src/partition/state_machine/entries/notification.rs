@@ -201,9 +201,11 @@ where
 mod tests {
     use super::*;
 
+    use crate::partition::state_machine::ExperimentalFeature;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
     use bytestring::ByteString;
+    use enumset::EnumSet;
     use googletest::prelude::*;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_storage_api::invocation_status_table::{
@@ -262,9 +264,13 @@ mod tests {
         test_env.shutdown().await;
     }
 
+    #[rstest]
     #[restate_core::test]
-    async fn notify_signal_received_before_pinned_deployment() {
-        let mut test_env = TestEnv::create().await;
+    async fn notify_signal_received_before_pinned_deployment(
+        #[values(ExperimentalFeature::UseJournalTableV2AsDefault.into(), EnumSet::empty())]
+        features: EnumSet<ExperimentalFeature>,
+    ) {
+        let mut test_env = TestEnv::create_with_experimental_features(features).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
         // Send signal notification before pinned deployment
