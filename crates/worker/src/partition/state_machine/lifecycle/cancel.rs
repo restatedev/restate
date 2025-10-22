@@ -118,7 +118,7 @@ mod tests {
     use super::*;
 
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
-    use crate::partition::state_machine::{Action, ExperimentalFeature};
+    use crate::partition::state_machine::{Action, Feature};
     use crate::partition::types::InvokerEffectKind;
     use assert2::assert;
     use enumset::EnumSet;
@@ -237,10 +237,9 @@ mod tests {
 
     #[restate_core::test]
     async fn cancel_invoked_invocation_without_pinned_deployment_with_journal_table_v2_default() {
-        let mut test_env = TestEnv::create_with_experimental_features(
-            ExperimentalFeature::UseJournalTableV2AsDefault.into(),
-        )
-        .await;
+        let mut test_env =
+            TestEnv::create_with_experimental_features(Feature::UseJournalTableV2AsDefault.into())
+                .await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
         // Send signal notification before pinning the deployment
@@ -273,7 +272,7 @@ mod tests {
     #[restate_core::test]
     async fn cancel_scheduled_invocation_through_notify_signal(
         #[values(ExperimentalFeature::UseJournalTableV2AsDefault.into(), EnumSet::empty())]
-        features: EnumSet<ExperimentalFeature>,
+        features: EnumSet<Feature>,
     ) -> anyhow::Result<()> {
         let mut test_env = TestEnv::create_with_experimental_features(features).await;
 
@@ -348,7 +347,7 @@ mod tests {
     #[restate_core::test]
     async fn cancel_inboxed_invocation_through_notify_signal(
         #[values(ExperimentalFeature::UseJournalTableV2AsDefault.into(), EnumSet::empty())]
-        features: EnumSet<ExperimentalFeature>,
+        features: EnumSet<Feature>,
     ) -> anyhow::Result<()> {
         let mut test_env = TestEnv::create_with_experimental_features(features).await;
 

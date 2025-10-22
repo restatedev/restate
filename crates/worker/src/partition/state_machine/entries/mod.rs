@@ -405,7 +405,7 @@ impl<CMD> ApplyJournalCommandEffect<'_, CMD> {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::state_machine::ExperimentalFeature;
+    use crate::partition::state_machine::Feature;
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
@@ -424,7 +424,7 @@ mod tests {
     #[restate_core::test]
     async fn update_journal_and_commands_length(
         #[values(ExperimentalFeature::UseJournalTableV2AsDefault.into(), EnumSet::empty())]
-        features: EnumSet<ExperimentalFeature>,
+        features: EnumSet<Feature>,
     ) {
         let mut test_env = TestEnv::create_with_experimental_features(features).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
