@@ -43,8 +43,7 @@ reqwest = { workspace = true }
 schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
-# using version 0.13.1 which is required by opentelemetry-otlp
-tonic = { version = "0.13.1", features = ["tls-native-roots"]}
+tonic = { workspace = true, features = ["tls-native-roots"]}
 tracing = { workspace = true }
 tracing-appender = { version = "0.2.3", features = ["parking_lot"] }
 tracing-core = { version = "0.1" }
