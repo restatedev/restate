@@ -39,9 +39,10 @@ use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
 use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalRetentionPolicy,
-    PreFlightInvocationArgument, PreFlightInvocationJournal, PreFlightInvocationMetadata,
-    ReadInvocationStatusTable, WriteInvocationStatusTable,
+    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
+    JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
+    PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
@@ -94,7 +95,7 @@ use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{
-    CommandType, CompletionId, EntryMetadata, NotificationId, Signal, SignalResult,
+    CommandType, CompletionId, EntryMetadata, InputCommand, NotificationId, Signal, SignalResult,
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
@@ -102,6 +103,7 @@ use restate_types::schema::Schema;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
@@ -115,7 +117,9 @@ use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 
 #[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
-pub enum ExperimentalFeature {}
+pub enum ExperimentalFeature {
+    UseJournalTableV2AsDefault,
+}
 
 pub struct StateMachine {
     // initialized from persistent storage
@@ -650,7 +654,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteTimerTable
             + WriteInboxTable
             + WriteFsmTable
-            + WriteJournalTable,
+            + WriteJournalTable
+            + journal_table_v2::WriteJournalTable,
     {
         let invocation_id = service_invocation.invocation_id;
         debug_assert!(
@@ -696,7 +701,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     async fn on_pre_flight_invocation(
         &mut self,
         invocation_id: InvocationId,
-        pre_flight_invocation_metadata: PreFlightInvocationMetadata,
+        mut pre_flight_invocation_metadata: PreFlightInvocationMetadata,
         submit_notification_sink: Option<SubmitNotificationSink>,
     ) -> Result<(), Error>
     where
@@ -708,9 +713,57 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteTimerTable
             + WriteInboxTable
             + WriteFsmTable
-            + WriteJournalTable,
+            + WriteJournalTable
+            + journal_table_v2::WriteJournalTable,
     {
         // A pre-flight invocation has been already deduplicated
+
+        // 0. Prepare the journal table v2
+        if self
+            .experimental_features
+            .contains(ExperimentalFeature::UseJournalTableV2AsDefault)
+            && let PreFlightInvocationArgument::Input(PreFlightInvocationInput {
+                argument,
+                headers,
+                span_context,
+            }) = pre_flight_invocation_metadata.input
+        {
+            // In this case, we do the following:
+            // * Write the input in the journal table v2
+            // * Change pre_flight_invocation_metadata.input
+
+            // Prepare the new entry
+            let new_entry: journal_v2::Entry = InputCommand {
+                headers,
+                payload: argument,
+                name: Default::default(),
+            }
+            .into();
+            let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
+
+            // Now write the entry in the new table
+            journal_table_v2::WriteJournalTable::put_journal_entry(
+                self.storage,
+                invocation_id,
+                0,
+                &StoredRawEntry::new(
+                    StoredRawEntryHeader::new(self.record_created_at),
+                    new_raw_entry,
+                ),
+                &[],
+            )?;
+
+            // Input is now a journal directly
+            pre_flight_invocation_metadata.input =
+                PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                    journal_metadata: JournalMetadata {
+                        length: 1,
+                        commands: 1,
+                        span_context,
+                    },
+                    pinned_deployment: None,
+                });
+        }
 
         // 1. Check if we need to schedule it
         let execution_time = pre_flight_invocation_metadata.execution_time;

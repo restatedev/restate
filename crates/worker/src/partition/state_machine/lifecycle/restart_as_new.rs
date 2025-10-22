@@ -21,12 +21,12 @@ use restate_storage_api::invocation_status_table::{
     PreFlightInvocationMetadata, ReadInvocationStatusTable, StatusTimestamps,
     WriteInvocationStatusTable,
 };
-use restate_storage_api::journal_table as journal_table_v1;
-use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
+use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::timer_table::WriteTimerTable;
+use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
 use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId};
 use restate_types::invocation::client::RestartAsNewInvocationResponse;
 use restate_types::invocation::{
@@ -68,8 +68,7 @@ impl<'ctx, 's: 'ctx, S> StateMachineApplyContext<'s, S> {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnRestartAsNewInvocationCommand
 where
-    S: WriteJournalTable
-        + ReadJournalTable
+    S: ReadJournalTable
         + IdempotencyTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
@@ -78,7 +77,8 @@ where
         + WriteVirtualObjectStatusTable
         + WriteTimerTable
         + WriteInboxTable
-        + journal_table_v1::WriteJournalTable,
+        + journal_table_v1::WriteJournalTable
+        + journal_table_v2::WriteJournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnRestartAsNewInvocationCommand {
@@ -146,7 +146,7 @@ where
                     new_journal_commands += 1;
 
                     // Now copy to the new journal
-                    WriteJournalTable::put_journal_entry(
+                    journal_table_v2::WriteJournalTable::put_journal_entry(
                         ctx.storage,
                         new_invocation_id,
                         new_journal_index,
@@ -166,7 +166,7 @@ where
                     }
 
                     // Now copy to the new journal
-                    WriteJournalTable::put_journal_entry(
+                    journal_table_v2::WriteJournalTable::put_journal_entry(
                         ctx.storage,
                         new_invocation_id,
                         new_journal_index,
@@ -192,7 +192,7 @@ where
                 && missing_completions.remove(&completion_id)
             {
                 // Copy over this notification
-                WriteJournalTable::put_journal_entry(
+                journal_table_v2::WriteJournalTable::put_journal_entry(
                     ctx.storage,
                     new_invocation_id,
                     new_journal_index,
