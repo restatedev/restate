@@ -117,7 +117,7 @@ use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 
 #[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
-pub enum ExperimentalFeature {
+pub enum Feature {
     UseJournalTableV2AsDefault,
 }
 
@@ -136,7 +136,7 @@ pub struct StateMachine {
     pub(crate) partition_key_range: RangeInclusive<PartitionKey>,
 
     /// Enabled experimental features.
-    pub(crate) experimental_features: EnumSet<ExperimentalFeature>,
+    pub(crate) features: EnumSet<Feature>,
 }
 
 impl Debug for StateMachine {
@@ -221,7 +221,7 @@ impl StateMachine {
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
         min_restate_version: SemanticRestateVersion,
-        experimental_features: EnumSet<ExperimentalFeature>,
+        experimental_features: EnumSet<Feature>,
         schema: Option<Schema>,
     ) -> Self {
         Self {
@@ -230,7 +230,7 @@ impl StateMachine {
             outbox_head_seq_number,
             partition_key_range,
             min_restate_version,
-            experimental_features,
+            features: experimental_features,
             schema,
         }
     }
@@ -247,8 +247,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     min_restate_version: &'a mut SemanticRestateVersion,
     schema: &'a mut Option<Schema>,
     partition_key_range: RangeInclusive<PartitionKey>,
-    #[allow(dead_code)]
-    experimental_features: &'a EnumSet<ExperimentalFeature>,
+    features: &'a EnumSet<Feature>,
     is_leader: bool,
 }
 
@@ -286,7 +285,7 @@ impl StateMachine {
                 min_restate_version: &mut self.min_restate_version,
                 schema: &mut self.schema,
                 partition_key_range: self.partition_key_range.clone(),
-                experimental_features: &self.experimental_features,
+                features: &self.features,
                 is_leader,
             }
             .on_apply(command)
@@ -719,9 +718,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // A pre-flight invocation has been already deduplicated
 
         // 0. Prepare the journal table v2
-        if self
-            .experimental_features
-            .contains(ExperimentalFeature::UseJournalTableV2AsDefault)
+        if self.features.contains(Feature::UseJournalTableV2AsDefault)
             && let PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                 argument,
                 headers,

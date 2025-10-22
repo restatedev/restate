@@ -90,7 +90,7 @@ impl TestEnv {
     }
 
     pub async fn create_with_experimental_features(
-        experimental_features: EnumSet<ExperimentalFeature>,
+        experimental_features: EnumSet<Feature>,
     ) -> Self {
         Self::create_with_state_machine(StateMachine::new(
             0,    /* inbox_seq_number */

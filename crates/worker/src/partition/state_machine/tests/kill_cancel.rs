@@ -32,7 +32,7 @@ use test_log::test;
 #[restate_core::test]
 async fn kill_inboxed_invocation(
     #[values(ExperimentalFeature::UseJournalTableV2AsDefault.into(), EnumSet::empty())]
-    features: EnumSet<ExperimentalFeature>,
+    features: EnumSet<Feature>,
 ) -> anyhow::Result<()> {
     let mut test_env = TestEnv::create_with_experimental_features(features).await;
 

@@ -67,7 +67,7 @@ use crate::metric_definitions::{
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
-use crate::partition::state_machine::{ActionCollector, ExperimentalFeature, StateMachine};
+use crate::partition::state_machine::{ActionCollector, Feature, StateMachine};
 
 /// Target leader state of the partition processor.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -197,7 +197,7 @@ where
         let mut features = EnumSet::new();
         // TODO(till) enable this using partition processor version barrier
         if env::var("RESTATE_EXPERIMENTAL_FEATURE__USE_JOURNAL_V2_BY_DEFAULT").is_ok() {
-            features.insert(ExperimentalFeature::UseJournalTableV2AsDefault);
+            features.insert(Feature::UseJournalTableV2AsDefault);
         }
 
         let state_machine = StateMachine::new(

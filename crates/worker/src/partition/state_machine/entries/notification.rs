@@ -201,7 +201,7 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::ExperimentalFeature;
+    use crate::partition::state_machine::Feature;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
     use bytestring::ByteString;
@@ -268,7 +268,7 @@ mod tests {
     #[restate_core::test]
     async fn notify_signal_received_before_pinned_deployment(
         #[values(ExperimentalFeature::UseJournalTableV2AsDefault.into(), EnumSet::empty())]
-        features: EnumSet<ExperimentalFeature>,
+        features: EnumSet<Feature>,
     ) {
         let mut test_env = TestEnv::create_with_experimental_features(features).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;

@@ -280,7 +280,7 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::ExperimentalFeature;
+    use crate::partition::state_machine::Feature;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
@@ -382,10 +382,9 @@ mod tests {
     async fn restart_killed_invocation() {
         // This works only when using journal table v2 as default!
         // The corner case with journal table v1 is handled by the rpc handler instead.
-        let mut test_env = TestEnv::create_with_experimental_features(
-            ExperimentalFeature::UseJournalTableV2AsDefault.into(),
-        )
-        .await;
+        let mut test_env =
+            TestEnv::create_with_experimental_features(Feature::UseJournalTableV2AsDefault.into())
+                .await;
 
         // Start invocation, then kill it
         let invocation_target = InvocationTarget::mock_virtual_object();
