@@ -192,6 +192,7 @@ pub struct ServiceMetadata {
     /// # Info
     ///
     /// List of configuration/deprecation information related to this service.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub info: Vec<Info>,
 }
 
@@ -448,6 +449,7 @@ pub struct HandlerMetadata {
     /// # Info
     ///
     /// List of configuration/deprecation information related to this handler.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub info: Vec<Info>,
 }
 

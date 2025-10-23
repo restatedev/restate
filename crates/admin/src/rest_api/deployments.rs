@@ -426,6 +426,7 @@ fn to_register_response(
         id,
         supported_protocol_versions,
         sdk_version,
+        info,
         ..
     }: Deployment,
     services: Vec<ServiceMetadata>,
@@ -436,6 +437,7 @@ fn to_register_response(
         min_protocol_version: *supported_protocol_versions.start(),
         max_protocol_version: *supported_protocol_versions.end(),
         sdk_version,
+        info,
     }
 }
 
@@ -448,6 +450,7 @@ fn to_deployment_response(
         sdk_version,
         created_at,
         metadata,
+        info,
         ..
     }: Deployment,
     services: Vec<(String, ServiceRevision)>,
@@ -472,6 +475,7 @@ fn to_deployment_response(
                 .into_iter()
                 .map(|(name, revision)| ServiceNameRevPair { name, revision })
                 .collect(),
+            info,
         },
         DeploymentType::Lambda {
             arn,
@@ -492,6 +496,7 @@ fn to_deployment_response(
                 .into_iter()
                 .map(|(name, revision)| ServiceNameRevPair { name, revision })
                 .collect(),
+            info,
         },
     }
 }
@@ -505,6 +510,7 @@ fn to_detailed_deployment_response(
         sdk_version,
         created_at,
         metadata,
+        info,
         ..
     }: Deployment,
     services: Vec<ServiceMetadata>,
@@ -526,6 +532,7 @@ fn to_detailed_deployment_response(
             max_protocol_version: *supported_protocol_versions.end(),
             sdk_version,
             services,
+            info,
         },
         DeploymentType::Lambda {
             arn,
@@ -543,6 +550,7 @@ fn to_detailed_deployment_response(
             max_protocol_version: *supported_protocol_versions.end(),
             sdk_version,
             services,
+            info,
         },
     }
 }
