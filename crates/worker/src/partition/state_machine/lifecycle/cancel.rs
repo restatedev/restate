@@ -238,8 +238,7 @@ mod tests {
     #[restate_core::test]
     async fn cancel_invoked_invocation_without_pinned_deployment_with_journal_table_v2_default() {
         let mut test_env =
-            TestEnv::create_with_experimental_features(Feature::UseJournalTableV2AsDefault.into())
-                .await;
+            TestEnv::create_with_experimental_features(Feature::UseJournalTableV2AsDefault).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
         // Send signal notification before pinning the deployment
