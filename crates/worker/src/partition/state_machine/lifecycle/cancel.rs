@@ -237,8 +237,7 @@ mod tests {
 
     #[restate_core::test]
     async fn cancel_invoked_invocation_without_pinned_deployment_with_journal_table_v2_default() {
-        let mut test_env =
-            TestEnv::create_with_experimental_features(Feature::UseJournalTableV2AsDefault).await;
+        let mut test_env = TestEnv::create_with_features(Feature::UseJournalTableV2AsDefault).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
         // Send signal notification before pinning the deployment
@@ -274,7 +273,7 @@ mod tests {
             Feature,
         >,
     ) -> anyhow::Result<()> {
-        let mut test_env = TestEnv::create_with_experimental_features(features).await;
+        let mut test_env = TestEnv::create_with_features(features).await;
 
         let invocation_id = InvocationId::mock_random();
         let rpc_id = PartitionProcessorRpcRequestId::new();
@@ -350,7 +349,7 @@ mod tests {
             Feature,
         >,
     ) -> anyhow::Result<()> {
-        let mut test_env = TestEnv::create_with_experimental_features(features).await;
+        let mut test_env = TestEnv::create_with_features(features).await;
 
         let invocation_target = InvocationTarget::mock_virtual_object();
         let invocation_id = InvocationId::mock_generate(&invocation_target);

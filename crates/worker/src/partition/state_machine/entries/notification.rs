@@ -271,7 +271,7 @@ mod tests {
             Feature,
         >,
     ) {
-        let mut test_env = TestEnv::create_with_experimental_features(features).await;
+        let mut test_env = TestEnv::create_with_features(features).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
         // Send signal notification before pinned deployment

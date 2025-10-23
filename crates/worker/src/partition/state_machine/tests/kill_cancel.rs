@@ -35,7 +35,7 @@ async fn kill_inboxed_invocation(
         Feature,
     >,
 ) -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create_with_experimental_features(features).await;
+    let mut test_env = TestEnv::create_with_features(features).await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);

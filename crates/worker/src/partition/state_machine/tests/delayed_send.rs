@@ -24,7 +24,7 @@ async fn send_with_delay(
         Feature,
     >,
 ) {
-    let mut test_env = TestEnv::create_with_experimental_features(features).await;
+    let mut test_env = TestEnv::create_with_features(features).await;
 
     let invocation_target = InvocationTarget::mock_service();
     let invocation_id = InvocationId::mock_random();

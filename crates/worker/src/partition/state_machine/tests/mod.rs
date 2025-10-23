@@ -86,12 +86,10 @@ impl TestEnv {
     }
 
     pub async fn create() -> Self {
-        Self::create_with_experimental_features(EnumSet::default()).await
+        Self::create_with_features(EnumSet::default()).await
     }
 
-    pub async fn create_with_experimental_features(
-        experimental_features: impl Into<EnumSet<Feature>>,
-    ) -> Self {
+    pub async fn create_with_features(experimental_features: impl Into<EnumSet<Feature>>) -> Self {
         Self::create_with_state_machine(StateMachine::new(
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */
