@@ -2,7 +2,6 @@ mod openapi;
 mod serde_hacks;
 pub mod updater;
 
-use std::cmp;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::ops::RangeInclusive;
@@ -29,7 +28,8 @@ use crate::metadata::GlobalMetadata;
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
-use crate::schema::deployment::{DeploymentResolver, DeploymentType};
+use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
+use crate::schema::info::Info;
 use crate::schema::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, DeploymentStatus,
     InputRules, InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver,
@@ -104,9 +104,12 @@ struct ActiveServiceRevision {
 }
 
 impl ActiveServiceRevision {
-    fn as_service_metadata(&self) -> service::ServiceMetadata {
+    fn as_service_metadata(
+        &self,
+        served_using_protocol_type: Option<ProtocolType>,
+    ) -> service::ServiceMetadata {
         self.service_revision
-            .to_service_metadata(self.deployment_id)
+            .to_service_metadata(self.deployment_id, served_using_protocol_type)
     }
 
     fn create_index<'a>(
@@ -187,6 +190,7 @@ impl Deployment {
             created_at: self.created_at,
             metadata: self.metadata.clone(),
             additional_headers: self.delivery_options.additional_headers.clone(),
+            info: vec![],
         }
     }
     /// This returns true if the two deployments are to be considered the "same".
@@ -337,11 +341,42 @@ impl MapAsVecItem for ServiceRevision {
 }
 
 impl ServiceRevision {
-    fn to_service_metadata(&self, deployment_id: DeploymentId) -> service::ServiceMetadata {
+    fn to_service_metadata(
+        &self,
+        deployment_id: DeploymentId,
+        served_using_protocol_type: Option<ProtocolType>,
+    ) -> service::ServiceMetadata {
         let configuration = Configuration::pinned();
 
         let mut retry_policy = configuration.resolve_default_retry_policy();
         retry_policy.merge_with_service_revision_overrides(self);
+
+        let mut info = vec![];
+        if let Some(inactivity_timeout) = self.inactivity_timeout
+            && served_using_protocol_type == Some(ProtocolType::RequestResponse)
+        {
+            info.push(
+                Info::new_with_code(
+                    &restate_errors::RT0021,
+                    format!("The configured inactivity_timeout {} will not be applied because the service is exposed in Request/Response mode.", FriendlyDuration::new(inactivity_timeout))
+                )
+            )
+        }
+
+        let (journal_retention, got_journal_retention_clamped) = configuration
+            .clamp_journal_retention(
+                self.journal_retention.or(configuration
+                    .invocation
+                    .default_journal_retention
+                    .to_non_zero_std()),
+            );
+        if got_journal_retention_clamped {
+            info.push(Info::new_with_code(
+                &restate_errors::RT0022,
+                "The configured journal_retention is clamped to the maximum server limit."
+                    .to_string(),
+            ))
+        }
 
         service::ServiceMetadata {
             name: self.name.clone(),
@@ -351,7 +386,11 @@ impl ServiceRevision {
                 .map(|(name, handler)| {
                     (
                         name.clone(),
-                        handler.as_handler_metadata(&configuration, self.public),
+                        handler.as_handler_metadata(
+                            &configuration,
+                            self.public,
+                            served_using_protocol_type,
+                        ),
                     )
                 })
                 .collect(),
@@ -376,20 +415,20 @@ impl ServiceRevision {
             } else {
                 None
             },
-            journal_retention: configuration.clamp_journal_retention(
-                self.journal_retention.or(configuration
-                    .invocation
-                    .default_journal_retention
-                    .to_non_zero_std()),
-            ),
-            inactivity_timeout: self
-                .inactivity_timeout
-                .unwrap_or_else(|| configuration.worker.invoker.inactivity_timeout.into()),
+            journal_retention,
+            inactivity_timeout: if served_using_protocol_type == Some(ProtocolType::RequestResponse)
+            {
+                Duration::ZERO
+            } else {
+                self.inactivity_timeout
+                    .unwrap_or_else(|| configuration.worker.invoker.inactivity_timeout.into())
+            },
             abort_timeout: self
                 .abort_timeout
                 .unwrap_or_else(|| configuration.worker.invoker.abort_timeout.into()),
             enable_lazy_state: self.enable_lazy_state.unwrap_or(false),
             retry_policy,
+            info,
         }
     }
 
@@ -482,7 +521,30 @@ impl Handler {
         &self,
         configuration: &Pinned<Configuration>,
         service_level_public: bool,
+        served_using_protocol_type: Option<ProtocolType>,
     ) -> service::HandlerMetadata {
+        let mut info = vec![];
+        if let Some(inactivity_timeout) = self.inactivity_timeout
+            && served_using_protocol_type == Some(ProtocolType::RequestResponse)
+        {
+            info.push(
+                Info::new_with_code(
+                    &restate_errors::RT0021,
+                    format!("The configured inactivity_timeout {} will not be applied because the handler is exposed in Request/Response mode.", FriendlyDuration::new(inactivity_timeout))
+                )
+            )
+        }
+
+        let (journal_retention, got_journal_retention_clamped) =
+            configuration.clamp_journal_retention(self.journal_retention);
+        if got_journal_retention_clamped {
+            info.push(Info::new_with_code(
+                &restate_errors::RT0022,
+                "The configured journal_retention is clamped to the maximum server limit."
+                    .to_string(),
+            ))
+        }
+
         service::HandlerMetadata {
             name: self.name.clone(),
             ty: self.target_ty.into(),
@@ -494,7 +556,7 @@ impl Handler {
             input_json_schema: self.input_rules.json_schema(),
             output_json_schema: self.output_rules.json_schema(),
             idempotency_retention: self.idempotency_retention,
-            journal_retention: configuration.clamp_journal_retention(self.journal_retention),
+            journal_retention,
             inactivity_timeout: self.inactivity_timeout,
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
@@ -505,6 +567,7 @@ impl Handler {
                 max_interval: self.retry_policy_max_interval,
                 on_max_attempts: self.retry_policy_on_max_attempts,
             },
+            info,
         }
     }
 }
@@ -538,7 +601,7 @@ impl DeploymentResolver for Schema {
                     dp.to_deployment(),
                     dp.services
                         .values()
-                        .map(|s| s.to_service_metadata(*dp_id))
+                        .map(|s| s.to_service_metadata(*dp_id, Some(dp.ty.protocol_type())))
                         .collect(),
                 )
             })
@@ -559,7 +622,7 @@ impl DeploymentResolver for Schema {
                 dp.to_deployment(),
                 dp.services
                     .values()
-                    .map(|s| s.to_service_metadata(*deployment_id))
+                    .map(|s| s.to_service_metadata(*deployment_id, Some(dp.ty.protocol_type())))
                     .collect(),
             )
         })
@@ -627,6 +690,7 @@ impl InvocationTargetResolver for Schema {
                             .to_non_zero_std()
                     }),
             )
+            .0
             .unwrap_or(Duration::ZERO);
 
         let deployment_status = self
@@ -739,7 +803,14 @@ impl ServiceMetadataResolver for Schema {
     ) -> Option<service::ServiceMetadata> {
         self.active_service_revisions
             .get(service_name.as_ref())
-            .map(|revision| revision.as_service_metadata())
+            .map(|revision| {
+                let protocol_type = self
+                    .deployments
+                    .get(&revision.deployment_id)
+                    .map(|dp| dp.ty.protocol_type());
+
+                revision.as_service_metadata(protocol_type)
+            })
     }
 
     fn resolve_latest_service_openapi(
@@ -755,7 +826,13 @@ impl ServiceMetadataResolver for Schema {
     fn list_services(&self) -> Vec<service::ServiceMetadata> {
         self.active_service_revisions
             .values()
-            .map(|revision| revision.as_service_metadata())
+            .map(|revision| {
+                let protocol_type = self
+                    .deployments
+                    .get(&revision.deployment_id)
+                    .map(|dp| dp.ty.protocol_type());
+                revision.as_service_metadata(protocol_type)
+            })
             .collect()
     }
 
@@ -789,7 +866,10 @@ impl SubscriptionResolver for Schema {
 }
 
 impl Configuration {
-    fn clamp_journal_retention(&self, requested: Option<Duration>) -> Option<Duration> {
+    fn clamp_journal_retention(
+        &self,
+        requested: Option<Duration>,
+    ) -> (Option<Duration>, /* got clamped */ bool) {
         clamp_max(
             requested,
             self.invocation.max_journal_retention.map(Duration::from),
@@ -797,18 +877,22 @@ impl Configuration {
     }
 
     fn clamp_max_attempts(&self, requested: Option<NonZeroUsize>) -> Option<NonZeroUsize> {
-        clamp_max(requested, self.invocation.max_retry_policy_max_attempts)
+        clamp_max(requested, self.invocation.max_retry_policy_max_attempts).0
     }
 }
 
-fn clamp_max<T: Ord>(requested: Option<T>, limit: Option<T>) -> Option<T> {
+fn clamp_max<T: Ord>(
+    requested: Option<T>,
+    limit: Option<T>,
+) -> (Option<T>, /* got clamped */ bool) {
     match (requested, limit) {
-        (None, Some(_)) => None,
-        (None, None) => None,
-        (Some(requested_duration), None) => Some(requested_duration),
-        (Some(requested_duration), Some(global_limit)) => {
-            Some(cmp::min(requested_duration, global_limit))
+        (None, Some(_)) => (None, false),
+        (None, None) => (None, false),
+        (Some(requested_duration), None) => (Some(requested_duration), false),
+        (Some(requested_duration), Some(global_limit)) if requested_duration > global_limit => {
+            (Some(global_limit), true)
         }
+        (Some(requested_duration), Some(_)) => (Some(requested_duration), true),
     }
 }
 

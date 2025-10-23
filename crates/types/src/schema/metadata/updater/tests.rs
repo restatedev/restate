@@ -14,6 +14,7 @@ use std::convert::Infallible;
 use crate::Versioned;
 use crate::schema::deployment::DeploymentResolver;
 use crate::schema::deployment::ProtocolType;
+use crate::schema::info::Info;
 use crate::schema::invocation_target::InvocationTargetResolver;
 use crate::schema::service::ServiceMetadataResolver;
 use crate::service_protocol::{
@@ -1943,14 +1944,19 @@ mod endpoint_manifest_options_propagation {
         crate::config::set_current_config(config);
 
         // Create a service with journal_retention of 120 seconds (higher than max)
-        let target = init_discover_and_resolve_target(
-            endpoint_manifest::Service {
-                journal_retention: Some(120 * 1000), // 120 seconds
-                ..greeter_service()
-            },
-            GREETER_SERVICE_NAME,
-            GREET_HANDLER_NAME,
-        );
+        let ((_, deployment_id), schema) =
+            SchemaUpdater::update_and_return(Schema::default(), move |updater| {
+                updater.add_deployment(add_deployment_request(vec![endpoint_manifest::Service {
+                    journal_retention: Some(120 * 1000), // 120 seconds
+                    ..greeter_service()
+                }]))
+            })
+            .unwrap();
+
+        schema.assert_service_revision(GREETER_SERVICE_NAME, 1);
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id);
+
+        let target = schema.assert_invocation_target(GREETER_SERVICE_NAME, GREET_HANDLER_NAME);
 
         // Verify that the journal_retention is clamped to 60 seconds (the max)
         assert_that!(
@@ -1959,6 +1965,15 @@ mod endpoint_manifest_options_propagation {
                 completion_retention: Duration::from_secs(60), // Clamped to max
                 journal_retention: Duration::from_secs(60),    // Clamped to max
             })
+        );
+
+        // Verify that the Info field is set in ServiceMetadata
+        let service_metadata = schema.assert_service(GREETER_SERVICE_NAME);
+        assert_that!(
+            service_metadata.info,
+            contains(predicate(|info: &Info| info
+                .message()
+                .contains("journal_retention is clamped")))
         );
     }
 
@@ -2031,6 +2046,24 @@ mod endpoint_manifest_options_propagation {
             pat!(HandlerMetadata {
                 journal_retention: some(eq(Duration::from_secs(60))), // Clamped to max
             })
+        );
+
+        // Verify that the Info field is set in ServiceMetadata for service-level clamping
+        let service_metadata = schema.assert_service(GREETER_SERVICE_NAME);
+        assert_that!(
+            service_metadata.info,
+            contains(predicate(|info: &Info| info
+                .message()
+                .contains("journal_retention is clamped")))
+        );
+
+        // Verify that the Info field is set in HandlerMetadata for handler-level clamping
+        let handler_metadata = schema.assert_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME);
+        assert_that!(
+            handler_metadata.info,
+            contains(predicate(|info: &Info| info
+                .message()
+                .contains("journal_retention is clamped")))
         );
 
         // Disable max
@@ -2212,6 +2245,50 @@ mod endpoint_manifest_options_propagation {
                 enable_lazy_state: None,
             })
         )
+    }
+
+    #[test]
+    fn inactivity_timeout_with_request_response_protocol() {
+        // Create a service with inactivity_timeout and deploy it with RequestResponse protocol
+        let ((_, deployment_id), schema) =
+            SchemaUpdater::update_and_return(Schema::default(), move |updater| {
+                updater.add_deployment(AddDeploymentRequest {
+                    deployment_address: DeploymentAddress::mock(),
+                    additional_headers: Default::default(),
+                    metadata: Default::default(),
+                    discovery_response: DiscoveryResponse {
+                        deployment_type_parameters: DeploymentConnectionParameters::Http {
+                            protocol_type: ProtocolType::RequestResponse,
+                            http_version: http::Version::HTTP_2,
+                        },
+                        supported_protocol_versions: (MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32)
+                            ..=(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION as i32),
+                        sdk_version: None,
+                        services: vec![endpoint_manifest::Service {
+                            inactivity_timeout: Some(60 * 1000), // 60 seconds
+                            ..greeter_service()
+                        }],
+                    },
+                    allow_breaking_changes: AllowBreakingChanges::No,
+                    overwrite: Overwrite::No,
+                })
+            })
+            .unwrap();
+
+        schema.assert_service_revision(GREETER_SERVICE_NAME, 1);
+        schema.assert_service_deployment(GREETER_SERVICE_NAME, deployment_id);
+
+        // Verify that the Info field is set in ServiceMetadata
+        let service_metadata = schema.assert_service(GREETER_SERVICE_NAME);
+        assert_that!(service_metadata.info, not(empty()));
+        assert_that!(
+            service_metadata
+                .info
+                .iter()
+                .any(|info| info.message().contains("inactivity_timeout")
+                    && info.message().contains("Request/Response")),
+            eq(true)
+        );
     }
 }
 

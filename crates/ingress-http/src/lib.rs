@@ -174,6 +174,7 @@ mod mocks {
                         input_json_schema: None,
                         output_json_schema: None,
                         retry_policy: Default::default(),
+                        info: vec![],
                     },
                 )]),
                 ty: invocation_target_metadata.target_ty.into(),
@@ -189,6 +190,7 @@ mod mocks {
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
                 retry_policy: Default::default(),
+                info: vec![],
             });
             self.1.add(
                 service_name,

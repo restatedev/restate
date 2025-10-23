@@ -13,6 +13,7 @@ use restate_serde_util::SerdeableHeaderHashMap;
 use restate_types::identifiers::ServiceRevision;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
 use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType};
+use restate_types::schema::info::Info;
 use restate_types::schema::service::ServiceMetadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -186,6 +187,12 @@ pub struct RegisterDeploymentResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub sdk_version: Option<String>,
+
+    /// # Info
+    ///
+    /// List of configuration/deprecation information related to this deployment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub info: Vec<Info>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -266,6 +273,12 @@ pub enum DeploymentResponse {
         ///
         /// List of services exposed by this deployment.
         services: Vec<ServiceNameRevPair>,
+
+        /// # Info
+        ///
+        /// List of configuration/deprecation information related to this deployment.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        info: Vec<Info>,
     },
     #[cfg_attr(
         feature = "schema",
@@ -331,6 +344,12 @@ pub enum DeploymentResponse {
         ///
         /// List of services exposed by this deployment.
         services: Vec<ServiceNameRevPair>,
+
+        /// # Info
+        ///
+        /// List of configuration/deprecation information related to this deployment.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        info: Vec<Info>,
     },
 }
 
@@ -413,6 +432,12 @@ pub enum DetailedDeploymentResponse {
         ///
         /// List of services exposed by this deployment.
         services: Vec<ServiceMetadata>,
+
+        /// # Info
+        ///
+        /// List of configuration/deprecation information related to this deployment.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        info: Vec<Info>,
     },
     #[cfg_attr(
         feature = "schema",
@@ -479,6 +504,12 @@ pub enum DetailedDeploymentResponse {
         ///
         /// List of services exposed by this deployment.
         services: Vec<ServiceMetadata>,
+
+        /// # Info
+        ///
+        /// List of configuration/deprecation information related to this deployment.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        info: Vec<Info>,
     },
 }
 

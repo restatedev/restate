@@ -24,6 +24,7 @@
 //! The [`Schema`] data structure is a serializable representation of this schema registry.
 
 pub mod deployment;
+pub mod info;
 pub mod invocation_target;
 mod metadata;
 pub mod registry;

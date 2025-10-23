@@ -18,6 +18,7 @@ use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
+use crate::schema::info::Info;
 use crate::schema::service::ServiceMetadata;
 use crate::time::MillisSinceEpoch;
 use bytestring::ByteString;
@@ -47,6 +48,10 @@ pub struct Deployment {
     pub created_at: MillisSinceEpoch,
     /// User provided metadata during registration
     pub metadata: HashMap<String, String>,
+    /// # Info
+    ///
+    /// List of configuration/deprecation information related to this deployment.
+    pub info: Vec<Info>,
 }
 
 impl Deployment {
@@ -358,6 +363,7 @@ pub mod test_util {
                 created_at: MillisSinceEpoch::now(),
                 metadata: Default::default(),
                 additional_headers: Default::default(),
+                info: vec![],
             }
         }
 
@@ -377,6 +383,7 @@ pub mod test_util {
                 created_at: MillisSinceEpoch::now(),
                 metadata: Default::default(),
                 additional_headers: Default::default(),
+                info: vec![],
             }
         }
     }
