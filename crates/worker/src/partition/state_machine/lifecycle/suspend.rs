@@ -91,19 +91,28 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::fixtures::{
         invoker_entry_effect, invoker_suspended,
     };
+    use crate::partition::state_machine::tests::matchers::storage::{
+        has_commands, has_journal_length, in_flight_metadata, is_variant,
+    };
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
-    use googletest::prelude::{all, assert_that, contains, eq, pat};
-    use googletest::{elements_are, property};
+    use crate::partition::state_machine::{Action, Feature};
+    use enumset::EnumSet;
+    use googletest::prelude::*;
+    use restate_storage_api::invocation_status_table::{
+        InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
+    };
+    use restate_types::invocation::NotifySignalRequest;
     use restate_types::journal_v2::{
-        CommandType, Entry, EntryMetadata, EntryType, NotificationId, SleepCommand, SleepCompletion,
+        CommandType, Entry, EntryMetadata, EntryType, NotificationId, Signal, SignalId,
+        SignalResult, SleepCommand, SleepCompletion,
     };
     use restate_types::time::MillisSinceEpoch;
     use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
+    use rstest::rstest;
     use std::time::{Duration, SystemTime};
 
     #[restate_core::test]
@@ -212,6 +221,81 @@ mod tests {
                 property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
                 matchers::entry_eq(sleep_command),
                 matchers::entry_eq(sleep_completion),
+            ]
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[rstest]
+    #[restate_core::test]
+    async fn suspend_waiting_on_signal(
+        #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
+            Feature,
+        >,
+    ) {
+        let mut test_env = TestEnv::create_with_experimental_features(features).await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        // We don't pin the deployment here, but this should work nevertheless.
+
+        let _ = test_env
+            .apply(invoker_suspended(
+                invocation_id,
+                [NotificationId::for_signal(SignalId::for_index(17))],
+            ))
+            .await;
+
+        assert_that!(
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await,
+            ok(all!(
+                is_variant(InvocationStatusDiscriminants::Suspended),
+                has_journal_length(1),
+                in_flight_metadata(pat!(InFlightInvocationMetadata {
+                    pinned_deployment: none()
+                })),
+            ))
+        );
+
+        // Let's notify the signal
+        let signal = Signal {
+            id: SignalId::for_index(17),
+            result: SignalResult::Void,
+        };
+        let actions = test_env
+            .apply(Command::NotifySignal(NotifySignalRequest {
+                invocation_id,
+                signal: signal.clone(),
+            }))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::invoke_for_id(invocation_id))
+        );
+
+        assert_that!(
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await,
+            ok(all!(
+                is_variant(InvocationStatusDiscriminants::Invoked),
+                has_journal_length(2),
+                has_commands(1),
+                in_flight_metadata(pat!(InFlightInvocationMetadata {
+                    pinned_deployment: none()
+                })),
+            ))
+        );
+
+        // Check journal
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 2).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(signal),
             ]
         );
 
