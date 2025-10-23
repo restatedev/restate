@@ -373,7 +373,7 @@ impl ServiceRevision {
         if got_journal_retention_clamped {
             info.push(Info::new_with_code(
                 &restate_errors::RT0022,
-                "The configured journal_retention is clamped to the maximum cluster limit."
+                "The configured journal_retention is clamped to the maximum server limit."
                     .to_string(),
             ))
         }
@@ -540,7 +540,7 @@ impl Handler {
         if got_journal_retention_clamped {
             info.push(Info::new_with_code(
                 &restate_errors::RT0022,
-                "The configured journal_retention is clamped to the maximum cluster limit."
+                "The configured journal_retention is clamped to the maximum server limit."
                     .to_string(),
             ))
         }
