@@ -24,6 +24,7 @@ use crate::invocation::{
 };
 use crate::net::address::AdvertisedAddress;
 use crate::net::address::HttpIngressPort;
+use crate::schema::info::Info;
 use crate::schema::invocation_target::{DEFAULT_IDEMPOTENCY_RETENTION, OnMaxAttempts};
 
 /// This API returns service metadata, as shown in the Admin API.
@@ -187,6 +188,11 @@ pub struct ServiceMetadata {
     /// If unset, it returns the default values configured in the Restate configuration.
     #[serde(default)]
     pub retry_policy: ServiceRetryPolicyMetadata,
+
+    /// # Info
+    ///
+    /// List of configuration/deprecation information related to this service.
+    pub info: Vec<Info>,
 }
 
 impl restate_serde_util::MapAsVecItem for ServiceMetadata {
@@ -438,6 +444,11 @@ pub struct HandlerMetadata {
     /// Retry policy overrides applied for this handler.
     #[serde(default)]
     pub retry_policy: HandlerRetryPolicyMetadata,
+
+    /// # Info
+    ///
+    /// List of configuration/deprecation information related to this handler.
+    pub info: Vec<Info>,
 }
 
 impl restate_serde_util::MapAsVecItem for HandlerMetadata {
@@ -566,6 +577,7 @@ pub mod test_util {
                                 input_json_schema: None,
                                 output_json_schema: None,
                                 retry_policy: Default::default(),
+                                info: vec![],
                             },
                         )
                     })
@@ -583,6 +595,7 @@ pub mod test_util {
                 abort_timeout: Duration::from_secs(60),
                 enable_lazy_state: false,
                 retry_policy: Default::default(),
+                info: vec![],
             }
         }
 
@@ -613,6 +626,7 @@ pub mod test_util {
                                 input_json_schema: None,
                                 output_json_schema: None,
                                 retry_policy: Default::default(),
+                                info: vec![],
                             },
                         )
                     })
@@ -630,6 +644,7 @@ pub mod test_util {
                 abort_timeout: Duration::from_secs(60),
                 enable_lazy_state: false,
                 retry_policy: Default::default(),
+                info: vec![],
             }
         }
     }
