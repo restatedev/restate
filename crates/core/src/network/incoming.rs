@@ -77,7 +77,7 @@ impl<M> Incoming<M> {
     /// incoming message, use [`Self::parent_context()`] instead
     pub fn follow_from_sender(&mut self) {
         if let Some(context) = self.parent_context.take() {
-            Span::current().set_parent(context)
+            let _ = Span::current().set_parent(context);
         }
     }
 
@@ -91,7 +91,7 @@ impl<M> Incoming<M> {
     /// incoming message, use [`Self::parent_context()`] instead
     pub fn follow_from_sender_for(&mut self, span: &Span) {
         if let Some(context) = self.parent_context.take() {
-            span.set_parent(context)
+            let _ = span.set_parent(context);
         }
     }
 }
