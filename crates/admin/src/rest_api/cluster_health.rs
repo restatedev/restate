@@ -10,7 +10,6 @@
 
 use axum::Json;
 use http::StatusCode;
-use okapi_operation::openapi;
 use restate_core::protobuf::node_ctl_svc::new_node_ctl_client;
 
 use crate::rest_api::error::GenericRestError;
@@ -20,12 +19,7 @@ use restate_types::config::Configuration;
 use restate_types::{NodeId, PlainNodeId};
 
 /// Cluster state endpoint
-#[openapi(
-    summary = "Cluster health",
-    description = "Get the cluster health.",
-    operation_id = "cluster_health",
-    tags = "cluster_health"
-)]
+// todo: Remove in v1.7.0 as it should no longer be actively used
 pub async fn cluster_health() -> Result<Json<ClusterHealthResponse>, GenericRestError> {
     let nodes_configuration = Metadata::with_current(|m| m.nodes_config_ref());
     let node_config = nodes_configuration

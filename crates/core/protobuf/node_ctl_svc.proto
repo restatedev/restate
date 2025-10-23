@@ -26,6 +26,7 @@ service NodeCtlSvc {
   rpc ProvisionCluster(ProvisionClusterRequest)
       returns (ProvisionClusterResponse);
 
+  // todo: Remove in v1.7.0 once the REST endpoint /cluster-health is removed
   // Returns the cluster health from the point of view of this node.
   rpc ClusterHealth(google.protobuf.Empty) returns (ClusterHealthResponse);
 }
