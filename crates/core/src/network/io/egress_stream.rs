@@ -25,7 +25,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use restate_types::Versioned;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
-use restate_types::net::{ProtocolVersion, RpcRequest, Service, ServiceTag, UnaryMessage};
+use restate_types::net::{
+    ProtocolVersion, RpcRequest, Service, ServiceTag, StreamRequest, UnaryMessage,
+};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
@@ -34,11 +36,12 @@ use super::egress_sender::{Sent, UnboundedEgressSender};
 use super::rpc_tracker::ReplyTracker;
 use super::{EgressSender, SendToken};
 use crate::Metadata;
-use crate::network::protobuf::network::{self, Datagram};
+use crate::network::io::stream_tracker::StreamTracker;
 use crate::network::protobuf::network::{
-    Header, Message, SpanContext, message, message::Body, message::ConnectionControl,
+    self, Datagram, Header, Message, SpanContext, StreamInbound, message, message::Body,
+    message::ConnectionControl, stream_inbound,
 };
-use crate::network::{ReplyRx, RpcReplyTx};
+use crate::network::{ReplyRx, RpcReplyTx, StreamEnvelope};
 
 /// A handle to drop the egress stream remotely, or to be notified if the egress stream has been
 /// terminated via other means.
@@ -97,6 +100,17 @@ pub enum EgressMessage {
         payload: Bytes,
         reply_sender: RpcReplyTx,
         sort_code: Option<u64>,
+        span: Option<Span>,
+        version: ProtocolVersion,
+        #[cfg(feature = "test-util")]
+        header: Option<Header>,
+    },
+    OpenStreamCall {
+        service_tag: ServiceTag,
+        msg_type: &'static str,
+        sort_code: Option<u64>,
+        stream_id_tx: oneshot::Sender<u64>,
+        message_tx: mpsc::Sender<StreamEnvelope>,
         span: Option<Span>,
         version: ProtocolVersion,
         #[cfg(feature = "test-util")]
@@ -179,6 +193,50 @@ impl EgressMessage {
             token,
         ))
     }
+
+    pub fn make_open_stream_message<M: StreamRequest>(
+        capacity: usize,
+        sort_code: Option<u64>,
+        protocol_version: ProtocolVersion,
+    ) -> (
+        EgressMessage,
+        oneshot::Receiver<u64>,
+        mpsc::Receiver<StreamEnvelope>,
+    ) {
+        let (stream_id_tx, stream_id_rx) = oneshot::channel();
+        let (message_tx, message_rx) = mpsc::channel::<StreamEnvelope>(capacity);
+
+        (
+            EgressMessage::OpenStreamCall {
+                service_tag: M::Service::TAG,
+                msg_type: M::TYPE,
+                sort_code,
+                stream_id_tx,
+                message_tx,
+                span: Some(Span::current()),
+                version: protocol_version,
+                #[cfg(feature = "test-util")]
+                header: None,
+            },
+            stream_id_rx,
+            message_rx,
+        )
+    }
+
+    pub fn make_stream_message(stream_id: u64, body: stream_inbound::Body) -> EgressMessage {
+        EgressMessage::Message(
+            Body::Datagram(Datagram {
+                datagram: Some(
+                    StreamInbound {
+                        stream_id,
+                        body: body.into(),
+                    }
+                    .into(),
+                ),
+            }),
+            None,
+        )
+    }
 }
 
 struct MetadataVersionCache {
@@ -237,6 +295,7 @@ pub struct EgressStream {
     /// responses to rpcs or handshake and other control signals are written to this channel
     unbounded: Option<mpsc::UnboundedReceiver<EgressMessage>>,
     reply_tracker: Arc<ReplyTracker>,
+    local_initiated_streams: Arc<StreamTracker>,
     /// The sole purpose of this channel, is to force drop the egress channel even if the inner stream's
     /// didn't wake us up. For instance, if there is no available space on the socket's sendbuf and
     /// we still want to drop this stream. We'll signal this by dropping the receiver.
@@ -272,6 +331,8 @@ impl EgressStream {
         let (tx, rx) = mpsc::channel(capacity);
         let (drop_tx, drop_rx) = oneshot::channel();
         let reply_tracker: Arc<ReplyTracker> = Default::default();
+        let local_initiated_streams: Arc<StreamTracker> = Default::default();
+
         (
             EgressSender::new(tx),
             Self {
@@ -280,6 +341,7 @@ impl EgressStream {
                 bounded: Some(rx),
                 unbounded: Some(unbounded),
                 reply_tracker: reply_tracker.clone(),
+                local_initiated_streams: local_initiated_streams.clone(),
                 drop_notification: Some(drop_tx),
                 metadata_cache: MetadataVersionCache::new(),
                 context_propagator: Default::default(),
@@ -290,6 +352,7 @@ impl EgressStream {
                 tx: Some(UnboundedEgressSender::new(unbounded_tx)),
                 drop_egress: Some(DropEgressStream(drop_rx)),
                 reply_tracker,
+                local_initiated_streams,
             },
         )
     }
@@ -449,6 +512,55 @@ impl EgressStream {
                             service: service_tag as i32,
                             msg_type: msg_type.to_owned(),
                             sort_code,
+                        }
+                        .into(),
+                    ),
+                };
+                let msg = Message {
+                    header: Some(header),
+                    body: Some(body.into()),
+                };
+                Decision::Ready(msg)
+            }
+            Poll::Ready(Some(EgressMessage::OpenStreamCall {
+                service_tag,
+                msg_type,
+                sort_code,
+                stream_id_tx,
+                message_tx,
+                span,
+                version: _,
+                #[cfg(feature = "test-util")]
+                    header: custom_header,
+            })) => {
+                let mut header = Header::default();
+                self.fill_header(&mut header, span);
+                #[cfg(feature = "test-util")]
+                let header = custom_header.unwrap_or(header);
+
+                // todo(azmy): If Egress stream uses an atomic
+                // to track next msg id we won't need the once channel
+                // to send back the msg id to the caller
+                let stream_id = self.next_msg_id();
+                trace!(
+                    rpc_id = %stream_id,
+                    "Sending RPC call: {service_tag}::{msg_type}",
+                );
+
+                self.local_initiated_streams
+                    .register_stream(stream_id, message_tx);
+
+                // Notify the caller of the selected stream id
+                _ = stream_id_tx.send(stream_id);
+                let body = Datagram {
+                    datagram: Some(
+                        StreamInbound {
+                            stream_id,
+                            body: Some(stream_inbound::Body::Open(stream_inbound::Open {
+                                msg_type: msg_type.to_owned(),
+                                sort_code,
+                                service: service_tag as i32,
+                            })),
                         }
                         .into(),
                     ),

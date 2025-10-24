@@ -10,10 +10,12 @@
 
 mod throttle;
 
+use restate_types::net::StreamRequest;
 use restate_types::net::codec::EncodeError;
 // re-export
 pub use throttle::ConnectThrottle;
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use metrics::counter;
@@ -32,7 +34,9 @@ use crate::Metadata;
 use crate::TaskId;
 use crate::TaskKind;
 use crate::network::PeerMetadataVersion;
+use crate::network::TypedStream;
 use crate::network::metric_definitions::NETWORK_CONNECTION_CREATED;
+use crate::network::protobuf::network::{self, stream_inbound};
 
 use super::ConnectError;
 use super::ConnectionClosed;
@@ -147,6 +151,92 @@ impl OwnedSendPermit {
         self.permit.send(msg);
 
         Ok(reply_token)
+    }
+}
+
+pub struct StreamOpenPermit {
+    connection: Connection,
+    permit: mpsc::OwnedPermit<EgressMessage>,
+}
+
+impl StreamOpenPermit {
+    /// Opens a stream with the specified receive capacity.
+    ///
+    /// If the internal buffer fills because the caller stops consuming messages,
+    /// subsequent messages are dropped and a LoadShedding error is automatically
+    /// returned to the peer.
+    pub async fn open<M: StreamRequest>(
+        self,
+        capacity: usize,
+        sort_code: Option<u64>,
+    ) -> Result<(StreamSink<M>, TypedStream<M::Response>), ConnectionClosed> {
+        let (msg, stream_id_rx, message_rx) = EgressMessage::make_open_stream_message::<M>(
+            capacity,
+            sort_code,
+            self.connection.protocol_version,
+        );
+
+        self.permit.send(msg);
+
+        let id = stream_id_rx.await.map_err(|_| ConnectionClosed)?;
+        let typed_stream = TypedStream::new(message_rx, self.connection.protocol_version);
+        Ok((
+            StreamSink {
+                id,
+                connection: Some(self.connection),
+                _phantom: PhantomData,
+            },
+            typed_stream,
+        ))
+    }
+}
+
+pub struct StreamSink<M: StreamRequest> {
+    // stream id
+    id: u64,
+    connection: Option<Connection>,
+    _phantom: PhantomData<M>,
+}
+
+impl<M: StreamRequest> StreamSink<M> {
+    pub async fn send(&self, message: M) -> Result<(), ConnectionClosed> {
+        let Some(connection) = self.connection.as_ref() else {
+            // unreachable!
+            return Err(ConnectionClosed);
+        };
+
+        let permit = connection.reserve().await.ok_or(ConnectionClosed)?;
+
+        let bytes = message
+            .encode_to_bytes(connection.protocol_version)
+            .expect("stream message to encode");
+        let msg = EgressMessage::make_stream_message(self.id, stream_inbound::Body::Payload(bytes));
+
+        permit.send(msg);
+        Ok(())
+    }
+}
+
+impl<M: StreamRequest> Drop for StreamSink<M> {
+    fn drop(&mut self) {
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+
+        let id = self.id;
+        tokio::spawn(async move {
+            let Some(permit) = connection.reserve().await else {
+                //connection closed already
+                return;
+            };
+
+            let msg = EgressMessage::make_stream_message(
+                id,
+                stream_inbound::Body::Status(network::StreamStatus::StreamDropped as i32),
+            );
+
+            permit.send(msg);
+        });
     }
 }
 
@@ -412,6 +502,20 @@ impl Connection {
         Some(OwnedSendPermit {
             permit,
             protocol_version: self.protocol_version,
+        })
+    }
+
+    /// Reserves capacity for opening a stream.
+    ///
+    /// Streams remain bound to their originating connection, so this call consumes
+    /// the connection. Clone the connection before invoking [`Connection::stream`] if
+    /// you need to reuse the connection.
+    #[must_use]
+    pub async fn stream(self) -> Option<StreamOpenPermit> {
+        let permit = self.sender.clone().reserve_owned().await.ok()?;
+        Some(StreamOpenPermit {
+            connection: self,
+            permit,
         })
     }
 

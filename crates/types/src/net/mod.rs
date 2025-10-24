@@ -55,6 +55,16 @@ pub trait UnaryMessage: codec::WireEncode + codec::WireDecode + Send + 'static {
     type Service: Service;
 }
 
+pub trait StreamRequest: codec::WireEncode + codec::WireDecode + Send + 'static {
+    const TYPE: &str;
+    type Service: Service;
+    type Response: StreamResponse;
+}
+
+pub trait StreamResponse: codec::WireEncode + codec::WireDecode + Unpin + Send {
+    type Service: Service;
+}
+
 /// Implements default wire codec for a type
 /// - Message type
 ///
@@ -214,5 +224,40 @@ macro_rules! define_rpc {
     };
 }
 
+/// to define an RPC, we need
+/// - Request type
+/// - request service tag
+/// - Service type
+///
+/// Example:
+/// ```ignore
+///   define_rpc! {
+///       @request = StreamRequest,
+///       @response = StreamResponse,
+///       @service = StreamService,
+///   }
+/// ```
+#[allow(unused_macros)]
+macro_rules! define_stream {
+    (
+        @request = $request:ty,
+        @response = $response:ty,
+        @service = $service:ty,
+    ) => {
+        impl $crate::net::StreamRequest for $request {
+            const TYPE: &str = stringify!($request);
+            type Response = $response;
+            type Service = $service;
+        }
+
+        impl $crate::net::StreamResponse for $response {
+            type Service = $service;
+        }
+    };
+}
+
 #[allow(unused_imports)]
-use {bilrost_wire_codec, default_wire_codec, define_rpc, define_service, define_unary_message};
+use {
+    bilrost_wire_codec, default_wire_codec, define_rpc, define_service, define_stream,
+    define_unary_message,
+};
