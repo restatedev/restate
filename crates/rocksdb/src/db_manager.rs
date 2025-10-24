@@ -16,7 +16,7 @@ use std::time::Duration;
 use parking_lot::RwLock;
 use rocksdb::{Cache, WriteBufferManager};
 use tokio_util::task::TaskTracker;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_serde_util::ByteCount;
@@ -67,6 +67,9 @@ impl RocksDbManager {
         }
         metric_definitions::describe_metrics();
         let opts = &Configuration::pinned().common;
+
+        check_memory_limit(opts);
+
         let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_size.get());
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
             opts.rocksdb_actual_total_memtables_size(),
@@ -421,6 +424,7 @@ impl DbWatchdog {
                 "[config update] Setting rocksdb total memory limit to {}",
                 ByteCount::from(new_common_opts.rocksdb_total_memory_size)
             );
+            check_memory_limit(new_common_opts);
             self.cache
                 .set_capacity(new_common_opts.rocksdb_total_memory_size.get());
             self.manager
@@ -457,6 +461,32 @@ impl DbWatchdog {
         }
 
         self.current_common_opts = new_common_opts.clone();
+    }
+}
+
+fn check_memory_limit(opts: &CommonOptions) {
+    if let Some(process_memory_size) = opts.process_total_memory_size() {
+        let memory_ratio =
+            opts.rocksdb_total_memory_size.get() as f64 / process_memory_size.get() as f64;
+        if memory_ratio < 0.5 {
+            warn!(
+                "'rocksdb-total-memory-size' parameter is set to {}, less than half the process memory limit of {}. Roughly 75% of process memory should be given to RocksDB",
+                ByteCount::from(opts.rocksdb_total_memory_size),
+                ByteCount::from(process_memory_size),
+            )
+        } else if memory_ratio > 1.0 {
+            error!(
+                "'rocksdb-total-memory-size' parameter is set to {}, more than the process memory limit of {}. This guarantees an OOM under load; roughly 75% of process memory should be given to RocksDB",
+                ByteCount::from(opts.rocksdb_total_memory_size),
+                ByteCount::from(process_memory_size),
+            )
+        } else if memory_ratio > 0.9 {
+            error!(
+                "'rocksdb-total-memory-size' parameter is set to {}, more than 90% of the process memory limit of {}. This risks an OOM under load; roughly 75% of process memory should be given to RocksDB",
+                ByteCount::from(opts.rocksdb_total_memory_size),
+                ByteCount::from(process_memory_size),
+            )
+        }
     }
 }
 

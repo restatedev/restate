@@ -352,6 +352,15 @@ pub struct CommonOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_low_priority_bg_threads: Option<NonZeroUsize>,
 
+    /// # Total memory limit for this process
+    ///
+    /// This is intended to be determined automatically on Linux based on the cgroup limit,
+    /// and is used to emit warning logs if other memory limits are set too close to it.
+    #[serde_as(as = "Option<NonZeroByteCount>")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub process_total_memory_size: Option<NonZeroUsize>,
+
     /// # Total memory limit for rocksdb caches and memtables.
     ///
     /// This includes memory for uncompressed block cache and all memtables by all open databases.
@@ -497,6 +506,24 @@ impl CommonOptions {
         self.base_dir.as_ref()
     }
 
+    #[cfg(target_os = "linux")]
+    pub fn process_total_memory_size(&self) -> Option<NonZeroUsize> {
+        self.process_total_memory_size.or_else(|| {
+            [
+                "/sys/fs/cgroup/memory.max", // cgroup v2, takes precedence
+                "/sys/fs/cgroup/memory/memory.limit_in_bytes", // cgroup v1
+            ]
+            .iter()
+            .find_map(|path| std::fs::read_to_string(path).ok())
+            .and_then(|contents| contents.trim().parse().ok())
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn process_total_memory_size(&self) -> Option<NonZeroUsize> {
+        self.process_total_memory_size
+    }
+
     pub fn rocksdb_actual_total_memtables_size(&self) -> usize {
         let sanitized = self.rocksdb_total_memtables_ratio.clamp(0.0, 1.0) as f64;
         let total_mem = self.rocksdb_total_memory_size.get() as f64;
@@ -597,8 +624,9 @@ impl Default for CommonOptions {
             default_thread_pool_size: None,
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
-            rocksdb_total_memtables_ratio: 0.5, // (50% of rocksdb-total-memory-size)
+            process_total_memory_size: None,
             rocksdb_total_memory_size: NonZeroUsize::new(6 * 1024 * 1024 * 1024).unwrap(), // 6GiB
+            rocksdb_total_memtables_ratio: 0.5, // (50% of rocksdb-total-memory-size)
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
