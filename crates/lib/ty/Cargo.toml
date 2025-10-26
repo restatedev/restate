@@ -1,0 +1,60 @@
+[package]
+name = "restate-ty"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+test-util = []
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-base64-util = { workspace = true }
+restate-encoding = { workspace = true }
+
+base62 = { version = "2.2.2" }
+base64 = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+bilrost = { workspace = true, features = ["derive"] }
+derive_more = { workspace = true }
+downcast-rs = { workspace = true }
+generic-array = { version = "1.3.5" }
+itertools = { workspace = true }
+num-traits = { workspace = true }
+opentelemetry = { workspace = true, features = ["trace"] }
+paste = { workspace = true }
+prost = { workspace = true }
+prost-dto = { workspace = true }
+prost-types = { workspace = true }
+rand = { workspace = true }
+schemars = { workspace = true, optional = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_with = { workspace = true }
+sha2 = { workspace = true }
+smartstring = { workspace = true }
+static_assertions = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+ulid = { workspace = true }
+xxhash-rust = { workspace = true, features = ["xxh3"] }
+
+[dev-dependencies]
+restate-ty = { path = ".", default-features = false, features = ["test-util"]}
+
+googletest = { workspace = true }
+criterion = { workspace = true }
+serde_json = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+
+[[bench]]
+name = "id_encoding"
+harness = false

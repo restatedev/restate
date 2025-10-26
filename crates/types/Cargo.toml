@@ -21,6 +21,7 @@ multi-db = []
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-ty = { path = "../lib/ty" }
 restate-base64-util = { workspace = true }
 restate-encoding = { workspace = true }
 restate-errors = { workspace = true }
