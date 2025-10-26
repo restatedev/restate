@@ -19,7 +19,7 @@ use metrics::counter;
 use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use strum::IntoEnumIterator as _;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Sleep;
 use tracing::{Instrument, Span, debug, info, trace, warn};
 
@@ -35,14 +35,18 @@ use restate_types::{Version, Versioned};
 
 use crate::network::incoming::{RawRpc, RawUnary, RpcReplyPort};
 use crate::network::io::EgressMessage;
+use crate::network::io::stream_tracker::StreamTracker;
 use crate::network::metric_definitions::NETWORK_MESSAGE_RECEIVED_BYTES;
 use crate::network::protobuf::network::message::{Body, Signal};
-use crate::network::protobuf::network::{Datagram, RpcReply, datagram, rpc_reply};
+use crate::network::protobuf::network::{
+    self, Datagram, RpcReply, StreamInbound, StreamOutbound, StreamStatus, datagram, rpc_reply,
+    stream_inbound, stream_outbound,
+};
 use crate::network::protobuf::network::{Header, Message};
 use crate::network::tracking::ConnectionTracking;
 use crate::network::{
-    Connection, Incoming, MessageRouter, PeerMetadataVersion, ReplyEnvelope, RouterError,
-    RpcReplyError,
+    BidiStreamError, Connection, Incoming, MessageRouter, PeerMetadataVersion, RawStream,
+    ReplyEnvelope, RouterError, RpcReplyError, StreamEnvelope, StreamPort,
 };
 use crate::{Metadata, ShutdownError, TaskCenter, TaskContext, TaskId, TaskKind};
 
@@ -67,6 +71,7 @@ pub struct ConnectionReactor {
     state: State,
     connection: Connection,
     shared: super::Shared,
+    remote_initiated_streams: Arc<StreamTracker>,
     context_propagator: TraceContextPropagator,
     seen_versions: Option<MetadataVersions>,
     router: Arc<MessageRouter>,
@@ -89,6 +94,7 @@ impl ConnectionReactor {
             state: State::Active,
             connection,
             shared,
+            remote_initiated_streams: Default::default(),
             context_propagator,
             seen_versions: Some(seen_versions),
             router,
@@ -428,6 +434,175 @@ impl ConnectionReactor {
                 Decision::Continue
             }
             Body::Datagram(Datagram {
+                datagram: Some(datagram::Datagram::StreamOutbound(stream)),
+            }) => {
+                let Some(tx) = self.shared.tx.as_ref() else {
+                    // egress for responses has been drained
+                    return Decision::Continue;
+                };
+
+                trace!(
+                    "received message for local initiated stream {}",
+                    stream.stream_id
+                );
+
+                let Some(body) = stream.body else {
+                    // body must be set
+                    return Decision::Continue;
+                };
+
+                match body {
+                    stream_outbound::Body::Payload(payload) => {
+                        // todo(azmy):
+                        // enable metrics for received bytes.
+                        // counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target_service.as_str_name())
+                        // .increment(encoded_len as u64);
+                        if let Err(err) = self
+                            .shared
+                            .local_initiated_streams
+                            .forward_envelope(&stream.stream_id, StreamEnvelope::Payload(payload))
+                        {
+                            send_inbound_stream_error(tx, err, stream.stream_id);
+                        }
+                    }
+                    stream_outbound::Body::Status(status) => {
+                        let peer_dropped = StreamStatus::StreamDropped as i32 == status
+                            || StreamStatus::StreamNotFound as i32 == status;
+
+                        if peer_dropped {
+                            trace!("local initiated stream {} dropped", &stream.stream_id);
+                            self.shared
+                                .local_initiated_streams
+                                .pop_stream_sender(&stream.stream_id);
+                        } else if let Err(err) = self
+                            .shared
+                            .local_initiated_streams
+                            .forward_envelope(&stream.stream_id, StreamEnvelope::Status(status))
+                        {
+                            send_inbound_stream_error(tx, err, stream.stream_id);
+                        }
+                    }
+                };
+
+                Decision::Continue
+            }
+            Body::Datagram(Datagram {
+                datagram: Some(datagram::Datagram::StreamInbound(stream)),
+            }) => {
+                let Some(tx) = self.shared.tx.as_ref() else {
+                    // egress for responses has been drained
+                    return Decision::Continue;
+                };
+
+                trace!(
+                    "received message from remote initiated stream {}",
+                    stream.stream_id
+                );
+
+                let Some(body) = stream.body else {
+                    // body must be set
+                    return Decision::Continue;
+                };
+
+                let parent_context = header
+                    .span_context
+                    .as_ref()
+                    .map(|span_ctx| self.context_propagator.extract(span_ctx));
+
+                let open = match body {
+                    stream_inbound::Body::Open(open) => open,
+                    stream_inbound::Body::Payload(payload) => {
+                        // todo(azmy): fix metrics.
+                        // The tracker needs to also hold the name of the target service!
+                        // counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target_service.as_str_name())
+                        // .increment(encoded_len as u64);
+                        if let Err(err) = self
+                            .remote_initiated_streams
+                            .forward_envelope(&stream.stream_id, StreamEnvelope::Payload(payload))
+                        {
+                            send_outbound_stream_error(tx, err, stream.stream_id);
+                        }
+
+                        return Decision::Continue;
+                    }
+                    stream_inbound::Body::Status(status) => {
+                        let peer_dropped = StreamStatus::StreamDropped as i32 == status
+                            || StreamStatus::StreamNotFound as i32 == status;
+
+                        if peer_dropped {
+                            trace!("remote initiated stream {} is dropped", &stream.stream_id);
+                            self.remote_initiated_streams
+                                .pop_stream_sender(&stream.stream_id);
+                        } else if let Err(err) = self
+                            .remote_initiated_streams
+                            .forward_envelope(&stream.stream_id, StreamEnvelope::Status(status))
+                        {
+                            send_outbound_stream_error(tx, err, stream.stream_id);
+                        }
+
+                        return Decision::Continue;
+                    }
+                };
+
+                let target_service = open.service();
+
+                if self.remote_initiated_streams.has_stream(stream.stream_id) {
+                    send_outbound_stream_error(tx, BidiStreamError::AlreadyOpen, stream.stream_id);
+                    return Decision::Continue;
+                }
+
+                // todo(azmy): currently fixed "buffered" capacity for incoming stream message to
+                // this value before starting to drop messages and returning LOAD_SHEDDING error to
+                // remote peer. This value should be defined by the Service instead!
+                let (port, peer) = StreamPort::new(64);
+                let raw_stream = RawStream {
+                    stream_port: port,
+                    msg_type: open.msg_type,
+                    sort_code: open.sort_code,
+                };
+
+                let incoming = Incoming::new(
+                    self.connection.protocol_version,
+                    raw_stream,
+                    self.connection.peer,
+                    PeerMetadataVersion::from(header),
+                    parent_context,
+                );
+
+                trace!(
+                    peer = %self.connection.peer(),
+                    stream_id = %stream.stream_id,
+                    "Received Open stream call: {target_service}::{}",
+                    incoming.msg_type()
+                );
+
+                let (inbound_tx, outbound_rx) = peer.split();
+                self.remote_initiated_streams
+                    .register_stream(stream.stream_id, inbound_tx);
+
+                match tokio::task::unconstrained(self.router.call_stream(target_service, incoming))
+                    .await
+                {
+                    Ok(()) => { /* spawn reply task */ }
+                    Err(err) => {
+                        send_outbound_stream_error(tx, err, stream.stream_id);
+                        self.remote_initiated_streams
+                            .pop_stream_sender(&stream.stream_id);
+                        return Decision::Continue;
+                    }
+                }
+
+                spawn_stream_responder(
+                    tx.clone(),
+                    Arc::clone(&self.remote_initiated_streams),
+                    stream.stream_id,
+                    outbound_rx,
+                    target_service,
+                );
+
+                Decision::Continue
+            }
+            Body::Datagram(Datagram {
                 datagram: Some(datagram::Datagram::Watch(_watch)),
             }) => {
                 // watch request
@@ -465,6 +640,47 @@ fn send_rpc_error(tx: &super::UnboundedEgressSender, err: RouterError, id: u64) 
     let body = RpcReply {
         id,
         body: Some(rpc_reply::Body::Status(rpc_reply::Status::from(err) as i32)),
+    };
+
+    let datagram = Body::Datagram(Datagram {
+        datagram: Some(body.into()),
+    });
+
+    let _ = tx.unbounded_send(EgressMessage::Message(datagram, None));
+}
+
+fn send_outbound_stream_error(
+    tx: &super::UnboundedEgressSender,
+    err: impl Into<BidiStreamError>,
+    id: u64,
+) {
+    let err: BidiStreamError = err.into();
+    let body = StreamOutbound {
+        stream_id: id,
+        body: Some(stream_outbound::Body::Status(
+            network::StreamStatus::from(err) as i32,
+        )),
+    };
+
+    let datagram = Body::Datagram(Datagram {
+        datagram: Some(body.into()),
+    });
+
+    let _ = tx.unbounded_send(EgressMessage::Message(datagram, None));
+}
+
+fn send_inbound_stream_error(
+    tx: &super::UnboundedEgressSender,
+    err: impl Into<BidiStreamError>,
+    id: u64,
+) {
+    let err: BidiStreamError = err.into();
+
+    let body = StreamInbound {
+        stream_id: id,
+        body: Some(stream_inbound::Body::Status(
+            network::StreamStatus::from(err) as i32,
+        )),
     };
 
     let datagram = Body::Datagram(Datagram {
@@ -514,6 +730,65 @@ fn spawn_rpc_responder(
                 trace!(rpc_id = %id, "Connection was dropped, dropping RPC responder task");
             }
         }
+    });
+}
+
+/// Receives all outbound traffic from the local end of the stream
+/// and transmit it back to the remote peer
+fn spawn_stream_responder(
+    tx: super::UnboundedEgressSender,
+    tracker: Arc<StreamTracker>,
+    id: u64,
+    mut outbound_rx: mpsc::UnboundedReceiver<StreamEnvelope>,
+    _target_service: ServiceTag,
+) {
+    // this is rpc-call, spawning a responder task
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                outbound = outbound_rx.recv() => {
+                    match outbound {
+                        Some(envelope) => {
+                            trace!(stream_id = %id, "Sending Stream outgoing message to caller");
+                            let body = StreamOutbound { stream_id: id, body: Some(match envelope {
+                                    StreamEnvelope::Status(status) => stream_outbound::Body::Status(status),
+                                    StreamEnvelope::Payload(bytes) => stream_outbound::Body::Payload(bytes),
+                                })
+                            };
+                            let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
+                            let _ = tx.unbounded_send(EgressMessage::Message(
+                                datagram,
+                                None,
+                            ));
+                        }
+                        None => {
+                            trace!(stream_id = %id, "Stream was dropped, sending dropped notification to caller");
+                            let body = StreamOutbound{
+                                stream_id: id,
+                                body: stream_outbound::Body::Status(network::StreamStatus::StreamDropped.into()).into()
+                            };
+                            let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
+                            let _ = tx.unbounded_send(EgressMessage::Message(
+                                datagram,
+                                None,
+                            ));
+                            break;
+                        }
+                    }
+                }
+                () = tx.closed() => {
+                    // connection was dropped. Nothing to be done here.
+                    trace!(rpc_id = %id, "Connection was dropped, dropping RPC responder task");
+                    break;
+                }
+            }
+        }
+
+        drop(tracker.pop_stream_sender(&id));
+
+        outbound_rx.close();
+        // drain all pending message
+        while outbound_rx.recv().await.is_some() {}
     });
 }
 

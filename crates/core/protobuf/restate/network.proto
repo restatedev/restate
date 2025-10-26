@@ -44,9 +44,7 @@ message Header {
   optional SpanContext span_context = 7;
 }
 
-message SpanContext {
-  map<string, string> fields = 1;
-}
+message SpanContext { map<string, string> fields = 1; }
 
 // direction is defined from the lens of the connection initiator
 enum ConnectionDirection {
@@ -54,18 +52,19 @@ enum ConnectionDirection {
   // compatibility with v1.2
   ConnectionDirection_UNKNOWN = 0;
   // Connection is declared by initiator as bidirectional. Bidirectional
-  // connections are used to send and receive rpc and unary messages by both ends
-  // of the connection.
+  // connections are used to send and receive rpc and unary messages by both
+  // ends of the connection.
   BIDIRECTIONAL = 1;
   // Connection is declared by initiator that it's used by initiator to send rpc
-  // requests and unary messages to the peer (acceptor). The acceptor side should *not*
-  // use this connection to send requests back to us. Only servicing requests. This is
-  // a typical case for a server who wants to run a side dedicated connection to a peer
-  // or for a client session connecting to a server.
+  // requests and unary messages to the peer (acceptor). The acceptor side
+  // should *not* use this connection to send requests back to us. Only
+  // servicing requests. This is a typical case for a server who wants to run a
+  // side dedicated connection to a peer or for a client session connecting to a
+  // server.
   FORWARD = 2;
-  // Connection is declared as a reverse connection by the initiator. A reverse connection
-  // is used to receive requests from peers. The acceptor can use this connection to send
-  // rpc requests to us.
+  // Connection is declared as a reverse connection by the initiator. A reverse
+  // connection is used to receive requests from peers. The acceptor can use
+  // this connection to send rpc requests to us.
   //
   // This can be used to initiate connections to a remote node that doesn't have
   // network access to initiate connections back to us.
@@ -86,7 +85,7 @@ message Hello {
   // the purpose of this connection. Default is GENERAL.
   Swimlane swimlane = 6;
 
-  // a unique fingerprint for this cluster. It will be respected by the receiver 
+  // a unique fingerprint for this cluster. It will be respected by the receiver
   // if it was a non-zero value.
   uint64 cluster_fingerprint = 7;
 }
@@ -96,9 +95,9 @@ message Welcome {
   restate.common.ProtocolVersion protocol_version = 2;
   // generational node id of sender
   restate.common.GenerationalNodeId my_node_id = 3;
-  // confirmation that this connection respects the direction state in the Hello message.
-  // if this is unset (UNKNOWN) then it's equivalent to if the Hello message had `BIDIRECTIONAL`
-  // for backward compatibility.
+  // confirmation that this connection respects the direction state in the Hello
+  // message. if this is unset (UNKNOWN) then it's equivalent to if the Hello
+  // message had `BIDIRECTIONAL` for backward compatibility.
   ConnectionDirection direction_ack = 4;
 }
 
@@ -151,6 +150,8 @@ message Datagram {
     WatchUpdate watch_update = 4;
     Ping ping = 5;
     Pong pong = 6;
+    StreamInbound stream_inbound = 7;
+    StreamOutbound stream_outbound = 8;
 
     // one way message
     Unary unary = 100;
@@ -172,9 +173,9 @@ message Watch {
 message WatchUpdate {
   enum Start {
     // Receiver will not respond to this request for unknown reason
-    // This is often returned when the receiver sent us a status that we don't recognize
-    // in this protocol version.
-    // The request *might* have been processed
+    // This is often returned when the receiver sent us a status that we don't
+    // recognize in this protocol version. The request *might* have been
+    // processed
     Start_UNKNOWN = 0;
     // Service identifier was not registered on this node
     // Request has not been processed
@@ -201,9 +202,9 @@ message WatchUpdate {
 
   enum End {
     // Receiver will not respond to this request for unknown reason
-    // This is often returned when the receiver sent us a status that we don't recognize
-    // in this protocol version.
-    // The request *might* have been processed
+    // This is often returned when the receiver sent us a status that we don't
+    // recognize in this protocol version. The request *might* have been
+    // processed
     End_UNKNOWN = 0;
     // Watch was cleanly stopped
     OK = 1;
@@ -231,9 +232,9 @@ message RpcCall {
 message RpcReply {
   enum Status {
     // Receiver will not respond to this request for unknown reason
-    // This is often returned when the receiver sent us a status that we don't recognize
-    // in this protocol version.
-    // The request *might* have been processed
+    // This is often returned when the receiver sent us a status that we don't
+    // recognize in this protocol version. The request *might* have been
+    // processed
     Status_UNKNOWN = 0;
     // Service identifier was not registered on this node
     // Request has not been processed
@@ -277,10 +278,66 @@ message Unary {
   bytes payload = 100;
 }
 
-message Ping {
-  uint64 timestamp = 1;
+message Ping { uint64 timestamp = 1; }
+
+message Pong { uint64 timestamp = 1; }
+
+enum StreamStatus {
+  // Receiver will not respond to this request for unknown reason
+  // This is often returned when the receiver sent us a status that we don't
+  // recognize in this protocol version. The request *might* have been
+  // processed
+  StreamStatus_UNKNOWN = 0;
+  // Service identifier was not registered on this node
+  // Request has not been processed
+  SERVICE_NOT_FOUND = 1;
+  // Service has stopped processing requests
+  // Request has not been processed
+  SERVICE_STOPPED = 2;
+  // Service is known but it has not started yet
+  // Request has not been processed
+  SERVICE_NOT_READY = 3;
+  // Service is known but it didn't recognize the sort code
+  // Request has not been processed
+  SORT_CODE_NOT_FOUND = 4;
+  // The received dropped the response handle
+  // The request *might* have been processed
+  STREAM_DROPPED = 5;
+  // The received dropped the response handle
+  // Channel has been closed
+  STREAM_NOT_FOUND = 6;
+  // Service did not process the request due to backpressure
+  // Request has not been processed
+  LOAD_SHEDDING = 7;
+  // Message type was unrecognized by the receiver
+  // Request has not been processed
+  MESSAGE_UNRECOGNIZED = 8;
+  // Channel with the same id is already open
+  ALREADY_OPEN = 9;
 }
 
-message Pong {
-  uint64 timestamp = 1;
+message StreamInbound {
+
+  message Open {
+    restate.common.ServiceTag service = 1;
+    // routing code of the target inbox if applicable, otherwise, defaults to 0.
+    optional uint64 sort_code = 2;
+    // the type-name of the unary message (variant in the service)
+    string msg_type = 3;
+  }
+
+  uint64 stream_id = 1;
+  oneof body {
+    StreamStatus status = 2;
+    Open open = 3;
+    bytes payload = 4;
+  }
+}
+
+message StreamOutbound {
+  uint64 stream_id = 1;
+  oneof body {
+    StreamStatus status = 2;
+    bytes payload = 4;
+  }
 }

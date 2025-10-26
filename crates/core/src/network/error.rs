@@ -18,12 +18,17 @@ use restate_types::net::{CURRENT_PROTOCOL_VERSION, MIN_SUPPORTED_PROTOCOL_VERSIO
 use restate_types::nodes_config::NodesConfigError;
 
 use crate::ShutdownError;
+use crate::network::protobuf::network;
 
 use super::protobuf::network::{rpc_reply, watch_update};
 
 #[derive(Debug, thiserror::Error)]
 #[error("connection closed")]
 pub struct ConnectionClosed;
+
+#[derive(Debug, thiserror::Error)]
+#[error("stream closed")]
+pub struct StreamClosed;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RouterError {
@@ -51,6 +56,43 @@ impl From<RouterError> for rpc_reply::Status {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum BidiStreamError {
+    #[error("stream already open with the same id")]
+    AlreadyOpen,
+    #[error("unknown stream id")]
+    StreamNotFound,
+    #[error("stream dropped")]
+    StreamDropped,
+    #[error("message dropped")]
+    LoadShedding,
+    #[error(transparent)]
+    Router(#[from] RouterError),
+}
+
+impl From<RouterError> for network::StreamStatus {
+    fn from(value: RouterError) -> Self {
+        match value {
+            RouterError::ServiceNotReady => Self::ServiceNotReady,
+            RouterError::ServiceStopped => Self::ServiceStopped,
+            RouterError::CapacityExceeded => Self::LoadShedding,
+            RouterError::ServiceNotFound => Self::ServiceNotFound,
+            RouterError::MessageUnrecognized => Self::MessageUnrecognized,
+        }
+    }
+}
+
+impl From<BidiStreamError> for network::StreamStatus {
+    fn from(value: BidiStreamError) -> Self {
+        match value {
+            BidiStreamError::Router(err) => err.into(),
+            BidiStreamError::AlreadyOpen => Self::AlreadyOpen,
+            BidiStreamError::StreamNotFound => Self::StreamNotFound,
+            BidiStreamError::StreamDropped => Self::StreamDropped,
+            BidiStreamError::LoadShedding => Self::LoadShedding,
+        }
+    }
+}
 /// A type to communicate rpc processing error to the caller
 ///
 /// This is used by service handlers to report back that they are not able to process
@@ -86,6 +128,16 @@ impl From<Verdict> for watch_update::Start {
             Verdict::MessageUnrecognized => Self::MessageUnrecognized,
             Verdict::SortCodeNotFound => Self::SortCodeNotFound,
             Verdict::LoadShedding => Self::LoadShedding,
+        }
+    }
+}
+
+impl From<Verdict> for network::StreamStatus {
+    fn from(value: Verdict) -> Self {
+        match value {
+            Verdict::LoadShedding => Self::LoadShedding,
+            Verdict::SortCodeNotFound => Self::SortCodeNotFound,
+            Verdict::MessageUnrecognized => Self::MessageUnrecognized,
         }
     }
 }

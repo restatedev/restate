@@ -23,6 +23,8 @@ use restate_types::net::metadata::MetadataKind;
 use restate_types::net::{ProtocolVersion, RpcResponse};
 use restate_types::{GenerationalNodeId, Version};
 
+use crate::network::protobuf::network;
+
 use super::protobuf::network::{Header, rpc_reply};
 use super::{ConnectionClosed, MessageSendError};
 
@@ -239,6 +241,58 @@ impl From<i32> for RpcReplyError {
             Ok(rpc_reply::Status::ServiceNotReady) => Self::ServiceNotReady,
             Ok(rpc_reply::Status::MessageUnrecognized) => Self::MessageUnrecognized,
             Err(err) => err,
+        }
+    }
+}
+
+pub enum StreamMessageError {
+    Unknown(i32),
+    /// Service identifier was not registered on this node
+    /// Request has not been processed
+    ServiceNotFound,
+    /// Service has stopped processing requests
+    /// Request has not been processed
+    ServiceStopped,
+    /// Service is known but it has not started yet
+    /// Request has not been processed
+    ServiceNotReady,
+    /// Service is known but it didn't recognize the sort code
+    /// Request has not been processed
+    SortCodeNotFound,
+    /// Stream has been closed
+    StreamDropped,
+    /// Stream not found on remote peer
+    StreamNotFound,
+    /// Service did not process the request due to backpressure
+    /// Request has not been processed
+    LoadShedding,
+    /// Message type was unrecognized by the receiver
+    /// Request has not been processed
+    MessageUnrecognized,
+    /// Channel with the same id is already open
+    AlreadyOpen,
+}
+
+impl From<i32> for StreamMessageError {
+    fn from(value: i32) -> Self {
+        let status = match network::StreamStatus::try_from(value)
+            .map_err(|unknown| Self::Unknown(unknown.0))
+        {
+            Ok(status) => status,
+            Err(err) => return err,
+        };
+
+        match status {
+            network::StreamStatus::Unknown => Self::Unknown(0),
+            network::StreamStatus::ServiceNotFound => Self::ServiceNotFound,
+            network::StreamStatus::ServiceStopped => Self::ServiceStopped,
+            network::StreamStatus::ServiceNotReady => Self::ServiceNotReady,
+            network::StreamStatus::SortCodeNotFound => Self::SortCodeNotFound,
+            network::StreamStatus::StreamDropped => Self::StreamDropped,
+            network::StreamStatus::StreamNotFound => Self::StreamNotFound,
+            network::StreamStatus::LoadShedding => Self::LoadShedding,
+            network::StreamStatus::MessageUnrecognized => Self::MessageUnrecognized,
+            network::StreamStatus::AlreadyOpen => Self::AlreadyOpen,
         }
     }
 }

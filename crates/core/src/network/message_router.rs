@@ -28,6 +28,7 @@ use restate_types::net::{Service, ServiceTag};
 use super::incoming::{Incoming, RawRpc, RawUnary, RawWatch};
 use super::metric_definitions::NETWORK_MESSAGE_PROCESSING_DURATION;
 use super::{RawSvcRpc, RawSvcUnary, RawSvcWatch, RouterError, Verdict};
+use crate::network::{RawStream, RawSvcStream};
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_token};
 
 /// Chooses the draining strategy for the service
@@ -90,6 +91,13 @@ pub trait Handler: Send + 'static {
     ) -> impl Future<Output = ()> + Send {
         std::future::ready(())
     }
+
+    fn on_stream(
+        &mut self,
+        message: Incoming<RawSvcStream<Self::Service>>,
+    ) -> impl Future<Output = ()> + Send {
+        std::future::ready(())
+    }
 }
 
 #[derive(Default)]
@@ -137,6 +145,18 @@ impl MessageRouter {
             .reserve()
             .await?
             .send(ServiceOp::Unary(message));
+        Ok(())
+    }
+
+    pub async fn call_stream(
+        &self,
+        target: ServiceTag,
+        message: Incoming<RawStream>,
+    ) -> Result<(), RouterError> {
+        self.get_sender(target)?
+            .reserve()
+            .await?
+            .send(ServiceOp::Stream(message));
         Ok(())
     }
 }
@@ -203,6 +223,7 @@ enum ServiceOp {
     CallRpc(Incoming<RawRpc>),
     Watch(Incoming<RawWatch>),
     Unary(Incoming<RawUnary>),
+    Stream(Incoming<RawStream>),
 }
 
 /// A permit to route a message to a service
@@ -266,6 +287,10 @@ impl<S: Service> Stream for ServiceStream<S> {
                     let message = Incoming::from_raw_unary(message);
                     Poll::Ready(Some(ServiceMessage::Unary(message)))
                 }
+                ServiceOp::Stream(message) => {
+                    let message = Incoming::from_raw_stream(message);
+                    Poll::Ready(Some(ServiceMessage::Stream(message)))
+                }
             },
             None => Poll::Ready(None),
         }
@@ -282,6 +307,7 @@ pub enum ServiceMessage<S> {
     Rpc(Incoming<RawSvcRpc<S>>),
     Watch(Incoming<RawSvcWatch<S>>),
     Unary(Incoming<RawSvcUnary<S>>),
+    Stream(Incoming<RawSvcStream<S>>),
 }
 
 impl<S: Service> ServiceMessage<S> {
@@ -352,6 +378,7 @@ impl<S: Service> ServiceMessage<S> {
             Self::Rpc(i) => i.msg_type(),
             Self::Watch(i) => i.msg_type(),
             Self::Unary(i) => i.msg_type(),
+            Self::Stream(i) => i.msg_type(),
         }
     }
 
@@ -360,6 +387,7 @@ impl<S: Service> ServiceMessage<S> {
             Self::Rpc(i) => i.sort_code(),
             Self::Watch(i) => i.sort_code(),
             Self::Unary(i) => i.sort_code(),
+            Self::Stream(i) => i.sort_code(),
         }
     }
 
@@ -368,6 +396,7 @@ impl<S: Service> ServiceMessage<S> {
             Self::Rpc(i) => i.follow_from_sender(),
             Self::Watch(i) => i.follow_from_sender(),
             Self::Unary(i) => i.follow_from_sender(),
+            Self::Stream(i) => i.follow_from_sender(),
         }
     }
 
@@ -376,6 +405,7 @@ impl<S: Service> ServiceMessage<S> {
             Self::Rpc(i) => i.fail(v),
             Self::Watch(i) => i.fail(v),
             Self::Unary(_) => {}
+            Self::Stream(i) => i.fail(v),
         }
     }
 }
@@ -569,6 +599,10 @@ where
                         ServiceMessage::Unary(mut message) => {
                             message.follow_from_sender();
                             self.inner.on_unary(message).await;
+                        }
+                        ServiceMessage::Stream(mut message) => {
+                            message.follow_from_sender();
+                            self.inner.on_stream(message).await;
                         }
                     }
                 }

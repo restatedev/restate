@@ -11,15 +11,21 @@
 use std::marker::PhantomData;
 
 use bytes::Bytes;
+use futures::{Stream, ready};
 use opentelemetry::Context;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use restate_types::GenerationalNodeId;
-use restate_types::net::codec::{WireDecode, WireEncode};
-use restate_types::net::{ProtocolVersion, Service, UnaryMessage, WatchResponse};
+use restate_types::net::codec::{self, WireDecode, WireEncode};
+use restate_types::net::{
+    ProtocolVersion, Service, StreamRequest, StreamResponse, UnaryMessage, WatchResponse,
+};
 use restate_types::net::{RpcRequest, RpcResponse, WatchRequest};
+
+use crate::network::protobuf::network;
+use crate::network::{StreamClosed, StreamMessageError};
 
 use super::protobuf::network::{rpc_reply, watch_update};
 use super::{ConnectionClosed, PeerMetadataVersion, Verdict};
@@ -230,6 +236,81 @@ pub struct RawSvcUnary<S> {
 
 // --- END UNARY ---
 
+// --- BEGIN STREAM ---
+
+pub struct Sink<O: StreamResponse> {
+    inner: mpsc::UnboundedSender<StreamEnvelope>,
+    _phantom: PhantomData<O>,
+}
+
+pub enum StreamEnvelope {
+    Status(i32),
+    Payload(Bytes),
+}
+
+pub(crate) struct StreamPort {
+    inbound_rx: mpsc::Receiver<StreamEnvelope>,
+    outbound_tx: mpsc::UnboundedSender<StreamEnvelope>,
+}
+
+impl StreamPort {
+    pub fn new(capacity: usize) -> (Self, StreamPeerPort) {
+        let (inbound_tx, inbound_rx) = mpsc::channel(capacity);
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel();
+
+        (
+            Self {
+                inbound_rx,
+                outbound_tx,
+            },
+            StreamPeerPort {
+                outbound_rx,
+                inbound_tx,
+            },
+        )
+    }
+}
+
+pub(crate) struct StreamPeerPort {
+    outbound_rx: mpsc::UnboundedReceiver<StreamEnvelope>,
+    inbound_tx: mpsc::Sender<StreamEnvelope>,
+}
+
+impl StreamPeerPort {
+    pub fn split(
+        self,
+    ) -> (
+        mpsc::Sender<StreamEnvelope>,
+        mpsc::UnboundedReceiver<StreamEnvelope>,
+    ) {
+        (self.inbound_tx, self.outbound_rx)
+    }
+}
+
+pub struct RawStream {
+    pub(super) stream_port: StreamPort,
+    pub(super) sort_code: Option<u64>,
+    pub(super) msg_type: String,
+}
+
+#[derive(derive_more::Debug)]
+pub struct RawSvcStream<S> {
+    #[debug(skip)]
+    stream_port: StreamPort,
+    pub(super) sort_code: Option<u64>,
+    msg_type: String,
+    _phantom: PhantomData<S>,
+}
+
+#[derive(derive_more::Debug)]
+pub struct BidiStream<M> {
+    #[debug(skip)]
+    stream_port: StreamPort,
+    pub(super) sort_code: Option<u64>,
+    _phantom: PhantomData<M>,
+}
+// --- END STREAM ---
+
 // A polymorphic incoming RPC request bound to a certain service
 impl<S> Incoming<RawSvcRpc<S>> {
     /// The sort-code is applicable if the sender specifies a target mailbox for this message.
@@ -319,6 +400,184 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
             metadata_version: self.metadata_version,
             parent_context: self.parent_context,
         }
+    }
+}
+
+impl<S> Incoming<RawSvcStream<S>> {
+    /// The sort-code is applicable if the sender specifies a target mailbox for this message.
+    ///
+    /// The original sender specifies the sort-code to guide the receiver to route the message
+    /// internally before processing/decoding it. For instance, this can be a partition-id, log-id,
+    /// loglet-id, or any value that can be encoded as u64.
+    ///
+    /// The value is opaque to the message fabric infrastructure.
+    pub fn sort_code(&self) -> Option<u64> {
+        self.inner.sort_code
+    }
+
+    /// Fails the request and report status back to the caller
+    ///
+    /// Check documentation of [[Verdict]] for more details
+    pub fn fail(self, status: Verdict) {
+        let status = network::StreamStatus::from(status);
+        _ = self
+            .inner
+            .stream_port
+            .outbound_tx
+            .send(StreamEnvelope::Status(status.into()));
+    }
+}
+
+impl Incoming<RawStream> {
+    pub fn msg_type(&self) -> &str {
+        &self.inner.msg_type
+    }
+}
+
+impl<S: Service> Incoming<RawSvcStream<S>> {
+    pub(crate) fn from_raw_stream(raw: Incoming<RawStream>) -> Self {
+        Incoming {
+            protocol_version: raw.protocol_version,
+            inner: RawSvcStream {
+                stream_port: raw.inner.stream_port,
+                sort_code: raw.inner.sort_code,
+                msg_type: raw.inner.msg_type,
+                _phantom: PhantomData,
+            },
+            peer: raw.peer,
+            metadata_version: raw.metadata_version,
+            parent_context: raw.parent_context,
+        }
+    }
+
+    #[inline(always)]
+    pub fn msg_type(&self) -> &str {
+        &self.inner.msg_type
+    }
+
+    /// Moves into a typed message.
+    ///
+    /// Returns the original message if the type of the message doesn't match the inner body.
+    #[allow(clippy::result_large_err)]
+    pub fn try_into_typed<M>(self) -> Result<Incoming<BidiStream<M>>, Self>
+    where
+        M: StreamRequest<Service = S>,
+    {
+        if M::TYPE != self.inner.msg_type {
+            return Err(self);
+        }
+        Ok(self.into_typed())
+    }
+
+    /// Moves into a typed message. The caller is responsible for ensuring that the raw
+    /// payload can be decoded into the correct type.
+    ///
+    /// In debug builds, this panics if the message type string of the inner message doesn't match
+    /// that of the the type M.
+    pub fn into_typed<M>(self) -> Incoming<BidiStream<M>>
+    where
+        M: StreamRequest<Service = S>,
+    {
+        debug_assert_eq!(M::TYPE, self.inner.msg_type);
+        Incoming {
+            inner: BidiStream {
+                stream_port: self.inner.stream_port,
+                sort_code: self.inner.sort_code,
+                _phantom: PhantomData,
+            },
+            protocol_version: self.protocol_version,
+            peer: self.peer,
+            metadata_version: self.metadata_version,
+            parent_context: self.parent_context,
+        }
+    }
+}
+
+pub struct TypedStream<M> {
+    inner: mpsc::Receiver<StreamEnvelope>,
+    protocol_version: ProtocolVersion,
+    _phantom: PhantomData<M>,
+}
+
+impl<M> TypedStream<M> {
+    pub(crate) fn new(
+        inner: mpsc::Receiver<StreamEnvelope>,
+        protocol_version: ProtocolVersion,
+    ) -> Self {
+        Self {
+            inner,
+            protocol_version,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<M> Stream for TypedStream<M>
+where
+    M: codec::WireEncode + codec::WireDecode + Unpin + Send,
+{
+    type Item = Result<M, StreamMessageError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let msg = ready!(self.inner.poll_recv(cx)).map(|envelope| match envelope {
+            StreamEnvelope::Payload(bytes) => Ok(M::decode(bytes, self.protocol_version)),
+            StreamEnvelope::Status(status) => Err(StreamMessageError::from(status)),
+        });
+        std::task::Poll::Ready(msg)
+    }
+}
+
+impl<M: StreamRequest> Incoming<BidiStream<M>> {
+    pub fn sort_code(&self) -> Option<u64> {
+        self.inner.sort_code
+    }
+
+    /// Consumes the message and returns a tuple of a reciprocal (reply port) and typed stream
+    /// of messages
+    pub fn split(self) -> (Reciprocal<Sink<M::Response>>, TypedStream<M>) {
+        let stream = TypedStream::new(self.inner.stream_port.inbound_rx, self.protocol_version);
+
+        (
+            Reciprocal {
+                protocol_version: self.protocol_version,
+                reply_port: Sink {
+                    inner: self.inner.stream_port.outbound_tx,
+                    _phantom: PhantomData,
+                },
+                _phantom: PhantomData,
+            },
+            stream,
+        )
+    }
+}
+
+impl<M: StreamResponse> Reciprocal<Sink<M>> {
+    /// Send a message to upstream peer
+    pub fn send(&self, message: M) -> Result<(), StreamClosed> {
+        let bytes = message
+            .encode_to_bytes(self.protocol_version)
+            .expect("serialize stream message to work");
+
+        self.reply_port
+            .inner
+            .send(StreamEnvelope::Payload(bytes))
+            .map_err(|_| StreamClosed)
+    }
+
+    /// Send a failure message to upstream peer
+    // todo(azmy): Verdict is the not the right failure message to send back
+    // since the stream is already open this should be stream specific
+    // for example, load-shedding is a possible failure, but not unrecognized message
+    pub fn fail(&self, verdict: Verdict) -> Result<(), StreamClosed> {
+        self.reply_port
+            .inner
+            .send(StreamEnvelope::Status(
+                network::StreamStatus::from(verdict) as i32
+            ))
+            .map_err(|_| StreamClosed)
     }
 }
 
