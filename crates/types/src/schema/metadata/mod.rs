@@ -557,7 +557,12 @@ impl Handler {
             output_json_schema: self.output_rules.json_schema(),
             idempotency_retention: self.idempotency_retention,
             journal_retention,
-            inactivity_timeout: self.inactivity_timeout,
+            inactivity_timeout: if served_using_protocol_type == Some(ProtocolType::RequestResponse)
+            {
+                None
+            } else {
+                self.inactivity_timeout
+            },
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
             retry_policy: HandlerRetryPolicyMetadata {
