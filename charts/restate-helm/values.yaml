@@ -39,6 +39,10 @@ env:
     value: json
   - name: RESTATE_CLUSTER_NAME
     value: helm-single-node
+  - name: RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE
+    # This value should be around 75% of the container memory limit, which defaults to 8Gi below.
+    # If provisioning restate with a different memory limit, make sure to update this value
+    value: 6Gi
 
 service:
   type: ClusterIP
@@ -46,11 +50,12 @@ service:
 
 resources:
   limits:
-    cpu: 1
-    memory: 3Gi
+    cpu: 6
+    # note the comment above re 'RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE'
+    memory: 8Gi
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 4
+    memory: 8Gi
 
 storage:
   # If provided the volume will be mounted with the specified claim
