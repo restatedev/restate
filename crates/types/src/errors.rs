@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::any::Any;
 use std::borrow::Cow;
 use std::convert::Into;
 use std::fmt;
@@ -379,14 +378,6 @@ pub enum IdDecodeError {
     TypeMismatch,
     #[error("unrecognized resource type: {0}")]
     UnrecognizedType(String),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ThreadJoinError {
-    #[error("thread panicked: {0:?}")]
-    Panic(sync_wrapper::SyncWrapper<Box<dyn Any + Send + 'static>>),
-    #[error("thread terminated unexpectedly")]
-    UnexpectedTermination,
 }
 
 #[derive(Debug, thiserror::Error)]

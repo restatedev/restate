@@ -91,16 +91,6 @@ pub enum BuildError {
     SnapshotRepository(#[from] anyhow::Error),
 }
 
-#[derive(Debug, thiserror::Error, CodedError)]
-pub enum Error {
-    #[error("thread '{thread}' panicked: {cause}")]
-    #[code(unknown)]
-    ThreadPanic {
-        thread: &'static str,
-        cause: restate_types::errors::ThreadJoinError,
-    },
-}
-
 pub struct Worker {
     storage_query_context: QueryContext,
     datafusion_remote_scanner: RemoteQueryScannerServer,

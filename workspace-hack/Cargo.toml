@@ -87,12 +87,12 @@ num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 object_store = { version = "0.12", features = ["aws", "azure", "gcp"] }
-opentelemetry_sdk = { version = "0.30", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
+opentelemetry = { version = "0.31" }
+opentelemetry_sdk = { version = "0.31", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 phf_shared = { version = "0.11" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
 prost-582f2526e08bb6a0 = { package = "prost", version = "0.14" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["prost-derive"] }
 prost-types = { version = "0.14" }
 protobuf = { version = "2", default-features = false, features = ["with-bytes"] }
 quanta = { version = "0.12" }
@@ -124,7 +124,7 @@ tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt"] }
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
-tonic = { version = "0.14", default-features = false, features = ["codegen", "gzip", "router", "transport", "zstd"] }
+tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
 tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "util"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
@@ -216,12 +216,12 @@ num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 object_store = { version = "0.12", features = ["aws", "azure", "gcp"] }
-opentelemetry_sdk = { version = "0.30", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
+opentelemetry = { version = "0.31" }
+opentelemetry_sdk = { version = "0.31", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 phf_shared = { version = "0.11" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
 prost-582f2526e08bb6a0 = { package = "prost", version = "0.14" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["prost-derive"] }
 prost-build = { version = "0.14", features = ["cleanup-markdown"] }
 prost-types = { version = "0.14" }
 protobuf = { version = "2", default-features = false, features = ["with-bytes"] }
@@ -255,7 +255,7 @@ tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt"] }
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
-tonic = { version = "0.14", default-features = false, features = ["codegen", "gzip", "router", "transport", "zstd"] }
+tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
 tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "util"] }
 tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
@@ -280,7 +280,7 @@ libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", default-features = false, features = ["no-recursion-limit"] }
+prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["no-recursion-limit", "prost-derive"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
 
@@ -292,7 +292,7 @@ libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", default-features = false, features = ["no-recursion-limit"] }
+prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["no-recursion-limit", "prost-derive"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
 
@@ -303,7 +303,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", default-features = false, features = ["no-recursion-limit"] }
+prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["no-recursion-limit", "prost-derive"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
 
@@ -314,7 +314,7 @@ hyper-util = { version = "0.1", default-features = false, features = ["client-pr
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.29", features = ["fs", "signal"] }
 num = { version = "0.4" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", default-features = false, features = ["no-recursion-limit"] }
+prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["no-recursion-limit", "prost-derive"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
 

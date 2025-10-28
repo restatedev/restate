@@ -105,7 +105,10 @@ pub fn confirm_or_exit(prompt: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn choose<T: ToString>(prompt: &str, choices: &[T]) -> anyhow::Result<usize> {
+pub fn choose<T: ToString + std::fmt::Display>(
+    prompt: &str,
+    choices: &[T],
+) -> anyhow::Result<usize> {
     let theme = dialoguer::theme::ColorfulTheme::default();
     Ok(dialoguer::Select::with_theme(&theme)
         .with_prompt(prompt)

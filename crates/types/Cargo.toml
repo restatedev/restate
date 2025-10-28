@@ -66,7 +66,7 @@ listenfd = { version = "1" }
 metrics = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }
 notify = { version = "8.0.0" }
-notify-debouncer-full = { version = "0.5" }
+notify-debouncer-full = { version = "0.6" }
 num-traits = { workspace = true }
 opentelemetry = { workspace = true , features = ["trace"]}
 parking_lot = { workspace = true }
@@ -88,7 +88,6 @@ smallvec = { workspace = true }
 smartstring = { workspace = true, features = ["serde"]}
 static_assertions = { workspace = true }
 strum = { workspace = true }
-sync_wrapper = { workspace = true }
 tempfile = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tiny-gradient = { version = "0.1.0" }
