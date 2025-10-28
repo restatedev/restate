@@ -17,6 +17,12 @@ mod quota;
 mod state_machine_manager;
 mod status_store;
 
+use futures::StreamExt;
+use futures::stream::Peekable;
+use gardal::futures::ThrottledStream;
+use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
+use metrics::counter;
+use restate_time_util::DurationExt;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::io::ErrorKind;
@@ -25,12 +31,6 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::SystemTime;
 use std::{cmp, panic};
-
-use futures::StreamExt;
-use gardal::futures::ThrottledStream;
-use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
-use metrics::counter;
-use restate_time_util::DurationExt;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace, warn};
@@ -340,7 +340,7 @@ where
         let mut segmented_input_queue = match SegmentQueue::init(tmp_dir.clone(), in_memory_limit)
             .await
         {
-            Ok(queue) => std::pin::pin!(queue.throttle(invocation_token_bucket)),
+            Ok(queue) => std::pin::pin!(queue.throttle(invocation_token_bucket).peekable()),
             Err(e) if e.kind() == ErrorKind::PermissionDenied => {
                 warn!(
                     "Could not initialize the invoker spill queue, permission denied to write the directory '{}'\n\
@@ -408,14 +408,17 @@ where
     Schemas: InvocationTargetResolver,
 {
     // Returns true if we should execute another step, false if we should stop executing steps
+    #[allow(clippy::type_complexity)]
     async fn step<F>(
         &mut self,
         options: &InvokerOptions,
         mut segmented_input_queue: Pin<
-            &mut ThrottledStream<
-                SegmentQueue<Box<InvokeCommand>>,
-                PaddedAtomicSharedStorage,
-                TokioClock,
+            &mut Peekable<
+                ThrottledStream<
+                    SegmentQueue<Box<InvokeCommand>>,
+                    PaddedAtomicSharedStorage,
+                    TokioClock,
+                >,
             >,
         >,
         mut shutdown: Pin<&mut F>,
@@ -423,142 +426,416 @@ where
     where
         F: Future<Output = ()>,
     {
-        tokio::select! {
-            Some(cmd) = self.status_rx.recv() => {
-                let keys = cmd.payload();
-                let statuses = self
-                    .invocation_state_machine_manager
-                    .registered_partitions_with_keys(keys.clone())
-                    .flat_map(|partition| self.status_store.status_for_partition(partition))
-                    .filter(|status| keys.contains(&status.invocation_id().partition_key()))
-                    .collect();
+        if self.quota.is_slot_available() {
+            tokio::select! {
+                Some(cmd) = self.status_rx.recv() => {
+                    let keys = cmd.payload();
+                    let statuses = self
+                        .invocation_state_machine_manager
+                        .registered_partitions_with_keys(keys.clone())
+                        .flat_map(|partition| self.status_store.status_for_partition(partition))
+                        .filter(|status| keys.contains(&status.invocation_id().partition_key()))
+                        .collect();
 
-                let _ = cmd.reply(statuses);
-            },
+                    let _ = cmd.reply(statuses);
+                },
 
-            Some(input_message) = self.input_rx.recv() => {
-                match input_message {
-                    // --- Spillable queue loading/offloading
-                    InputCommand::Invoke(invoke_command) => {
-                        counter!(INVOKER_ENQUEUE, "partition_id" => invoke_command.partition.0.to_string()).increment(1);
-                        segmented_input_queue.inner_pin_mut().enqueue(invoke_command).await;
-                    },
-                    // --- Other commands (they don't go through the segment queue)
-                    InputCommand::RegisterPartition { partition, partition_key_range, storage_reader, sender, } => {
-                        self.handle_register_partition(partition, partition_key_range,
-                                storage_reader, sender);
-                    },
-                    InputCommand::Abort { partition, invocation_id, invocation_epoch } => {
-                        self.handle_abort_invocation(partition, invocation_id,invocation_epoch);
+                Some(input_message) = self.input_rx.recv() => {
+                    match input_message {
+                        // --- Spillable queue loading/offloading
+                        InputCommand::Invoke(invoke_command) => {
+                            counter!(INVOKER_ENQUEUE, "partition_id" => invoke_command.partition.0.to_string()).increment(1);
+                            segmented_input_queue.as_mut().get_pin_mut().inner_pin_mut().enqueue(invoke_command).await;
+                        },
+                        // --- Other commands (they don't go through the segment queue)
+                        InputCommand::RegisterPartition { partition, partition_key_range, storage_reader, sender, } => {
+                            self.handle_register_partition(partition, partition_key_range, storage_reader, sender);
+                        },
+                        InputCommand::Abort { partition, invocation_id, invocation_epoch } => {
+                            self.handle_abort_invocation(partition, invocation_id,invocation_epoch);
+                        }
+                        InputCommand::RetryNow { partition, invocation_id, invocation_epoch } => {
+                            self.handle_retry_now_invocation(options, partition, invocation_id,invocation_epoch);
+                        }
+                        InputCommand::Pause { partition, invocation_id, invocation_epoch } => {
+                            self.handle_pause_invocation( partition, invocation_id,invocation_epoch).await;
+                        }
+                        InputCommand::AbortAllPartition { partition } => {
+                            self.handle_abort_partition(partition);
+                        }
+                        InputCommand::Completion { partition, invocation_id, completion } => {
+                            self.handle_completion(partition, invocation_id, completion);
+                        },
+                        InputCommand::Notification { partition, invocation_id, invocation_epoch, notification } => {
+                            self.handle_notification(options, partition, invocation_id,invocation_epoch, notification);
+                        },
+                        InputCommand::StoredCommandAck { partition, invocation_id, invocation_epoch, command_index } => {
+                            self.handle_stored_command_ack(options, partition, invocation_id,invocation_epoch, command_index);
+                        }
                     }
-                    InputCommand::RetryNow { partition, invocation_id, invocation_epoch } => {
-                        self.handle_retry_now_invocation(options, partition, invocation_id,invocation_epoch);
+                },
+                Some(invoke_input_command) = segmented_input_queue.next() => {
+                    self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_epoch, invoke_input_command.invocation_target, invoke_input_command.journal);
+                },
+                Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
+                    let InvocationTaskOutput {
+                        invocation_id,
+                        partition,
+                        invocation_epoch,
+                        inner
+                    } = invocation_task_msg;
+                    match inner {
+                        InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
+                            self.handle_pinned_deployment(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                deployment_metadata,
+                                has_changed,
+                            )
+                        }
+                        InvocationTaskOutputInner::ServerHeaderReceived(x_restate_server_header) => {
+                            self.handle_server_header_received(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                x_restate_server_header
+                            )
+                        }
+                        InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
+                            self.handle_new_entry(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                entry_index,
+                                *entry,
+                                requires_ack
+                            ).await
+                        },
+                        InvocationTaskOutputInner::NewNotificationProposal { notification } => {
+                            self.handle_new_notification_proposal(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                notification
+                            ).await
+                        },
+                        InvocationTaskOutputInner::Closed => {
+                            self.handle_invocation_task_closed(partition, invocation_id, invocation_epoch).await
+                        },
+                        InvocationTaskOutputInner::Failed(e) => {
+                            self.handle_invocation_task_failed(partition, invocation_id, invocation_epoch, e).await
+                        },
+                        InvocationTaskOutputInner::Suspended(indexes) => {
+                            self.handle_invocation_task_suspended(partition, invocation_id, invocation_epoch, indexes).await
+                        }
+                        InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
+                            self.handle_new_command(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                command_index,
+                                command,
+                                requires_ack
+                            ).await
+                        }
+                        InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
+                            self.handle_invocation_task_suspended_v2(partition, invocation_id, invocation_epoch, notification_ids).await
+                        }
+                    };
+                },
+                timer = self.retry_timers.await_timer() => {
+                    let (partition, fid, invocation_epoch) = timer.into_inner();
+                    self.handle_retry_timer_fired(options, partition, fid, invocation_epoch);
+                },
+                Some(invocation_task_result) = self.invocation_tasks.join_next() => {
+                    if let Err(err) = invocation_task_result {
+                        // Propagate panics coming from invocation tasks.
+                        if err.is_panic() {
+                            panic::resume_unwind(err.into_panic());
+                        }
                     }
-                    InputCommand::Pause { partition, invocation_id, invocation_epoch } => {
-                        self.handle_pause_invocation( partition, invocation_id,invocation_epoch).await;
-                    }
-                    InputCommand::AbortAllPartition { partition } => {
-                        self.handle_abort_partition(partition);
-                    }
-                    InputCommand::Completion { partition, invocation_id, completion } => {
-                        self.handle_completion(partition, invocation_id, completion);
-                    },
-                    InputCommand::Notification { partition, invocation_id, invocation_epoch, notification } => {
-                        self.handle_notification(options, partition, invocation_id,invocation_epoch, notification);
-                    },
-                    InputCommand::StoredCommandAck { partition, invocation_id, invocation_epoch, command_index } => {
-                        self.handle_stored_command_ack(options, partition, invocation_id,invocation_epoch, command_index);
-                    }
+                    // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
+                    // hence we can ignore them.
                 }
-            },
-            Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() => {
-                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_epoch, invoke_input_command.invocation_target, invoke_input_command.journal);
-            },
-            Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
-                let InvocationTaskOutput {
-                    invocation_id,
-                    partition,
-                    invocation_epoch,
-                    inner
-                } = invocation_task_msg;
-                match inner {
-                    InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
-                        self.handle_pinned_deployment(
-                            partition,
-                            invocation_id,
-                            invocation_epoch,
-                            deployment_metadata,
-                            has_changed,
-                        )
-                    }
-                    InvocationTaskOutputInner::ServerHeaderReceived(x_restate_server_header) => {
-                        self.handle_server_header_received(
-                            partition,
-                            invocation_id,
-                            invocation_epoch,
-                            x_restate_server_header
-                        )
-                    }
-                    InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
-                        self.handle_new_entry(
-                            partition,
-                            invocation_id,
-                            invocation_epoch,
-                            entry_index,
-                            *entry,
-                            requires_ack
-                        ).await
-                    },
-                    InvocationTaskOutputInner::NewNotificationProposal { notification } => {
-                        self.handle_new_notification_proposal(
-                            partition,
-                            invocation_id,
-                            invocation_epoch,
-                            notification
-                        ).await
-                    },
-                    InvocationTaskOutputInner::Closed => {
-                        self.handle_invocation_task_closed(partition, invocation_id, invocation_epoch).await
-                    },
-                    InvocationTaskOutputInner::Failed(e) => {
-                        self.handle_invocation_task_failed(partition, invocation_id, invocation_epoch, e).await
-                    },
-                    InvocationTaskOutputInner::Suspended(indexes) => {
-                        self.handle_invocation_task_suspended(partition, invocation_id, invocation_epoch, indexes).await
-                    }
-                    InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
-                        self.handle_new_command(
-                            partition,
-                            invocation_id,
-                            invocation_epoch,
-                            command_index,
-                            command,
-                            requires_ack
-                        ).await
-                    }
-                    InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
-                        self.handle_invocation_task_suspended_v2(partition, invocation_id, invocation_epoch, notification_ids).await
-                    }
-                };
-            },
-            timer = self.retry_timers.await_timer() => {
-                let (partition, fid, invocation_epoch) = timer.into_inner();
-                self.handle_retry_timer_fired(options, partition, fid, invocation_epoch);
-            },
-            Some(invocation_task_result) = self.invocation_tasks.join_next() => {
-                if let Err(err) = invocation_task_result {
-                    // Propagate panics coming from invocation tasks.
-                    if err.is_panic() {
-                        panic::resume_unwind(err.into_panic());
-                    }
+                _ = &mut shutdown => {
+                    debug!("Shutting down the invoker");
+                    self.handle_shutdown();
+                    return false;
                 }
-                // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
-                // hence we can ignore them.
             }
-            _ = &mut shutdown => {
-                debug!("Shutting down the invoker");
-                self.handle_shutdown();
-                return false;
+        } else if self.quota.is_evictable() {
+            tokio::select! {
+                Some(cmd) = self.status_rx.recv() => {
+                    let keys = cmd.payload();
+                    let statuses = self
+                        .invocation_state_machine_manager
+                        .registered_partitions_with_keys(keys.clone())
+                        .flat_map(|partition| self.status_store.status_for_partition(partition))
+                        .filter(|status| keys.contains(&status.invocation_id().partition_key()))
+                        .collect();
+
+                    let _ = cmd.reply(statuses);
+                },
+
+                Some(input_message) = self.input_rx.recv() => {
+                    match input_message {
+                        // --- Spillable queue loading/offloading
+                        InputCommand::Invoke(invoke_command) => {
+                            counter!(INVOKER_ENQUEUE, "partition_id" => invoke_command.partition.0.to_string()).increment(1);
+                            segmented_input_queue.get_pin_mut().inner_pin_mut().enqueue(invoke_command).await;
+                        },
+                        // --- Other commands (they don't go through the segment queue)
+                        InputCommand::RegisterPartition { partition, partition_key_range, storage_reader, sender, } => {
+                            self.handle_register_partition(partition, partition_key_range, storage_reader, sender);
+                        },
+                        InputCommand::Abort { partition, invocation_id, invocation_epoch } => {
+                            self.handle_abort_invocation(partition, invocation_id,invocation_epoch);
+                        }
+                        InputCommand::RetryNow { partition, invocation_id, invocation_epoch } => {
+                            self.handle_retry_now_invocation(options, partition, invocation_id,invocation_epoch);
+                        }
+                        InputCommand::Pause { partition, invocation_id, invocation_epoch } => {
+                            self.handle_pause_invocation( partition, invocation_id,invocation_epoch).await;
+                        }
+                        InputCommand::AbortAllPartition { partition } => {
+                            self.handle_abort_partition(partition);
+                        }
+                        InputCommand::Completion { partition, invocation_id, completion } => {
+                            self.handle_completion(partition, invocation_id, completion);
+                        },
+                        InputCommand::Notification { partition, invocation_id, invocation_epoch, notification } => {
+                            self.handle_notification(options, partition, invocation_id,invocation_epoch, notification);
+                        },
+                        InputCommand::StoredCommandAck { partition, invocation_id, invocation_epoch, command_index } => {
+                            self.handle_stored_command_ack(options, partition, invocation_id,invocation_epoch, command_index);
+                        }
+                    }
+                },
+                Some(_) = segmented_input_queue.as_mut().peek() => {
+                    self.handle_eviction(options);
+                },
+                Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
+                    let InvocationTaskOutput {
+                        invocation_id,
+                        partition,
+                        invocation_epoch,
+                        inner
+                    } = invocation_task_msg;
+                    match inner {
+                        InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
+                            self.handle_pinned_deployment(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                deployment_metadata,
+                                has_changed,
+                            )
+                        }
+                        InvocationTaskOutputInner::ServerHeaderReceived(x_restate_server_header) => {
+                            self.handle_server_header_received(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                x_restate_server_header
+                            )
+                        }
+                        InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
+                            self.handle_new_entry(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                entry_index,
+                                *entry,
+                                requires_ack
+                            ).await
+                        },
+                        InvocationTaskOutputInner::NewNotificationProposal { notification } => {
+                            self.handle_new_notification_proposal(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                notification
+                            ).await
+                        },
+                        InvocationTaskOutputInner::Closed => {
+                            self.handle_invocation_task_closed(partition, invocation_id, invocation_epoch).await
+                        },
+                        InvocationTaskOutputInner::Failed(e) => {
+                            self.handle_invocation_task_failed(partition, invocation_id, invocation_epoch, e).await
+                        },
+                        InvocationTaskOutputInner::Suspended(indexes) => {
+                            self.handle_invocation_task_suspended(partition, invocation_id, invocation_epoch, indexes).await
+                        }
+                        InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
+                            self.handle_new_command(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                command_index,
+                                command,
+                                requires_ack
+                            ).await
+                        }
+                        InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
+                            self.handle_invocation_task_suspended_v2(partition, invocation_id, invocation_epoch, notification_ids).await
+                        }
+                    };
+                },
+                timer = self.retry_timers.await_timer() => {
+                    let (partition, fid, invocation_epoch) = timer.into_inner();
+                    self.handle_retry_timer_fired(options, partition, fid, invocation_epoch);
+                },
+                Some(invocation_task_result) = self.invocation_tasks.join_next() => {
+                    if let Err(err) = invocation_task_result {
+                        // Propagate panics coming from invocation tasks.
+                        if err.is_panic() {
+                            panic::resume_unwind(err.into_panic());
+                        }
+                    }
+                    // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
+                    // hence we can ignore them.
+                }
+                _ = &mut shutdown => {
+                    debug!("Shutting down the invoker");
+                    self.handle_shutdown();
+                    return false;
+                }
+            }
+        } else {
+            tokio::select! {
+                Some(cmd) = self.status_rx.recv() => {
+                    let keys = cmd.payload();
+                    let statuses = self
+                        .invocation_state_machine_manager
+                        .registered_partitions_with_keys(keys.clone())
+                        .flat_map(|partition| self.status_store.status_for_partition(partition))
+                        .filter(|status| keys.contains(&status.invocation_id().partition_key()))
+                        .collect();
+
+                    let _ = cmd.reply(statuses);
+                },
+
+                Some(input_message) = self.input_rx.recv() => {
+                    match input_message {
+                        // --- Spillable queue loading/offloading
+                        InputCommand::Invoke(invoke_command) => {
+                            counter!(INVOKER_ENQUEUE, "partition_id" => invoke_command.partition.0.to_string()).increment(1);
+                            segmented_input_queue.as_mut().get_pin_mut().inner_pin_mut().enqueue(invoke_command).await;
+                        },
+                        // --- Other commands (they don't go through the segment queue)
+                        InputCommand::RegisterPartition { partition, partition_key_range, storage_reader, sender, } => {
+                            self.handle_register_partition(partition, partition_key_range, storage_reader, sender);
+                        },
+                        InputCommand::Abort { partition, invocation_id, invocation_epoch } => {
+                            self.handle_abort_invocation(partition, invocation_id,invocation_epoch);
+                        }
+                        InputCommand::RetryNow { partition, invocation_id, invocation_epoch } => {
+                            self.handle_retry_now_invocation(options, partition, invocation_id,invocation_epoch);
+                        }
+                        InputCommand::Pause { partition, invocation_id, invocation_epoch } => {
+                            self.handle_pause_invocation( partition, invocation_id,invocation_epoch).await;
+                        }
+                        InputCommand::AbortAllPartition { partition } => {
+                            self.handle_abort_partition(partition);
+                        }
+                        InputCommand::Completion { partition, invocation_id, completion } => {
+                            self.handle_completion(partition, invocation_id, completion);
+                        },
+                        InputCommand::Notification { partition, invocation_id, invocation_epoch, notification } => {
+                            self.handle_notification(options, partition, invocation_id,invocation_epoch, notification);
+                        },
+                        InputCommand::StoredCommandAck { partition, invocation_id, invocation_epoch, command_index } => {
+                            self.handle_stored_command_ack(options, partition, invocation_id,invocation_epoch, command_index);
+                        }
+                    }
+                },
+                Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
+                    let InvocationTaskOutput {
+                        invocation_id,
+                        partition,
+                        invocation_epoch,
+                        inner
+                    } = invocation_task_msg;
+                    match inner {
+                        InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
+                            self.handle_pinned_deployment(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                deployment_metadata,
+                                has_changed,
+                            )
+                        }
+                        InvocationTaskOutputInner::ServerHeaderReceived(x_restate_server_header) => {
+                            self.handle_server_header_received(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                x_restate_server_header
+                            )
+                        }
+                        InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
+                            self.handle_new_entry(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                entry_index,
+                                *entry,
+                                requires_ack
+                            ).await
+                        },
+                        InvocationTaskOutputInner::NewNotificationProposal { notification } => {
+                            self.handle_new_notification_proposal(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                notification
+                            ).await
+                        },
+                        InvocationTaskOutputInner::Closed => {
+                            self.handle_invocation_task_closed(partition, invocation_id, invocation_epoch).await
+                        },
+                        InvocationTaskOutputInner::Failed(e) => {
+                            self.handle_invocation_task_failed(partition, invocation_id, invocation_epoch, e).await
+                        },
+                        InvocationTaskOutputInner::Suspended(indexes) => {
+                            self.handle_invocation_task_suspended(partition, invocation_id, invocation_epoch, indexes).await
+                        }
+                        InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
+                            self.handle_new_command(
+                                partition,
+                                invocation_id,
+                                invocation_epoch,
+                                command_index,
+                                command,
+                                requires_ack
+                            ).await
+                        }
+                        InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
+                            self.handle_invocation_task_suspended_v2(partition, invocation_id, invocation_epoch, notification_ids).await
+                        }
+                    };
+                },
+                timer = self.retry_timers.await_timer() => {
+                    let (partition, fid, invocation_epoch) = timer.into_inner();
+                    self.handle_retry_timer_fired(options, partition, fid, invocation_epoch);
+                },
+                Some(invocation_task_result) = self.invocation_tasks.join_next() => {
+                    if let Err(err) = invocation_task_result {
+                        // Propagate panics coming from invocation tasks.
+                        if err.is_panic() {
+                            panic::resume_unwind(err.into_panic());
+                        }
+                    }
+                    // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
+                    // hence we can ignore them.
+                }
+                _ = &mut shutdown => {
+                    debug!("Shutting down the invoker");
+                    self.handle_shutdown();
+                    return false;
+                }
             }
         }
         // Execute next loop
@@ -673,6 +950,32 @@ where
             trace!(
                 "No registered partition {partition:?} was found for the invocation {invocation_id}"
             );
+        }
+    }
+
+    #[instrument(level = "trace", skip_all)]
+    fn handle_eviction(&mut self, options: &InvokerOptions) {
+        if let Some(concurrency_limit) = options.concurrent_invocations_limit() {
+            let how_many_to_evict = concurrency_limit.div_ceil(10);
+            let max_iterations = concurrency_limit.div_ceil(3);
+            let mut evicted_count = 0;
+            for (id, ism) in self
+                .invocation_state_machine_manager
+                .invocations_from_older_to_newer()
+                .take(max_iterations)
+            {
+                trace!(
+                    restate.invocation.id = %id,
+                    "Evicting invocation",
+                );
+                if ism.suspend() {
+                    evicted_count += 1;
+                }
+                if evicted_count >= how_many_to_evict {
+                    break;
+                }
+            }
+            self.quota.evict(evicted_count);
         }
     }
 
@@ -1651,6 +1954,7 @@ mod tests {
     use super::*;
 
     use std::future::{pending, ready};
+    use std::mem::ManuallyDrop;
     use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1994,11 +2298,15 @@ mod tests {
             .disable_eager_state(false)
             .message_size_warning(NonZeroUsize::new(1024).unwrap())
             .message_size_limit(None)
+            .concurrent_invocations_limit(Some(NonZeroUsize::new(1).unwrap()))
             .build()
             .unwrap();
 
-        let mut segment_queue =
-            std::pin::pin!(SegmentQueue::new(tempdir().unwrap().keep(), 1024).throttle(None));
+        let mut segment_queue = std::pin::pin!(
+            SegmentQueue::new(tempdir().unwrap().keep(), 1024)
+                .throttle(None)
+                .peekable()
+        );
 
         let cancel_token = CancellationToken::new();
         let shutdown = cancel_token.cancelled();
@@ -2008,7 +2316,10 @@ mod tests {
         let invocation_id_2 = InvocationId::mock_random();
 
         let (_invoker_tx, _status_tx, mut service_inner) = ServiceInner::mock(
-            |_, _, _, _, _, _, _| ready(()),
+            |_, _, _, _, _, rx, _| {
+                let _ = ManuallyDrop::new(rx);
+                ready(())
+            },
             MockSchemas(
                 // fixed amount of retries so that an invocation eventually completes with a failure
                 Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
@@ -2021,6 +2332,7 @@ mod tests {
         // Enqueue sid_1 and sid_2
         segment_queue
             .as_mut()
+            .get_pin_mut()
             .inner_pin_mut()
             .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
@@ -2032,6 +2344,7 @@ mod tests {
             .await;
         segment_queue
             .as_mut()
+            .get_pin_mut()
             .inner_pin_mut()
             .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
@@ -2058,6 +2371,7 @@ mod tests {
                 .in_flight()
         );
         assert!(!service_inner.quota.is_slot_available());
+        assert!(service_inner.quota.is_evictable());
 
         // Step again to remove sid_1 from task queue. This should not invoke sid_2!
         assert!(
@@ -2072,6 +2386,7 @@ mod tests {
                 .is_none()
         );
         assert!(!service_inner.quota.is_slot_available());
+        assert!(!service_inner.quota.is_evictable());
 
         // Send the close signal
         service_inner
@@ -2080,11 +2395,12 @@ mod tests {
 
         // Slot should be available again
         assert!(service_inner.quota.is_slot_available());
+        assert!(!service_inner.quota.is_evictable());
 
         // Step now should invoke sid_2
         assert!(
             service_inner
-                .step(&invoker_options, segment_queue.as_mut(), shutdown.as_mut(),)
+                .step(&invoker_options, segment_queue.as_mut(), shutdown.as_mut())
                 .await
         );
         assert!(
@@ -3114,5 +3430,107 @@ mod tests {
                 })
             })
         );
+    }
+
+    mod eviction {
+        use super::*;
+
+        use test_log::test;
+
+        #[test(restate_core::test)]
+        async fn works() {
+            const CONCURRENCY_LIMIT: usize = 2;
+            let invoker_options = InvokerOptionsBuilder::default()
+                .inactivity_timeout(FriendlyDuration::ZERO)
+                .abort_timeout(FriendlyDuration::ZERO)
+                .concurrent_invocations_limit(Some(NonZeroUsize::new(CONCURRENCY_LIMIT).unwrap()))
+                .build()
+                .unwrap();
+
+            let invocation_id_1 = InvocationId::mock_random();
+            let invocation_id_2 = InvocationId::mock_random();
+            let invocation_id_3 = InvocationId::mock_random();
+
+            // Use OnMaxAttempts::Kill to ensure pause is from manual request
+            let (_, _status_tx, mut service_inner) = ServiceInner::mock(
+                |_, _, _, _, _, rx, _| {
+                    let _ = ManuallyDrop::new(rx);
+                    ready(())
+                },
+                MockSchemas::default(),
+                Some(CONCURRENCY_LIMIT),
+            );
+            let _effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+            // Start the first two invocations.
+            for invocation_id in [invocation_id_1, invocation_id_2] {
+                service_inner.handle_invoke(
+                    &invoker_options,
+                    MOCK_PARTITION,
+                    invocation_id,
+                    0,
+                    InvocationTarget::mock_virtual_object(),
+                    InvokeInputJournal::NoCachedJournal,
+                );
+            }
+
+            // Now we should be in an evictable state
+            assert!(!service_inner.quota.is_slot_available());
+            assert!(service_inner.quota.is_evictable());
+
+            // Let's evict
+            service_inner.handle_eviction(&invoker_options);
+
+            // When evicting, we just request suspension, let's check that. We should have done it only for invocation_id_1
+            assert!(
+                service_inner
+                    .invocation_state_machine_manager
+                    .resolve_invocation(MOCK_PARTITION, &invocation_id_1)
+                    .unwrap()
+                    .1
+                    .in_flight_with_notifications_tx_closed()
+            );
+
+            // invocation_id_2 should be left untouched
+            assert!(
+                service_inner
+                    .invocation_state_machine_manager
+                    .resolve_invocation(MOCK_PARTITION, &invocation_id_2)
+                    .unwrap()
+                    .1
+                    .in_flight_with_notifications_tx_open()
+            );
+
+            // We're not in evictable state, and we also don't have quota. We gotta wait for suspension.
+            assert!(!service_inner.quota.is_evictable());
+            assert!(!service_inner.quota.is_slot_available());
+
+            service_inner
+                .handle_invocation_task_suspended_v2(
+                    MOCK_PARTITION,
+                    invocation_id_1,
+                    0,
+                    HashSet::from([NotificationId::for_completion(17)]),
+                )
+                .await;
+
+            // We can be evicted again now, and we also have slots available
+            assert!(!service_inner.quota.is_evictable());
+            assert!(service_inner.quota.is_slot_available());
+
+            // Let's go with invocation_id_3
+            service_inner.handle_invoke(
+                &invoker_options,
+                MOCK_PARTITION,
+                invocation_id_3,
+                0,
+                InvocationTarget::mock_virtual_object(),
+                InvokeInputJournal::NoCachedJournal,
+            );
+
+            // We're again evictable
+            assert!(service_inner.quota.is_evictable());
+            assert!(!service_inner.quota.is_slot_available());
+        }
     }
 }

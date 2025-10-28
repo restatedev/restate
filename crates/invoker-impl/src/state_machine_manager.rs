@@ -9,11 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
-use std::ops::RangeInclusive;
-
+use indexmap::IndexMap;
 use restate_invoker_api::Effect;
 use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_types::identifiers::PartitionKey;
+use std::iter::empty;
+use std::ops::RangeInclusive;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
 #[derive(Debug)]
@@ -32,7 +33,7 @@ impl<SR> Default for InvocationStateMachineManager<SR> {
 #[derive(Debug)]
 struct PartitionInvocationStateMachineCoordinator<IR> {
     output_tx: mpsc::Sender<Box<Effect>>,
-    invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
+    invocation_state_machines: IndexMap<InvocationId, InvocationStateMachine>,
     partition_key_range: RangeInclusive<PartitionKey>,
     storage_reader: IR,
 }
@@ -120,7 +121,9 @@ where
                 return Some((
                     &p.output_tx,
                     &p.storage_reader,
-                    p.invocation_state_machines.remove(invocation_id).unwrap(),
+                    p.invocation_state_machines
+                        .shift_remove(invocation_id)
+                        .unwrap(),
                 ));
             }
             None
@@ -131,7 +134,7 @@ where
     pub(super) fn remove_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-    ) -> Option<HashMap<InvocationId, InvocationStateMachine>> {
+    ) -> Option<IndexMap<InvocationId, InvocationStateMachine>> {
         self.partitions
             .remove(&partition)
             .map(|p| p.invocation_state_machines)
@@ -198,5 +201,18 @@ where
         partition: PartitionLeaderEpoch,
     ) -> Option<&mut PartitionInvocationStateMachineCoordinator<IR>> {
         self.partitions.get_mut(&partition)
+    }
+
+    #[inline]
+    pub(super) fn invocations_from_older_to_newer(
+        &mut self,
+    ) -> impl Iterator<Item = (&InvocationId, &mut InvocationStateMachine)> {
+        // this is based on the assumption that there is only one partition per invoker (which is always the case at the moment).
+        let partition_map = self.partitions.iter_mut().next();
+        if let Some(partition) = partition_map {
+            itertools::Either::Left(partition.1.invocation_state_machines.iter_mut())
+        } else {
+            itertools::Either::Right(empty())
+        }
     }
 }

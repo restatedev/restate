@@ -33,6 +33,7 @@ codederror = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true , features = ["async"]}
+indexmap = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
