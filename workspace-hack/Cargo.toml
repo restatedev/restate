@@ -114,6 +114,7 @@ serde_core = { version = "1", default-features = false, features = ["alloc", "rc
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
+smartstring = { version = "1", features = ["serde"] }
 sqlparser = { version = "0.58", default-features = false, features = ["recursive-protection", "visitor"] }
 stable_deref_trait = { version = "1" }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
@@ -171,6 +172,8 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
+darling = { version = "0.20" }
+darling_core = { version = "0.20", default-features = false, features = ["suggestions"] }
 datafusion-common = { version = "50", default-features = false, features = ["object_store", "recursive_protection"] }
 datafusion-expr = { version = "50", default-features = false, features = ["recursive_protection"] }
 digest = { version = "0.10", features = ["mac", "std"] }
@@ -244,6 +247,7 @@ serde_core = { version = "1", default-features = false, features = ["alloc", "rc
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
+smartstring = { version = "1", features = ["serde"] }
 sqlparser = { version = "0.58", default-features = false, features = ["recursive-protection", "visitor"] }
 stable_deref_trait = { version = "1" }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
