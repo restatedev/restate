@@ -38,7 +38,7 @@ pub struct GossipOptions {
     /// # Number of peers to gossip
     ///
     /// On every gossip interval, how many peers each node attempts to gossip with. The default is
-    /// optimized for small clusters (<5). On larger clusters, if gossip overhead is noticeable,
+    /// optimized for small clusters (less than 5 nodes). On larger clusters, if gossip overhead is noticeable,
     /// consider reducing this value to 1.
     pub gossip_num_peers: NonZeroU32,
 
