@@ -2,6 +2,7 @@
 members = [
     "cli",
     "crates/*",
+    "crates/lib/ty",
     "crates/core/derive",
     "crates/encoding/derive",
     "crates/codederror/derive",
@@ -15,11 +16,13 @@ members = [
     "tools/xtask",
     "workspace-hack",
 ]
+
+exclude = [ 
+    "crates/lib",
+]
+
 default-members = [
     "cli",
-    "crates/*",
-    "crates/core/derive",
-    "crates/codederror/derive",
     "server",
     "tools/restatectl",
 ]
@@ -120,7 +123,7 @@ clap = { version = "4", default-features = false }
 clap-verbosity-flag = { version = "3.0.2" }
 clap_complete = { version = "4.5" }
 cling = { version = "0.1.3", default-features = false, features = ["derive"] }
-criterion = "0.5"
+criterion = "0.7"
 crossterm = { version = "0.29.0" }
 dashmap = { version = "6" }
 datafusion = { version = "50.0.0", default-features = false, features = [
@@ -162,7 +165,7 @@ hyper-rustls = { version = "0.27.2", default-features = false, features = [
 hyper-util = { version = "0.1" }
 indexmap = "2.7"
 itertools = "0.14.0"
-jiff = "0.2.14"
+jiff = { version = "0.2.14" }
 jsonschema = { version = "0.28.3", default-features = false }
 metrics = { version = "0.24" }
 metrics-exporter-prometheus = { version = "0.17", default-features = false, features = [
@@ -184,7 +187,7 @@ paste = "1.0"
 pin-project = "1.0"
 pin-project-lite = { version = "0.2" }
 prost = { version = "0.14.1" }
-prost-build = { version = "0.14.1" }
+prost-build = { version = "0.14.1", default-features = false }
 priority-queue = { version = "2.7.0" }
 prost-dto = { version = "0.0.4" }
 prost-types = { version = "0.14.1" }
@@ -206,10 +209,10 @@ rustls = { version = "0.23.26", default-features = false, features = ["ring"] }
 schemars = { version = "0.8", features = ["bytes", "enumset"] }
 semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_with = "3.8"
+serde_json = { version = "1.0" }
+serde_with = { version = "3.15" }
 serde_yaml = "0.9"
-sha2 = "0.10.8"
+sha2 = { version = "0.10.8" }
 smartstring = { version = "1.0.1" }
 static_assertions = { version = "1.1.0" }
 strum = { version = "0.27.1", features = ["derive"] }
@@ -253,7 +256,7 @@ ulid = { version = "1.2.0" }
 url = { version = "2.5" }
 urlencoding = { version = "2.1" }
 uuid = { version = "1.3.0", features = ["v7", "serde"] }
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
+xxhash-rust = { version = "0.8" }
 zstd = { version = "0.13" }
 
 [patch.crates-io.restate-workspace-hack]
