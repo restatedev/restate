@@ -1,0 +1,30 @@
+services:
+  prometheus:
+    image: docker.io/prom/prometheus:latest
+    command:
+      - '--config.file=/prometheus.yml'
+    restart: unless-stopped
+    network_mode: "host"
+    volumes:
+      - ./prometheus.yml:/prometheus.yml:Z,ro
+
+  json_exporter:
+    image: quay.io/prometheuscommunity/json-exporter:latest
+    container_name: json_exporter
+    network_mode: "host"
+    volumes:
+      - ./json-exporter.yml:/config/config.yml:Z,ro
+    command:
+      - '--config.file=/config/config.yml'
+      - '--web.listen-address=:7979'
+
+  grafana:
+    image: docker.io/grafana/grafana:latest
+    restart: unless-stopped
+    network_mode: "host"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:Z,rw
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:Z,rw
