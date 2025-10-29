@@ -13,19 +13,23 @@ use std::fmt;
 use std::fmt::{Display, Formatter};
 use std::ops::RangeInclusive;
 
-use crate::config::Configuration;
-use crate::deployment::{
-    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
-};
-use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision};
-use crate::schema::info::Info;
-use crate::schema::service::ServiceMetadata;
-use crate::time::MillisSinceEpoch;
 use bytestring::ByteString;
 use http::Uri;
 use http::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+
+use restate_ty::LambdaARN;
+use restate_ty::invocation::ServiceRevision;
+
+use crate::config::Configuration;
+use crate::deployment::{
+    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+};
+use crate::identifiers::DeploymentId;
+use crate::schema::info::Info;
+use crate::schema::service::ServiceMetadata;
+use crate::time::MillisSinceEpoch;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -275,9 +279,10 @@ mod serde_hacks {
 
 #[cfg(test)]
 mod serde_tests {
-    use crate::{identifiers::LambdaARN, storage::StorageCodec};
     use bytestring::ByteString;
     use http::Uri;
+    use restate_ty::LambdaARN;
+    use restate_ty::storage::StorageCodec;
 
     use super::{DeploymentType, ProtocolType};
 

@@ -29,8 +29,9 @@ use restate_storage_api::journal_table_v2::{
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
+use restate_ty::journal::JournalEntryId;
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
+    EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
 };
 use restate_types::journal_v2::raw::{RawCommand, RawEntry};
 use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
@@ -349,7 +350,7 @@ impl ReadJournalTable for PartitionStore {
 impl ScanJournalTable for PartitionStore {
     fn for_each_journal<
         F: FnMut(
-                (restate_types::identifiers::JournalEntryId, StoredRawEntry),
+                (restate_ty::journal::JournalEntryId, StoredRawEntry),
             ) -> std::ops::ControlFlow<()>
             + Send
             + Sync

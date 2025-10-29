@@ -31,7 +31,6 @@ use restate_types::journal::{
     CompleteAwakeableEntry, Entry, GetInvocationOutputEntry, InvokeEntry, OneWayCallEntry,
 };
 use restate_types::journal::{EntryType, InvokeRequest};
-use restate_types::journal_v2::SignalId;
 use restate_types::live::Live;
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 
@@ -269,15 +268,7 @@ where
                 {
                     old_awk_id.into_inner()
                 } else if let Ok(new_awk_id) = ExternalSignalIdentifier::from_str(&id) {
-                    let (invocation_id, signal_id) = new_awk_id.into_inner();
-                    if let SignalId::Index(idx) = signal_id {
-                        (invocation_id, idx)
-                    } else {
-                        return Err(InvocationError::new(
-                            codes::BAD_REQUEST,
-                            "Unsupported awakeable signal identifier. Only signals with auto generated id can be completed using service protocol <= v3.".to_string(),
-                        ));
-                    }
+                    new_awk_id.into_inner()
                 } else {
                     return Err(InvocationError::new(
                         codes::BAD_REQUEST,

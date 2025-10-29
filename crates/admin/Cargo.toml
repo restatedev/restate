@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = ["serve-web-ui"]
-options_schema = ["restate-service-client/options_schema", "restate-types/schemars"]
+options_schema = ["restate-service-client/options_schema", "restate-types/schemars", "restate-ty/schemars"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
 storage-query = []
 metadata-api = []
@@ -27,6 +27,7 @@ restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
 restate-time-util = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 restate-wal-protocol = { workspace = true }
 restate-web-ui = { git = "https://github.com/restatedev/restate-web-ui-crate", optional = true, version = "0.1.11", tag = "v0.1.11" }

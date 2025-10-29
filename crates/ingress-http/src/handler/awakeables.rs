@@ -20,6 +20,7 @@ use http_body_util::Full;
 use restate_types::errors::{InvocationError, codes};
 use restate_types::identifiers::{AwakeableIdentifier, ExternalSignalIdentifier, WithInvocationId};
 use restate_types::invocation::{InvocationResponse, JournalCompletionTarget, ResponseResult};
+use restate_types::journal_v2::SignalId;
 use restate_types::journal_v2::{Signal, SignalResult};
 use std::str::FromStr;
 use tracing::{debug, trace, warn};
@@ -73,13 +74,13 @@ where
                 "Processing awakeables request"
             );
 
-            let (invocation_id, signal_id) = signal_id.into_inner();
+            let (invocation_id, entry_index) = signal_id.into_inner();
 
             self.dispatcher
                 .send_signal(
                     invocation_id,
                     Signal::new(
-                        signal_id,
+                        SignalId::for_index(entry_index),
                         match result {
                             ResponseResult::Success(s) => SignalResult::Success(s),
                             ResponseResult::Failure(f) => SignalResult::Failure(f.into()),

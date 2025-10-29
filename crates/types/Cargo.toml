@@ -9,11 +9,11 @@ publish = false
 
 [features]
 default = []
-schemars = ["dep:schemars", "restate-serde-util/schema", "restate-time-util/schema"]
+schemars = ["dep:schemars", "restate-serde-util/schema", "restate-time-util/schema", "restate-ty/schemars"]
 unsafe-mutable-config = []
 # Enables the tokio console subscriber and exposes its configuration
 console = []
-test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util"]
+test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util", "restate-ty/test-util"]
 # Runs every partition in a separate rocksdb database
 # Note: this is currently backwards-incompatible with the production builds.
 multi-db = []
@@ -125,8 +125,4 @@ jsonptr = "0.7.1"
 
 [[bench]]
 name = "network_serialization"
-harness = false
-
-[[bench]]
-name = "id_encoding"
 harness = false

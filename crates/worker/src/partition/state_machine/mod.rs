@@ -90,9 +90,9 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
-use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::{self, SignalId};
 use restate_types::journal_v2::{
     CommandType, CompletionId, EntryMetadata, NotificationId, Signal, SignalResult,
 };
@@ -3038,12 +3038,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                         entry.result.into(),
                     ))?;
                 } else if let Ok(new_awk_id) = ExternalSignalIdentifier::from_str(&entry.id) {
-                    let (invocation_id, signal_id) = new_awk_id.into_inner();
+                    let (invocation_id, entry_index) = new_awk_id.into_inner();
                     self.handle_outgoing_message(OutboxMessage::NotifySignal(
                         NotifySignalRequest {
                             invocation_id,
                             signal: Signal::new(
-                                signal_id,
+                                SignalId::for_index(entry_index),
                                 match entry.result {
                                     EntryResult::Success(s) => SignalResult::Success(s),
                                     EntryResult::Failure(code, message) => {

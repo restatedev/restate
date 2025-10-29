@@ -84,6 +84,7 @@ restate-time-util = { path = "crates/time-util" }
 restate-timer = { path = "crates/timer" }
 restate-timer-queue = { path = "crates/timer-queue" }
 restate-tracing-instrumentation = { path = "crates/tracing-instrumentation" }
+restate-ty = { path = "crates/lib/ty" }
 restate-types = { path = "crates/types" }
 restate-utoipa = { path = "crates/utoipa" }
 restate-wal-protocol = { path = "crates/wal-protocol" }

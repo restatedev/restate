@@ -20,13 +20,13 @@ use serde_with::serde_as;
 
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 use restate_time_util::NonZeroFriendlyDuration;
+use restate_ty::PlainNodeId;
+use restate_ty::locality::NodeLocation;
 
 use super::{
     AwsLambdaOptions, GossipOptions, HttpOptions, InvalidConfigurationError, ObjectStoreOptions,
     PerfStatsLevel, RocksDbOptions,
 };
-use crate::PlainNodeId;
-use crate::locality::NodeLocation;
 use crate::net::address::{AdvertisedAddress, ListenerPort};
 use crate::net::address::{BindAddress, FabricPort, TokioConsolePort};
 use crate::net::listener::AddressBook;

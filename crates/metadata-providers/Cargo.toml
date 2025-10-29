@@ -37,6 +37,7 @@ restate-workspace-hack = { workspace = true }
 
 restate-metadata-server-grpc = { workspace = true, optional = true, features = ["grpc-client"] }
 restate-metadata-store = { workspace = true, features = ["grpc-client"] }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 # Deps for objstore

@@ -21,8 +21,10 @@ use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
+use restate_ty::identifiers::DeploymentId;
+use restate_ty::invocation::ServiceRevision;
+use restate_ty::lambda::InvalidLambdaARN;
 use restate_types::deployment::{HttpDeploymentAddress, LambdaDeploymentAddress};
-use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
 use restate_types::schema;
 use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
