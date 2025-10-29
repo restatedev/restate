@@ -1099,9 +1099,9 @@ dependencies = [
 
 [[package]]
 name = "bilrost"
-version = "0.1014.0"
+version = "0.1014.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1ec781b82aaa1ead5e8c6ab1cf7b3485f8909e76521f87eb3091a8db5bc00df"
+checksum = "be62a88fe2e8da9012cbf81085cc86f53ce9a8584507180e3eb9918a9b77b02f"
 dependencies = [
  "autocfg",
  "bilrost-derive",
@@ -1112,9 +1112,9 @@ dependencies = [
 
 [[package]]
 name = "bilrost-derive"
-version = "0.1014.0"
+version = "0.1014.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f96db92d1373235cede86875c0589f1e053eb36f8e26f2fc131690bf7d03de6"
+checksum = "a770fdbaa701326b4fe9400bb5dada1ec01a8b026f078154f010ffed544a5da1"
 dependencies = [
  "eyre",
  "itertools 0.14.0",
@@ -1891,8 +1891,7 @@ dependencies = [
  "cast",
  "ciborium",
  "clap",
- "criterion-plot",
- "futures",
+ "criterion-plot 0.5.0",
  "is-terminal",
  "itertools 0.10.5",
  "num-traits",
@@ -1903,6 +1902,29 @@ dependencies = [
  "regex",
  "serde",
  "serde_derive",
+ "serde_json",
+ "tinytemplate",
+ "walkdir",
+]
+
+[[package]]
+name = "criterion"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1c047a62b0cc3e145fa84415a3191f628e980b194c2755aa12300a4e6cbd928"
+dependencies = [
+ "anes",
+ "cast",
+ "ciborium",
+ "clap",
+ "criterion-plot 0.6.0",
+ "itertools 0.13.0",
+ "num-traits",
+ "oorandom",
+ "plotters",
+ "rayon",
+ "regex",
+ "serde",
  "serde_json",
  "tinytemplate",
  "tokio",
@@ -1917,6 +1939,16 @@ checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
 dependencies = [
  "cast",
  "itertools 0.10.5",
+]
+
+[[package]]
+name = "criterion-plot"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b1bcc0dc7dfae599d84ad0b1a55f80cde8af3725da8313b528da95ef783e338"
+dependencies = [
+ "cast",
+ "itertools 0.13.0",
 ]
 
 [[package]]
@@ -3402,10 +3434,11 @@ dependencies = [
 
 [[package]]
 name = "generic-array"
-version = "1.2.0"
+version = "1.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8c8444bc9d71b935156cc0ccab7f622180808af7867b1daae6547d773591703"
+checksum = "eaf57c49a95fd1fe24b90b3033bee6dc7e8f1288d51494cb44e627c295e38542"
 dependencies = [
+ "rustversion",
  "typenum",
 ]
 
@@ -3957,9 +3990,9 @@ dependencies = [
 
 [[package]]
 name = "indenter"
-version = "0.3.3"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce23b50ad8242c51a442f3ff322d56b02f08852c77e4c0b4d3fd684abc89c683"
+checksum = "964de6e86d545b246d84badc0fef527924ace5134f30641c203ef52ba83f58d5"
 
 [[package]]
 name = "indexmap"
@@ -5750,7 +5783,7 @@ dependencies = [
  "aligned-vec",
  "backtrace",
  "cfg-if",
- "criterion",
+ "criterion 0.5.1",
  "findshlibs",
  "inferno",
  "libc",
@@ -6711,7 +6744,7 @@ name = "restate-benchmarks"
 version = "1.6.0-dev"
 dependencies = [
  "anyhow",
- "criterion",
+ "criterion 0.7.0",
  "futures-util",
  "http 1.3.1",
  "mock-service-endpoint",
@@ -6741,7 +6774,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "bytestring",
- "criterion",
+ "criterion 0.7.0",
  "crossbeam-utils",
  "dashmap",
  "derive_more",
@@ -7512,7 +7545,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "codederror",
- "criterion",
+ "criterion 0.7.0",
  "dashmap",
  "derive_more",
  "enum-map",
@@ -7558,7 +7591,7 @@ name = "restate-queue"
 version = "1.6.0-dev"
 dependencies = [
  "bincode",
- "criterion",
+ "criterion 0.7.0",
  "futures",
  "pin-project",
  "restate-fs-util",
@@ -7886,7 +7919,7 @@ version = "1.6.0-dev"
 dependencies = [
  "arc-swap",
  "console-subscriber",
- "criterion",
+ "criterion 0.7.0",
  "futures",
  "http 1.3.1",
  "metrics",
@@ -7915,6 +7948,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-ty"
+version = "1.6.0-dev"
+dependencies = [
+ "anyhow",
+ "base62",
+ "base64 0.22.1",
+ "bilrost",
+ "bytes",
+ "bytestring",
+ "criterion 0.7.0",
+ "derive_more",
+ "downcast-rs",
+ "generic-array 1.3.5",
+ "googletest",
+ "itertools 0.14.0",
+ "num-traits",
+ "opentelemetry",
+ "paste",
+ "prost 0.14.1",
+ "prost-build",
+ "prost-dto",
+ "prost-types 0.14.1",
+ "rand 0.9.1",
+ "restate-base64-util",
+ "restate-encoding",
+ "restate-ty",
+ "restate-workspace-hack",
+ "schemars 0.8.22",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_with",
+ "sha2",
+ "smartstring",
+ "static_assertions",
+ "strum 0.27.1",
+ "thiserror 2.0.17",
+ "ulid",
+ "xxhash-rust",
+]
+
+[[package]]
 name = "restate-types"
 version = "1.6.0-dev"
 dependencies = [
@@ -7931,7 +8006,7 @@ dependencies = [
  "chrono",
  "clap",
  "codederror",
- "criterion",
+ "criterion 0.7.0",
  "dashmap",
  "derive_builder",
  "derive_more",
@@ -7944,7 +8019,7 @@ dependencies = [
  "flexbuffers",
  "futures",
  "gardal",
- "generic-array 1.2.0",
+ "generic-array 1.3.5",
  "googletest",
  "hostname",
  "http 1.3.1",
@@ -7977,6 +8052,7 @@ dependencies = [
  "restate-serde-util",
  "restate-test-util",
  "restate-time-util",
+ "restate-ty",
  "restate-types",
  "restate-utoipa",
  "restate-workspace-hack",
@@ -8150,8 +8226,10 @@ dependencies = [
  "clap",
  "clap_builder",
  "comfy-table",
- "criterion",
+ "criterion 0.7.0",
  "crossbeam-epoch",
+ "darling 0.20.10",
+ "darling_core 0.20.10",
  "datafusion-common",
  "datafusion-expr",
  "digest",
@@ -8231,6 +8309,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "smallvec",
+ "smartstring",
  "sqlparser",
  "stable_deref_trait",
  "syn 2.0.106",
@@ -8526,9 +8605,9 @@ dependencies = [
 
 [[package]]
 name = "rustversion"
-version = "1.0.19"
+version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7c45b9784283f1b2e7fb61b42047c2fd678ef0960d4f6f1eba131594cc369d4"
+checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "ryu"
@@ -8574,6 +8653,18 @@ name = "schemars"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82d20c4491bc164fa2f6c5d44565947a52ad80b9505d8e36f8d54c27c739fcd0"
 dependencies = [
  "dyn-clone",
  "ref-cast",
@@ -8755,9 +8846,9 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.13.0"
+version = "3.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf65a400f8f66fb7b0552869ad70157166676db75ed8181f8104ea91cf9d0b42"
+checksum = "aa66c845eee442168b2c8134fec70ac50dc20e760769c8ba0ad1319ca1959b04"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -8765,8 +8856,8 @@ dependencies = [
  "indexmap 1.9.3",
  "indexmap 2.11.4",
  "schemars 0.9.0",
- "serde",
- "serde_derive",
+ "schemars 1.0.4",
+ "serde_core",
  "serde_json",
  "serde_with_macros",
  "time",
@@ -8774,11 +8865,11 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.13.0"
+version = "3.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81679d9ed988d5e9a5e6531dc3f2c28efbd639cbd1dfb628df08edea6004da77"
+checksum = "b91a903660542fced4e99881aa481bdbaec1634568ee02e0b8bd57c64cb38955"
 dependencies = [
- "darling 0.20.10",
+ "darling 0.21.3",
  "proc-macro2",
  "quote",
  "syn 2.0.106",
@@ -10039,9 +10130,9 @@ dependencies = [
 
 [[package]]
 name = "typenum"
-version = "1.18.0"
+version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dccffe3ce07af9386bfd29e80c0ab1a8205a2fc34e4bcd40364df902cfa8f3f"
+checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 
 [[package]]
 name = "typify"
