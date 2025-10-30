@@ -33,7 +33,7 @@ impl<SR> Default for InvocationStateMachineManager<SR> {
 #[derive(Debug)]
 struct PartitionInvocationStateMachineCoordinator<IR> {
     output_tx: mpsc::Sender<Box<Effect>>,
-    invocation_state_machines: IndexMap<InvocationId, InvocationStateMachine>,
+    invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
     partition_key_range: RangeInclusive<PartitionKey>,
     storage_reader: IR,
 }
@@ -121,9 +121,7 @@ where
                 return Some((
                     &p.output_tx,
                     &p.storage_reader,
-                    p.invocation_state_machines
-                        .shift_remove(invocation_id)
-                        .unwrap(),
+                    p.invocation_state_machines.remove(invocation_id).unwrap(),
                 ));
             }
             None
@@ -134,7 +132,7 @@ where
     pub(super) fn remove_partition(
         &mut self,
         partition: PartitionLeaderEpoch,
-    ) -> Option<IndexMap<InvocationId, InvocationStateMachine>> {
+    ) -> Option<HashMap<InvocationId, InvocationStateMachine>> {
         self.partitions
             .remove(&partition)
             .map(|p| p.invocation_state_machines)

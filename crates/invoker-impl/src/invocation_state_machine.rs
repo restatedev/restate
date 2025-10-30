@@ -506,10 +506,7 @@ impl InvocationStateMachine {
         } = &mut self.invocation_state
         {
             // Close notifications_tx to trigger suspension
-            return notifications_tx.take().is_some_and(|tx| {
-                let is_closed = tx.is_closed();
-                !is_closed
-            });
+            return notifications_tx.take().is_some_and(|tx| !tx.is_closed());
         }
         false
     }

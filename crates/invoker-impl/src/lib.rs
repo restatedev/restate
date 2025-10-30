@@ -956,8 +956,8 @@ where
     #[instrument(level = "trace", skip_all)]
     fn handle_eviction(&mut self, options: &InvokerOptions) {
         if let Some(concurrency_limit) = options.concurrent_invocations_limit() {
-            let how_many_to_evict = concurrency_limit.div_ceil(10);
-            let max_iterations = concurrency_limit.div_ceil(3);
+            let how_many_to_evict = concurrency_limit.div_ceil(3);
+            let max_iterations = concurrency_limit.div_ceil(2);
             let mut evicted_count = 0;
             for (id, ism) in self
                 .invocation_state_machine_manager
