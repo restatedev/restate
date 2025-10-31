@@ -119,6 +119,11 @@ pub(crate) enum InvokerError {
         actual: InvocationEpoch,
         expected: InvocationEpoch,
     },
+    #[error(
+        "error when reading the journal: expected to read {expected} entries, but read only {expected}. This indicates a bug or a storage corruption."
+    )]
+    #[code(unknown)]
+    UnexpectedEntryCount { actual: u32, expected: u32 },
 
     #[error(transparent)]
     #[code(restate_errors::RT0010)]
@@ -172,6 +177,12 @@ pub(crate) enum InvokerError {
     #[error("service is temporary unavailable '{0}'")]
     #[code(restate_errors::RT0010)]
     ServiceUnavailable(http::StatusCode),
+
+    #[error(
+        "service {0} is exposed by the deprecated deployment {1}, please upgrade the SDK used by the service."
+    )]
+    #[code(restate_errors::RT0020)]
+    DeploymentDeprecated(String, DeploymentId),
 }
 
 impl InvokerError {
