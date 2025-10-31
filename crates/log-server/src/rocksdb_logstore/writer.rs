@@ -47,6 +47,12 @@ pub struct LogStoreWriteCommand {
     ack: Option<Ack>,
 }
 
+impl LogStoreWriteCommand {
+    pub fn requires_sync_write(&self) -> bool {
+        matches!(&self.metadata_update, Some(MetadataUpdate::Seal))
+    }
+}
+
 enum DataUpdate {
     StoreBatch { store_message: Store },
     TrimLogRecords { trim_point: LogletOffset },
@@ -63,6 +69,8 @@ pub(crate) struct LogStoreWriter {
     batch_acks_buf: Vec<Ack>,
     buffer: BytesMut,
     health_status: HealthStatus<LogServerStatus>,
+    sync_write_is_required: bool,
+    // add WriteBatch
 }
 
 impl LogStoreWriter {
@@ -72,6 +80,7 @@ impl LogStoreWriter {
             batch_acks_buf: Vec::default(),
             buffer: BytesMut::with_capacity(INITIAL_SERDE_BUFFER_SIZE),
             health_status,
+            sync_write_is_required: false,
         }
     }
 
@@ -128,6 +137,8 @@ impl LogStoreWriter {
                 .expect("metadata cf exists");
 
             for command in commands {
+                self.sync_write_is_required |= command.requires_sync_write();
+
                 match command.data_update {
                     Some(DataUpdate::StoreBatch { store_message }) => Self::process_store_message(
                         store_message,
@@ -228,8 +239,16 @@ impl LogStoreWriter {
 
     async fn commit(&mut self, opts: &LogServerOptions, write_batch: WriteBatch) {
         let mut write_opts = rocksdb::WriteOptions::new();
-        write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
-        write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
+        if self.sync_write_is_required {
+            write_opts.disable_wal(false);
+            write_opts.set_sync(true);
+        } else {
+            write_opts.disable_wal(opts.rocksdb.rocksdb_disable_wal());
+            write_opts.set_sync(!opts.rocksdb_disable_wal_fsync());
+        }
+
+        // Reset the flag until we see a command that requires a sync write again.
+        self.sync_write_is_required = false;
         // hint to rocksdb to insert the memtable position hint for the batch, our writes per batch
         // are mostly ordered.
         write_opts.set_memtable_insert_hint_per_batch(true);
