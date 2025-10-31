@@ -211,7 +211,7 @@ pub enum DurabilityMode {
 }
 
 pub const DEFAULT_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
-pub const DEFAULT_ABORT_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEFAULT_ABORT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// # Invoker options
 #[serde_as]

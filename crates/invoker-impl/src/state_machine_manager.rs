@@ -9,11 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
-use std::ops::RangeInclusive;
-
+use indexmap::IndexMap;
 use restate_invoker_api::Effect;
 use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_types::identifiers::PartitionKey;
+use std::iter::empty;
+use std::ops::RangeInclusive;
 
 /// Tree of [InvocationStateMachine] held by the [Service].
 #[derive(Debug)]
@@ -198,5 +199,18 @@ where
         partition: PartitionLeaderEpoch,
     ) -> Option<&mut PartitionInvocationStateMachineCoordinator<IR>> {
         self.partitions.get_mut(&partition)
+    }
+
+    #[inline]
+    pub(super) fn invocations_from_older_to_newer(
+        &mut self,
+    ) -> impl Iterator<Item = (&InvocationId, &mut InvocationStateMachine)> {
+        // this is based on the assumption that there is only one partition per invoker (which is always the case at the moment).
+        let partition_map = self.partitions.iter_mut().next();
+        if let Some(partition) = partition_map {
+            itertools::Either::Left(partition.1.invocation_state_machines.iter_mut())
+        } else {
+            itertools::Either::Right(empty())
+        }
     }
 }
