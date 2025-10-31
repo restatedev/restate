@@ -54,7 +54,7 @@ pub trait ReadJournalTable {
 pub trait ScanJournalTable {
     fn for_each_journal<
         F: FnMut(
-                (restate_types::identifiers::JournalEntryId, StoredRawEntry),
+                (restate_ty::journal::JournalEntryId, StoredRawEntry),
             ) -> std::ops::ControlFlow<()>
             + Send
             + Sync

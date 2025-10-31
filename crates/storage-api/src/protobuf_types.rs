@@ -10,8 +10,8 @@
 
 use bytes::{Buf, BytesMut};
 
+use restate_ty::identifiers::IdDecodeError;
 use restate_types::SemanticRestateVersion;
-use restate_types::errors::IdDecodeError;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageDecodeError, StorageEncode};
 
 use crate::StorageError;

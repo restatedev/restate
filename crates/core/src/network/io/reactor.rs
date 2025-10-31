@@ -24,10 +24,10 @@ use tokio::time::Sleep;
 use tracing::{Instrument, Span, debug, info, trace, warn};
 
 use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_ty::metadata::MetadataKind;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
 use restate_types::net::ServiceTag;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;

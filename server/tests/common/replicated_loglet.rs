@@ -27,13 +27,13 @@ use restate_local_cluster_runner::{
 use restate_metadata_store::{MetadataStoreClient, retry_on_retryable_error};
 use restate_rocksdb::RocksDbManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
+use restate_ty::metadata::MetadataKind;
 use restate_types::logs::LogletId;
 use restate_types::logs::builder::LogsBuilder;
 use restate_types::logs::metadata::{Chain, LogletParams, SegmentIndex};
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::BIFROST_CONFIG_KEY;
 use restate_types::net::listener::AddressBook;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::retries::RetryPolicy;
 use restate_types::{
     GenerationalNodeId, PlainNodeId, Version, Versioned,

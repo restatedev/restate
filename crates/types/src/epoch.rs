@@ -10,7 +10,8 @@
 
 #![allow(dead_code)]
 
-use crate::identifiers::{LeaderEpoch, PartitionId};
+use restate_ty::partitions::{LeaderEpoch, PartitionId};
+
 use crate::partitions::PartitionConfiguration;
 use crate::{GenerationalNodeId, Version, Versioned, flexbuffers_storage_encode_decode};
 
@@ -144,9 +145,10 @@ impl EpochMetadata {
 flexbuffers_storage_encode_decode!(EpochMetadata);
 
 mod compatibility {
+    use restate_ty::partitions::LeaderEpoch;
+
     use crate::Version;
     use crate::epoch::{EpochMetadata, LeaderMetadata};
-    use crate::identifiers::LeaderEpoch;
     use crate::partitions::PartitionConfiguration;
 
     #[derive(Debug, serde::Deserialize)]
@@ -185,9 +187,9 @@ mod tests {
     use crate::epoch::{EpochMetadata, PartitionConfiguration};
     use crate::identifiers::{LeaderEpoch, PartitionId};
     use crate::replication::ReplicationProperty;
-    use crate::storage::StorageCodec;
-    use crate::version::Versioned;
     use bytes::BytesMut;
+    use restate_ty::Versioned;
+    use restate_ty::storage::StorageCodec;
     use std::collections::HashMap;
 
     #[test]

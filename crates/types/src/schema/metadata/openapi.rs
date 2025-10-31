@@ -10,10 +10,10 @@
 
 use super::Handler;
 
-use crate::identifiers::ServiceRevision;
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort, PeerNetAddress};
 use crate::schema::invocation_target::{InputValidationRule, OutputContentTypeRule};
+use restate_ty::invocation::ServiceRevision;
 use restate_utoipa::openapi::extensions::Extensions;
 use restate_utoipa::openapi::path::{Operation, Parameter, ParameterIn};
 use restate_utoipa::openapi::request_body::RequestBody;

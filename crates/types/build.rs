@@ -93,34 +93,22 @@ fn main() -> std::io::Result<()> {
 fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
     prost_build::Config::new()
         .bytes(["."])
-        .enum_attribute(
-            "ServiceTag",
-            "#[derive(::enum_map::Enum, ::derive_more::IsVariant, ::derive_more::Display)]",
-        )
-        .enum_attribute(
-            "NodeStatus",
-            "#[derive(::serde::Serialize, ::derive_more::IsVariant)]",
-        )
-        .enum_attribute("AdminStatus", "#[derive(::serde::Serialize)]")
-        .enum_attribute("LogServerStatus", "#[derive(::serde::Serialize)]")
-        .enum_attribute("WorkerStatus", "#[derive(::serde::Serialize)]")
-        .enum_attribute("MetadataServerStatus", "#[derive(::serde::Serialize)]")
         .btree_map([
             ".restate.cluster.ClusterState",
             ".restate.cluster.AliveNode",
         ])
-        .file_descriptor_set_path(out_dir.join("common_descriptor.bin"))
+        .file_descriptor_set_path(out_dir.join("types_descriptor.bin"))
+        .extern_path(".restate.common", "::restate_ty::protobuf")
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(
             &[
-                "./protobuf/restate/common.proto",
                 "./protobuf/restate/metadata.proto",
                 "./protobuf/restate/cluster.proto",
                 "./protobuf/restate/journal_events.proto",
                 "./protobuf/restate/log_server_common.proto",
             ],
-            &["protobuf"],
+            &["protobuf", "../lib/ty/protobuf"],
         )?;
     Ok(())
 }

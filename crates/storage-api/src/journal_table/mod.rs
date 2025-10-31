@@ -12,7 +12,8 @@ use std::ops::RangeInclusive;
 
 use futures::Stream;
 
-use restate_types::identifiers::{EntryIndex, InvocationId, JournalEntryId, PartitionKey};
+use restate_ty::journal::JournalEntryId;
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{CompletionResult, EntryType};
 

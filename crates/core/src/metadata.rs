@@ -24,19 +24,19 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::instrument;
 
 use restate_metadata_store::{MetadataStoreClient, ReadError};
+use restate_ty::{GenerationalNodeId, Version, Versioned};
 use restate_types::live::{Live, Pinned};
 use restate_types::logs::metadata::Logs;
 use restate_types::metadata::GlobalMetadata;
-pub use restate_types::net::metadata::MetadataKind;
 use restate_types::net::metadata::{self, MetadataContainer};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::schema::Schema;
-use restate_types::{GenerationalNodeId, Version, Versioned};
 
 pub use self::manager::{MetadataManager, TargetVersion};
 use crate::network::Connection;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
+pub use restate_ty::metadata::MetadataKind;
 
 use self::metadata_client_wrapper::MetadataClientWrapper;
 

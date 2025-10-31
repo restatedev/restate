@@ -26,7 +26,7 @@ use crate::schema::invocation_target::{
 use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
 use crate::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Source, Subscription};
 use crate::time::MillisSinceEpoch;
-use crate::{deployment, endpoint_manifest, identifiers};
+use crate::{deployment, endpoint_manifest};
 use http::{HeaderValue, Uri};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -523,7 +523,7 @@ impl SchemaUpdater {
         &self,
         service_name: &String,
         service: endpoint_manifest::Service,
-        new_revision: identifiers::ServiceRevision,
+        new_revision: restate_ty::invocation::ServiceRevision,
         previous_service_revision: Option<&ServiceRevision>,
         service_level_settings_behavior: ServiceLevelSettingsBehavior,
     ) -> Result<ServiceRevision, SchemaError> {

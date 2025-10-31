@@ -15,10 +15,10 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use restate_types::live::Live;
 use tokio::sync::mpsc::Sender;
 
-use restate_types::identifiers::ServiceRevision;
+use restate_ty::invocation::ServiceRevision;
+use restate_types::live::Live;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 
 use super::schema::SysDeploymentBuilder;

@@ -18,7 +18,8 @@ use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_admin_rest_model::services::*;
 use restate_admin_rest_model::version::VersionInformation;
 use restate_serde_util::SerdeableHeaderHashMap;
-use restate_types::identifiers::{DeploymentId, LambdaARN};
+use restate_types::LambdaARN;
+use restate_types::identifiers::DeploymentId;
 use restate_types::schema::deployment::ProtocolType;
 use restate_types::schema::service::ServiceMetadata;
 

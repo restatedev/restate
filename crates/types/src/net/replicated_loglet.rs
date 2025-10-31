@@ -13,8 +13,9 @@
 use serde::{Deserialize, Serialize};
 use std::ops::{Deref, DerefMut};
 
+use restate_ty::logs::SegmentIndex;
+
 use super::ServiceTag;
-use crate::logs::metadata::SegmentIndex;
 use crate::logs::{LogId, LogletId, LogletOffset, SequenceNumber, TailState};
 use crate::net::{bilrost_wire_codec, define_rpc, define_service};
 

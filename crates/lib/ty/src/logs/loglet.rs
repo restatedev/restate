@@ -11,10 +11,51 @@
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 
+use serde::{Deserialize, Serialize};
+
 use restate_encoding::{BilrostNewType, NetSerde};
 
 use crate::logs::LogId;
-use crate::logs::metadata::SegmentIndex;
+
+// Starts with 0 being the oldest loglet in the chain.
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    Serialize,
+    Deserialize,
+    derive_more::From,
+    derive_more::Into,
+    derive_more::Display,
+    derive_more::Debug,
+    BilrostNewType,
+)]
+#[repr(transparent)]
+#[serde(transparent)]
+#[debug("{}", _0)]
+pub struct SegmentIndex(pub(crate) u32);
+
+impl SegmentIndex {
+    pub const OLDEST: SegmentIndex = SegmentIndex(0);
+
+    #[cfg(feature = "test-util")]
+    pub fn from_raw(v: u32) -> Self {
+        Self(v)
+    }
+
+    pub fn next(&self) -> SegmentIndex {
+        SegmentIndex(
+            self.0
+                .checked_add(1)
+                .expect("we should never create more than 2^32 segments"),
+        )
+    }
+}
 
 /// LogletId is a helper type to generate reliably unique identifiers for individual loglets in a
 /// single chain.

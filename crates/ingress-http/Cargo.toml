@@ -20,6 +20,7 @@ restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-time-util = { workspace = true, features = ["serde_with"] }
 restate-tracing-instrumentation = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

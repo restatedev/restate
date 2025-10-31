@@ -20,8 +20,8 @@ pub mod partition_processor_manager;
 pub mod remote_query_scanner;
 pub mod replicated_loglet;
 
-pub use crate::protobuf::common::ProtocolVersion;
-pub use crate::protobuf::common::ServiceTag;
+pub use restate_ty::net::ProtocolVersion;
+pub use restate_ty::net::ServiceTag;
 
 pub static MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V2;
 pub static CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V2;

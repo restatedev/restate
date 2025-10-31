@@ -10,8 +10,8 @@
 
 use tokio::sync::watch;
 
-use crate::Merge;
-pub use crate::protobuf::common::{
+use restate_ty::Merge;
+pub use restate_ty::protobuf::{
     AdminStatus, IngressStatus, LogServerStatus, MetadataServerStatus, NodeRpcStatus, NodeStatus,
     WorkerStatus,
 };

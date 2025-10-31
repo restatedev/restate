@@ -12,7 +12,7 @@ use anyhow::Context;
 use datafusion::common::ScalarValue;
 use datafusion::logical_expr::expr::InList;
 use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col};
-use restate_types::identifiers::partitioner::HashPartitioner;
+use restate_ty::partitions::partitioner::HashPartitioner;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};

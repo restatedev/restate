@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
+
 use http::{Uri, Version};
+use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
+
 use restate_serde_util::SerdeableHeaderHashMap;
-use restate_types::identifiers::ServiceRevision;
-use restate_types::identifiers::{DeploymentId, LambdaARN};
+use restate_types::LambdaARN;
+use restate_types::identifiers::DeploymentId;
 use restate_types::schema::deployment::{EndpointLambdaCompression, ProtocolType};
 use restate_types::schema::info::Info;
 use restate_types::schema::service::ServiceMetadata;
-use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-use std::collections::HashMap;
 
 // This enum could be a struct with a nested enum to avoid repeating some fields, but serde(flatten) unfortunately breaks the openapi code generation
 #[serde_as]
@@ -160,7 +162,7 @@ pub enum RegisterDeploymentRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServiceNameRevPair {
     pub name: String,
-    pub revision: ServiceRevision,
+    pub revision: u32,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

@@ -12,8 +12,10 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use crate::net::metadata::{MetadataContainer, MetadataKind};
-use crate::storage::{StorageDecode, StorageEncode};
+use restate_ty::metadata::MetadataKind;
+use restate_ty::storage::{StorageDecode, StorageEncode};
+
+use crate::net::metadata::MetadataContainer;
 use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
 
 /// A trait all metadata types managed by metadata manager.

@@ -14,7 +14,7 @@ use bytes::Buf;
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use tracing::error;
 
-use super::{StorageCodecKind, StorageDecodeError};
+use restate_ty::storage::{StorageCodecKind, StorageDecodeError};
 
 /// Decode a [`DeserializeOwned`] type from a buffer using serde if it is supported by the codec.
 pub fn decode_serde<T: DeserializeOwned, B: Buf>(

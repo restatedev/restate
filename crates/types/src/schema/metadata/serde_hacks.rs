@@ -35,7 +35,7 @@ mod v1_data_model {
 
         pub deployment_id: DeploymentId,
 
-        pub revision: identifiers::ServiceRevision,
+        pub revision: restate_ty::invocation::ServiceRevision,
 
         pub public: bool,
 
@@ -97,17 +97,17 @@ mod v1_data_model {
         Workflow,
     }
 
-    impl From<InvocationTargetType> for Option<HandlerMetadataType> {
+    impl From<InvocationTargetType> for HandlerMetadataType {
         fn from(value: InvocationTargetType) -> Self {
             match value {
-                InvocationTargetType::Service => Some(HandlerMetadataType::Shared),
+                InvocationTargetType::Service => HandlerMetadataType::Shared,
                 InvocationTargetType::VirtualObject(h_ty) => match h_ty {
-                    VirtualObjectHandlerType::Exclusive => Some(HandlerMetadataType::Exclusive),
-                    VirtualObjectHandlerType::Shared => Some(HandlerMetadataType::Shared),
+                    VirtualObjectHandlerType::Exclusive => HandlerMetadataType::Exclusive,
+                    VirtualObjectHandlerType::Shared => HandlerMetadataType::Shared,
                 },
                 InvocationTargetType::Workflow(h_ty) => match h_ty {
-                    WorkflowHandlerType::Workflow => Some(HandlerMetadataType::Workflow),
-                    WorkflowHandlerType::Shared => Some(HandlerMetadataType::Shared),
+                    WorkflowHandlerType::Workflow => HandlerMetadataType::Workflow,
+                    WorkflowHandlerType::Shared => HandlerMetadataType::Shared,
                 },
             }
         }
@@ -213,7 +213,7 @@ mod v1_data_model {
 
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
     pub struct ServiceSchemas {
-        pub revision: crate::identifiers::ServiceRevision,
+        pub revision: restate_ty::invocation::ServiceRevision,
         pub handlers: HashMap<String, HandlerSchemas>,
         pub ty: ServiceType,
         pub location: ServiceLocation,
@@ -606,7 +606,7 @@ mod conversions {
                             handler_name.clone(),
                             v1_data_model::HandlerMetadata {
                                 name: handler_name.clone(),
-                                ty: handler.target_ty.into(),
+                                ty: Some(handler.target_ty.into()),
                                 documentation: handler.documentation.clone(),
                                 metadata: handler.metadata.clone(),
                                 idempotency_retention: handler.idempotency_retention,

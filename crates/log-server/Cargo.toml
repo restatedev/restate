@@ -20,6 +20,7 @@ restate-core = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 ahash = { workspace = true }

@@ -16,9 +16,10 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use restate_time_util::FriendlyDuration;
+use restate_ty::identifiers::DeploymentId;
+use restate_ty::invocation::ServiceRevision;
 
 use crate::config::{DEFAULT_ABORT_TIMEOUT, DEFAULT_INACTIVITY_TIMEOUT};
-use crate::identifiers::{DeploymentId, ServiceRevision};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
@@ -288,9 +289,8 @@ pub enum HandlerMetadataType {
     Shared,
     Workflow,
 }
-
-impl From<InvocationTargetType> for Option<HandlerMetadataType> {
-    fn from(value: InvocationTargetType) -> Self {
+impl HandlerMetadataType {
+    pub fn from_invocation_target(value: InvocationTargetType) -> Option<Self> {
         match value {
             InvocationTargetType::Service => None,
             InvocationTargetType::VirtualObject(h_ty) => match h_ty {

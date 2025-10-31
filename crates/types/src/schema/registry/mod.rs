@@ -22,11 +22,14 @@ use codederror::{BoxedCodedError, CodedError};
 use http::{StatusCode, Uri};
 use tracing::subscriber::NoSubscriber;
 
+use restate_ty::LambdaARN;
+use restate_ty::invocation::ServiceRevision;
+
 use crate::deployment;
 use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
-use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
+use crate::identifiers::{DeploymentId, SubscriptionId};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::metadata::updater;

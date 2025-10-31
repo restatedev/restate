@@ -18,7 +18,8 @@ use restate_storage_api::StorageError;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_storage_api::journal_table::ScanJournalTable;
 use restate_storage_api::journal_table_v2::ScanJournalTable as ScanJournalTableV2;
-use restate_types::identifiers::{JournalEntryId, PartitionKey};
+use restate_ty::journal::JournalEntryId;
+use restate_ty::partitions::PartitionKey;
 use restate_types::storage::StoredRawEntry;
 
 use crate::context::{QueryContext, SelectPartitions};

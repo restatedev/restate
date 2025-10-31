@@ -20,8 +20,8 @@ pub mod network {
 
     use opentelemetry::propagation::{Extractor, Injector};
 
+    use restate_ty::metadata::MetadataKind;
     use restate_types::GenerationalNodeId;
-    use restate_types::net::metadata::MetadataKind;
     use restate_types::nodes_config::ClusterFingerprint;
 
     use restate_types::net::{

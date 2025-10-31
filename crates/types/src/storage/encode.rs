@@ -12,7 +12,7 @@ use std::mem;
 use bytes::{BufMut, Bytes, BytesMut};
 use serde::Serialize;
 
-use super::{StorageCodecKind, StorageEncodeError};
+use restate_ty::storage::{StorageCodecKind, StorageEncodeError};
 
 /// Encode a [`Serialize`] type to a buffer using serde if it is supported by the codec.
 pub fn encode_serde<T: Serialize>(

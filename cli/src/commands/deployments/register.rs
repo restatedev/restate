@@ -26,7 +26,7 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
-use restate_types::identifiers::LambdaARN;
+use restate_ty::LambdaARN;
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;

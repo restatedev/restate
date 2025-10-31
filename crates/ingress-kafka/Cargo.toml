@@ -19,6 +19,7 @@ restate-core = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-timer-queue = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }
 restate-wal-protocol = { workspace = true }

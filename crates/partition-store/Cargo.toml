@@ -19,6 +19,7 @@ restate-object-store-util = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 ahash = { workspace = true }

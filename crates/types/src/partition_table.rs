@@ -15,10 +15,12 @@ use std::sync::Arc;
 
 use serde_with::serde_as;
 
+use restate_ty::metadata::MetadataKind;
+
 use crate::identifiers::{PartitionId, PartitionKey};
 use crate::logs::LogId;
 use crate::metadata::GlobalMetadata;
-use crate::net::metadata::{MetadataContainer, MetadataKind};
+use crate::net::metadata::MetadataContainer;
 use crate::replication::ReplicationProperty;
 use crate::{Version, Versioned, flexbuffers_storage_encode_decode};
 

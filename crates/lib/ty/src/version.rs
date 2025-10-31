@@ -50,15 +50,15 @@ impl Version {
     }
 }
 
-impl From<crate::protobuf::common::Version> for Version {
-    fn from(version: crate::protobuf::common::Version) -> Self {
+impl From<crate::protobuf::Version> for Version {
+    fn from(version: crate::protobuf::Version) -> Self {
         crate::Version::from(version.value)
     }
 }
 
-impl From<Version> for crate::protobuf::common::Version {
+impl From<Version> for crate::protobuf::Version {
     fn from(version: Version) -> Self {
-        crate::protobuf::common::Version {
+        crate::protobuf::Version {
             value: version.into(),
         }
     }

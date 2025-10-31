@@ -13,7 +13,8 @@ use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_storage_api::state_table::WriteStateTable;
 use restate_types::invocation::{NotifySignalRequest, ResponseResult};
 use restate_types::journal_v2::{
-    CompleteAwakeableCommand, CompleteAwakeableId, CompleteAwakeableResult, Signal, SignalResult,
+    CompleteAwakeableCommand, CompleteAwakeableId, CompleteAwakeableResult, Signal, SignalId,
+    SignalResult,
 };
 
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
@@ -42,11 +43,11 @@ where
                 )
             }
             CompleteAwakeableId::New(new_awakeable_id) => {
-                let (invocation_id, signal_id) = new_awakeable_id.into_inner();
+                let (invocation_id, entry_index) = new_awakeable_id.into_inner();
                 OutboxMessage::NotifySignal(NotifySignalRequest {
                     invocation_id,
                     signal: Signal::new(
-                        signal_id,
+                        SignalId::for_index(entry_index),
                         match self.entry.result {
                             CompleteAwakeableResult::Success(s) => SignalResult::Success(s),
                             CompleteAwakeableResult::Failure(f) => SignalResult::Failure(f),

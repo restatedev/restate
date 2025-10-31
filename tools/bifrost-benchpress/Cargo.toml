@@ -25,6 +25,7 @@ restate-metadata-server = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-test-util = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
+restate-ty = { workspace = true, features = ["test-util"] }
 restate-types = { workspace = true, features = ["test-util", "clap"] }
 
 anyhow = { workspace = true }

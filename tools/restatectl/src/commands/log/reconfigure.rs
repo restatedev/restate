@@ -18,13 +18,13 @@ use restate_cli_util::{c_eprintln, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{
     ChainExtension, SealAndExtendChainRequest, new_cluster_ctrl_client,
 };
+use restate_ty::protobuf::Version;
+use restate_ty::{NodeId, PlainNodeId};
 use restate_types::logs::LogId;
 use restate_types::logs::metadata::{Logs, ProviderKind, Segment};
 use restate_types::nodes_config::Role;
-use restate_types::protobuf::common::Version;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::ReplicationProperty;
-use restate_types::{NodeId, PlainNodeId};
 
 use crate::connection::ConnectionInfo;
 use crate::util::RangeParam;

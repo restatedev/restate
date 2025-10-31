@@ -16,17 +16,19 @@ use serde_with::serde_as;
 
 use restate_serde_util::MapAsVecItem;
 use restate_time_util::FriendlyDuration;
+use restate_ty::identifiers::{DeploymentId, SubscriptionId};
+use restate_ty::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
+use restate_ty::metadata::MetadataKind;
+use restate_ty::{Version, Versioned};
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
 use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
-use crate::identifiers::{DeploymentId, SubscriptionId};
-use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::live::Pinned;
 use crate::metadata::GlobalMetadata;
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
-use crate::net::metadata::{MetadataContainer, MetadataKind};
+use crate::net::metadata::MetadataContainer;
 use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
 use crate::schema::info::Info;
@@ -43,7 +45,6 @@ use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, Subscri
 use crate::schema::{deployment, service};
 use crate::service_protocol::ServiceProtocolVersion;
 use crate::time::MillisSinceEpoch;
-use crate::{Version, Versioned, identifiers};
 
 /// Serializable data structure representing the schema registry
 ///
@@ -239,7 +240,7 @@ struct ServiceRevision {
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
     /// Latest revision of the service.
-    revision: identifiers::ServiceRevision,
+    revision: restate_ty::invocation::ServiceRevision,
 
     /// If true, the service can be invoked through the ingress.
     /// If false, the service can be invoked only from another Restate service.
@@ -547,7 +548,7 @@ impl Handler {
 
         service::HandlerMetadata {
             name: self.name.clone(),
-            ty: self.target_ty.into(),
+            ty: service::HandlerMetadataType::from_invocation_target(self.target_ty),
             documentation: self.documentation.clone(),
             metadata: self.metadata.clone(),
             public: self.public.unwrap_or(service_level_public),
@@ -637,7 +638,7 @@ impl DeploymentResolver for Schema {
         &self,
     ) -> Vec<(
         deployment::Deployment,
-        Vec<(String, identifiers::ServiceRevision)>,
+        Vec<(String, restate_ty::invocation::ServiceRevision)>,
     )> {
         self.deployments
             .values()
@@ -988,9 +989,9 @@ mod test_util {
 
     use super::service::ServiceMetadata;
     use super::service::ServiceMetadataResolver;
-    use crate::identifiers::ServiceRevision;
     use crate::schema::service::HandlerMetadata;
     use restate_test_util::assert_eq;
+    use restate_ty::invocation::ServiceRevision;
 
     impl Schema {
         #[track_caller]

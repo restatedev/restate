@@ -16,10 +16,10 @@ use tonic::service::Routes;
 use tower_http::trace::{DefaultOnFailure, TraceLayer};
 use tracing::{Level, debug};
 
+use restate_ty::protobuf::NodeRpcStatus;
 use restate_types::health::HealthStatus;
 use restate_types::net::address::FabricPort;
 use restate_types::net::listener::{AddressBook, Listeners};
-use restate_types::protobuf::common::NodeRpcStatus;
 
 use super::net_util::run_hyper_server;
 

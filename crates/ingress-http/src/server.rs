@@ -28,12 +28,12 @@ use tracing::{Span, debug, info, info_span, instrument};
 
 use restate_core::{TaskCenter, TaskKind, cancellation_watcher};
 use restate_time_util::DurationExt;
+use restate_ty::protobuf::IngressStatus;
 use restate_types::config::IngressOptions;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::net::address::{HttpIngressPort, ListenerPort, SocketAddress};
 use restate_types::net::listener::Listeners;
-use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 

@@ -13,6 +13,7 @@ test-util = []
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 prost = { workspace = true }

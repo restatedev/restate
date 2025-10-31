@@ -14,6 +14,7 @@ use std::sync::Arc;
 use futures::Stream;
 
 use restate_metadata_store::MetadataStoreClient;
+use restate_ty::metadata::MetadataKind;
 use restate_types::logs::metadata::{ProviderKind, bootstrap_logs_metadata};
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::{
@@ -21,7 +22,6 @@ use restate_types::metadata_store::keys::{
 };
 use restate_types::net::Service;
 use restate_types::net::address::AdvertisedAddress;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, Version};

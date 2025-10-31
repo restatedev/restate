@@ -17,9 +17,9 @@ use tracing::{info, warn};
 use restate_core::ShutdownError;
 use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
 use restate_serde_util::ByteCount;
+use restate_ty::protobuf::LogServerStatus;
 use restate_types::config::{Configuration, LogServerOptions};
 use restate_types::health::HealthStatus;
-use restate_types::protobuf::common::LogServerStatus;
 
 use super::writer::LogStoreWriter;
 use super::{DATA_CF, DB_NAME, METADATA_CF};

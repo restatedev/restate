@@ -13,6 +13,7 @@ test-util = [
   "restate-core-derive",
   "restate-metadata-store/test-util",
   "restate-types/test-util",
+  "restate-ty/test-util",
   "tokio/test-util"
 ]
 
@@ -23,6 +24,7 @@ restate-core-derive = { workspace = true, optional = true }
 restate-futures-util = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-time-util = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 ahash = { workspace = true }

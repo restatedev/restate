@@ -124,7 +124,7 @@ mod mocks {
     };
     use restate_types::schema::service::test_util::MockServiceMetadataResolver;
     use restate_types::schema::service::{
-        HandlerMetadata, ServiceMetadata, ServiceMetadataResolver,
+        HandlerMetadata, HandlerMetadataType, ServiceMetadata, ServiceMetadataResolver,
     };
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
@@ -160,7 +160,9 @@ mod mocks {
                     handler_name.to_string(),
                     HandlerMetadata {
                         name: handler_name.to_string(),
-                        ty: invocation_target_metadata.target_ty.into(),
+                        ty: HandlerMetadataType::from_invocation_target(
+                            invocation_target_metadata.target_ty,
+                        ),
                         documentation: None,
                         metadata: Default::default(),
                         idempotency_retention: None,

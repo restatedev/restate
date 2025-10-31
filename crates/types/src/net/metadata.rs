@@ -8,13 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::bail;
 use bytes::Bytes;
-use enum_map::Enum;
-use prost_dto::{FromProst, IntoProst};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use strum::EnumIter;
+
+use restate_ty::metadata::MetadataKind;
 
 use crate::Version;
 use crate::Versioned;
@@ -79,50 +77,6 @@ impl WireDecode for MetadataUpdate {
         Self: Sized,
     {
         codec::decode_as_flexbuffers(buf, protocol_version)
-    }
-}
-
-/// The kind of versioned metadata that can be synchronized across nodes.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    Enum,
-    EnumIter,
-    Serialize,
-    Deserialize,
-    derive_more::Display,
-    strum::EnumCount,
-    IntoProst,
-    FromProst,
-)]
-#[prost(target = "crate::protobuf::common::MetadataKind")]
-pub enum MetadataKind {
-    NodesConfiguration,
-    Schema,
-    PartitionTable,
-    Logs,
-}
-
-// todo remove once prost_dto supports TryFromProst
-impl TryFrom<crate::protobuf::common::MetadataKind> for MetadataKind {
-    type Error = anyhow::Error;
-
-    fn try_from(value: crate::protobuf::common::MetadataKind) -> Result<Self, Self::Error> {
-        match value {
-            crate::protobuf::common::MetadataKind::Unknown => bail!("unknown metadata kind"),
-            crate::protobuf::common::MetadataKind::NodesConfiguration => {
-                Ok(MetadataKind::NodesConfiguration)
-            }
-            crate::protobuf::common::MetadataKind::Schema => Ok(MetadataKind::Schema),
-            crate::protobuf::common::MetadataKind::PartitionTable => {
-                Ok(MetadataKind::PartitionTable)
-            }
-            crate::protobuf::common::MetadataKind::Logs => Ok(MetadataKind::Logs),
-        }
     }
 }
 

@@ -17,7 +17,6 @@ use bytestring::ByteString;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
 use rand::Rng;
-use restate_types::retries::RetryPolicy;
 use tonic::transport::Channel;
 use tonic::{Code, Status};
 use tracing::{debug, instrument, trace};
@@ -29,14 +28,15 @@ use restate_metadata_server_grpc::grpc::new_metadata_server_client;
 use restate_metadata_store::{
     MetadataStore, MetadataStoreClient, ProvisionError, ReadError, WriteError,
 };
+use restate_ty::metadata::MetadataKind;
 use restate_types::config::Configuration;
 use restate_types::errors::ConversionError;
 use restate_types::errors::SimpleStatus;
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::address::{AdvertisedAddress, FabricPort};
 use restate_types::net::connect_opts::CommonClientConnectionOptions;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
+use restate_types::retries::RetryPolicy;
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
 
