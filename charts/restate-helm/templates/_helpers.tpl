@@ -14,7 +14,7 @@ app.kubernetes.io/version: {{ .Values.version | default .Chart.Version | quote }
 {{- end }}
 
 {{- define "restate.selectorLabels" -}}
-app: {{ include "restate.name" . }}
+app: {{ include "restate.fullname" . }}
 {{- end }}
 
 {{- define "restate.tag" -}}
