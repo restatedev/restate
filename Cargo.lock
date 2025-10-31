@@ -8030,6 +8030,7 @@ dependencies = [
  "bytestring",
  "enum-map",
  "prost 0.14.1",
+ "restate-encoding",
  "restate-invoker-api",
  "restate-storage-api",
  "restate-types",
