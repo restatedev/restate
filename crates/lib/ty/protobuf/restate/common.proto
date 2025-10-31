@@ -1,0 +1,127 @@
+// Copyright (c) 2024 - Restate Software, Inc., Restate GmbH
+//
+// This file is part of the Restate service protocol, which is
+// released under the MIT license.
+//
+// You can find a copy of the license in file LICENSE in the root
+// directory of this repository or package, or at
+// https://github.com/restatedev/proto/blob/main/LICENSE
+
+syntax = "proto3";
+
+package restate.common;
+
+enum ProtocolVersion {
+  ProtocolVersion_UNKNOWN = 0;
+  reserved 1;
+  // Released in v1.2. Support dropped in v1.5.0
+  // V1 = 1;
+  // [Native RPC] Released in >= v1.3.3
+  V2 = 2;
+}
+
+message NodeId {
+  uint32 id = 1;
+  optional uint32 generation = 2;
+}
+
+message GenerationalNodeId {
+  uint32 id = 1;
+  uint32 generation = 2;
+}
+
+// Partition Processor leadership epoch number
+message LeaderEpoch { uint64 value = 1; }
+
+// Log sequence number
+message Lsn { uint64 value = 1; }
+
+// A generic type for versioned metadata
+message Version { uint32 value = 1; }
+
+// The handle name or type tag of the message. For every service there must be
+// exactly one message handler implementation.
+enum ServiceTag {
+  reserved 1 to 25, 40 to 43, 50 to 53, 60, 61, 80 to 85  ;
+  ServiceTag_UNKNOWN = 0;
+  // LogServer
+  LOG_SERVER_DATA_SERVICE = 26;
+  LOG_SERVER_META_SERVICE = 27;
+
+  // ReplicatedLoglet
+  SEQUENCER_DATA_SERVICE = 44;
+  SEQUENCER_META_SERVICE = 45;
+  // Partition Processor
+  PARTITION_MANAGER_SERVICE = 54;
+  PARTITION_LEADER_SERVICE = 55;
+
+  // Failure detector
+  GOSSIP_SERVICE = 62;
+
+  // Data fusion
+  REMOTE_DATA_FUSION_SERVICE = 86;
+
+  // Metadata management
+  METADATA_MANAGER_SERVICE = 100;
+}
+
+// ** Health & Per-role Status
+
+enum NodeStatus {
+  NodeStatus_UNKNOWN = 0;
+  // The node has joined the cluster and is fully operational.
+  ALIVE = 1;
+  // The node is not fully running yet.
+  STARTING_UP = 2;
+  // The node is performing a graceful shutdown.
+  SHUTTING_DOWN = 3;
+}
+
+enum NodeRpcStatus {
+  NodeRpcStatus_UNKNOWN = 0;
+  NodeRpcStatus_READY = 1;
+  NodeRpcStatus_STARTING_UP = 2;
+  NodeRpcStatus_STOPPING = 3;
+}
+
+enum WorkerStatus {
+  WorkerStatus_UNKNOWN = 0;
+  WorkerStatus_READY = 1;
+  WorkerStatus_STARTING_UP = 2;
+}
+
+enum AdminStatus {
+  AdminStatus_UNKNOWN = 0;
+  AdminStatus_READY = 1;
+  AdminStatus_STARTING_UP = 2;
+}
+
+enum LogServerStatus {
+  LogServerStatus_UNKNOWN = 0;
+  LogServerStatus_READY = 1;
+  LogServerStatus_STARTING_UP = 2;
+  LogServerStatus_FAILSAFE = 3;
+  LogServerStatus_STOPPING = 4;
+}
+
+enum MetadataServerStatus {
+  MetadataServerStatus_UNKNOWN = 0;
+  MetadataServerStatus_STARTING_UP = 1;
+  MetadataServerStatus_AWAITING_PROVISIONING = 2;
+  MetadataServerStatus_MEMBER = 3;
+  MetadataServerStatus_STANDBY = 4;
+}
+
+enum IngressStatus {
+  IngressStatus_UNKNOWN = 0;
+  IngressStatus_READY = 1;
+  IngressStatus_STARTING_UP = 2;
+}
+
+enum MetadataKind {
+  MetadataKind_UNKNOWN = 0;
+  NODES_CONFIGURATION = 1;
+  SCHEMA = 2;
+  PARTITION_TABLE = 3;
+  LOGS = 4;
+}
