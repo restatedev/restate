@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU8, NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -545,6 +545,25 @@ pub struct SnapshotsOptions {
     ///
     /// A retry policy for dealing with retryable object store errors.
     pub object_store_retry_policy: RetryPolicy,
+
+    /// # Experimental: Snapshot retention count
+    ///
+    /// EXPERIMENTAL (v1.6): Number of most recent snapshots to retain. Older snapshots will be
+    /// deleted automatically. If you enable this for the first time, historic snapshots created
+    /// before this setting was used will not be deleted.
+    ///
+    /// WARNING: Enabling this feature upgrades the snapshot tracking format. Only enable if all
+    /// cluster nodes run a compatible version. Downgrading will forget the tracked snapshots and
+    /// revert to v1.5.x behavior.
+    ///
+    /// Default: `None` (unlimited retention, uses V1 format)
+    // todo(v1.7): Rename to `retain_snapshots` and mark stable
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experimental_retain_snapshots: Option<NonZeroU8>,
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub enable_cleanup: bool,
 }
 
 impl Default for SnapshotsOptions {
@@ -555,6 +574,9 @@ impl Default for SnapshotsOptions {
             snapshot_interval_num_records: None,
             object_store: Default::default(),
             object_store_retry_policy: Self::default_retry_policy(),
+            experimental_retain_snapshots: None,
+            #[cfg(any(test, feature = "test-util"))]
+            enable_cleanup: true,
         }
     }
 }

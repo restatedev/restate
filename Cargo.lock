@@ -7818,6 +7818,7 @@ dependencies = [
  "static_assertions",
  "strum",
  "tempfile",
+ "test-log",
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",
