@@ -21,11 +21,10 @@ use restate_types::logs::Lsn;
 use restate_types::nodes_config::ClusterFingerprint;
 
 use super::{
-    LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotError, SnapshotErrorKind,
-    SnapshotFormatVersion, SnapshotRepository,
+    LocalPartitionSnapshot, PartitionSnapshotMetadata, PartitionSnapshotStatus, SnapshotError,
+    SnapshotErrorKind, SnapshotFormatVersion, SnapshotRepository,
 };
 use crate::PartitionStoreManager;
-use crate::snapshots::ArchivedLsn;
 
 /// Creates a partition store snapshot along with Restate snapshot metadata.
 pub struct SnapshotPartitionTask {
@@ -47,19 +46,24 @@ impl SnapshotPartitionTask {
         skip_all,
         fields(partition_id = %self.partition_id, snapshot_id = %self.snapshot_id)
     )]
-    pub async fn run(self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
+    pub async fn run(self) -> Result<(PartitionId, PartitionSnapshotStatus), SnapshotError> {
         debug!("Creating partition snapshot");
         if let Some(result) = cancellation_token()
             .run_until_cancelled(self.create_snapshot_inner())
             .await
         {
             result
-                .inspect(|metadata| {
-                    info!(archived_lsn = %metadata.min_applied_lsn, "Created partition snapshot");
+                .inspect(|(archived_lsn, metadata)| {
+                    info!(
+                        snapshot_lsn = %metadata.min_applied_lsn,
+                        archived_lsn = %archived_lsn.archived_lsn,
+                        "Created partition snapshot"
+                    );
                 })
                 .inspect_err(|err| {
                     warn!("Create snapshot failed: {}", err);
                 })
+                .map(|r| (r.1.partition_id, r.0))
         } else {
             Err(SnapshotError {
                 partition_id: self.partition_id,
@@ -68,7 +72,9 @@ impl SnapshotPartitionTask {
         }
     }
 
-    async fn create_snapshot_inner(&self) -> Result<PartitionSnapshotMetadata, SnapshotError> {
+    async fn create_snapshot_inner(
+        &self,
+    ) -> Result<(PartitionSnapshotStatus, PartitionSnapshotMetadata), SnapshotError> {
         let snapshot = self
             .partition_store_manager
             .export_partition(
@@ -81,22 +87,24 @@ impl SnapshotPartitionTask {
 
         let metadata = self.metadata(&snapshot, WallClock::recent_ms());
 
-        self.snapshot_repository
+        let archived_lsn = self
+            .snapshot_repository
             .put(&metadata, snapshot.base_dir)
             .await
             .map_err(|e| SnapshotError {
                 partition_id: self.partition_id,
                 kind: SnapshotErrorKind::RepositoryIo(e),
             })?;
+
         if let Some(db) = self
             .partition_store_manager
             .get_partition_db(self.partition_id)
             .await
         {
-            db.note_archived_lsn(ArchivedLsn::from(&metadata));
+            db.note_archived_lsn(archived_lsn.archived_lsn);
         }
 
-        Ok(metadata)
+        Ok((archived_lsn, metadata))
     }
 
     fn metadata(

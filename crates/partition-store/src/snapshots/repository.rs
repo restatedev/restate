@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
+use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
 use object_store::path::Path as ObjectPath;
@@ -35,7 +34,7 @@ use restate_core::Metadata;
 use restate_object_store_util::create_object_store_client;
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
-use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
 use restate_types::time::MillisSinceEpoch;
 
@@ -60,8 +59,8 @@ pub struct SnapshotRepository {
     object_store: Arc<dyn ObjectStore>,
     destination: Url,
     prefix: ObjectPath,
-    /// Ingested snapshots staging location.
     staging_dir: PathBuf,
+    retain_snapshots: Option<std::num::NonZeroU8>,
 }
 
 /// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
@@ -71,12 +70,32 @@ const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
 /// Maximum number of concurrent downloads when getting snapshots from the repository.
 const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 
+/// Maximum number of pending deletions before snapshot creation is suspended. Deleting old
+/// snapshots is handled asynchronously from snapshot uploads as a follow-up metadata update. As
+/// pending deletes are thus persisted, they can be resumed by another process if the cleanup task
+/// fails. If for some reason delete operations are repeatedly failing, we can accumulate up to this
+/// many snapshots before we'll stop producing new snapshots.
+const MAX_PENDING_DELETIONS: usize = 10;
+
+/// Maximum number of failed CAS retries
+const OBJECT_STORE_CAS_RETRIES: usize = 3;
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum LatestSnapshotVersion {
+    #[default]
+    V1,
+    /// V2 adds support for a fixed number of retained snapshots
+    // todo(v1.7): make this the default
+    V2,
+}
+
 #[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LatestSnapshot {
-    pub version: SnapshotFormatVersion,
+    pub version: LatestSnapshotVersion,
 
     pub partition_id: PartitionId,
+    pub log_id: Option<LogId>, // mandatory in LatestSnapshotVersion::V2
 
     /// Restate cluster name which produced the snapshot.
     pub cluster_name: String,
@@ -101,20 +120,66 @@ pub struct LatestSnapshot {
 
     /// The relative path within the snapshot repository where the snapshot data is stored.
     pub path: String,
+
+    /// Retained snapshots ordered from latest to earliest. Introduced in V2 format.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retained_snapshots: Vec<SnapshotReference>,
+
+    /// Snapshots marked for deletion but not yet deleted. Introduced in V2 format.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_deletions: Vec<SnapshotReference>,
+}
+
+#[serde_as]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotReference {
+    pub snapshot_id: SnapshotId,
+    pub min_applied_lsn: Lsn,
+    #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+    pub created_at: jiff::Timestamp,
+    pub path: String,
+}
+
+impl SnapshotReference {
+    fn from_metadata(snapshot: &PartitionSnapshotMetadata) -> Self {
+        SnapshotReference {
+            snapshot_id: snapshot.snapshot_id,
+            min_applied_lsn: snapshot.min_applied_lsn,
+            created_at: snapshot.created_at,
+            path: UniqueSnapshotKey::from_metadata(snapshot).padded_key(),
+        }
+    }
 }
 
 impl LatestSnapshot {
     pub fn from_snapshot(snapshot: &PartitionSnapshotMetadata) -> Self {
         LatestSnapshot {
-            version: snapshot.version,
+            version: LatestSnapshotVersion::V1,
             cluster_name: snapshot.cluster_name.clone(),
             cluster_fingerprint: snapshot.cluster_fingerprint,
             node_name: snapshot.node_name.clone(),
             partition_id: snapshot.partition_id,
+            log_id: Some(snapshot.log_id),
             snapshot_id: snapshot.snapshot_id,
             created_at: snapshot.created_at,
             min_applied_lsn: snapshot.min_applied_lsn,
             path: UniqueSnapshotKey::from_metadata(snapshot).padded_key(),
+            retained_snapshots: vec![],
+            pending_deletions: vec![],
+        }
+    }
+
+    fn get_effective_retained_snapshots(&self) -> Vec<SnapshotReference> {
+        if self.retained_snapshots.is_empty() {
+            // upgrade path from V1 - implicitly the "latest" snapshot is always retained
+            vec![SnapshotReference {
+                snapshot_id: self.snapshot_id,
+                min_applied_lsn: self.min_applied_lsn,
+                created_at: self.created_at,
+                path: self.path.clone(),
+            }]
+        } else {
+            self.retained_snapshots.clone()
         }
     }
 
@@ -147,50 +212,73 @@ impl LatestSnapshot {
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub enum ArchivedLsn {
-    None,
-    Snapshot {
-        // Ordering is intentional: LSN takes priority over elapsed wall clock time for comparisons
-        min_applied_lsn: Lsn,
-        created_at: MillisSinceEpoch,
-    },
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug, Clone, derive_more::Display)]
+#[display("{}", latest_snapshot_id)]
+pub struct PartitionSnapshotStatus {
+    // Field ordering is intentional to naturally order items by LSN
+    pub archived_lsn: Lsn,
+    pub latest_snapshot_lsn: Lsn,
+    pub latest_snapshot_id: SnapshotId,
+    pub log_id: LogId,
+    pub latest_snapshot_created_at: MillisSinceEpoch,
 }
 
-impl ArchivedLsn {
-    pub fn get_min_applied_lsn(&self) -> Lsn {
-        match self {
-            ArchivedLsn::None => Lsn::INVALID,
-            ArchivedLsn::Snapshot {
-                min_applied_lsn, ..
-            } => *min_applied_lsn,
-        }
-    }
-
-    pub fn get_age(&self) -> Duration {
-        match self {
-            ArchivedLsn::None => Duration::MAX,
-            ArchivedLsn::Snapshot { created_at, .. } => {
-                WallClock::recent_ms().duration_since(*created_at)
-            }
+impl PartitionSnapshotStatus {
+    /// Creates a sentinel status indicating no snapshot exists for this partition
+    pub fn none(log_id: LogId) -> Self {
+        use restate_types::logs::SequenceNumber;
+        Self {
+            archived_lsn: Lsn::INVALID,
+            latest_snapshot_lsn: Lsn::INVALID,
+            latest_snapshot_id: SnapshotId::INVALID,
+            log_id,
+            latest_snapshot_created_at: WallClock::recent_ms(),
         }
     }
 }
 
-impl From<&LatestSnapshot> for ArchivedLsn {
+impl From<&LatestSnapshot> for PartitionSnapshotStatus {
     fn from(latest: &LatestSnapshot) -> Self {
-        ArchivedLsn::Snapshot {
-            min_applied_lsn: latest.min_applied_lsn,
-            created_at: latest.created_at.into(),
-        }
-    }
-}
+        let log_id = latest.log_id.unwrap_or_else(|| {
+            warn!(
+                snapshot_id = %latest.snapshot_id,
+                partition_id = %latest.partition_id,
+                "LatestSnapshot V2 metadata with no stored log id, this is probably a bug"
+            );
+            Metadata::with_current(|m| m.partition_table_ref())
+                .get(&latest.partition_id)
+                .map(|p| p.log_id())
+                .unwrap_or_else(|| LogId::default_for_partition(latest.partition_id))
+        });
 
-impl From<&PartitionSnapshotMetadata> for ArchivedLsn {
-    fn from(metadata: &PartitionSnapshotMetadata) -> Self {
-        ArchivedLsn::Snapshot {
-            min_applied_lsn: metadata.min_applied_lsn,
-            created_at: metadata.created_at.into(),
+        let (archived_lsn, latest_snapshot_created_at) = match latest.version {
+            LatestSnapshotVersion::V1 => (latest.min_applied_lsn, latest.created_at.into()),
+            LatestSnapshotVersion::V2 => {
+                // Report the earliest as the archived LSN, enables restoring from any of them
+                let archived_lsn = latest
+                    .retained_snapshots
+                    .iter()
+                    .min_by_key(|s| s.min_applied_lsn)
+                    .map(|s| s.min_applied_lsn)
+                    .unwrap_or(latest.min_applied_lsn);
+
+                let latest_snapshot_created_at = latest
+                    .retained_snapshots
+                    .iter()
+                    .max_by_key(|s| s.min_applied_lsn)
+                    .map(|s| s.created_at.into())
+                    .unwrap_or_else(|| latest.created_at.into());
+
+                (archived_lsn, latest_snapshot_created_at)
+            }
+        };
+
+        PartitionSnapshotStatus {
+            archived_lsn,
+            latest_snapshot_lsn: latest.min_applied_lsn,
+            latest_snapshot_created_at,
+            latest_snapshot_id: latest.snapshot_id,
+            log_id,
         }
     }
 }
@@ -221,7 +309,7 @@ impl UniqueSnapshotKey {
 
 impl SnapshotRepository {
     /// Creates an instance of the repository if a snapshots destination is configured.
-    pub async fn create_if_configured(
+    pub async fn new_from_config(
         snapshots_options: &SnapshotsOptions,
         staging_dir: PathBuf,
     ) -> anyhow::Result<Option<SnapshotRepository>> {
@@ -249,10 +337,14 @@ impl SnapshotRepository {
             destination,
             prefix: ObjectPath::from(prefix),
             staging_dir,
+            retain_snapshots: snapshots_options.experimental_retain_snapshots,
         }))
     }
 
-    /// Write a partition snapshot to the snapshot repository.
+    /// Write a partition snapshot to the snapshot repository
+    ///
+    /// Returns an archived LSN that reflects a successful upload. Depending on snapshot retention
+    /// settings, the archived LSN may reflect an older snapshot than the one which was uploaded.
     #[instrument(
         level = "error",
         err,
@@ -263,11 +355,11 @@ impl SnapshotRepository {
         &self,
         snapshot: &PartitionSnapshotMetadata,
         local_snapshot_path: PathBuf,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<PartitionSnapshotStatus> {
         debug!("Publishing partition snapshot to: {}", self.destination);
 
         let put_result = self
-            .put_snapshot_inner(snapshot, local_snapshot_path.as_path())
+            .put_snapshot_inner(snapshot, local_snapshot_path.as_path(), true)
             .await;
 
         // We only log the error here since (a) it's relatively unlikely for rmdir to fail, and (b)
@@ -278,7 +370,7 @@ impl SnapshotRepository {
             .inspect_err(|e| warn!("Failed to delete local snapshot files: {}", e));
 
         match put_result {
-            Ok(_) => Ok(()),
+            Ok(archived_lsn) => Ok(archived_lsn),
             Err(put_error) => {
                 for filename in put_error.uploaded_files {
                     let path = put_error.full_snapshot_path.child(filename);
@@ -302,8 +394,9 @@ impl SnapshotRepository {
         &self,
         snapshot: &PartitionSnapshotMetadata,
         local_snapshot_path: &Path,
-    ) -> Result<(), PutSnapshotError> {
-        let snapshot_prefix = self.get_base_prefix(snapshot);
+        enable_cleanup: bool,
+    ) -> Result<PartitionSnapshotStatus, PutSnapshotError> {
+        let snapshot_prefix = self.base_prefix(snapshot);
         debug!(
             "Uploading snapshot from {:?} to {}",
             local_snapshot_path, snapshot_prefix
@@ -313,7 +406,7 @@ impl SnapshotRepository {
         let mut buf = BytesMut::new();
         for file in &snapshot.files {
             let filename = file.name.trim_start_matches("/");
-            let key = self.get_snapshot_file(snapshot, filename);
+            let key = self.snapshot_file_path(snapshot, filename);
 
             let put_result = put_snapshot_object(
                 local_snapshot_path.join(filename).as_path(),
@@ -324,11 +417,11 @@ impl SnapshotRepository {
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
-            debug!(etag = put_result.e_tag.unwrap_or_default(), %key, "Put snapshot object completed");
+            debug!(etag = %put_result.e_tag.unwrap_or_default(), %key, "Put snapshot object completed");
             progress.push(file.name.clone());
         }
 
-        let metadata_key = self.get_snapshot_file(snapshot, "metadata.json");
+        let metadata_key = self.snapshot_file_path(snapshot, "metadata.json");
         let metadata_json_payload = PutPayload::from(
             serde_json::to_string_pretty(snapshot).expect("Can always serialize JSON"),
         );
@@ -341,37 +434,44 @@ impl SnapshotRepository {
         progress.push("/metadata.json".to_owned());
 
         debug!(
-            etag = put_result.e_tag.unwrap_or_default(),
             key = %metadata_key,
+            etag = %put_result.e_tag.unwrap_or_default(),
             "Successfully published snapshot metadata",
         );
 
-        let latest_path = self.get_latest_snapshot_pointer(snapshot.partition_id);
+        let latest_path = self.latest_snapshot_pointer_path(snapshot.partition_id);
 
-        // By performing a CAS on the latest snapshot pointer, we can ensure strictly monotonic updates.
         let maybe_stored = self
             .get_latest_snapshot_metadata_for_update(snapshot, &latest_path)
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
-        if maybe_stored.as_ref().is_some_and(|(latest_stored, _)| {
-            latest_stored.min_applied_lsn >= snapshot.min_applied_lsn
-        }) {
-            let repository_latest_lsn = maybe_stored.expect("is some").0.min_applied_lsn;
+
+        if let Some((latest_stored, _)) = &maybe_stored
+            && latest_stored.min_applied_lsn >= snapshot.min_applied_lsn
+        {
             info!(
-                ?repository_latest_lsn,
+                repository_latest_lsn = ?latest_stored.min_applied_lsn,
                 new_snapshot_lsn = ?snapshot.min_applied_lsn,
                 "The newly uploaded snapshot is no newer than the already-stored latest snapshot, will not update latest pointer"
             );
-            return Ok(());
+            return Ok(PartitionSnapshotStatus::from(latest_stored));
         }
 
-        let latest = LatestSnapshot::from_snapshot(snapshot);
-        let latest = PutPayload::from(
-            serde_json::to_string_pretty(&latest)
+        let format_version = self.determine_format_version(maybe_stored.as_ref().map(|(l, _)| l));
+        let new_latest = match format_version {
+            LatestSnapshotVersion::V1 => self.build_latest_v1(snapshot),
+            LatestSnapshotVersion::V2 => self
+                .build_latest_v2(snapshot, maybe_stored.as_ref().map(|(l, _)| l))
+                .map_err(|e| PutSnapshotError::from(e, progress.clone()))?,
+        };
+
+        let latest_payload = PutPayload::from(
+            serde_json::to_string_pretty(&new_latest)
                 .map_err(|e| PutSnapshotError::from(e, progress.clone()))?,
         );
 
-        // The object_store file provider supports create-if-not-exists but not update-version on put
+        // The object_store file provider supports create-if-not-exists but not update-version on
+        // put. The file:// protocol is only be enabled in test because of this.
         let use_conditional_update = !matches!(self.destination.scheme(), "file");
         let conditions = maybe_stored
             .map(|(_, version)| PutOptions {
@@ -383,22 +483,305 @@ impl SnapshotRepository {
             })
             .unwrap_or_else(|| PutOptions::from(PutMode::Create));
 
-        // Note: this call may return an error on concurrent modification. Since we don't expect any
-        // contention (here), and this doesn't cause any correctness issues, we don't bother with
-        // retrying the entire put_snapshot attempt on object_store::Error::Precondition.
         let put_result = self
             .object_store
-            .put_opts(&latest_path, latest, conditions)
+            .put_opts(&latest_path, latest_payload, conditions)
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
         debug!(
-            etag = put_result.e_tag.unwrap_or_default(),
             key = ?latest_path,
+            etag = %put_result.e_tag.unwrap_or_default(),
             "Successfully updated latest snapshot pointer",
         );
 
-        Ok(())
+        if !new_latest.pending_deletions.is_empty() && enable_cleanup {
+            self.spawn_cleanup_task(snapshot.partition_id, new_latest.pending_deletions.clone());
+        }
+
+        Ok(PartitionSnapshotStatus::from(&new_latest))
+    }
+
+    // todo(v1.7): make V2 format the default
+    fn determine_format_version(&self, current: Option<&LatestSnapshot>) -> LatestSnapshotVersion {
+        if self.retain_snapshots.is_some() {
+            if let Some(latest) = current
+                && latest.version == LatestSnapshotVersion::V1
+            {
+                debug!("Upgrading latest snapshot format from V1 to V2");
+            }
+            LatestSnapshotVersion::V2
+        } else {
+            current
+                .map(|l| l.version)
+                .unwrap_or(LatestSnapshotVersion::V1)
+        }
+    }
+
+    fn build_latest_v1(&self, snapshot: &PartitionSnapshotMetadata) -> LatestSnapshot {
+        LatestSnapshot::from_snapshot(snapshot)
+    }
+
+    fn build_latest_v2(
+        &self,
+        snapshot: &PartitionSnapshotMetadata,
+        current: Option<&LatestSnapshot>,
+    ) -> anyhow::Result<LatestSnapshot> {
+        let original_pending_deletions = current
+            .map(|l| l.pending_deletions.clone())
+            .unwrap_or_default();
+
+        if original_pending_deletions.len() >= MAX_PENDING_DELETIONS {
+            warn!(
+                pending_deletions = original_pending_deletions.len(),
+                threshold = MAX_PENDING_DELETIONS,
+                "Pending snapshot deletions exceed threshold. \
+                Check object store connectivity and permissions."
+            );
+        }
+
+        let new_snapshot_ref = SnapshotReference::from_metadata(snapshot);
+
+        let (retained_snapshots, pending_deletions) = match self.retain_snapshots {
+            // if retain-snapshots is unset, we revert to the V1 behavior: keep everything
+            None => (vec![], vec![]),
+            Some(retain_snapshots) => {
+                let mut retained_snapshots = current
+                    .map(|l| l.get_effective_retained_snapshots())
+                    .unwrap_or_default();
+                retained_snapshots.insert(0, new_snapshot_ref.clone());
+                retained_snapshots.sort_by_key(|s| std::cmp::Reverse(s.min_applied_lsn)); // just in case
+
+                let newly_deleted = retained_snapshots
+                    .split_off((retain_snapshots.get() as usize).min(retained_snapshots.len()));
+                let pending_deletions = original_pending_deletions
+                    .into_iter()
+                    .chain(newly_deleted)
+                    .collect();
+
+                (retained_snapshots, pending_deletions)
+            }
+        };
+
+        Ok(LatestSnapshot {
+            version: LatestSnapshotVersion::V2,
+            partition_id: snapshot.partition_id,
+            log_id: Some(snapshot.log_id),
+            cluster_name: snapshot.cluster_name.clone(),
+            cluster_fingerprint: snapshot.cluster_fingerprint,
+            node_name: snapshot.node_name.clone(),
+            created_at: snapshot.created_at,
+            snapshot_id: snapshot.snapshot_id,
+            min_applied_lsn: snapshot.min_applied_lsn,
+            path: new_snapshot_ref.path.clone(),
+            retained_snapshots,
+            pending_deletions,
+        })
+    }
+
+    fn spawn_cleanup_task(
+        &self,
+        partition_id: PartitionId,
+        cleanup_snapshots: Vec<SnapshotReference>,
+    ) {
+        let repository = self.clone();
+        let task_name = format!("snapshot-cleanup-{}", partition_id);
+
+        let _ = restate_core::TaskCenter::spawn_unmanaged_child(
+            restate_core::TaskKind::Disposable,
+            task_name,
+            async move {
+                repository
+                    .cleanup_pending_deletions(partition_id, cleanup_snapshots)
+                    .await;
+                Ok::<(), anyhow::Error>(())
+            },
+        );
+    }
+
+    async fn cleanup_pending_deletions(
+        &self,
+        partition_id: PartitionId,
+        cleanup_snapshots: Vec<SnapshotReference>,
+    ) {
+        let mut successfully_deleted = HashSet::new();
+
+        for snapshot_ref in &cleanup_snapshots {
+            if self
+                .delete_snapshot_files(partition_id, snapshot_ref)
+                .await
+                .is_ok()
+            {
+                successfully_deleted.insert(snapshot_ref.snapshot_id);
+            }
+        }
+
+        if !successfully_deleted.is_empty() {
+            let _ = self
+                .update_latest_post_cleanup(partition_id, successfully_deleted)
+                .await;
+        }
+    }
+
+    async fn delete_snapshot_files(
+        &self,
+        partition_id: PartitionId,
+        snapshot_ref: &SnapshotReference,
+    ) -> anyhow::Result<()> {
+        let metadata_path = self
+            .prefix
+            .child(partition_id.to_string())
+            .child(snapshot_ref.path.as_str())
+            .child("metadata.json");
+
+        let metadata = match self.object_store.get(&metadata_path).await {
+            Ok(data) => {
+                let bytes = data.bytes().await?;
+                serde_json::from_slice::<PartitionSnapshotMetadata>(&bytes)?
+            }
+            Err(object_store::Error::NotFound { .. }) => {
+                // already deleted, this is fine
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut failed_deletes = vec![];
+        for path in metadata
+            .files
+            .iter()
+            .map(|filename| {
+                self.snapshot_file_path(&metadata, filename.name.trim_start_matches("/"))
+            })
+            .chain(std::iter::once(metadata_path))
+        {
+            if let Err(err) = self.object_store.delete(&path).await
+                && !matches!(err, object_store::Error::NotFound { .. })
+            {
+                debug!(%path, "Failed deleting snapshot object: {err}");
+                failed_deletes.push(err);
+            }
+        }
+
+        if failed_deletes.is_empty() {
+            Ok(())
+        } else {
+            info!(
+                %partition_id,
+                snapshot_id = %snapshot_ref.snapshot_id,
+                "Failed to clean up old snapshot; repeated failures will impact the ability to create new snapshots"
+            );
+            Err(anyhow!("Could not fully delete snapshot"))
+        }
+    }
+
+    pub(crate) async fn update_latest_post_cleanup(
+        &self,
+        partition_id: PartitionId,
+        successfully_deleted: HashSet<SnapshotId>,
+    ) -> anyhow::Result<()> {
+        let latest_path = self.latest_snapshot_pointer_path(partition_id);
+
+        for _ in 0..OBJECT_STORE_CAS_RETRIES {
+            let maybe_stored = match self.object_store.get(&latest_path).await {
+                Ok(result) => {
+                    let version = UpdateVersion {
+                        e_tag: result.meta.e_tag.clone(),
+                        version: result.meta.version.clone(),
+                    };
+                    match result.bytes().await {
+                        Ok(bytes) => match serde_json::from_slice::<LatestSnapshot>(&bytes) {
+                            Ok(latest) => Some((latest, version)),
+                            Err(e) => {
+                                debug!(
+                                    %partition_id,
+                                    error = %e,
+                                    "Failed to deserialize latest snapshot metadata during cleanup"
+                                );
+                                None
+                            }
+                        },
+                        Err(e) => {
+                            debug!(
+                                %partition_id,
+                                error = %e,
+                                "Failed to read bytes for latest snapshot metadata during cleanup"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        %partition_id,
+                        error = %e,
+                        "Failed to fetch latest snapshot metadata during cleanup"
+                    );
+                    None
+                }
+            };
+
+            let Some((mut latest, version)) = maybe_stored else {
+                warn!(
+                    %partition_id,
+                    "Unable to read latest snapshot metadata after cleanup",
+                );
+                return Ok(());
+            };
+
+            // We need V2 or newer format for tracking retained snapshots
+            if latest.version == LatestSnapshotVersion::V1 {
+                return Ok(());
+            }
+
+            latest
+                .pending_deletions
+                .retain(|pending| !successfully_deleted.contains(&pending.snapshot_id));
+
+            let latest_payload = PutPayload::from(serde_json::to_string_pretty(&latest)?);
+
+            let use_conditional_update = !matches!(self.destination.scheme(), "file");
+            let conditions = PutOptions {
+                mode: match use_conditional_update {
+                    true => PutMode::Update(version),
+                    false => PutMode::Overwrite,
+                },
+                ..PutOptions::default()
+            };
+
+            match self
+                .object_store
+                .put_opts(&latest_path, latest_payload, conditions)
+                .await
+            {
+                Ok(_) => {
+                    debug!(
+                        partition_id = %partition_id,
+                        removed_count = successfully_deleted.len(),
+                        "Successfully removed snapshots from pending deletions"
+                    );
+                    return Ok(());
+                }
+                Err(object_store::Error::Precondition { .. }) => {
+                    // Retry on CAS conflict
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        partition_id = %partition_id,
+                        error = %e,
+                        "Failed to update pending deletions list"
+                    );
+                    return Err(e.into());
+                }
+            }
+        }
+
+        warn!(
+            partition_id = %partition_id,
+            "Failed to clean up snapshots pending deletion, will resume on next snapshot upload"
+        );
+        anyhow::bail!("Failed to clean up snapshots pending deletion")
     }
 
     /// Discover and download the latest snapshot available. It is the caller's responsibility
@@ -413,7 +796,7 @@ impl SnapshotRepository {
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
-        let latest_path = self.get_latest_snapshot_pointer(partition_id);
+        let latest_path = self.latest_snapshot_pointer_path(partition_id);
 
         let latest = match self.object_store.get(&latest_path).await {
             Ok(result) => result,
@@ -457,7 +840,7 @@ impl SnapshotRepository {
 
         let mut snapshot_metadata: PartitionSnapshotMetadata =
             serde_json::from_slice(&snapshot_metadata.bytes().await?)?;
-        if snapshot_metadata.version != SnapshotFormatVersion::V1 {
+        if !matches!(snapshot_metadata.version, SnapshotFormatVersion::V1) {
             bail!(
                 "Unsupported snapshot format version: {:?}",
                 snapshot_metadata.version
@@ -584,18 +967,21 @@ impl SnapshotRepository {
         }))
     }
 
-    /// Retrieve the latest known LSN to be archived to the snapshot repository.
-    pub async fn get_latest_archived_lsn(
+    /// Retrieve the latest snapshot metadata from the snapshot repository
+    ///
+    /// If there are multiple retained snapshots, the archived LSN will be that of the earliest
+    /// snapshot's LSN. This allows restoring any of the retained snapshots.
+    pub async fn get_latest_snapshot_status(
         &self,
         partition_id: PartitionId,
-    ) -> anyhow::Result<ArchivedLsn> {
-        let latest_path = self.get_latest_snapshot_pointer(partition_id);
+    ) -> anyhow::Result<Option<PartitionSnapshotStatus>> {
+        let latest_path = self.latest_snapshot_pointer_path(partition_id);
 
         let latest = match self.object_store.get(&latest_path).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => {
                 debug!("Latest snapshot data not found in repository");
-                return Ok(ArchivedLsn::None);
+                return Ok(None);
             }
             Err(e) => {
                 return Err(anyhow::Error::new(e).context(format!(
@@ -607,7 +993,7 @@ impl SnapshotRepository {
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
         debug!(partition_id = %partition_id, snapshot_id = %latest.snapshot_id, "Latest snapshot metadata: {:?}", latest);
 
-        Ok(ArchivedLsn::from(&latest))
+        Ok(Some(PartitionSnapshotStatus::from(&latest)))
     }
 
     async fn get_latest_snapshot_metadata_for_update(
@@ -660,30 +1046,26 @@ impl SnapshotRepository {
         }
     }
 
-    /// Construct the full object path to the latest snapshot pointer for a given partition.
-    fn get_latest_snapshot_pointer(&self, partition_id: PartitionId) -> ObjectPath {
-        self.get_partition_snapshots_prefix(partition_id)
+    fn latest_snapshot_pointer_path(&self, partition_id: PartitionId) -> ObjectPath {
+        self.partition_snapshots_prefix(partition_id)
             .child("latest.json")
     }
 
-    /// Construct the prefix relative to the destination root for a given partition's snapshots.
-    fn get_partition_snapshots_prefix(&self, partition_id: PartitionId) -> ObjectPath {
+    fn partition_snapshots_prefix(&self, partition_id: PartitionId) -> ObjectPath {
         self.prefix.child(partition_id.to_string())
     }
 
-    /// Construct the complete snapshot prefix from the base of the object store destination.
-    fn get_base_prefix(&self, snapshot_metadata: &PartitionSnapshotMetadata) -> ObjectPath {
-        self.get_partition_snapshots_prefix(snapshot_metadata.partition_id)
+    fn base_prefix(&self, snapshot_metadata: &PartitionSnapshotMetadata) -> ObjectPath {
+        self.partition_snapshots_prefix(snapshot_metadata.partition_id)
             .child(UniqueSnapshotKey::from_metadata(snapshot_metadata).padded_key())
     }
 
-    /// Construct the full object path for a specific file from the given snapshot.
-    fn get_snapshot_file(
+    fn snapshot_file_path(
         &self,
         snapshot_metadata: &PartitionSnapshotMetadata,
         filename: &str,
     ) -> ObjectPath {
-        self.get_base_prefix(snapshot_metadata).child(filename)
+        self.base_prefix(snapshot_metadata).child(filename)
     }
 }
 
@@ -789,44 +1171,36 @@ async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime};
+
+    use ahash::HashSet;
     use bytes::Bytes;
+    use futures::TryStreamExt;
+    use jiff::Timestamp;
     use object_store::ObjectStoreExt;
     use object_store::path::Path as ObjectPath;
-    use std::sync::Arc;
-    use std::time::SystemTime;
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
     use tracing::info;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tracing_subscriber::{EnvFilter, fmt};
     use url::Url;
 
-    use restate_core::test_env::create_mock_nodes_config;
-    use restate_core::{Metadata, MetadataBuilder, TaskCenter};
+    use restate_clock::time::MillisSinceEpoch;
+    use restate_core::{Metadata, TestCoreEnv};
     use restate_object_store_util::create_object_store_client;
     use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
     use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId};
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
     use restate_types::retries::RetryPolicy;
 
-    use super::{LatestSnapshot, SnapshotRepository, UniqueSnapshotKey};
+    use crate::snapshots::repository::LatestSnapshotVersion;
+
+    use super::{LatestSnapshot, SnapshotReference, SnapshotRepository, UniqueSnapshotKey};
     use super::{PartitionSnapshotMetadata, SnapshotFormatVersion};
 
-    #[restate_core::test]
+    #[test_log::test(restate_core::test)]
     async fn test_overwrite_unparsable_latest() -> anyhow::Result<()> {
-        tracing_subscriber::registry()
-            .with(fmt::layer())
-            .with(EnvFilter::from_default_env())
-            .init();
-
-        let metadata_builder = MetadataBuilder::default();
-        TaskCenter::try_set_global_metadata(metadata_builder.to_metadata());
-        // ensure we have a valid nodes configuration to set the cluster name and fingerprint for
-        // us.
-        metadata_builder
-            .to_metadata()
-            .set(Arc::new(create_mock_nodes_config(1, 1)).into());
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
@@ -852,10 +1226,9 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository =
-            SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().keep())
-                .await?
-                .unwrap();
+        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+            .await?
+            .unwrap();
 
         // Write invalid JSON to latest.json
         let latest_path = destination_dir
@@ -872,7 +1245,7 @@ mod tests {
         Ok(())
     }
 
-    #[restate_core::test]
+    #[test_log::test(restate_core::test)]
     async fn test_put_snapshot_local_filesystem() -> anyhow::Result<()> {
         let snapshots_destination = TempDir::new()?;
         test_put_snapshot(
@@ -884,7 +1257,7 @@ mod tests {
     }
 
     /// For this test to run, set RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME to a writable S3 bucket name
-    #[restate_core::test]
+    #[test_log::test(restate_core::test)]
     async fn test_put_snapshot_s3() -> anyhow::Result<()> {
         let Ok(bucket_name) = std::env::var("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME") else {
             return Ok(());
@@ -893,18 +1266,7 @@ mod tests {
     }
 
     async fn test_put_snapshot(destination: String) -> anyhow::Result<()> {
-        tracing_subscriber::registry()
-            .with(fmt::layer())
-            .with(EnvFilter::from_default_env())
-            .init();
-
-        let metadata_builder = MetadataBuilder::default();
-        TaskCenter::try_set_global_metadata(metadata_builder.to_metadata());
-        // ensure we have a valid nodes configuration to set the cluster name and fingerprint for
-        // us.
-        metadata_builder
-            .to_metadata()
-            .set(Arc::new(create_mock_nodes_config(1, 1)).into());
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
         let snapshot_source = TempDir::new()?;
         let source_dir = snapshot_source.path().to_path_buf();
@@ -944,10 +1306,9 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository =
-            SnapshotRepository::create_if_configured(&opts, TempDir::new().unwrap().keep())
-                .await?
-                .unwrap();
+        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+            .await?
+            .unwrap();
 
         repository.put(&snapshot1, source_dir.clone()).await?;
 
@@ -1012,6 +1373,26 @@ mod tests {
         Ok(())
     }
 
+    async fn mock_snapshot(
+        data: &[u8],
+        lsn: Lsn,
+    ) -> anyhow::Result<(PartitionSnapshotMetadata, PathBuf)> {
+        let snapshot_dir = TempDir::new()?.keep();
+
+        let mut data_file = tokio::fs::File::create(snapshot_dir.join("data.sst")).await?;
+        data_file.write_all(data).await?;
+        data_file.shutdown().await?;
+
+        let mut snapshot = mock_snapshot_metadata(
+            "/data.sst".to_owned(),
+            snapshot_dir.to_string_lossy().to_string(),
+            data.len(),
+        );
+        snapshot.min_applied_lsn = lsn;
+
+        Ok((snapshot, snapshot_dir))
+    }
+
     fn mock_snapshot_metadata(
         file_name: String,
         directory: String,
@@ -1033,7 +1414,6 @@ mod tests {
             log_id: LogId::MIN,
             min_applied_lsn: Lsn::new(1),
             db_comparator_name: "leveldb.BytewiseComparator".to_string(),
-            // this is totally bogus, but it doesn't matter since we won't be importing it into RocksDB
             files: vec![rocksdb::LiveFile {
                 column_family_name: "data-0".to_owned(),
                 name: file_name,
@@ -1048,5 +1428,365 @@ mod tests {
                 largest_seqno: 0,
             }],
         }
+    }
+
+    #[restate_core::test]
+    async fn test_snapshot_retention_v2() -> anyhow::Result<()> {
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+
+        let snapshots_destination = TempDir::new()?;
+        let destination = Url::from_file_path(snapshots_destination.path())
+            .unwrap()
+            .to_string();
+
+        let opts = SnapshotsOptions {
+            destination: Some(destination.clone()),
+            experimental_retain_snapshots: Some(std::num::NonZeroU8::new(3).unwrap()),
+            ..SnapshotsOptions::default()
+        };
+
+        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+            .await?
+            .unwrap();
+
+        let mut snapshots = Vec::new();
+        for i in 1..=4 {
+            let snapshot_source = TempDir::new()?;
+            let source_dir = snapshot_source.path().to_path_buf();
+
+            let data = format!("snapshot-data-{}", i);
+            let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+            data_file.write_all(data.as_bytes()).await?;
+            data_file.shutdown().await?;
+
+            let mut snapshot = mock_snapshot_metadata(
+                "/data.sst".to_owned(),
+                source_dir.to_string_lossy().to_string(),
+                data.len(),
+            );
+            snapshot.min_applied_lsn = Lsn::new(i * 1000);
+
+            repository.put(&snapshot, source_dir).await?;
+            snapshots.push(snapshot);
+        }
+
+        let latest_path = ObjectPath::from(Url::parse(&destination)?.path().to_string())
+            .child(PartitionId::MIN.to_string())
+            .child("latest.json");
+
+        let object_store = create_object_store_client(
+            Url::parse(&destination)?,
+            &ObjectStoreOptions::default(),
+            &RetryPolicy::None,
+        )
+        .await?;
+
+        let latest_data = object_store.get(&latest_path).await?;
+        let latest: LatestSnapshot = serde_json::from_slice(&latest_data.bytes().await?)?;
+
+        assert_eq!(latest.version, LatestSnapshotVersion::V2);
+        assert_eq!(latest.retained_snapshots.len(), 3);
+        assert_eq!(latest.retained_snapshots[0].min_applied_lsn, Lsn::new(4000));
+        assert_eq!(latest.retained_snapshots[1].min_applied_lsn, Lsn::new(3000));
+        assert_eq!(latest.retained_snapshots[2].min_applied_lsn, Lsn::new(2000));
+
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn test_v1_to_v2_migration() -> anyhow::Result<()> {
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+
+        let snapshots_destination = TempDir::new()?;
+        let destination = Url::from_file_path(snapshots_destination.path())
+            .unwrap()
+            .to_string();
+
+        let opts_v1 = SnapshotsOptions {
+            destination: Some(destination.clone()),
+            experimental_retain_snapshots: None,
+            ..SnapshotsOptions::default()
+        };
+
+        let repository_v1 =
+            SnapshotRepository::new_from_config(&opts_v1, TempDir::new().unwrap().keep())
+                .await?
+                .unwrap();
+
+        let snapshot_source = TempDir::new()?;
+        let source_dir = snapshot_source.path().to_path_buf();
+        let data = b"snapshot-data-v1";
+        let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+        data_file.write_all(data).await?;
+        data_file.shutdown().await?;
+
+        let mut snapshot_v1 = mock_snapshot_metadata(
+            "/data.sst".to_owned(),
+            source_dir.to_string_lossy().to_string(),
+            data.len(),
+        );
+        snapshot_v1.min_applied_lsn = Lsn::new(1000);
+
+        repository_v1.put(&snapshot_v1, source_dir.clone()).await?;
+
+        let object_store = create_object_store_client(
+            Url::parse(&destination)?,
+            &ObjectStoreOptions::default(),
+            &RetryPolicy::None,
+        )
+        .await?;
+
+        let latest_path = ObjectPath::from(Url::parse(&destination)?.path().to_string())
+            .child(PartitionId::MIN.to_string())
+            .child("latest.json");
+
+        let latest_data = object_store.get(&latest_path).await?;
+        let latest: LatestSnapshot = serde_json::from_slice(&latest_data.bytes().await?)?;
+        assert_eq!(latest.version, LatestSnapshotVersion::V1);
+
+        let opts_v2 = SnapshotsOptions {
+            destination: Some(destination.clone()),
+            experimental_retain_snapshots: Some(std::num::NonZeroU8::new(2).unwrap()),
+            ..SnapshotsOptions::default()
+        };
+
+        let repository_v2 =
+            SnapshotRepository::new_from_config(&opts_v2, TempDir::new().unwrap().keep())
+                .await?
+                .unwrap();
+
+        let snapshot_source_2 = TempDir::new()?;
+        let source_dir_2 = snapshot_source_2.path().to_path_buf();
+        let data2 = b"snapshot-data-v2";
+        let mut data_file_2 = tokio::fs::File::create(source_dir_2.join("data.sst")).await?;
+        data_file_2.write_all(data2).await?;
+        data_file_2.shutdown().await?;
+
+        let mut snapshot_v2 = mock_snapshot_metadata(
+            "/data.sst".to_owned(),
+            source_dir_2.to_string_lossy().to_string(),
+            data2.len(),
+        );
+        snapshot_v2.min_applied_lsn = Lsn::new(2000);
+
+        repository_v2.put(&snapshot_v2, source_dir_2).await?;
+
+        let latest_data = object_store.get(&latest_path).await?;
+        let latest: LatestSnapshot = serde_json::from_slice(&latest_data.bytes().await?)?;
+        assert_eq!(latest.version, LatestSnapshotVersion::V2);
+        assert_eq!(latest.retained_snapshots.len(), 2);
+
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn test_archived_lsn_v2() -> anyhow::Result<()> {
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+
+        let snapshots_destination = TempDir::new()?;
+        let destination = Url::from_file_path(snapshots_destination.path())
+            .unwrap()
+            .to_string();
+
+        let opts = SnapshotsOptions {
+            destination: Some(destination.clone()),
+            experimental_retain_snapshots: Some(std::num::NonZeroU8::new(3).unwrap()),
+            ..SnapshotsOptions::default()
+        };
+
+        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+            .await?
+            .unwrap();
+
+        for i in 1..=3 {
+            let snapshot_source = TempDir::new()?;
+            let source_dir = snapshot_source.path().to_path_buf();
+
+            let data = format!("snapshot-data-{}", i);
+            let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
+            data_file.write_all(data.as_bytes()).await?;
+            data_file.shutdown().await?;
+
+            let mut snapshot = mock_snapshot_metadata(
+                "/data.sst".to_owned(),
+                source_dir.to_string_lossy().to_string(),
+                data.len(),
+            );
+            snapshot.min_applied_lsn = Lsn::new(i * 1000);
+
+            repository.put(&snapshot, source_dir).await?;
+        }
+
+        let status = repository
+            .get_latest_snapshot_status(PartitionId::MIN)
+            .await?;
+        assert_eq!(
+            status.unwrap().archived_lsn,
+            Lsn::new(1000),
+            "archived LSN = earliest retained snapshot as the safe to trim LSN"
+        );
+
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn test_cleanup() -> anyhow::Result<()> {
+        let _env = TestCoreEnv::create_with_single_node(1, 1).await;
+
+        // Upload snapshots with cleanup disabled, to check pending_deletions
+        let snapshots_destination = TempDir::new()?;
+        let destination = Url::from_file_path(snapshots_destination.path())
+            .unwrap()
+            .to_string();
+
+        let mut opts = SnapshotsOptions {
+            destination: Some(destination.clone()),
+            experimental_retain_snapshots: Some(std::num::NonZeroU8::new(3).unwrap()),
+            enable_cleanup: false,
+            ..SnapshotsOptions::default()
+        };
+
+        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+            .await?
+            .unwrap();
+
+        let mut all_snapshot_paths = Vec::new();
+        for i in 1..=4 {
+            let (snapshot, source_dir) =
+                mock_snapshot(format!("data-{}", i).as_bytes(), Lsn::new(100 * i)).await?;
+            all_snapshot_paths.push(SnapshotReference::from_metadata(&snapshot).path);
+            repository.put(&snapshot, source_dir).await?;
+        }
+
+        // Allow the cleanup task to run
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let latest_path = repository.latest_snapshot_pointer_path(PartitionId::MIN);
+        let partition_prefix = repository.partition_snapshots_prefix(PartitionId::MIN);
+        let result = repository.object_store.get(&latest_path).await?;
+        let mut latest: LatestSnapshot = serde_json::from_slice(&result.bytes().await?)?;
+        assert_eq!(latest.pending_deletions.len(), 1);
+        assert_eq!(latest.retained_snapshots.len(), 3);
+
+        // Enable cleanup, upload another snapshot to trigger spawning a cleanup task
+        opts.enable_cleanup = true;
+        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+            .await?
+            .unwrap();
+
+        let (snapshot, source_dir) = mock_snapshot("data-5".as_bytes(), Lsn::new(500)).await?;
+        all_snapshot_paths.push(SnapshotReference::from_metadata(&snapshot).path);
+        repository.put(&snapshot, source_dir).await?;
+
+        // Allow the cleanup task to run, check that snapshots were cleared
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let result = repository.object_store.get(&latest_path).await?;
+            latest = serde_json::from_slice(&result.bytes().await?)?;
+            if latest.pending_deletions.is_empty() {
+                break;
+            }
+        }
+
+        assert!(latest.pending_deletions.is_empty());
+        assert_eq!(latest.retained_snapshots.len(), 3);
+        assert_eq!(
+            latest
+                .retained_snapshots
+                .iter()
+                .map(|s| s.min_applied_lsn)
+                .collect::<Vec<_>>(),
+            vec![Lsn::new(500), Lsn::new(400), Lsn::new(300)]
+        );
+
+        let full_list: Vec<_> = repository
+            .object_store
+            .list(Some(&partition_prefix))
+            .try_collect()
+            .await?;
+        let repository_snapshot_paths: HashSet<_> = full_list
+            .iter()
+            .filter_map(|obj| {
+                // path should be in form <partition>/lsn_xxx-snap_yyy/data.sst
+                let path_str = obj.location.as_ref();
+                path_str.split('/').find(|s| s.starts_with("lsn_"))
+            })
+            .filter(|p| p.starts_with("lsn_"))
+            .collect();
+        let retained_snapshot_paths: HashSet<_> = latest
+            .retained_snapshots
+            .iter()
+            .map(|s| s.path.as_str())
+            .collect();
+
+        assert_eq!(
+            repository_snapshot_paths,
+            retained_snapshot_paths,
+            "only retained snapshots should exist in object store - uploaded: {:?}, expected to be deleted: {:?}",
+            all_snapshot_paths,
+            all_snapshot_paths
+                .iter()
+                .filter(|p| !retained_snapshot_paths.contains(p.as_str()))
+                .collect::<Vec<_>>()
+        );
+
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn test_archived_lsn_reports_earliest_retained_v2() -> anyhow::Result<()> {
+        use super::PartitionSnapshotStatus;
+
+        // Create a V2 latest snapshot with multiple retained snapshots
+        let latest = LatestSnapshot {
+            version: LatestSnapshotVersion::V2,
+            partition_id: PartitionId::MIN,
+            log_id: Some(LogId::MIN),
+            cluster_name: "test".to_string(),
+            cluster_fingerprint: None,
+            node_name: "node1".to_string(),
+            created_at: Timestamp::from_second(2).unwrap(),
+            snapshot_id: SnapshotId::new(),
+            min_applied_lsn: Lsn::new(3484), // This is the newest snapshot
+            path: "newest".to_string(),
+            retained_snapshots: vec![
+                SnapshotReference {
+                    snapshot_id: SnapshotId::new(),
+                    min_applied_lsn: Lsn::new(3484), // Newest (index 0)
+                    created_at: Timestamp::from_second(2).unwrap(),
+                    path: "snap1".to_string(),
+                },
+                SnapshotReference {
+                    snapshot_id: SnapshotId::new(),
+                    min_applied_lsn: Lsn::new(1342), // Oldest by LSN (last index)
+                    created_at: Timestamp::from_second(0).unwrap(),
+                    path: "snap3".to_string(),
+                },
+                // we intentionally re-order some items within retained - should not influence archived LSN
+                SnapshotReference {
+                    snapshot_id: SnapshotId::new(),
+                    min_applied_lsn: Lsn::new(2839),
+                    created_at: Timestamp::from_second(1).unwrap(),
+                    path: "snap2".to_string(),
+                },
+            ],
+            pending_deletions: vec![],
+        };
+
+        let status = PartitionSnapshotStatus::from(&latest);
+
+        assert_eq!(
+            status.archived_lsn,
+            Lsn::new(1342),
+            "reports the earliest snapshot LSN as archived"
+        );
+
+        assert_eq!(
+            status.latest_snapshot_created_at,
+            MillisSinceEpoch::UNIX_EPOCH + Duration::from_secs(2),
+            "reports the latest retained snapshot's created-at time"
+        );
+
+        Ok(())
     }
 }
