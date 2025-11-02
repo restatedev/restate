@@ -94,7 +94,12 @@ impl Snapshots {
         let archived_lsn = repository
             .get_latest_archived_lsn(partition_id)
             .await
-            .inspect_err(|err| warn!(?partition_id, "Unable to get latest archived LSN: {}", err))
+            .inspect_err(|err| {
+                warn!(
+                    ?partition_id,
+                    "Unable to get archived LSN from snapshot repository: {}", err
+                )
+            })
             .ok()
             .unwrap_or(ArchivedLsn::None);
         db.note_archived_lsn(archived_lsn);

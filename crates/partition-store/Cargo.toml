@@ -68,6 +68,7 @@ rand = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-test = { workspace = true }
 
 [[bench]]
 name = "basic_benchmark"
