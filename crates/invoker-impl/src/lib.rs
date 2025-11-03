@@ -975,7 +975,7 @@ where
                     break;
                 }
             }
-            self.quota.evict(evicted_count);
+            self.quota.evict(cmp::max(evicted_count, 1));
         }
     }
 
