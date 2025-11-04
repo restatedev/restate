@@ -15,8 +15,8 @@ use prost_dto::IntoProst;
 use serde::{Deserialize, Serialize};
 
 use restate_encoding::NetSerde;
+use restate_ty::partitions::{LeaderEpoch, PartitionId};
 
-use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, PlainNodeId, Version};

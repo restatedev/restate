@@ -129,10 +129,11 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
     ) -> Result<Response<GetMetadataResponse>, Status> {
         let request = request.into_inner();
         let metadata = Metadata::current();
-        let kind = request
-            .kind()
-            .try_into()
-            .map_err(|err: anyhow::Error| Status::invalid_argument(err.to_string()))?;
+        let kind = request.kind().try_into().map_err(
+            |err: Box<dyn std::error::Error + Sync + Send + 'static>| {
+                Status::invalid_argument(err.to_string())
+            },
+        )?;
         let mut encoded = BytesMut::new();
         match kind {
             MetadataKind::NodesConfiguration => {

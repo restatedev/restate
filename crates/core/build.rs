@@ -19,11 +19,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(out_dir.join("cluster_ctrl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .extern_path(".restate.common", "::restate_types::protobuf::common")
+        .extern_path(".restate.common", "::restate_ty::protobuf")
         .extern_path(".restate.cluster", "::restate_types::protobuf::cluster")
         .compile_protos(
             &["./protobuf/cluster_ctrl_svc.proto"],
-            &["protobuf", "../types/protobuf"],
+            &["protobuf", "../types/protobuf", "../lib/ty/protobuf"],
         )?;
 
     tonic_prost_build::configure()
@@ -33,11 +33,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(out_dir.join("node_ctl_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .extern_path(".restate.common", "::restate_types::protobuf::common")
+        .extern_path(".restate.common", "::restate_ty::protobuf")
         .extern_path(".restate.cluster", "::restate_types::protobuf::cluster")
         .compile_protos(
             &["./protobuf/node_ctl_svc.proto"],
-            &["protobuf", "../types/protobuf"],
+            &["protobuf", "../types/protobuf", "../lib/ty/protobuf"],
         )?;
 
     tonic_prost_build::configure()
@@ -52,14 +52,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .file_descriptor_set_path(out_dir.join("core_node_svc_descriptor.bin"))
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .extern_path(".restate.common", "::restate_types::protobuf::common")
+        .extern_path(".restate.common", "::restate_ty::protobuf")
         .extern_path(".restate.node", "::restate_types::protobuf::node")
         .compile_protos(
             &[
                 "./protobuf/restate/network.proto",
                 "./protobuf/core_node_svc.proto",
             ],
-            &["protobuf", "../types/protobuf"],
+            &["protobuf", "../types/protobuf", "../lib/ty/protobuf"],
         )?;
 
     Ok(())

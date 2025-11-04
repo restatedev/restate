@@ -14,9 +14,10 @@ use bytes::BytesMut;
 use restate_encoding::NetSerde;
 use serde::{Deserialize, Serialize};
 
-use crate::storage::{
+use restate_ty::storage::{
     EncodedPolyBytes, PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode,
 };
+
 use crate::time::NanosSinceEpoch;
 
 use super::{KeyFilter, Keys, MatchKeyQuery};

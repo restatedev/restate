@@ -18,56 +18,23 @@ use ahash::{HashMap, HashMapExt};
 use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
-use restate_encoding::BilrostNewType;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use smallvec::SmallVec;
+
+pub use restate_ty::logs::SegmentIndex;
+use restate_ty::metadata::MetadataKind;
 
 use super::LogletId;
 use super::builder::LogsBuilder;
 use crate::config::Configuration;
 use crate::logs::{LogId, Lsn, SequenceNumber};
 use crate::metadata::GlobalMetadata;
-use crate::net::metadata::{MetadataContainer, MetadataKind};
+use crate::net::metadata::MetadataContainer;
 use crate::replicated_loglet::ReplicatedLogletParams;
 use crate::replication::ReplicationProperty;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, Version, Versioned, flexbuffers_storage_encode_decode};
-
-// Starts with 0 being the oldest loglet in the chain.
-#[derive(
-    Default,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    Hash,
-    Serialize,
-    Deserialize,
-    derive_more::From,
-    derive_more::Into,
-    derive_more::Display,
-    derive_more::Debug,
-    BilrostNewType,
-)]
-#[repr(transparent)]
-#[serde(transparent)]
-#[debug("{}", _0)]
-pub struct SegmentIndex(pub(crate) u32);
-
-impl SegmentIndex {
-    pub const OLDEST: SegmentIndex = SegmentIndex(0);
-
-    pub fn next(&self) -> SegmentIndex {
-        SegmentIndex(
-            self.0
-                .checked_add(1)
-                .expect("we should never create more than 2^32 segments"),
-        )
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct LogletRef<P> {

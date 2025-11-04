@@ -17,6 +17,7 @@ restate-workspace-hack = { workspace = true }
 
 restate-errors = { workspace = true, optional = true }
 restate-serde-util = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 assert2 = { workspace = true, optional = true }

@@ -30,14 +30,14 @@ use restate_core::{
 use restate_metadata_server_grpc::grpc::MetadataServerSnapshot;
 use restate_metadata_store::serialize_value;
 use restate_rocksdb::RocksError;
+use restate_ty::metadata::MetadataKind;
+use restate_ty::protobuf::MetadataServerStatus;
 use restate_types::config::Configuration;
 use restate_types::errors::{ConversionError, GenericError};
 use restate_types::health::HealthStatus;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
-use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::{PlainNodeId, Version};
 
 use crate::grpc::handler::MetadataServerHandler;

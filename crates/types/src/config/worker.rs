@@ -18,9 +18,9 @@ use tracing::warn;
 
 use restate_serde_util::NonZeroByteCount;
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
+use restate_ty::partitions::PartitionId;
 
 use super::{CommonOptions, ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder};
-use crate::identifiers::PartitionId;
 use crate::rate::Rate;
 use crate::retries::RetryPolicy;
 

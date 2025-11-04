@@ -53,6 +53,7 @@ use restate_partition_store::snapshots::{
 };
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_time_util::DurationExt;
+use restate_ty::metadata::MetadataKind;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::config::Configuration;
@@ -63,7 +64,6 @@ use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::net::partition_processor::PartitionLeaderService;
 use restate_types::net::partition_processor_manager::{
     ControlProcessor, ControlProcessors, CreateSnapshotRequest, CreateSnapshotResponse,

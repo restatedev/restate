@@ -19,7 +19,8 @@ use tracing::debug;
 
 use restate_bifrost::Bifrost;
 use restate_storage_api::deduplication_table::DedupInformation;
-use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey, partitioner};
+use restate_ty::partitions::partitioner;
+use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, SpanRelation};
 use restate_types::live;
 use restate_types::message::MessageIndex;

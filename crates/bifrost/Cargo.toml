@@ -22,6 +22,7 @@ restate-futures-util = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true, optional = true }
 restate-test-util = { workspace = true, optional = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 ahash = { workspace = true }
