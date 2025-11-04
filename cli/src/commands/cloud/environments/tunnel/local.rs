@@ -14,118 +14,120 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
+use http::{
+    Uri,
+    uri::{PathAndQuery, Scheme},
+};
 use restate_cli_util::CliContext;
 use restate_cloud_tunnel_client::client::{HandlerNotification, ServeError};
 use restate_types::retries::RetryPolicy;
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, error, info, info_span};
-use url::Url;
 
-use crate::cli_env::CliEnv;
 use crate::clients::cloud::generated::DescribeEnvironmentResponse;
 
-use super::renderer::{LocalRenderer, TunnelRenderer};
+use super::renderer::TunnelRenderer;
 
 const HTTP_VERSION: http::HeaderName =
     http::HeaderName::from_static("x-restate-tunnel-http-version");
-const HTTP_VERSION_11: http::HeaderValue = http::HeaderValue::from_static("HTTP/1.1");
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_local(
-    env: &CliEnv,
+    no_local: bool,
+    alpn_client: reqwest::Client,
     h1_client: reqwest::Client,
     h2_client: reqwest::Client,
     bearer_token: &str,
     environment_info: DescribeEnvironmentResponse,
-    opts: &super::Tunnel,
+    tunnel_name: String,
     tunnel_renderer: Arc<TunnelRenderer>,
 ) -> Result<(), ServeError> {
-    let port = if let Some(port) = opts.local_port {
-        port
-    } else {
+    if no_local {
         return Ok(());
-    };
+    }
 
-    let retry_policy = RetryPolicy::exponential(
-        Duration::from_millis(10),
-        2.0,
-        None,
-        Some(Duration::from_secs(12)),
+    let resolver = hickory_resolver::Resolver::builder_tokio().unwrap().build();
+
+    let tunnel_urls = resolver
+        .srv_lookup(environment_info.tunnel_srv)
+        .await
+        .map_err(|err| ServeError::Connection(err.into()))?
+        .iter()
+        .map(|record| {
+            Uri::builder()
+                .scheme(Scheme::HTTPS)
+                .path_and_query(PathAndQuery::from_static("/"))
+                .authority(format!("{}:{}", record.target(), record.port()).as_str())
+                .build()
+                .map_err(|err| ServeError::Connection(err.into()))
+        })
+        .collect::<std::result::Result<Vec<Uri>, ServeError>>()?;
+
+    tunnel_renderer.local.target_connected.store(
+        tunnel_urls.len().min(64) as u8,
+        std::sync::atomic::Ordering::Relaxed,
     );
 
-    let url = Url::parse(&format!("http://localhost:{port}")).unwrap();
+    let mut futures: FuturesUnordered<_> = tunnel_urls.into_iter().enumerate().map(async |(tunnel_index, tunnel_url)| {
+        let alpn_client = alpn_client.clone();
+        let h1_client = h1_client.clone();
+        let h2_client = h2_client.clone();
 
-    let handler = restate_cloud_tunnel_client::client::Handler::<(), ()>::new(
-        hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
-            let client = if req.headers().get(HTTP_VERSION) == Some(&HTTP_VERSION_11) {
-                &h1_client
-            } else {
-                &h2_client
-            };
-            do_proxy(client, &url, req)
-        }),
-        CliContext::get().connect_timeout(),
-        &environment_info.environment_id,
-        &environment_info.signing_public_key,
-        bearer_token,
-        opts.tunnel_name.clone(),
-        {
-            let tunnel_renderer = tunnel_renderer.clone();
-            Some(move |notification| match notification {
-                HandlerNotification::Started {
-                    proxy_port,
-                    tunnel_url,
-                    tunnel_name,
-                } => {
-                    tunnel_renderer.local.get_or_init(|| {
-                        LocalRenderer::new(
-                            proxy_port,
-                            tunnel_url,
-                            tunnel_name,
-                            environment_info.name.clone(),
-                            port,
-                        )
-                    });
+        let retry_policy = RetryPolicy::exponential(
+            Duration::from_millis(10),
+            2.0,
+            None,
+            Some(Duration::from_secs(12)),
+        );
 
-                    tunnel_renderer.clear_error();
-                }
-                HandlerNotification::RequestIdentityError(err) => {
-                    tunnel_renderer.store_error(format!("Request identity error, are you discovering from the right environment?\n  {err}"));
-                }
-                HandlerNotification::Error(err) => {
-                    tunnel_renderer.store_error(err);
-                }
-                HandlerNotification::Request => {
-                    tunnel_renderer.clear_error();
-                }
-            })
-        },
-    )?;
+        let handler = restate_cloud_tunnel_client::client::Handler::<(), ()>::new(
+            hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
+                do_proxy(&alpn_client, &h1_client, &h2_client, req)
+            }),
+            CliContext::get().connect_timeout(),
+            &environment_info.environment_id,
+            &environment_info.signing_public_key,
+            bearer_token,
+            Some(tunnel_name.clone()),
+            {
+                let tunnel_renderer = tunnel_renderer.clone();
+                Some(move |notification| match notification {
+                    HandlerNotification::Started {
+                        ..
+                    } => {
+                        tunnel_renderer.local.set_connected(tunnel_index, true);
+                        tunnel_renderer.clear_error();
+                    }
+                    HandlerNotification::RequestIdentityError(err) => {
+                        tunnel_renderer.store_error(format!("Request identity error, are you discovering from the right environment?\n  {err}"));
+                    }
+                    HandlerNotification::Error(err) => {
+                        tunnel_renderer.store_error(err);
+                    }
+                    HandlerNotification::Request => {
+                        tunnel_renderer.clear_error();
+                    }
+                })
+            },
+        )?;
 
-    retry_policy
-        .retry_if(
+        retry_policy.retry_if(
             || {
-                let tunnel_url = tunnel_renderer
-                    .local
-                    .get()
-                    // use the url reported by the active tunnel session, if there has been one
-                    .map(|l| l.tunnel_url.as_str())
-                    // or use the one the user specifically requested
-                    .or(opts.tunnel_url.as_deref())
-                    // or just use the configured base url
-                    .unwrap_or(env.config.cloud.tunnel_base_url.as_str())
-                    .parse()
-                    .unwrap();
-
+                let tunnel_url = tunnel_url.clone();
                 let handler = handler.clone();
 
                 async move {
-                    Err(handler
+                    let err = handler
                         .serve(
                             tunnel_url,
                             CancellationToken::new(),
                             CancellationToken::new(),
                         )
-                        .await)
+                        .await;
+
+                    Err(err)
                 }
             },
             |err: &ServeError| {
@@ -133,10 +135,7 @@ pub(crate) async fn run_local(
                     return false;
                 }
 
-                if tunnel_renderer.local.get().is_none() {
-                    // no point retrying if we've never had a success; leave that up to the user
-                    return false;
-                };
+                tunnel_renderer.local.set_connected(tunnel_index, false);
 
                 let err = match err.source() {
                     Some(source) => format!("{err}, retrying\n  Caused by: {source}"),
@@ -146,52 +145,115 @@ pub(crate) async fn run_local(
 
                 true
             },
-        )
-        .await
+        ).await
+    }).collect();
+
+    futures.next().await.unwrap()
 }
 
 fn do_proxy(
-    client: &reqwest::Client,
-    destination: &Url,
+    alpn_client: &reqwest::Client,
+    h1_client: &reqwest::Client,
+    h2_client: &reqwest::Client,
     req: http::Request<hyper::body::Incoming>,
-) -> impl Future<Output = Result<http::Response<reqwest::Body>, reqwest::Error>>
-+ Send
-+ Sync
-// we require this fancy new syntax to promise rustc that the future does not capture the client
-+ use<> {
-    let url = if let Some(path) = req.uri().path_and_query() {
-        destination.join(path.as_str()).unwrap()
-    } else {
-        destination.clone()
+) -> impl Future<Output = Result<http::Response<reqwest::Body>, reqwest::Error>> + 'static + use<> {
+    let (mut head, body) = req.into_parts();
+
+    let Some(path_and_query) = head.uri.path_and_query() else {
+        error!(uri = %head.uri, "Tunnel request was missing path");
+        return std::future::ready(Ok(http::Response::builder()
+            .status(http::StatusCode::BAD_REQUEST)
+            .body(reqwest::Body::default())
+            .unwrap()))
+        .left_future();
     };
 
-    let span = info_span!("client_proxy", destination = %url);
+    let destination =
+        match restate_cloud_tunnel_client::util::parse_tunnel_destination(path_and_query) {
+            Ok(destination) => destination,
+            Err(message) => {
+                error!(uri = %head.uri, "Tunnel request had an invalid path ({})", message);
+                return std::future::ready(Ok(http::Response::builder()
+                    .status(http::StatusCode::BAD_REQUEST)
+                    .body(reqwest::Body::default())
+                    .unwrap()))
+                .left_future();
+            }
+        };
 
-    let (head, body) = req.into_parts();
+    head.uri = destination;
 
-    let request = client
-        .request(head.method, url)
+    let client = match (
+        head.uri.scheme_str(),
+        head.headers
+            .get(HTTP_VERSION)
+            .map(http::HeaderValue::as_bytes),
+    ) {
+        // https urls will use an alpn client which supports http2 via alpn and http1.1, unless the user requested a particular version
+        (Some("https"), None) => {
+            // we don't want to force HTTP2 as we don't know if the destination accepts it
+            // a request with HTTP_11 can still end up using h2 if the alpn agrees
+            head.version = http::Version::HTTP_11;
+            alpn_client
+        }
+        // cleartext requests where the user didn't request a specific version; use http2 prior-knowledge
+        (_, None) => {
+            head.version = http::Version::HTTP_2;
+            h2_client
+        }
+        // https or cleartext requests where the user requested http2; use http2
+        // prior-knowledge for cleartext, h2 in alpn otherwise
+        (_, Some(b"HTTP/2.0")) => {
+            head.version = http::Version::HTTP_2;
+            h2_client
+        }
+        // https or cleartext requests where the user requested http1.1; use http1.1
+        // will not use h2 even if the alpn supports it
+        (_, Some(b"HTTP/1.1")) => {
+            head.version = http::Version::HTTP_11;
+            h1_client
+        }
+        (_, Some(other)) => {
+            error!(uri = %head.uri, "Tunnel request had an invalid x-restate-tunnel-http-version ({})", String::from_utf8_lossy(other));
+            return std::future::ready(Ok(http::Response::builder()
+                .status(http::StatusCode::BAD_REQUEST)
+                .body(reqwest::Body::default())
+                .unwrap()))
+            .left_future();
+        }
+    };
+
+    let uri = head.uri.to_string();
+
+    let span = info_span!("client_proxy", destination = %uri);
+
+    // let hyper insert this using the real destination
+    head.headers.remove(http::header::HOST);
+
+    let fut = client
+        .request(head.method, uri)
+        .version(head.version)
         .body(reqwest::Body::wrap(body))
-        .headers(head.headers);
+        .headers(head.headers)
+        .send();
 
     async move {
-        let mut result = match request.send().await {
+        match fut.await {
             Ok(result) => {
                 info!("Proxied request with status {}", result.status());
-                result
+
+                Ok(result.into())
             }
             Err(err) => {
                 error!("Failed to proxy request: {}", err);
-                return Err(err);
+
+                Ok(http::Response::builder()
+                    .status(http::StatusCode::BAD_GATEWAY)
+                    .body(reqwest::Body::default())
+                    .unwrap())
             }
-        };
-
-        let mut response = http::Response::builder().status(result.status());
-        if let Some(headers) = response.headers_mut() {
-            std::mem::swap(headers, result.headers_mut())
-        };
-
-        Ok(response.body(reqwest::Body::from(result)).unwrap())
+        }
     }
     .instrument(span)
+    .right_future()
 }

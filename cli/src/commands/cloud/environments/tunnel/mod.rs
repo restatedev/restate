@@ -15,6 +15,7 @@ use anyhow::Result;
 use cling::prelude::*;
 use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
+use rand::seq::IndexedRandom;
 use remote::RemotePort;
 use tokio_util::sync::CancellationToken;
 
@@ -32,18 +33,14 @@ mod renderer;
 #[cling(run = "run_tunnel")]
 #[clap(visible_alias = "expose", visible_alias = "tun")]
 pub struct Tunnel {
-    /// The port of a local service to expose to the Environment
-    #[clap(short = 'l', long)]
-    local_port: Option<u16>,
+    /// Disable inbound requests from the Cloud Environment through the tunnel
+    #[clap(long = "no-local")]
+    no_inbound: bool,
 
     /// Remote port on the Environment to expose on localhost
     /// This argument can be repeated to specify multiple remote ports
     #[clap(short = 'r', long, action = clap::ArgAction::Append)]
     remote_port: Vec<remote::RemotePort>,
-
-    /// If reattaching to a previous tunnel session, the tunnel server to connect to
-    #[clap(long = "tunnel-url")]
-    tunnel_url: Option<String>,
 
     /// A name for the tunnel; a random name will be generated if not provided
     #[clap(long = "tunnel-name")]
@@ -85,8 +82,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
     };
 
     let mut opts = opts.clone();
-    if opts.local_port.is_none() && opts.remote_port.is_empty() {
-        opts.local_port = Some(9080);
+    if opts.remote_port.is_empty() {
         opts.remote_port = vec![RemotePort::Ingress, RemotePort::Admin];
     }
 
@@ -111,6 +107,11 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
 
     let connect_timeout = CliContext::get().connect_timeout();
 
+    let alpn_client = reqwest::Client::builder()
+        .user_agent(user_agent.clone())
+        .connect_timeout(connect_timeout)
+        .build()?;
+
     let h2_client = reqwest::Client::builder()
         .user_agent(user_agent.clone())
         .connect_timeout(connect_timeout)
@@ -132,15 +133,27 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         *crate::EXIT_HANDLER.lock().unwrap() = Some(boxed);
     }
 
-    let tunnel_renderer = Arc::new(renderer::TunnelRenderer::new(&opts.remote_port).unwrap());
+    let tunnel_name = opts.tunnel_name.clone().unwrap_or(
+        String::from_utf8_lossy(mnemonic::MN_WORDS.choose(&mut rand::rng()).unwrap()).to_string(),
+    );
+
+    let tunnel_renderer = Arc::new(
+        renderer::TunnelRenderer::new(
+            tunnel_name.clone(),
+            environment_info.name.clone(),
+            &opts.remote_port,
+        )
+        .unwrap(),
+    );
 
     let local_fut = local::run_local(
-        &env,
+        opts.no_inbound,
+        alpn_client,
         h1_client.clone(),
         h2_client.clone(),
         &bearer_token,
         environment_info,
-        &opts,
+        tunnel_name.clone(),
         tunnel_renderer.clone(),
     );
 
@@ -196,11 +209,14 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
         }
     };
 
-    if let Some(mut renderer) = Arc::into_inner(tunnel_renderer)
-        && let Some(local) = renderer.local.take()
+    if let Some(renderer) = Arc::into_inner(tunnel_renderer)
+        && renderer
+            .local
+            .target_connected
+            .load(std::sync::atomic::Ordering::Relaxed)
+            != 0
     {
         // dropping the renderer will exit the alt screen
-        let (tunnel_url, tunnel_name, port) = local.into_tunnel_details();
         drop(renderer);
         let remote_ports = if opts.remote_port.is_empty() {
             String::new()
@@ -214,7 +230,7 @@ pub async fn run_tunnel(State(env): State<CliEnv>, opts: &Tunnel) -> Result<()> 
             )
         };
         eprintln!(
-            "To retry with the same endpoint:\nrestate cloud env tunnel --local-port {port} --tunnel-url {tunnel_url} --tunnel-name {tunnel_name}{remote_ports}"
+            "To retry with the same tunnel name:\nrestate cloud env tunnel --tunnel-name {tunnel_name}{remote_ports}"
         );
     };
 

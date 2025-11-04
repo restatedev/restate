@@ -9,8 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::hash::Hasher;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::{io::Write, sync::Arc};
 
 use arc_swap::ArcSwapOption;
@@ -31,13 +30,17 @@ use super::remote::RemotePort;
 
 pub(crate) struct TunnelRenderer {
     last_hash: AtomicU64,
-    pub local: OnceLock<LocalRenderer>,
+    pub local: LocalRenderer,
     pub remote: Vec<RemoteRenderer>,
     last_error: ArcSwapOption<String>,
 }
 
 impl TunnelRenderer {
-    pub(crate) fn new(remote_ports: &[RemotePort]) -> std::io::Result<Self> {
+    pub(crate) fn new(
+        tunnel_name: String,
+        environment_name: String,
+        remote_ports: &[RemotePort],
+    ) -> std::io::Result<Self> {
         // Redirect console output to in-memory buffer
         let console = Console::in_memory();
         restate_cli_util::ui::output::set_stdout(console.clone());
@@ -52,7 +55,7 @@ impl TunnelRenderer {
         )?;
         Ok(Self {
             last_hash: AtomicU64::default(),
-            local: OnceLock::new(),
+            local: LocalRenderer::new(tunnel_name, environment_name),
             remote: remote_ports
                 .iter()
                 .map(|p| RemoteRenderer::new(*p))
@@ -93,17 +96,27 @@ impl TunnelRenderer {
             Cell::new("Destination").add_attribute(comfy_table::Attribute::Bold),
         ]);
 
-        if let Some(local) = self.local.get() {
+        let (connected_count, target_connected_count) = self.local.connected_count();
+        if target_connected_count > 0 {
+            let tunnel_color = if connected_count == target_connected_count {
+                comfy_table::Color::Green
+            } else if connected_count == 0 {
+                comfy_table::Color::Red
+            } else {
+                comfy_table::Color::Yellow
+            };
             tunnel_table.add_row(vec![
                 comfy_table::Cell::new(format!(" {} ", stylesheet::HANDSHAKE_ICON))
                     .set_alignment(comfy_table::CellAlignment::Center),
-                format!("tunnel://{}:{}", local.tunnel_name, local.proxy_port)
-                    .as_str()
-                    .into(),
+                Cell::new(format!(
+                    "tunnel://{} ({connected_count}/{target_connected_count} connected)",
+                    self.local.tunnel_name,
+                ))
+                .fg(tunnel_color),
                 " → ".into(),
                 comfy_table::Cell::new(format!(" {} ", stylesheet::HOME_ICON))
                     .set_alignment(comfy_table::CellAlignment::Center),
-                format!("http://localhost:{}", local.port).into(),
+                "your machine".into(),
             ]);
         }
 
@@ -138,12 +151,11 @@ impl TunnelRenderer {
             c_warn!("Error: {last_error}")
         }
 
-        if let Some(local) = self.local.get() {
+        if self.local.target_connected.load(Ordering::Relaxed) > 0 {
             c_tip!(
-                "To discover:\nrestate deployments register tunnel://{}:{}\nThe deployment is only reachable from this Restate Cloud environment ({}).",
-                local.tunnel_name,
-                local.proxy_port,
-                local.environment_name,
+                "To discover a local service:\nrestate deployments register --tunnel-name {} http://localhost:9080\nThe deployment is only reachable from this Restate Cloud environment ({}).",
+                self.local.tunnel_name,
+                self.local.environment_name,
             );
         }
 
@@ -200,36 +212,45 @@ impl TunnelRenderer {
 }
 
 pub(crate) struct LocalRenderer {
-    pub tunnel_url: String,
-    pub proxy_port: u16,
     pub tunnel_name: String,
     pub environment_name: String,
-    pub port: u16,
+    pub connected: AtomicU64,
+    pub target_connected: AtomicU8,
 }
 
 impl LocalRenderer {
-    pub(crate) fn new(
-        proxy_port: u16,
-        tunnel_url: String,
-        tunnel_name: String,
-        environment_name: String,
-        port: u16,
-    ) -> Self {
+    pub(crate) fn new(tunnel_name: String, environment_name: String) -> Self {
         Self {
-            proxy_port,
-            tunnel_url,
             tunnel_name,
             environment_name,
-            port,
+            connected: AtomicU64::new(0),
+            target_connected: AtomicU8::new(0),
         }
     }
 
-    pub(crate) fn into_tunnel_details(mut self) -> (String, String, u16) {
-        (
-            std::mem::take(&mut self.tunnel_url),
-            std::mem::take(&mut self.tunnel_name),
-            self.port,
-        )
+    pub(crate) fn set_connected(&self, tunnel_index: usize, set: bool) {
+        if tunnel_index >= 64 {
+            return;
+        }
+
+        if set {
+            self.connected
+                .fetch_or(1 << tunnel_index, Ordering::Relaxed);
+        } else {
+            self.connected
+                .fetch_and(!(1 << tunnel_index), Ordering::Relaxed);
+        }
+    }
+
+    fn connected_count(&self) -> (u8, u8) {
+        let target_connected_count = self.target_connected.load(Ordering::Relaxed);
+        if target_connected_count == 0 {
+            return (0, 0);
+        }
+
+        let connected_bitmap = self.connected.load(Ordering::Relaxed);
+        let connected_count = connected_bitmap.count_ones() as u8;
+        (connected_count, target_connected_count)
     }
 }
 

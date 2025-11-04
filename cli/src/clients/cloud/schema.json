@@ -1,5 +1,5 @@
 {
-  "openapi": "3.0.3",
+  "openapi": "3.1.0",
   "info": {
     "title": "Restate Cloud API",
     "version": "v1"
@@ -17,7 +17,293 @@
   ],
   "definitions": {
     "GetUserIdentityRequest": {
-      "type": "object"
+      "type": "object",
+      "properties": {}
+    },
+    "ListAccountsRequest": {
+      "type": "object",
+      "properties": {}
+    },
+    "GetUserLimitsRequest": {
+      "type": "object",
+      "properties": {}
+    },
+    "CreateAccountRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "DeleteAccountRequest": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId"
+      ]
+    },
+    "UpdateAccountRequest": {
+      "type": "object",
+      "properties": {
+        "accountId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId"
+      ]
+    },
+    "AccountId": {
+      "description": "Unique account identifier",
+      "example": "acc_1b2DE3f40",
+      "type": "string"
+    },
+    "DescribeAccountRequest": {
+      "type": "object",
+      "properties": {}
+    },
+    "CreateStripePortalSessionRequest": {
+      "type": "object",
+      "properties": {
+        "returnUrl": {
+          "type": "string"
+        }
+      }
+    },
+    "CreateEnvironmentRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "region": {
+          "type": "string"
+        },
+        "tierId": {
+          "type": "string",
+          "enum": [
+            "FREE",
+            "STARTER",
+            "BUSINESS",
+            "PREMIUM"
+          ]
+        },
+        "payment": {
+          "type": "object",
+          "properties": {
+            "successUrl": {
+              "type": "string"
+            },
+            "cancelUrl": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "successUrl",
+            "cancelUrl"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ]
+    },
+    "UpdateEnvironmentTierRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "tierId": {
+          "type": "string",
+          "enum": [
+            "FREE",
+            "STARTER",
+            "BUSINESS",
+            "PREMIUM"
+          ]
+        },
+        "payment": {
+          "type": "object",
+          "properties": {
+            "successUrl": {
+              "type": "string"
+            },
+            "cancelUrl": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "successUrl",
+            "cancelUrl"
+          ]
+        }
+      },
+      "required": [
+        "environmentId",
+        "tierId"
+      ]
+    },
+    "GetAccountLimitsRequest": {
+      "type": "object",
+      "properties": {}
+    },
+    "ListEnvironmentsRequest": {
+      "type": "object",
+      "properties": {}
+    },
+    "DescribeEnvironmentRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ]
+    },
+    "DestroyEnvironmentRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ]
+    },
+    "CreateApiKeyRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "roleId": {
+          "$ref": "#/components/schemas/RoleId"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "roleId"
+      ]
+    },
+    "RoleId": {
+      "description": "A role identifier specifying a particular level of access for a principal.",
+      "example": "rst:role::FullAccess",
+      "type": "string",
+      "enum": [
+        "rst:role::FullAccess",
+        "rst:role::IngressAccess",
+        "rst:role::AdminAccess",
+        "rst:role::CompleteAwakeableAccess",
+        "rst:role::TunnelAccess"
+      ]
+    },
+    "ListApiKeysRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ]
+    },
+    "DescribeApiKeyRequest": {
+      "type": "object",
+      "properties": {
+        "keyId": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "keyId",
+        "environmentId"
+      ]
+    },
+    "DeleteApiKeyRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "keyId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "keyId"
+      ]
+    },
+    "GetEnvironmentLogsRequest": {
+      "type": "object",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "start": {
+          "type": "number",
+          "minimum": 1700000000,
+          "maximum": 2000000000
+        },
+        "end": {
+          "type": "number",
+          "minimum": 1700000000,
+          "maximum": 2000000000
+        }
+      },
+      "required": [
+        "environmentId",
+        "start",
+        "end"
+      ]
+    },
+    "ListAccountSecondaryOwnersRequest": {
+      "type": "object",
+      "properties": {}
+    },
+    "AddAccountSecondaryOwnerRequest": {
+      "type": "object",
+      "properties": {
+        "secondaryOwnerUserId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "secondaryOwnerUserId"
+      ]
+    },
+    "RemoveAccountSecondaryOwnerRequest": {
+      "type": "object",
+      "properties": {
+        "secondaryOwnerUserId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "secondaryOwnerUserId"
+      ]
     },
     "GetUserIdentityResponse": {
       "type": "object",
@@ -28,7 +314,8 @@
       },
       "required": [
         "userId"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ClientError": {
       "type": "object",
@@ -43,7 +330,8 @@
       "required": [
         "code",
         "message"
-      ]
+      ],
+      "additionalProperties": false
     },
     "UnauthorizedError": {
       "type": "object",
@@ -58,7 +346,8 @@
       "required": [
         "code",
         "message"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ServerInternalError": {
       "type": "object",
@@ -73,10 +362,8 @@
       "required": [
         "code",
         "message"
-      ]
-    },
-    "ListAccountsRequest": {
-      "type": "object"
+      ],
+      "additionalProperties": false
     },
     "ListAccountsResponse": {
       "type": "object",
@@ -103,24 +390,40 @@
             "required": [
               "accountId",
               "name"
-            ]
+            ],
+            "additionalProperties": false
           }
         }
       },
       "required": [
         "accounts"
-      ]
+      ],
+      "additionalProperties": false
     },
-    "CreateAccountRequest": {
+    "GetUserLimitsResponse": {
       "type": "object",
       "properties": {
-        "name": {
-          "type": "string"
+        "accounts": {
+          "type": "object",
+          "properties": {
+            "usage": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "usage",
+            "limit"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
-        "name"
-      ]
+        "accounts"
+      ],
+      "additionalProperties": false
     },
     "CreateAccountResponse": {
       "type": "object",
@@ -135,18 +438,8 @@
       "required": [
         "accountId",
         "name"
-      ]
-    },
-    "DeleteAccountRequest": {
-      "type": "object",
-      "properties": {
-        "accountId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "accountId"
-      ]
+      ],
+      "additionalProperties": false
     },
     "DeleteAccountResponse": {
       "type": "object",
@@ -162,28 +455,16 @@
               },
               "required": [
                 "ok"
-              ]
+              ],
+              "additionalProperties": false
             },
             {
               "type": "string"
             }
           ]
         }
-      }
-    },
-    "UpdateAccountRequest": {
-      "type": "object",
-      "properties": {
-        "accountId": {
-          "type": "string"
-        },
-        "name": {
-          "type": "string"
-        }
       },
-      "required": [
-        "accountId"
-      ]
+      "additionalProperties": false
     },
     "UpdateAccountResponse": {
       "type": "object",
@@ -205,26 +486,87 @@
       "required": [
         "accountId",
         "name"
-      ]
+      ],
+      "additionalProperties": false
     },
-    "AccountId": {
-      "type": "string",
-      "description": "Unique account identifier",
-      "example": "acc_1b2DE3f40"
-    },
-    "CreateEnvironmentRequest": {
+    "DescribeAccountResponse": {
       "type": "object",
       "properties": {
-        "name": {
-          "type": "string"
+        "environments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "environmentId": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "tierId": {
+                "type": "string",
+                "enum": [
+                  "FREE",
+                  "STARTER",
+                  "BUSINESS",
+                  "PREMIUM"
+                ]
+              }
+            },
+            "required": [
+              "environmentId",
+              "region",
+              "name",
+              "tierId"
+            ],
+            "additionalProperties": false
+          }
         },
-        "region": {
+        "subscription": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "AWAITING_PAYMENT",
+                "ACTIVE",
+                "INACTIVE"
+              ]
+            },
+            "currentPeriodStart": {
+              "type": "number"
+            },
+            "currentPeriodEnd": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "status",
+            "currentPeriodStart",
+            "currentPeriodEnd"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "environments"
+      ],
+      "additionalProperties": false
+    },
+    "CreateStripePortalSessionResponse": {
+      "type": "object",
+      "properties": {
+        "url": {
           "type": "string"
         }
       },
       "required": [
-        "name"
-      ]
+        "url"
+      ],
+      "additionalProperties": false
     },
     "CreateEnvironmentResponse": {
       "type": "object",
@@ -234,15 +576,50 @@
         },
         "name": {
           "type": "string"
+        },
+        "checkoutUrl": {
+          "type": "string"
         }
       },
       "required": [
         "environmentId",
         "name"
-      ]
+      ],
+      "additionalProperties": false
     },
-    "ListEnvironmentsRequest": {
-      "type": "object"
+    "UpdateEnvironmentTierResponse": {
+      "type": "object",
+      "properties": {
+        "checkoutUrl": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "GetAccountLimitsResponse": {
+      "type": "object",
+      "properties": {
+        "freeEnvironments": {
+          "type": "object",
+          "properties": {
+            "usage": {
+              "type": "number"
+            },
+            "limit": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "usage",
+            "limit"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "freeEnvironments"
+      ],
+      "additionalProperties": false
     },
     "ListEnvironmentsResponse": {
       "type": "object",
@@ -260,30 +637,31 @@
               },
               "name": {
                 "type": "string"
+              },
+              "tierId": {
+                "type": "string",
+                "enum": [
+                  "FREE",
+                  "STARTER",
+                  "BUSINESS",
+                  "PREMIUM"
+                ]
               }
             },
             "required": [
               "environmentId",
               "region",
-              "name"
-            ]
+              "name",
+              "tierId"
+            ],
+            "additionalProperties": false
           }
         }
       },
       "required": [
         "environments"
-      ]
-    },
-    "DescribeEnvironmentRequest": {
-      "type": "object",
-      "properties": {
-        "environmentId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "environmentId"
-      ]
+      ],
+      "additionalProperties": false
     },
     "DescribeEnvironmentResponse": {
       "type": "object",
@@ -324,7 +702,8 @@
             "required": [
               "keyId",
               "environmentId"
-            ]
+            ],
+            "additionalProperties": false
           }
         },
         "ingressBaseUrl": {
@@ -336,8 +715,20 @@
         "tunnelBaseUrl": {
           "type": "string"
         },
+        "tunnelSrv": {
+          "type": "string"
+        },
         "proxyBaseUrl": {
           "type": "string"
+        },
+        "tierId": {
+          "type": "string",
+          "enum": [
+            "FREE",
+            "STARTER",
+            "BUSINESS",
+            "PREMIUM"
+          ]
         }
       },
       "required": [
@@ -350,19 +741,11 @@
         "ingressBaseUrl",
         "adminBaseUrl",
         "tunnelBaseUrl",
-        "proxyBaseUrl"
-      ]
-    },
-    "DestroyEnvironmentRequest": {
-      "type": "object",
-      "properties": {
-        "environmentId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "environmentId"
-      ]
+        "tunnelSrv",
+        "proxyBaseUrl",
+        "tierId"
+      ],
+      "additionalProperties": false
     },
     "DestroyEnvironmentResponse": {
       "type": "object",
@@ -378,43 +761,16 @@
               },
               "required": [
                 "ok"
-              ]
+              ],
+              "additionalProperties": false
             },
             {
               "type": "string"
             }
           ]
         }
-      }
-    },
-    "CreateApiKeyRequest": {
-      "type": "object",
-      "properties": {
-        "environmentId": {
-          "type": "string"
-        },
-        "roleId": {
-          "$ref": "#/components/schemas/RoleId"
-        },
-        "description": {
-          "type": "string"
-        }
       },
-      "required": [
-        "environmentId",
-        "roleId"
-      ]
-    },
-    "RoleId": {
-      "type": "string",
-      "enum": [
-        "rst:role::FullAccess",
-        "rst:role::IngressAccess",
-        "rst:role::AdminAccess",
-        "rst:role::CompleteAwakeableAccess"
-      ],
-      "description": "A role identifier specifying a particular level of access for a principal.",
-      "example": "rst:role::FullAccess"
+      "additionalProperties": false
     },
     "CreateApiKeyResponse": {
       "type": "object",
@@ -449,18 +805,8 @@
         "accountId",
         "apiKey",
         "state"
-      ]
-    },
-    "ListApiKeysRequest": {
-      "type": "object",
-      "properties": {
-        "environmentId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "environmentId"
-      ]
+      ],
+      "additionalProperties": false
     },
     "ListApiKeysResponse": {
       "type": "object",
@@ -480,28 +826,15 @@
             "required": [
               "keyId",
               "environmentId"
-            ]
+            ],
+            "additionalProperties": false
           }
         }
       },
       "required": [
         "apiKeys"
-      ]
-    },
-    "DescribeApiKeyRequest": {
-      "type": "object",
-      "properties": {
-        "keyId": {
-          "type": "string"
-        },
-        "environmentId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "keyId",
-        "environmentId"
-      ]
+      ],
+      "additionalProperties": false
     },
     "DescribeApiKeyResponse": {
       "type": "object",
@@ -535,22 +868,8 @@
         "environmentId",
         "accountId",
         "state"
-      ]
-    },
-    "DeleteApiKeyRequest": {
-      "type": "object",
-      "properties": {
-        "environmentId": {
-          "type": "string"
-        },
-        "keyId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "environmentId",
-        "keyId"
-      ]
+      ],
+      "additionalProperties": false
     },
     "DeleteApiKeyResponse": {
       "type": "object",
@@ -566,37 +885,16 @@
               },
               "required": [
                 "ok"
-              ]
+              ],
+              "additionalProperties": false
             },
             {
               "type": "string"
             }
           ]
         }
-      }
-    },
-    "GetEnvironmentLogsRequest": {
-      "type": "object",
-      "properties": {
-        "environmentId": {
-          "type": "string"
-        },
-        "start": {
-          "type": "number",
-          "minimum": 1700000000,
-          "maximum": 2000000000
-        },
-        "end": {
-          "type": "number",
-          "minimum": 1700000000,
-          "maximum": 2000000000
-        }
       },
-      "required": [
-        "environmentId",
-        "start",
-        "end"
-      ]
+      "additionalProperties": false
     },
     "GetEnvironmentLogsResponse": {
       "type": "object",
@@ -616,16 +914,15 @@
             "required": [
               "unixNanos",
               "line"
-            ]
+            ],
+            "additionalProperties": false
           }
         }
       },
       "required": [
         "lines"
-      ]
-    },
-    "ListAccountSecondaryOwnersRequest": {
-      "type": "object"
+      ],
+      "additionalProperties": false
     },
     "ListAccountSecondaryOwnersResponse": {
       "type": "object",
@@ -635,22 +932,31 @@
           "items": {
             "type": "string"
           }
+        },
+        "secondaryOwners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "userId": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "userId"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [
-        "secondaryOwnersUserIds"
-      ]
-    },
-    "AddAccountSecondaryOwnerRequest": {
-      "type": "object",
-      "properties": {
-        "secondaryOwnerUserId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "secondaryOwnerUserId"
-      ]
+        "secondaryOwnersUserIds",
+        "secondaryOwners"
+      ],
+      "additionalProperties": false
     },
     "AddAccountSecondaryOwnerResponse": {
       "type": "object",
@@ -664,18 +970,8 @@
       },
       "required": [
         "secondaryOwnersUserIds"
-      ]
-    },
-    "RemoveAccountSecondaryOwnerRequest": {
-      "type": "object",
-      "properties": {
-        "secondaryOwnerUserId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "secondaryOwnerUserId"
-      ]
+      ],
+      "additionalProperties": false
     },
     "RemoveAccountSecondaryOwnerResponse": {
       "type": "object",
@@ -689,7 +985,8 @@
       },
       "required": [
         "secondaryOwnersUserIds"
-      ]
+      ],
+      "additionalProperties": false
     }
   },
   "$schema": "http://json-schema.org/draft-07/schema#"

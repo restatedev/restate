@@ -56,6 +56,7 @@ dialoguer = { workspace = true }
 dirs = { version = "5.0" }
 figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
+hickory-resolver = "0.25.2"
 http = { workspace = true }
 hyper = { workspace = true }
 humantime = { workspace = true }
@@ -63,8 +64,10 @@ indicatif = "0.17.7"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }
 json-patch = "2.0.0"
+mnemonic = "1.1.1"
 octocrab = { version = "0.44.0", features = ["stream"] }
 open = "5.1.2"
+rand = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
 rustls = { workspace = true, features = ["aws-lc-rs"]}
 serde = { workspace = true }
