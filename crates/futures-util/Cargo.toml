@@ -11,6 +11,7 @@ publish = false
 restate-workspace-hack = { workspace = true }
 
 anyhow = { workspace = true }
+async-channel = { workspace = true }
 futures = { workspace = true }
 pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
