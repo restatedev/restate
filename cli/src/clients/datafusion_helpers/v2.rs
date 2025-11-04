@@ -37,7 +37,7 @@ pub async fn find_active_invocations_simple(
     client: &DataFusionHttpClient,
     filter: &str,
 ) -> Result<Vec<SimpleInvocation>> {
-    let query = format!("SELECT id, target, status FROM sys_invocation WHERE {filter}");
+    let query = format!("SELECT id, target FROM sys_invocation_status WHERE {filter}");
     Ok(client.run_json_query::<SimpleInvocation>(query).await?)
 }
 

@@ -10,14 +10,13 @@
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
-use crate::clients::{self, AdminClientInterface, collect_and_split_futures};
+use crate::clients::{self, AdminClientInterface, batch_execute};
 use crate::ui::invocations::render_simple_invocation_list;
 
-use crate::commands::invocations::create_query_filter;
+use crate::commands::invocations::{create_query_filter, DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT};
 use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
 use comfy_table::{Attribute, Cell, Color, Table};
-use futures::TryFutureExt;
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
 
@@ -34,7 +33,7 @@ pub struct RestartAsNew {
     /// * `virtualObjectName/key/handler`
     query: String,
     /// Limit the number of fetched invocations
-    #[clap(long, default_value = "500")]
+    #[clap(long, default_value = "DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT")]
     limit: usize,
 }
 
@@ -56,35 +55,34 @@ pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) 
         );
     };
 
-    render_simple_invocation_list(&invocations);
+    render_simple_invocation_list(&invocations, DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT);
 
     // Get the invocation and confirm
     confirm_or_exit("Are you sure you want to restart these invocations?")?;
 
     // Restart invocations
     let (restarted, failed_to_restart) =
-        collect_and_split_futures(invocations.into_iter().map(|invocation| invocation.id).map(
-            |invocation_id| async {
-                client
-                    .restart_invocation(&invocation_id)
-                    .map_err(anyhow::Error::from)
-                    .and_then(|e| async { e.into_body().map_err(anyhow::Error::from).await })
-                    .await
-                    .map(|response| (invocation_id.clone(), response.new_invocation_id))
-                    .map_err(|e| (invocation_id, e))
-            },
-        ))
+        batch_execute(client, invocations, |client, invocation| async move {
+            let envelope = client
+                .restart_invocation(&invocation.id)
+                .await
+                .map_err(anyhow::Error::from)?;
+            let response = envelope.into_body().await.map_err(anyhow::Error::from)?;
+            Ok(response.new_invocation_id)
+        })
         .await;
+    let succeeded_count = restarted.len();
+    let failed_count = failed_to_restart.len();
 
     c_println!();
-    c_success!("Restarted invocations:");
+    c_success!("Restarted {} invocations:", succeeded_count);
 
     // Print success
     let mut invocations_table = Table::new_styled();
     invocations_table.set_styled_header(vec!["OLD ID", "NEW ID"]);
-    for (old_id, restart_as_new_response) in restarted {
+    for (old_inv, restart_as_new_response) in restarted {
         invocations_table.add_row(vec![
-            Cell::new(&old_id),
+            Cell::new(&old_inv.id),
             Cell::new(restart_as_new_response).add_attribute(Attribute::Bold),
         ]);
     }
@@ -96,13 +94,19 @@ pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) 
         c_warn!("Failed to restart:");
         let mut failed_to_restart_table = Table::new_styled();
         failed_to_restart_table.set_styled_header(vec!["ID", "REASON"]);
-        for (id, reason) in failed_to_restart {
-            failed_to_restart_table
-                .add_row(vec![Cell::new(&id), Cell::new(reason).fg(Color::DarkRed)]);
+        for (inv, reason) in failed_to_restart {
+            failed_to_restart_table.add_row(vec![
+                Cell::new(&inv.id),
+                Cell::new(reason).fg(Color::DarkRed),
+            ]);
         }
         c_indent_table!(0, failed_to_restart_table);
 
-        return Err(anyhow!("Failed to restart some invocations"));
+        return Err(anyhow!(
+            "Failed to restart {} invocations out of {}",
+            failed_count,
+            failed_count + succeeded_count
+        ));
     }
 
     Ok(())
