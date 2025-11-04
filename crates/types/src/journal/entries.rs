@@ -12,11 +12,15 @@
 
 use super::*;
 
+use std::fmt;
+
+use restate_ty::invocation::ServiceId;
+use restate_ty::journal::EntryIndex;
+
 use crate::errors::{InvocationError, InvocationErrorCode};
-use crate::identifiers::{EntryIndex, IdempotencyId, ServiceId};
+use crate::identifiers::IdempotencyId;
 use crate::invocation::Header;
 use crate::time::MillisSinceEpoch;
-use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Entry {

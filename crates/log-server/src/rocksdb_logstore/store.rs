@@ -17,6 +17,7 @@ use tracing::trace;
 
 use restate_bifrost::loglet::OperationError;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
+use restate_ty::protobuf::LogServerStatus;
 use restate_types::GenerationalNodeId;
 use restate_types::health::HealthStatus;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
@@ -24,7 +25,6 @@ use restate_types::net::log_server::{
     Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
     RecordStatus, Records, Seal, Store, Trim,
 };
-use restate_types::protobuf::common::LogServerStatus;
 
 use super::keys::{KeyPrefixKind, MARKER_KEY, MetadataKey};
 use super::record_format::DataRecordDecoder;

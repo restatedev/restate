@@ -17,6 +17,7 @@ grpc-server = ["tonic/server"]
 restate-workspace-hack = { workspace = true }
 
 restate-types = { workspace = true }
+restate-ty = { workspace = true }
 
 bytes = { workspace = true }
 bytestring = { workspace = true }

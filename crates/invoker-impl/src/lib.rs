@@ -1671,10 +1671,11 @@ mod tests {
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_test_util::check;
     use restate_time_util::FriendlyDuration;
+    use restate_ty::invocation::ServiceRevision;
     use restate_types::config::InvokerOptionsBuilder;
     use restate_types::deployment::{DeploymentAddress, Headers};
     use restate_types::errors::{InvocationError, codes};
-    use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceRevision};
+    use restate_types::identifiers::{LeaderEpoch, PartitionId};
     use restate_types::invocation::ServiceType;
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;

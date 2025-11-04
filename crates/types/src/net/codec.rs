@@ -18,7 +18,7 @@ use bytes::Bytes;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::protobuf::common::ProtocolVersion;
+use restate_ty::net::ProtocolVersion;
 
 #[derive(thiserror::Error, Debug)]
 pub enum EncodeError {

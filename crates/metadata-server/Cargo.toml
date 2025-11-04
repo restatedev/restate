@@ -19,6 +19,7 @@ restate-metadata-server-grpc = { workspace = true, features = ["grpc-client", "g
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-time-util = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

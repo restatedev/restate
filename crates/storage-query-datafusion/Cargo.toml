@@ -21,6 +21,7 @@ restate-partition-store = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"]  }
 restate-storage-api = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 ahash = { workspace = true }                                                    # Required to due a yanked version used by datafusion

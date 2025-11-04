@@ -16,10 +16,11 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
 
-use restate_types::errors::{GenericError, IdDecodeError, InvocationError};
-use restate_types::identifiers::{
-    AwakeableIdentifier, ExternalSignalIdentifier, IdempotencyId, InvocationId, ServiceId,
+use restate_ty::identifiers::{
+    AwakeableIdentifier, ExternalSignalIdentifier, IdDecodeError, IdempotencyId, InvocationId,
 };
+use restate_ty::invocation::ServiceId;
+use restate_types::errors::{GenericError, InvocationError};
 use restate_types::invocation::Header;
 use restate_types::journal_v2::encoding::DecodingError;
 use restate_types::journal_v2::lite::{

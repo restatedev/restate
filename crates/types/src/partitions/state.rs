@@ -15,9 +15,9 @@ use tokio::sync::futures::Notified;
 use tokio::sync::{Notify, watch};
 
 use restate_encoding::NetSerde;
+use restate_ty::partitions::{LeaderEpoch, PartitionId};
 
 use crate::cluster_state::ClusterState;
-use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::{Lsn, SequenceNumber};
 use crate::partitions::PartitionConfiguration;
 use crate::{GenerationalNodeId, Merge, PlainNodeId, Version};

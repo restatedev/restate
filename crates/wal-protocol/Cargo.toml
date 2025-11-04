@@ -16,6 +16,7 @@ restate-workspace-hack = { workspace = true }
 
 restate-invoker-api = { workspace = true }
 restate-storage-api = { workspace = true }
+restate-ty = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }

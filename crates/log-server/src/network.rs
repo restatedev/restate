@@ -22,13 +22,13 @@ use tracing::trace;
 
 use restate_core::cancellation_token;
 use restate_core::network::{BackPressureMode, MessageRouterBuilder, ServiceReceiver};
+use restate_ty::protobuf::LogServerStatus;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::logs::LogletId;
 use restate_types::net::log_server::*;
 use restate_types::nodes_config::StorageState;
-use restate_types::protobuf::common::LogServerStatus;
 
 use crate::loglet_worker::{LogletWorker, LogletWorkerHandle};
 use crate::logstore::LogStore;

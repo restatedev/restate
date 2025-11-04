@@ -17,9 +17,11 @@ use bytestring::ByteString;
 use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
 
-use crate::errors::IdDecodeError;
+use restate_ty::identifiers::IdDecodeError;
+use restate_ty::invocation::ServiceId;
+
 use crate::identifiers::{
-    AwakeableIdentifier, ExternalSignalIdentifier, IdempotencyId, InvocationId, ServiceId,
+    AwakeableIdentifier, ExternalSignalIdentifier, IdempotencyId, InvocationId,
 };
 use crate::invocation::{Header, InvocationQuery, InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::raw::{TryFromEntry, TryFromEntryError};

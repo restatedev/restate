@@ -11,12 +11,13 @@
 use std::num::NonZeroU32;
 use std::ops::Deref;
 
+use restate_ty::Version;
+use restate_ty::logs::{LogId, Lsn, SegmentIndex};
+
 use super::metadata::{
     Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, LookupIndex, MaybeSegment,
-    ProviderKind, SealMetadata, SegmentIndex,
+    ProviderKind, SealMetadata,
 };
-use super::{LogId, Lsn};
-use crate::Version;
 use crate::replicated_loglet::ReplicatedLogletParams;
 
 #[derive(Debug, Default, Clone)]
@@ -208,7 +209,7 @@ impl ChainBuilder<'_> {
         match *last_entry.key() {
             key if key < base_lsn => {
                 // append
-                let new_index = SegmentIndex(last_entry.get().index().0 + 1);
+                let new_index = last_entry.get().index().next();
                 if ProviderKind::Replicated == provider {
                     let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
                     self.lookup_index
@@ -235,7 +236,7 @@ impl ChainBuilder<'_> {
                         );
                     }
                 }
-                let new_index = SegmentIndex(last_entry.get().index().0 + 1);
+                let new_index = last_entry.get().index().next();
 
                 if ProviderKind::Replicated == provider {
                     let params = ReplicatedLogletParams::deserialize_from(params.as_bytes())?;
@@ -277,7 +278,7 @@ impl ChainBuilder<'_> {
                 // segment it seals. This is to enable re-entrant sealing on either segments
                 // and still passing the check of segment_index equality in the case of conditional
                 // sealing.
-                let new_index = SegmentIndex(last_entry.get().index().0);
+                let new_index = last_entry.get().index();
                 self.inner
                     .chain
                     .insert(tail_lsn, LogletConfig::new_sealed(new_index, metadata)?);
@@ -300,7 +301,7 @@ impl ChainBuilder<'_> {
                     }
                 }
                 // we inherit the index from the previous segment
-                let new_index = SegmentIndex(last_entry.get().index().0);
+                let new_index = last_entry.get().index();
                 last_entry.insert(LogletConfig::new_sealed(new_index, metadata)?);
                 *self.modified = true;
                 Ok(tail_lsn)
@@ -324,12 +325,14 @@ impl Deref for ChainBuilder<'_> {
 mod tests {
     use std::num::NonZeroU8;
 
+    use googletest::prelude::*;
+
+    use restate_ty::logs::{Lsn, SegmentIndex};
+
+    use super::*;
     use crate::logs::SequenceNumber;
     use crate::logs::metadata::{LogletParams, MaybeSegment, ProviderKind, Segment};
     use crate::{Version, Versioned};
-    use googletest::prelude::*;
-
-    use super::*;
 
     #[test]
     fn test_default_builder() -> googletest::Result<()> {
@@ -344,7 +347,7 @@ mod tests {
             Chain::new(ProviderKind::InMemory, LogletParams::from("test1")),
         )?;
 
-        assert_eq!(chain.tail_index(), SegmentIndex(0));
+        assert_eq!(chain.tail_index(), SegmentIndex::from_raw(0));
 
         let segment = chain.find_segment_for_lsn(Lsn::INVALID);
         assert_that!(
@@ -419,8 +422,8 @@ mod tests {
         assert_eq!(Lsn::OLDEST, chain.head().base_lsn);
         assert_eq!(Lsn::from(10), chain.tail().base_lsn);
 
-        assert_eq!(SegmentIndex(1), chain.tail_index());
-        assert_eq!(SegmentIndex(1), chain.tail().index());
+        assert_eq!(SegmentIndex::from_raw(1), chain.tail_index());
+        assert_eq!(SegmentIndex::from_raw(1), chain.tail().index());
 
         // can't, this is a conflict.
         assert_that!(
@@ -465,8 +468,8 @@ mod tests {
         assert_eq!(Lsn::from(10), chain.tail().base_lsn);
         assert_that!(chain.tail().config.kind, eq(ProviderKind::InMemory));
 
-        assert_eq!(SegmentIndex(2), chain.tail_index());
-        assert_eq!(SegmentIndex(2), chain.tail().index());
+        assert_eq!(SegmentIndex::from_raw(2), chain.tail_index());
+        assert_eq!(SegmentIndex::from_raw(2), chain.tail().index());
 
         // Add another segment
         chain.append_segment(
@@ -475,8 +478,8 @@ mod tests {
             LogletParams::from("test5"),
         )?;
         assert_eq!(3, chain.num_segments());
-        assert_eq!(SegmentIndex(3), chain.tail_index());
-        assert_eq!(SegmentIndex(3), chain.tail().index());
+        assert_eq!(SegmentIndex::from_raw(3), chain.tail_index());
+        assert_eq!(SegmentIndex::from_raw(3), chain.tail().index());
         let base_lsns: Vec<_> = chain.iter().map(|s| s.base_lsn).collect();
         assert_that!(
             base_lsns,
@@ -722,11 +725,11 @@ mod tests {
         assert_eq!(1, chain.num_segments());
         assert_eq!(Lsn::from(550), chain.tail().base_lsn);
 
-        assert_eq!(SegmentIndex(5), chain.tail_index());
+        assert_eq!(SegmentIndex::from_raw(5), chain.tail_index());
 
         // sealing the chain at 560
         assert_eq!(
-            Lsn(560),
+            Lsn::from(560),
             chain.seal(Lsn::from(560), &SealMetadata::default())?,
         );
         assert_eq!(2, chain.num_segments());
@@ -734,19 +737,19 @@ mod tests {
         {
             let mut iter = chain.iter();
             let segment = iter.next().unwrap();
-            assert_eq!(Lsn(550), segment.base_lsn);
-            assert_eq!(Some(Lsn(560)), segment.tail_lsn);
-            assert_eq!(SegmentIndex(5), segment.config.index());
+            assert_eq!(Lsn::from(550), segment.base_lsn);
+            assert_eq!(Some(Lsn::from(560)), segment.tail_lsn);
+            assert_eq!(SegmentIndex::from_raw(5), segment.config.index());
             let segment = iter.next().unwrap();
-            assert_eq!(Lsn(560), segment.base_lsn);
+            assert_eq!(Lsn::from(560), segment.base_lsn);
             assert_eq!(None, segment.tail_lsn);
-            assert_eq!(SegmentIndex(5), segment.config.index());
+            assert_eq!(SegmentIndex::from_raw(5), segment.config.index());
         }
 
         // try sealing again the chain at 561
         assert_eq!(
             // we still get the same tail_lsn
-            Lsn(560),
+            Lsn::from(560),
             chain.seal(Lsn::from(561), &SealMetadata::default())?,
         );
 
