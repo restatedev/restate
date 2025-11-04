@@ -36,6 +36,9 @@ pub struct Purge {
     /// * `workflowName/key`
     /// * `workflowName/key/handler`
     query: String,
+    /// Limit the number of fetched invocations
+    #[clap(long, default_value = "500")]
+    limit: usize,
 }
 
 pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
@@ -43,8 +46,9 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
     let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
     let filter = format!(
-        "{} AND status = 'completed'",
-        create_query_filter(&opts.query)
+        "{} AND status = 'completed' LIMIT {}",
+        create_query_filter(&opts.query),
+        opts.limit
     );
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;

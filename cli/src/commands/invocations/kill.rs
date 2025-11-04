@@ -27,6 +27,9 @@ pub struct Kill {
     /// * `workflowName/key`
     /// * `workflowName/key/handler`
     query: String,
+    /// Limit the number of fetched invocations
+    #[clap(long, default_value = "500")]
+    limit: usize,
 }
 
 pub async fn run_kill(state: State<CliEnv>, opts: &Kill) -> Result<()> {
@@ -35,6 +38,7 @@ pub async fn run_kill(state: State<CliEnv>, opts: &Kill) -> Result<()> {
         &Cancel {
             query: opts.query.clone(),
             kill: true,
+            limit: opts.limit,
         },
     )
     .await

@@ -32,6 +32,9 @@ pub struct Pause {
     /// * `virtualObjectName/key`
     /// * `virtualObjectName/key/handler`
     query: String,
+    /// Limit the number of fetched invocations
+    #[clap(long, default_value = "500")]
+    limit: usize,
 }
 
 pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
@@ -54,7 +57,10 @@ pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
         }
     };
     // Filter only by invoked/suspended/paused, this command has no effect on non-completed invocations
-    let filter = format!("{filter} AND status IN ('running', 'backing-off', 'ready')");
+    let filter = format!(
+        "{filter} AND status IN ('running', 'backing-off', 'ready') LIMIT {}",
+        opts.limit
+    );
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {

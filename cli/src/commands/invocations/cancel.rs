@@ -38,6 +38,9 @@ pub struct Cancel {
     /// Ungracefully kill the invocation and its children
     #[clap(long)]
     pub(super) kill: bool,
+    /// Limit the number of fetched invocations
+    #[clap(long, default_value = "500")]
+    pub(super) limit: usize,
 }
 
 pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> {
@@ -45,8 +48,9 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
     let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
     let filter = format!(
-        "{} AND status != 'completed'",
-        create_query_filter(&opts.query)
+        "{} AND status != 'completed' LIMIT {}",
+        create_query_filter(&opts.query),
+        opts.limit
     );
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
