@@ -13,6 +13,11 @@ use axum::routing::get;
 use http::{HeaderValue, StatusCode, Uri, header};
 use http_body_util::Full;
 
+async fn redirect_to_ui(uri: Uri) -> impl IntoResponse {
+    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    Redirect::permanent(&format!("/ui/{}", query))
+}
+
 async fn serve_web_ui(uri: Uri) -> impl IntoResponse {
     let path = uri.path().trim_start_matches("/ui").trim_start_matches('/');
 
@@ -48,20 +53,8 @@ async fn serve_web_ui(uri: Uri) -> impl IntoResponse {
 
 pub(crate) fn web_ui_router() -> axum::Router {
     axum::Router::new()
-        .route(
-            "/",
-            get(|uri: Uri| async move {
-                let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
-                Redirect::permanent(&format!("/ui/{}", query))
-            }),
-        )
-        .route(
-            "/ui",
-            get(|uri: Uri| async move {
-                let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
-                Redirect::permanent(&format!("/ui/{}", query))
-            }),
-        )
+        .route("/", get(redirect_to_ui))
+        .route("/ui", get(redirect_to_ui))
         .route("/ui/", get(serve_web_ui))
         .route("/ui/{*path}", get(serve_web_ui))
 }
