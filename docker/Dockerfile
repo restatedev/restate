@@ -60,6 +60,7 @@ RUN --mount=type=cache,target=/var/cache/sccache \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restatectl target/restatectl && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate target/restate
+RUN cp docker/scripts/no-restate-debug-symbols.sh target/download-restate-debug-symbols.sh
 
 FROM builder AS upload-true
 RUN --mount=type=secret,id=parca --mount=type=cache,target=/var/cache/sccache \
@@ -97,7 +98,7 @@ COPY --from=upload /restate/LICENSE /LICENSE
 # copy OS roots
 COPY --from=upload /etc/ssl /etc/ssl
 COPY --from=upload /restate/target/restate-server /usr/local/bin
-COPY --from=upload /restate/target/*.sh /usr/local/bin
+COPY --from=upload /restate/target/download-restate-debug-symbols.sh /usr/local/bin
 COPY --from=upload /restate/target/restatectl /usr/local/bin
 COPY --from=upload /restate/target/restate /usr/local/bin
 WORKDIR /

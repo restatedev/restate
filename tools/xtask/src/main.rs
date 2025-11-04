@@ -291,7 +291,7 @@ fn generate_table_docs() -> anyhow::Result<()> {
         r"# SQL Introspection API
 
 This page contains the reference of the introspection tables.
-To learn how to access the introspection interface, check out the [introspection documentation](/operate/introspection).
+To learn how to access the introspection interface, check out the [introspection documentation](/services/introspection).
 "
     )?;
 

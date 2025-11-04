@@ -75,6 +75,7 @@ restate-metadata-providers = { workspace = true, features = ["replicated"] }
 restate-node = { workspace = true, features = ["memory-loglet"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+restate-object-store-util = { workspace = true, features = ["test-util"] }
 mock-service-endpoint = { workspace = true }
 
 anyhow = { workspace = true }
