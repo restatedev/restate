@@ -11,7 +11,9 @@
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface, batch_execute};
-use crate::commands::invocations::{create_query_filter, DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT};
+use crate::commands::invocations::{
+    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, create_query_filter,
+};
 use crate::ui::invocations::render_simple_invocation_list;
 
 use anyhow::{Result, anyhow, bail};

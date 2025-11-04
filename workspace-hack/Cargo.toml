@@ -44,6 +44,7 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
+crossbeam-utils = { version = "0.8" }
 datafusion-common = { version = "50", default-features = false, features = ["object_store", "recursive_protection"] }
 datafusion-expr = { version = "50", default-features = false, features = ["recursive_protection"] }
 digest = { version = "0.10", features = ["mac", "std"] }
@@ -171,6 +172,7 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
+crossbeam-utils = { version = "0.8" }
 datafusion-common = { version = "50", default-features = false, features = ["object_store", "recursive_protection"] }
 datafusion-expr = { version = "50", default-features = false, features = ["recursive_protection"] }
 digest = { version = "0.10", features = ["mac", "std"] }

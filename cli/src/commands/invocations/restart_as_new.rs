@@ -13,7 +13,9 @@ use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface, batch_execute};
 use crate::ui::invocations::render_simple_invocation_list;
 
-use crate::commands::invocations::{create_query_filter, DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT};
+use crate::commands::invocations::{
+    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, create_query_filter,
+};
 use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
 use comfy_table::{Attribute, Cell, Color, Table};
