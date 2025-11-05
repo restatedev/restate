@@ -32,6 +32,13 @@ pub struct Resume {
     /// * `virtualObjectName/key`
     /// * `virtualObjectName/key/handler`
     query: String,
+
+    /// When resuming from paused/suspended, provide a deployment id to use to replace the currently pinned deployment id.
+    /// If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id.
+    /// When not provided, the invocation will resume on the pinned deployment id.
+    /// When provided and the invocation is either running, or no deployment is pinned, this operation will fail.
+    #[clap(long)]
+    deployment: Option<String>,
 }
 
 pub async fn run_resume(State(env): State<CliEnv>, opts: &Resume) -> Result<()> {
@@ -58,11 +65,12 @@ pub async fn run_resume(State(env): State<CliEnv>, opts: &Resume) -> Result<()> 
     confirm_or_exit("Are you sure you want to resume these invocations?")?;
 
     // Resume invocations
+    let deployment = opts.deployment.as_deref();
     let (resumed, failed_to_resume) =
         collect_and_split_futures(invocations.into_iter().map(|invocation| invocation.id).map(
             |invocation_id| async {
                 client
-                    .resume_invocation(&invocation_id)
+                    .resume_invocation(&invocation_id, deployment)
                     .map_err(anyhow::Error::from)
                     .await
                     .map(|_| invocation_id.clone())
