@@ -32,4 +32,4 @@ jobs:
           branch: 'main'
           remote-organization-name: 'restatedev'
           remote-repository-name: 'cla-signatures'
-          allowlist: github-actions[bot],dependabot[bot]
+          allowlist: github-actions[bot],dependabot[bot],claude
