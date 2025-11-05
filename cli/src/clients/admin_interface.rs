@@ -55,7 +55,11 @@ pub trait AdminClientInterface {
         id: &str,
     ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>>;
 
-    async fn resume_invocation(&self, id: &str, deployment: Option<&str>) -> reqwest::Result<Envelope<()>>;
+    async fn resume_invocation(
+        &self,
+        id: &str,
+        deployment: Option<&str>,
+    ) -> reqwest::Result<Envelope<()>>;
 
     async fn pause_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
 
@@ -154,7 +158,11 @@ impl AdminClientInterface for AdminClient {
         self.run(reqwest::Method::PATCH, url).await
     }
 
-    async fn resume_invocation(&self, id: &str, deployment: Option<&str>) -> reqwest::Result<Envelope<()>> {
+    async fn resume_invocation(
+        &self,
+        id: &str,
+        deployment: Option<&str>,
+    ) -> reqwest::Result<Envelope<()>> {
         let mut url = self.versioned_url(["invocations", id, "resume"]);
         if let Some(deployment) = deployment {
             url.set_query(Some(&format!("deployment={deployment}")));
