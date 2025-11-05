@@ -1,0 +1,36 @@
+name: "Prepare CI Rust environment"
+description: "Installs rust, protoc, just, some other stuff too"
+runs:
+  using: "composite"
+  steps:
+    - name: Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: clippy
+        rustflags: ""
+        cache: false
+
+    - name: Setup Rust Caching
+      uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
+      with:
+        cache-on-failure: "true"
+
+    - name: Install cargo-hakari
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-hakari
+
+    - name: Disable hakari
+      run: cargo hakari disable
+      shell: bash
+
+    - name: Install protoc
+      uses: ./.github/actions/install-protoc
+
+    - name: Install nextest
+      uses: taiki-e/install-action@v2
+      with:
+        tool: nextest@0.9.98
+
+    - name: Setup just
+      uses: extractions/setup-just@v3
