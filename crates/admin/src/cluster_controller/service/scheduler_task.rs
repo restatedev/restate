@@ -19,12 +19,12 @@ use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher,
 };
 use restate_metadata_store::MetadataStoreClient;
+use restate_ty::metadata::MetadataKind;
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::cluster_state::ClusterState;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partitions::PartitionTable;
 

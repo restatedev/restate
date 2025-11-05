@@ -19,8 +19,9 @@ use restate_storage_api::journal_table::{
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
+use restate_ty::journal::JournalEntryId;
 use restate_types::identifiers::{
-    EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
+    EntryIndex, InvocationId, InvocationUuid, PartitionKey, WithPartitionKey,
 };
 
 use crate::TableKind::Journal;

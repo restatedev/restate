@@ -17,9 +17,9 @@ use bytes::Bytes;
 use futures::FutureExt;
 use tokio::sync::oneshot;
 
+use restate_ty::metadata::MetadataKind;
 use restate_types::net::address::AdvertisedAddress;
 use restate_types::net::address::FabricPort;
-use restate_types::net::metadata::MetadataKind;
 use restate_types::net::{ProtocolVersion, RpcResponse};
 use restate_types::{GenerationalNodeId, Version};
 

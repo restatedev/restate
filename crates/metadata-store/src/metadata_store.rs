@@ -19,6 +19,7 @@ use tokio::time::Instant;
 use tracing::debug;
 
 use restate_time_util::DurationExt;
+use restate_ty::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
 use restate_types::errors::{
     BoxedMaybeRetryableError, GenericError, IntoMaybeRetryable, MaybeRetryableError,
 };
@@ -26,7 +27,6 @@ use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::retries::RetryPolicy;
-use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
 use restate_types::{Version, Versioned};
 
 use crate::metric_definitions::{

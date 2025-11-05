@@ -23,7 +23,6 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
-use restate_types::net::listener::AddressBook;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::Status;
 use ulid::Ulid;
@@ -35,15 +34,16 @@ use restate_metadata_server_grpc::{MetadataServerConfiguration, grpc as protobuf
 pub use restate_metadata_store::{
     MetadataStoreClient, ReadError, ReadModifyWriteError, WriteError,
 };
+use restate_ty::protobuf::MetadataServerStatus;
 use restate_types::config::{Configuration, MetadataClientKind};
 use restate_types::errors::{ConversionError, GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::metadata::{Precondition, VersionedValue};
+use restate_types::net::listener::AddressBook;
 use restate_types::nodes_config::{
     MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration, Role,
 };
-use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_types::{GenerationalNodeId, PlainNodeId, Version};
 

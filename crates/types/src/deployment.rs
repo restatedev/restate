@@ -8,11 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::identifiers::{DeploymentId, LambdaARN};
-use crate::service_protocol::ServiceProtocolVersion;
-use http::{HeaderName, HeaderValue, Uri};
 use std::collections::HashMap;
 use std::fmt;
+
+use http::{HeaderName, HeaderValue, Uri};
+
+use restate_ty::LambdaARN;
+
+use crate::identifiers::DeploymentId;
+use crate::service_protocol::ServiceProtocolVersion;
 
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
@@ -152,30 +156,5 @@ mod mocks {
         pub fn mock_uri(uri: &str) -> Self {
             HttpDeploymentAddress::new(uri.parse().unwrap()).into()
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::identifiers::{ResourceId, TimestampAwareId};
-
-    #[test]
-    fn test_deployment_id_format() {
-        let a = DeploymentId::new();
-        assert!(a.timestamp().as_u64() > 0);
-        let a_str = a.to_string();
-        assert!(a_str.starts_with("dp_"));
-        assert_eq!(a_str.len(), DeploymentId::str_encoded_len(),);
-        assert_eq!(26, a_str.len());
-    }
-
-    #[test]
-    fn test_deployment_roundtrip() {
-        let a = DeploymentId::new();
-        let b: DeploymentId = a.to_string().parse().unwrap();
-        assert_eq!(a, b);
-        assert_eq!(a.to_string(), b.to_string());
     }
 }

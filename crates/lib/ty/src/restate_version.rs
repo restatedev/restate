@@ -120,7 +120,7 @@ impl SemanticRestateVersion {
     /// # Example
     ///
     /// ```
-    /// use restate_types::SemanticRestateVersion;
+    /// use restate_ty::SemanticRestateVersion;
     ///
     /// let mut versions = [
     ///     "1.20.0+c144a98".parse::<SemanticRestateVersion>().unwrap(),
@@ -204,6 +204,11 @@ impl TryFrom<&RestateVersion> for SemanticRestateVersion {
 mod tests {
     use super::*;
     use googletest::prelude::*;
+
+    #[test]
+    fn unknown_version_is_valid_semver() {
+        semver::Version::parse(RestateVersion::unknown().as_str()).unwrap();
+    }
 
     #[test]
     fn restate_semantic_version() {

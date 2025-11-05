@@ -648,11 +648,11 @@ mod tests {
     use tokio_stream::wrappers::ReceiverStream;
 
     use restate_test_util::assert_eq;
+    use restate_ty::metadata::MetadataKind;
     use restate_types::Version;
     use restate_types::config::NetworkingOptions;
     use restate_types::net::address::AdvertisedAddress;
     use restate_types::net::metadata::GetMetadataRequest;
-    use restate_types::net::metadata::MetadataKind;
     use restate_types::net::metadata::MetadataManagerService;
     use restate_types::net::node::GetNodeState;
     use restate_types::net::{

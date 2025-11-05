@@ -43,6 +43,7 @@ restate-node = { workspace = true, features = ["all-metadata-providers"] }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio", "prometheus"] }
+restate-ty = { workspace = true }
 restate-types = { workspace = true, features = ["clap"] }
 restate-admin = { workspace = true }
 
@@ -74,6 +75,7 @@ restate-metadata-providers = { workspace = true, features = ["replicated"] }
 restate-node = { workspace = true, features = ["memory-loglet"] }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+restate-object-store-util = { workspace = true, features = ["test-util"] }
 mock-service-endpoint = { workspace = true }
 
 anyhow = { workspace = true }

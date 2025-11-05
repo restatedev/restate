@@ -21,11 +21,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .server_mod_attribute("metadata_server_svc", "#[cfg(feature = \"grpc-server\")]")
         // allow older protobuf compiler to be used
         .protoc_arg("--experimental_allow_proto3_optional")
-        .extern_path(".restate.common", "::restate_types::protobuf::common")
+        .extern_path(".restate.common", "::restate_ty::protobuf")
         .extern_path(".restate.metadata", "::restate_types::protobuf::metadata")
         .compile_protos(
             &["./proto/metadata_server_svc.proto"],
-            &["proto", "../types/protobuf"],
+            &["proto", "../types/protobuf", "../lib/ty/protobuf"],
         )?;
 
     Ok(())

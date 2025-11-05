@@ -8,10 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZero;
 use std::str::FromStr;
 
 use bytes::{Buf, BufMut};
+
 use restate_encoding::{BilrostNewType, NetSerde};
+
+use crate::base62_util::{base62_encode_fixed_width_u64, base62_max_length_for_type};
+use crate::errors::GenericError;
 
 /// A generational node identifier. Nodes with the same ID but different generations
 /// represent the same node across different instances (restarts) of its lifetime.
@@ -58,8 +63,8 @@ pub enum NodeId {
 #[debug("{}:{}", _0, _1)]
 pub struct GenerationalNodeId(PlainNodeId, u32);
 
-impl From<crate::protobuf::common::GenerationalNodeId> for GenerationalNodeId {
-    fn from(value: crate::protobuf::common::GenerationalNodeId) -> Self {
+impl From<crate::protobuf::GenerationalNodeId> for GenerationalNodeId {
+    fn from(value: crate::protobuf::GenerationalNodeId) -> Self {
         Self(PlainNodeId(value.id), value.generation)
     }
 }
@@ -265,34 +270,34 @@ impl PartialEq<PlainNodeId> for NodeId {
     }
 }
 
-impl From<crate::protobuf::common::NodeId> for NodeId {
-    fn from(node_id: crate::protobuf::common::NodeId) -> Self {
+impl From<crate::protobuf::NodeId> for NodeId {
+    fn from(node_id: crate::protobuf::NodeId) -> Self {
         NodeId::new(node_id.id, node_id.generation)
     }
 }
 
-impl From<NodeId> for crate::protobuf::common::NodeId {
+impl From<NodeId> for crate::protobuf::NodeId {
     fn from(node_id: NodeId) -> Self {
-        crate::protobuf::common::NodeId {
+        crate::protobuf::NodeId {
             id: node_id.id().into(),
             generation: node_id.as_generational().map(|g| g.generation()),
         }
     }
 }
 
-impl From<PlainNodeId> for crate::protobuf::common::NodeId {
+impl From<PlainNodeId> for crate::protobuf::NodeId {
     fn from(node_id: PlainNodeId) -> Self {
         let id: u32 = node_id.into();
-        crate::protobuf::common::NodeId {
+        crate::protobuf::NodeId {
             id,
             generation: None,
         }
     }
 }
 
-impl From<GenerationalNodeId> for crate::protobuf::common::NodeId {
+impl From<GenerationalNodeId> for crate::protobuf::NodeId {
     fn from(node_id: GenerationalNodeId) -> Self {
-        crate::protobuf::common::NodeId {
+        crate::protobuf::NodeId {
             id: node_id.raw_id(),
             generation: Some(node_id.generation()),
         }
@@ -380,8 +385,88 @@ impl PartialEq<NodeId> for GenerationalNodeId {
     }
 }
 
+#[derive(
+    Clone,
+    Copy,
+    derive_more::Debug,
+    derive_more::From,
+    Eq,
+    PartialEq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+#[debug("ClusterFingerprint({_0})")]
+pub struct ClusterFingerprint(NonZero<u64>);
+
+#[derive(Debug, thiserror::Error)]
+#[error("invalid fingerprint value: {0}")]
+pub struct InvalidFingerprint(u64);
+
+impl TryFrom<u64> for ClusterFingerprint {
+    type Error = InvalidFingerprint;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Ok(Self(NonZero::new(value).ok_or(InvalidFingerprint(value))?))
+    }
+}
+
+impl ClusterFingerprint {
+    pub fn generate() -> Self {
+        Self(rand::random())
+    }
+
+    pub fn to_u64(self) -> u64 {
+        self.0.get()
+    }
+}
+
+impl std::fmt::Display for ClusterFingerprint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut buf = [b'0'; base62_max_length_for_type::<u64>()];
+        let written = base62_encode_fixed_width_u64(self.0.get(), &mut buf);
+        // SAFETY; the array was initialised with valid utf8 and base_encode_fixed_width_u64 only writes utf8
+        f.write_str(unsafe { std::str::from_utf8_unchecked(&buf[0..written]) })
+    }
+}
+
+impl FromStr for ClusterFingerprint {
+    type Err = GenericError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let size_to_read = base62_max_length_for_type::<u64>();
+        if s.len() < size_to_read {
+            return Err(format!(
+                "invalid cluster fingerprint: too short (expected at least {} chars, got {})",
+                size_to_read,
+                s.len()
+            )
+            .into());
+        }
+
+        let decoded =
+            base62::decode_alternative(s.trim_start_matches('0')).or_else(|e| match e {
+                // If we trim all zeros and nothing left, we assume there was a
+                // single zero value in the original input.
+                base62::DecodeError::EmptyInput => Ok(0),
+                _ => Err(format!("malformed cluster fingerprint: {e}")),
+            })?;
+        let out = u64::from_be(
+            decoded
+                .try_into()
+                .map_err(|e| format!("malformed cluster fingerprint: {e}"))?,
+        );
+
+        Ok(Self(
+            NonZero::new(out).ok_or("cluster fingerprint must be a non-zero value")?,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
+
     use super::*;
 
     //test display of NodeId and equality
@@ -448,5 +533,21 @@ mod tests {
         assert_eq!(generational1, generational1_3.with_generation(2));
 
         assert!(generational1_3.is_newer_than(generational1));
+    }
+
+    #[test]
+    fn cluster_fingerprint_str_roundtrip() {
+        let fingerprint = ClusterFingerprint::generate();
+        let str = fingerprint.to_string();
+        assert_eq!(11, str.len());
+        assert_eq!(fingerprint, str.parse().unwrap());
+
+        assert!(ClusterFingerprint::from_str("").is_err());
+        assert!(ClusterFingerprint::from_str("5").is_err());
+        assert!(ClusterFingerprint::from_str("00000000000").is_err());
+        assert_eq!(
+            ClusterFingerprint::from_str("01000000000").unwrap(),
+            ClusterFingerprint(NonZeroU64::new(17700569142996992).unwrap())
+        );
     }
 }

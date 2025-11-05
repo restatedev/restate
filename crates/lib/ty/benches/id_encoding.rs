@@ -12,9 +12,9 @@ use std::fmt::Write;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 
-use restate_types::identifiers::AwakeableIdentifier;
-use restate_types::identifiers::InvocationId;
-use restate_types::identifiers::ResourceId;
+use restate_ty::identifiers::AwakeableIdentifier;
+use restate_ty::identifiers::InvocationId;
+use restate_ty::identifiers::ResourceId;
 
 pub fn id_encoding(c: &mut Criterion) {
     c.bench_function("invocation-id-display", |b| {
