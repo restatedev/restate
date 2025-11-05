@@ -201,11 +201,9 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::Feature;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
     use bytestring::ByteString;
-    use enumset::EnumSet;
     use googletest::prelude::*;
     use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_storage_api::invocation_status_table::{
@@ -221,6 +219,7 @@ mod tests {
         SleepCommand, SleepCompletion,
     };
     use restate_types::time::MillisSinceEpoch;
+    use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
     use rstest::rstest;
@@ -264,14 +263,21 @@ mod tests {
         test_env.shutdown().await;
     }
 
-    #[rstest]
     #[restate_core::test]
-    async fn notify_signal_received_before_pinned_deployment(
-        #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
-            Feature,
-        >,
+    async fn notify_signal_received_before_pinned_deployment() {
+        run_notify_signal_received_before_pinned_deployment(SemanticRestateVersion::unknown())
+            .await;
+    }
+
+    #[restate_core::test]
+    async fn notify_signal_received_before_pinned_deployment_journal_v2_enabled() {
+        run_notify_signal_received_before_pinned_deployment(RESTATE_VERSION_1_6_0).await;
+    }
+
+    async fn run_notify_signal_received_before_pinned_deployment(
+        min_restate_version: SemanticRestateVersion,
     ) {
-        let mut test_env = TestEnv::create_with_features(features).await;
+        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
         // Send signal notification before pinned deployment
