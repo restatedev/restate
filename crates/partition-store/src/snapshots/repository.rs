@@ -32,12 +32,12 @@ use url::Url;
 use restate_clock::WallClock;
 use restate_core::Metadata;
 use restate_object_store_util::create_object_store_client;
-use restate_types::SemanticRestateVersion;
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion};
 
 use super::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
 
@@ -521,9 +521,9 @@ impl SnapshotRepository {
 
     fn determine_format_version(&self, current: Option<&LatestSnapshot>) -> LatestSnapshotVersion {
         // V2 is the default from 1.7.0, including pre-releases
-        const GATE_VERSION: SemanticRestateVersion = SemanticRestateVersion::new(1, 6, u64::MAX);
-
-        if SemanticRestateVersion::current() > &GATE_VERSION || self.num_retained.is_some() {
+        if SemanticRestateVersion::current().is_equal_or_newer_than(&RESTATE_VERSION_1_7_0)
+            || self.num_retained.is_some()
+        {
             if let Some(latest) = current
                 && latest.version == LatestSnapshotVersion::V1
             {

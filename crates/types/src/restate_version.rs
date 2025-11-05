@@ -162,6 +162,13 @@ impl SemanticRestateVersion {
     pub fn is_equal_or_newer_than(&self, other: &Self) -> bool {
         self.cmp_precedence(other) != std::cmp::Ordering::Less
     }
+
+    /// True if this version is newer than the other version
+    ///
+    /// note that a released version is considered newer than the equivalent dev version
+    pub fn is_newer_than(&self, other: &Self) -> bool {
+        self.cmp_precedence(other) == std::cmp::Ordering::Greater
+    }
 }
 
 impl std::fmt::Display for SemanticRestateVersion {
@@ -199,6 +206,23 @@ impl TryFrom<&RestateVersion> for SemanticRestateVersion {
         Ok(Self(version))
     }
 }
+
+// Version constants
+
+/// Why isn't this value simply v1.6.0? The problem is that we use this value for feature gating,
+/// and we want to be able to test features when we are still on 1.6.0-dev. To make this work, we need
+/// a version X with 1.6.0 >= X && 1.6.0-dev >= X && 1.5.x < X. That's why we chose 1.6.0-dev.
+///
+/// An alternative approach could have been to use v1.5.u64::MAX instead as this version would
+/// fulfill the same inequalities. However, we serialize SemanticRestateVersion by using
+/// [`serde_with::DisplayFromStr`] and this would create quite a long string when one of the
+/// components is `u64::MAX` (translates into 20 characters).
+pub static RESTATE_VERSION_1_6_0: LazyLock<SemanticRestateVersion> =
+    LazyLock::new(|| SemanticRestateVersion::parse("1.6.0-dev").expect("valid semver version"));
+
+/// Why isn't this value simply v1.7.0? See description of [`RESTATE_VERSION_1_6_0`].
+pub static RESTATE_VERSION_1_7_0: LazyLock<SemanticRestateVersion> =
+    LazyLock::new(|| SemanticRestateVersion::parse("1.7.0-dev").expect("valid semver version"));
 
 #[cfg(test)]
 mod tests {

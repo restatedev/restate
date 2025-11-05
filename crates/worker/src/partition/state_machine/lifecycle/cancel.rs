@@ -118,11 +118,10 @@ where
 mod tests {
     use super::*;
 
+    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
-    use crate::partition::state_machine::{Action, Feature};
     use crate::partition::types::InvokerEffectKind;
     use assert2::assert;
-    use enumset::EnumSet;
     use googletest::prelude::*;
     use restate_invoker_api::Effect;
     use restate_storage_api::invocation_status_table::{
@@ -141,8 +140,8 @@ mod tests {
     use restate_types::journal_v2::{CANCEL_SIGNAL, CommandType, Entry, EntryMetadata, EntryType};
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
+    use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::Command;
-    use rstest::rstest;
 
     #[restate_core::test]
     async fn cancel_invoked_invocation() {
@@ -237,7 +236,8 @@ mod tests {
 
     #[restate_core::test]
     async fn cancel_invoked_invocation_without_pinned_deployment_with_journal_table_v2_default() {
-        let mut test_env = TestEnv::create_with_features(Feature::UseJournalTableV2AsDefault).await;
+        let mut test_env =
+            TestEnv::create_with_min_restate_version(RESTATE_VERSION_1_6_0.clone()).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
         // Send signal notification before pinning the deployment
@@ -266,14 +266,22 @@ mod tests {
         test_env.shutdown().await;
     }
 
-    #[rstest]
     #[restate_core::test]
-    async fn cancel_scheduled_invocation_through_notify_signal(
-        #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
-            Feature,
-        >,
+    async fn cancel_scheduled_invocation_through_notify_signal() -> anyhow::Result<()> {
+        run_cancel_scheduled_invocation_through_notify_signal(SemanticRestateVersion::unknown())
+            .await
+    }
+
+    #[restate_core::test]
+    async fn cancel_scheduled_invocation_through_notify_signal_journal_v2_enabled()
+    -> anyhow::Result<()> {
+        run_cancel_scheduled_invocation_through_notify_signal(RESTATE_VERSION_1_6_0.clone()).await
+    }
+
+    async fn run_cancel_scheduled_invocation_through_notify_signal(
+        min_restate_version: SemanticRestateVersion,
     ) -> anyhow::Result<()> {
-        let mut test_env = TestEnv::create_with_features(features).await;
+        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
 
         let invocation_id = InvocationId::mock_random();
         let rpc_id = PartitionProcessorRpcRequestId::new();
@@ -342,14 +350,21 @@ mod tests {
         Ok(())
     }
 
-    #[rstest]
     #[restate_core::test]
-    async fn cancel_inboxed_invocation_through_notify_signal(
-        #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
-            Feature,
-        >,
+    async fn cancel_inboxed_invocation_through_notify_signal() -> anyhow::Result<()> {
+        run_cancel_inboxed_invocation_through_notify_signal(SemanticRestateVersion::unknown()).await
+    }
+
+    #[restate_core::test]
+    async fn cancel_inboxed_invocation_through_notify_signal_journal_v2_enabled()
+    -> anyhow::Result<()> {
+        run_cancel_inboxed_invocation_through_notify_signal(RESTATE_VERSION_1_6_0.clone()).await
+    }
+
+    async fn run_cancel_inboxed_invocation_through_notify_signal(
+        min_restate_version: SemanticRestateVersion,
     ) -> anyhow::Result<()> {
-        let mut test_env = TestEnv::create_with_features(features).await;
+        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
 
         let invocation_target = InvocationTarget::mock_virtual_object();
         let invocation_id = InvocationId::mock_generate(&invocation_target);

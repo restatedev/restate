@@ -408,11 +408,9 @@ impl<CMD> ApplyJournalCommandEffect<'_, CMD> {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition::state_machine::Feature;
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use bytes::Bytes;
-    use enumset::EnumSet;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
     use restate_types::identifiers::{InvocationId, ServiceId};
@@ -420,17 +418,21 @@ mod tests {
         Header, InvocationResponse, InvocationTarget, JournalCompletionTarget, ResponseResult,
     };
     use restate_types::journal_v2::{CallCommand, CallRequest};
+    use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::Command;
-    use rstest::rstest;
 
-    #[rstest]
     #[restate_core::test]
-    async fn update_journal_and_commands_length(
-        #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
-            Feature,
-        >,
-    ) {
-        let mut test_env = TestEnv::create_with_features(features).await;
+    async fn update_journal_and_commands_length() {
+        run_update_journal_and_commands_length(SemanticRestateVersion::unknown()).await;
+    }
+
+    #[restate_core::test]
+    async fn update_journal_and_commands_length_journal_v2_enabled() {
+        run_update_journal_and_commands_length(RESTATE_VERSION_1_6_0.clone()).await;
+    }
+
+    async fn run_update_journal_and_commands_length(min_restate_version: SemanticRestateVersion) {
+        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
         fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
 

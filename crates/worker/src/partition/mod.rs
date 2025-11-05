@@ -16,14 +16,12 @@ pub mod shuffle;
 mod state_machine;
 pub mod types;
 
-use std::env;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use assert2::let_assert;
-use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt};
 use metrics::{SharedString, gauge, histogram};
 use tokio::sync::{mpsc, watch};
@@ -79,7 +77,7 @@ use crate::metric_definitions::{
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
-use crate::partition::state_machine::{ActionCollector, Feature, StateMachine};
+use crate::partition::state_machine::{ActionCollector, StateMachine};
 
 /// Target leader state of the partition processor.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -218,19 +216,12 @@ where
             });
         }
 
-        let mut features = EnumSet::new();
-        // TODO(till) enable this using partition processor version barrier
-        if env::var("RESTATE_EXPERIMENTAL_FEATURE__USE_JOURNAL_V2_BY_DEFAULT").is_ok() {
-            features.insert(Feature::UseJournalTableV2AsDefault);
-        }
-
         let state_machine = StateMachine::new(
             inbox_seq_number,
             outbox_seq_number,
             outbox_head_seq_number,
             partition_store.partition_key_range().clone(),
             min_restate_version,
-            features,
             schema,
         );
 

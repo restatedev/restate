@@ -141,7 +141,7 @@ jobs:
       serviceImage: "ghcr.io/restatedev/test-services-java:main"
       testArtifactOutput: sdk-java-integration-test-journal-table-v2
       envVars: |
-        RESTATE_EXPERIMENTAL_FEATURE__USE_JOURNAL_V2_BY_DEFAULT=true
+        RESTATE_INTERNAL_FORCE_MIN_RESTATE_VERSION=1.6.0-dev
 
   sdk-java-vqueues:
     name: Vqueues Run SDK-Java integration tests
@@ -278,8 +278,9 @@ jobs:
     needs: docker
     steps:
       - name: Set up Docker containerd snapshotter
-        uses: crazy-max/ghaction-setup-docker@v3
+        uses: docker/setup-docker-action@v4
         with:
+          version: "v28.5.2"
           set-host: true
           daemon-config: |
             {
@@ -305,19 +306,14 @@ jobs:
         with:
           testArtifactOutput: e2e-journal-table-v2-test-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
-          # Needed for backward compatibility tests 1.6 -> 1.5
           envVars: |
-            RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
-            RESTATE_EXPERIMENTAL_FEATURE__USE_JOURNAL_V2_BY_DEFAULT=true
-          # Why these tests are disabled?
-          # In restate 1.5 the invoker storage reader will not handle correctly the case where there's no pinned deployment yet
-          # and the journal table used is v2. This doesn't show in the logs, but will simply hang badly the invocation task loop!
-          # These tests trigger this condition!
+            RESTATE_INTERNAL_FORCE_MIN_RESTATE_VERSION=1.6.0-dev
+          # Ignore forward compatibility tests as long as the previous version is not at least v1.6.0-dev. Otherwise,
+          # the previous version will hang at applying the version barrier with version 1.6.0-dev.
           exclusions: |
             exclusions:
               "versionCompat":
-                - "dev.restate.sdktesting.tests.BackCompatibilityTest\\$OldVersion#proxyCallShouldBeDone"
-                - "dev.restate.sdktesting.tests.BackCompatibilityTest\\$OldVersion#proxyOneWayCallShouldBeDone"
+                - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
 
   e2e-vqueues:
     name: Vqueues Run E2E tests
@@ -361,9 +357,7 @@ jobs:
         with:
           testArtifactOutput: e2e-test-vqueues-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
-          # Needed for backward compatibility tests 1.6 -> 1.5
           envVars: |
-            RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
             RESTATE_EXPERIMENTAL_ENABLE_VQUEUES=true
           # We will never support the forward compatibility tests for v1.5 when using vqueues.
           # The backward compatibility tests are temporarily disabled until we support migration from v1.5 -> v1.6

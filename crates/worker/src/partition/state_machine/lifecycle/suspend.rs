@@ -103,6 +103,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::fixtures::{
         invoker_entry_effect, invoker_suspended,
     };
@@ -110,8 +111,6 @@ mod tests {
         has_commands, has_journal_length, in_flight_metadata, is_variant,
     };
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
-    use crate::partition::state_machine::{Action, Feature};
-    use enumset::EnumSet;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
@@ -122,9 +121,9 @@ mod tests {
         SignalResult, SleepCommand, SleepCompletion,
     };
     use restate_types::time::MillisSinceEpoch;
+    use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
-    use rstest::rstest;
     use std::time::{Duration, SystemTime};
 
     #[restate_core::test]
@@ -239,14 +238,18 @@ mod tests {
         test_env.shutdown().await;
     }
 
-    #[rstest]
     #[restate_core::test]
-    async fn suspend_waiting_on_signal(
-        #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
-            Feature,
-        >,
-    ) {
-        let mut test_env = TestEnv::create_with_features(features).await;
+    async fn suspend_waiting_on_signal() {
+        run_suspend_waiting_on_signal(SemanticRestateVersion::unknown()).await;
+    }
+
+    #[restate_core::test]
+    async fn suspend_waiting_on_signal_journal_v2_enabled() {
+        run_suspend_waiting_on_signal(RESTATE_VERSION_1_6_0.clone()).await;
+    }
+
+    async fn run_suspend_waiting_on_signal(min_restate_version: SemanticRestateVersion) {
+        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
         // We don't pin the deployment here, but this should work nevertheless.
 

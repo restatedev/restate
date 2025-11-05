@@ -13,18 +13,21 @@ use super::*;
 use restate_storage_api::inbox_table::ReadInboxTable;
 use restate_types::invocation::SubmitNotificationSink;
 use restate_types::time::MillisSinceEpoch;
-use rstest::rstest;
 use std::time::{Duration, SystemTime};
 use test_log::test;
 
-#[rstest]
 #[restate_core::test]
-async fn send_with_delay(
-    #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
-        Feature,
-    >,
-) {
-    let mut test_env = TestEnv::create_with_features(features).await;
+async fn send_with_delay() {
+    run_send_with_delay(SemanticRestateVersion::unknown()).await
+}
+
+#[restate_core::test]
+async fn send_with_delay_journal_v2_enabled() {
+    run_send_with_delay(RESTATE_VERSION_1_6_0.clone()).await
+}
+
+async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
+    let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
 
     let invocation_target = InvocationTarget::mock_service();
     let invocation_id = InvocationId::mock_random();
@@ -120,7 +123,7 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
     );
 
     // Now let's update the features
-    test_env.set_features(Feature::UseJournalTableV2AsDefault);
+    test_env.set_min_restate_version(RESTATE_VERSION_1_6_0.clone());
 
     // Now fire the timer
     let actions = test_env

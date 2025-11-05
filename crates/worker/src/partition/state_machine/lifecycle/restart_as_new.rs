@@ -285,12 +285,12 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::Feature;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
+    use restate_types::RESTATE_VERSION_1_6_0;
     use restate_types::identifiers::{
         DeploymentId, InvocationId, InvocationUuid, PartitionProcessorRpcRequestId,
         WithPartitionKey,
@@ -387,7 +387,8 @@ mod tests {
     async fn restart_killed_invocation() {
         // This works only when using journal table v2 as default!
         // The corner case with journal table v1 is handled by the rpc handler instead.
-        let mut test_env = TestEnv::create_with_features(Feature::UseJournalTableV2AsDefault).await;
+        let mut test_env =
+            TestEnv::create_with_min_restate_version(RESTATE_VERSION_1_6_0.clone()).await;
 
         // Start invocation, then kill it
         let invocation_target = InvocationTarget::mock_virtual_object();

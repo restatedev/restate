@@ -85,17 +85,18 @@ impl TestEnv {
     }
 
     pub async fn create() -> Self {
-        Self::create_with_features(EnumSet::default()).await
+        Self::create_with_min_restate_version(SemanticRestateVersion::unknown()).await
     }
 
-    pub async fn create_with_features(experimental_features: impl Into<EnumSet<Feature>>) -> Self {
+    pub async fn create_with_min_restate_version(
+        min_restate_version: SemanticRestateVersion,
+    ) -> Self {
         Self::create_with_state_machine(StateMachine::new(
             0,    /* inbox_seq_number */
             0,    /* outbox_seq_number */
             None, /* outbox_head_seq_number */
             PartitionKey::MIN..=PartitionKey::MAX,
-            SemanticRestateVersion::unknown().clone(),
-            experimental_features.into(),
+            min_restate_version,
             None,
         ))
         .await
@@ -311,8 +312,8 @@ impl TestEnv {
         );
     }
 
-    pub fn set_features(&mut self, features: impl Into<EnumSet<Feature>>) {
-        self.state_machine.features = features.into()
+    pub fn set_min_restate_version(&mut self, min_restate_version: SemanticRestateVersion) {
+        self.state_machine.min_restate_version = min_restate_version;
     }
 }
 
@@ -1087,7 +1088,6 @@ async fn truncate_outbox_with_gap() -> Result<(), Error> {
         Some(outbox_head_index),
         PartitionKey::MIN..=PartitionKey::MAX,
         SemanticRestateVersion::unknown().clone(),
-        EnumSet::empty(),
         None,
     ))
     .await;

@@ -19,7 +19,6 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::hash::Hash;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::time::Instant;
@@ -27,7 +26,6 @@ use std::time::Instant;
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
-use enumset::EnumSet;
 use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
 use tracing::{Instrument, Span, debug, error, info, trace, warn};
@@ -98,7 +96,6 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
-use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::{RawEntry, RawNotification};
 use restate_types::journal_v2::{
@@ -114,6 +111,7 @@ use restate_types::state_mut::StateMutationVersion;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::{NewEntryPriority, VQueueId, VQueueInstance, VQueueParent};
+use restate_types::{RESTATE_VERSION_1_6_0, journal_v2};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
 use restate_vqueues::{VQueues, VQueuesMetaMut};
@@ -126,9 +124,18 @@ use crate::metric_definitions::{PARTITION_APPLY_COMMAND, USAGE_LEADER_JOURNAL_EN
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 
-#[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
-pub enum Feature {
-    UseJournalTableV2AsDefault,
+trait StateMachineFeatures {
+    /// Write to journal v2 instead of journal v1 by default. This is a preparational step for
+    /// removing the journal v1 after enabling this feature and migrating all unpinned invocations
+    /// from journal v1 to journal v2.
+    fn use_journal_v2_as_default(&self) -> bool;
+}
+
+impl StateMachineFeatures for SemanticRestateVersion {
+    fn use_journal_v2_as_default(&self) -> bool {
+        // use journal v2 as default if the min Restate version is >= v1.6.0
+        self.is_equal_or_newer_than(&RESTATE_VERSION_1_6_0)
+    }
 }
 
 pub struct StateMachine {
@@ -144,9 +151,6 @@ pub struct StateMachine {
     pub(crate) schema: Option<Schema>,
 
     pub(crate) partition_key_range: RangeInclusive<PartitionKey>,
-
-    /// Enabled experimental features.
-    pub(crate) features: EnumSet<Feature>,
 }
 
 impl Debug for StateMachine {
@@ -163,7 +167,7 @@ impl Debug for StateMachine {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "partition is blocked; requires and upgrade to restate-server version \
+        "partition is blocked; requires an upgrade to restate-server version \
         {required_min_version} or higher; reason='{barrier_reason}'"
     )]
     VersionBarrier {
@@ -231,7 +235,6 @@ impl StateMachine {
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
         min_restate_version: SemanticRestateVersion,
-        experimental_features: EnumSet<Feature>,
         schema: Option<Schema>,
     ) -> Self {
         Self {
@@ -240,7 +243,6 @@ impl StateMachine {
             outbox_head_seq_number,
             partition_key_range,
             min_restate_version,
-            features: experimental_features,
             schema,
         }
     }
@@ -258,7 +260,6 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     min_restate_version: &'a mut SemanticRestateVersion,
     schema: &'a mut Option<Schema>,
     partition_key_range: RangeInclusive<PartitionKey>,
-    features: &'a EnumSet<Feature>,
     is_leader: bool,
 }
 
@@ -299,7 +300,6 @@ impl StateMachine {
                 vqueues_cache,
                 schema: &mut self.schema,
                 partition_key_range: self.partition_key_range.clone(),
-                features: &self.features,
                 is_leader,
             }
             .on_apply(command)
@@ -755,21 +755,13 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable
             + journal_table_v2::WriteJournalTable,
     {
-        if Configuration::pinned().common.experimental_enable_vqueues {
-            // skips the rest of this logic and jumps straight to vqueues' implementation
-            return self
-                .vqueue_enqueue(
-                    invocation_id,
-                    pre_flight_invocation_metadata,
-                    submit_notification_sink,
-                )
-                .await;
-        }
-
         // A pre-flight invocation has been already deduplicated
 
-        // 0. Prepare the journal table v2
-        if self.features.contains(Feature::UseJournalTableV2AsDefault)
+        // 0. Prepare the journal table v2. This ensures that all newly created invocations will
+        // have a journal v2 created. To handle already existing invocations for which we didn't
+        // create the journal yet, there is a separate path in init_journal to create the journal
+        // v2. This change has been introduced with v1.6
+        if self.min_restate_version.use_journal_v2_as_default()
             && let PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                 argument,
                 headers,
@@ -778,7 +770,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         {
             // In this case, we do the following:
             // * Write the input in the journal table v2
-            // * Change pre_flight_invocation_metadata.input
+            // * Change pre_flight_invocation_metadata.input to be PreFlightInvocationArgument::Journal
+            //   so that we don't create the journal again when calling init_journal_and_invoke
 
             // Prepare the new entry
             let new_entry: journal_v2::Entry = InputCommand {
@@ -811,6 +804,17 @@ impl<S> StateMachineApplyContext<'_, S> {
                     },
                     pinned_deployment: None,
                 });
+        }
+
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            // skips the rest of this logic and jumps straight to vqueues' implementation
+            return self
+                .vqueue_enqueue(
+                    invocation_id,
+                    pre_flight_invocation_metadata,
+                    submit_notification_sink,
+                )
+                .await;
         }
 
         // 1. Check if we need to schedule it
@@ -1278,6 +1282,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         )
     }
 
+    /// This method creates a journal for the given invocation id. Depending on `min_restate_version`
+    /// it will either be the journal v2 or journal v1.
+    // Once the minimum Restate version is v1.6.0, Restate will use the journal v2 by default. All
+    // new invocations will have a journal created when entering the pre-flight phase. Only for
+    // those invocations that were created before bumping the minimum Restate version to v1.6.0 we
+    // need to call this method. Once we migrate those invocations and create the journal, this method
+    // will no longer be needed.
     fn init_journal(
         &mut self,
         invocation_id: InvocationId,
@@ -1292,7 +1303,11 @@ impl<S> StateMachineApplyContext<'_, S> {
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
         in_flight_invocation_metadata.journal_metadata.length = 1;
 
-        if self.features.contains(Feature::UseJournalTableV2AsDefault) {
+        // This branch is only relevant for invocations that were created before we started using
+        // the journal v2 by default (setting the min Restate version to v1.6.0). For invocations
+        // that are created afterwards, Restate will create the journal in
+        // [`StateMachineApplyContext::on_pre_flight_invocation`].
+        if self.min_restate_version.use_journal_v2_as_default() {
             // Prepare the new entry
             let new_entry: journal_v2::Entry = InputCommand {
                 headers: invocation_input.headers,

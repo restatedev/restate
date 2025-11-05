@@ -28,14 +28,20 @@ use restate_types::service_protocol;
 use rstest::rstest;
 use test_log::test;
 
-#[rstest]
 #[restate_core::test]
-async fn kill_inboxed_invocation(
-    #[values(Feature::UseJournalTableV2AsDefault.into(), EnumSet::empty())] features: EnumSet<
-        Feature,
-    >,
+async fn kill_inboxed_invocation() -> anyhow::Result<()> {
+    run_kill_inboxed_invocation(SemanticRestateVersion::unknown()).await
+}
+
+#[restate_core::test]
+async fn kill_inboxed_invocation_journal_v2_enabled() -> anyhow::Result<()> {
+    run_kill_inboxed_invocation(RESTATE_VERSION_1_6_0.clone()).await
+}
+
+async fn run_kill_inboxed_invocation(
+    min_restate_version: SemanticRestateVersion,
 ) -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create_with_features(features).await;
+    let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
