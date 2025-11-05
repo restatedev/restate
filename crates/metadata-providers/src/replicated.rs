@@ -16,7 +16,6 @@ use bytes::BytesMut;
 use bytestring::ByteString;
 use indexmap::IndexMap;
 use parking_lot::Mutex;
-use rand::Rng;
 use restate_types::retries::RetryPolicy;
 use tonic::transport::Channel;
 use tonic::{Code, Status};
@@ -489,7 +488,7 @@ impl ChannelManager {
     fn choose_channel(&self) -> Option<ChannelWithAddress> {
         self.channels
             .lock()
-            .choose_next_round_robin()
+            .choose_next(&mut rand::rng())
             .map(|c| c.into_channel(self.connection_options.deref()))
     }
 
@@ -606,17 +605,16 @@ struct Channels {
     // this is to allow for the initial addresses being dns entries that resolve to multiple node IPs
     initial_addresses: Vec<AdvertisedAddress<FabricPort>>,
     channels: IndexMap<PlainNodeId, ChannelWithAddress>,
-    channel_index: usize,
+    last: Option<AdvertisedAddress<FabricPort>>,
 }
 
 impl Channels {
     fn new(initial_addresses: Vec<AdvertisedAddress<FabricPort>>) -> Self {
         assert!(!initial_addresses.is_empty());
-        let initial_index = rand::rng().random_range(..initial_addresses.len());
         Channels {
             initial_addresses,
             channels: IndexMap::default(),
-            channel_index: initial_index,
+            last: None,
         }
     }
 
@@ -624,28 +622,46 @@ impl Channels {
         self.channels.insert(plain_node_id, channel);
     }
 
-    fn choose_next_round_robin(&mut self) -> Option<ChannelOrInitialAddress> {
+    fn get(&self, i: usize) -> Option<ChannelOrInitialAddress> {
         let num_channels = self.channels.len();
 
-        self.channel_index += 1;
-        if self.channel_index >= num_channels + self.initial_addresses.len() {
-            self.channel_index = 0;
-        }
-
-        if self.channel_index < num_channels {
-            self.channels
-                .get_index(self.channel_index)
-                .map(|(_, channel)| channel)
-                .cloned()
-                .map(ChannelOrInitialAddress::from)
-        } else if !self.initial_addresses.is_empty() {
-            self.initial_addresses
-                .get(self.channel_index - num_channels)
-                .cloned()
-                .map(ChannelOrInitialAddress::from)
+        if i < num_channels {
+            Some(ChannelOrInitialAddress::from(self.channels[i].clone()))
+        } else if i < num_channels + self.initial_addresses.len() {
+            Some(ChannelOrInitialAddress::from(
+                self.initial_addresses[i - num_channels].clone(),
+            ))
         } else {
             None
         }
+    }
+
+    fn choose_next(&mut self, rng: &mut impl rand::Rng) -> Option<ChannelOrInitialAddress> {
+        // sample up to two distinct channels/initial addresses from the full list
+        let mut random_channels = rand::seq::IteratorRandom::choose_multiple(
+            0..(self.channels.len() + self.initial_addresses.len()),
+            rng,
+            2,
+        );
+
+        // choose_multiple picks random items but the order is not random
+        rand::seq::SliceRandom::shuffle(random_channels.as_mut_slice(), rng);
+
+        let mut random_channels = random_channels
+            .into_iter()
+            .map(|channel_index| self.get(channel_index).unwrap());
+
+        let next = match random_channels.next() {
+            Some(channel) if Some(channel.address()) == self.last.as_ref() => {
+                // same as last time, try another if available
+                Some(random_channels.next().unwrap_or(channel))
+            }
+            Some(channel) => Some(channel), // different to last time
+            None => None,                   // no channels
+        };
+
+        self.last = next.as_ref().map(|n| n.address().clone());
+        next
     }
 
     /// Returns true if there are no channels. It ignores the initial channels.
@@ -670,6 +686,9 @@ impl Channels {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use rand::SeedableRng;
     use restate_types::{PlainNodeId, net::address::AdvertisedAddress};
     use test_log::test;
     use tonic::transport::Channel;
@@ -684,10 +703,11 @@ mod tests {
 
     #[test(restate_core::test)]
     async fn update_channels() {
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(4360796539057359171);
         let initial_addr: AdvertisedAddress<_> = "http://localhost".parse().unwrap();
         let mut channels = Channels::new(vec![initial_addr.clone()]);
 
-        assert!(channels.choose_next_round_robin().is_some());
+        assert!(channels.choose_next(&mut rng).is_some());
 
         // Define node addresses for easier comparison later
         let node1_addr: AdvertisedAddress<_> = "http://node1".parse().unwrap();
@@ -718,13 +738,22 @@ mod tests {
             ),
         ]);
 
-        let mut seen_addresses = Vec::new();
-        for _ in 0..4 {
-            if let Some(channel) = channels.choose_next_round_robin() {
-                seen_addresses.push(channel.address().clone());
-            }
+        let mut seen_addresses = HashSet::new();
+
+        let mut last = None;
+
+        for _ in 0..50 {
+            let next_address = channels
+                .choose_next(&mut rng)
+                .as_ref()
+                .map(|c| c.address().clone());
+            assert!(next_address.is_some());
+            assert!(last != next_address); // check that we never get a repeat
+            last = next_address.clone();
+            seen_addresses.insert(next_address.unwrap());
         }
 
+        // check that all values turn up eventually
         assert!(seen_addresses.contains(&initial_addr));
         assert!(seen_addresses.contains(&node1_addr));
         assert!(seen_addresses.contains(&node2_addr));
@@ -733,18 +762,27 @@ mod tests {
         channels.drop_initial_addresses();
 
         seen_addresses.clear();
-        for _ in 0..3 {
-            if let Some(channel) = channels.choose_next_round_robin() {
-                seen_addresses.push(channel.address().clone());
-            }
+        last = None;
+
+        for _ in 0..50 {
+            let next_address = channels
+                .choose_next(&mut rng)
+                .as_ref()
+                .map(|c| c.address().clone());
+            assert!(next_address.is_some());
+            assert!(last != next_address); // check that we never get a repeat
+            last = next_address.clone();
+            seen_addresses.insert(next_address.unwrap());
         }
 
+        // check that all values turn up eventually
+        assert!(!seen_addresses.contains(&initial_addr));
         assert!(seen_addresses.contains(&node1_addr));
         assert!(seen_addresses.contains(&node2_addr));
         assert!(seen_addresses.contains(&node3_addr));
 
         channels.update_channels(vec![]);
 
-        assert!(channels.choose_next_round_robin().is_none());
+        assert!(channels.choose_next(&mut rng).is_none());
     }
 }
