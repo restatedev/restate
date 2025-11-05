@@ -11,6 +11,7 @@
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::Table;
+use crossterm::style::Stylize;
 use indoc::indoc;
 
 use restate_cli_util::ui::console::StyledTable;
@@ -64,6 +65,17 @@ pub(super) const ABORT_TIMEOUT: &str = indoc! {
     gracefully terminate, then this value needs to be set accordingly.
 
     This overrides the default abort timeout set in invoker options."
+};
+pub(super) const ENABLE_LAZY_STATE: &str = indoc! {
+    "If true, lazy state will be enabled for all invocations to this service.
+    This is relevant only for Workflows and Virtual Objects."
+};
+pub(super) const RETRY_POLICY: &str = indoc! {
+    "Retry policy to use for transient errors. The next retry interval is calculated as
+    initial_interval * (exponentiation_factor ^ attempt), capped at max_interval.
+
+    Max attempts: Maximum number of retry attempts before giving up (infinite if unset).
+    On max attempts: What to do when max attempts are reached (Pause or Kill)."
 };
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -140,5 +152,133 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     c_tip!("{}", ABORT_TIMEOUT);
     c_println!();
 
+    let mut table = Table::new_styled();
+    table.add_kv_row("Enable lazy state:", service.enable_lazy_state);
+    c_println!("{table}");
+    c_tip!("{}", ENABLE_LAZY_STATE);
+    c_println!();
+
+    let mut table = Table::new_styled();
+    table.add_row(vec!["Retry Policy:".bold()]);
+    table.add_kv_row(
+        "  Max attempts:",
+        service
+            .retry_policy
+            .max_attempts
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<UNSET>".to_string()),
+    );
+    table.add_kv_row(
+        "  On max attempts:",
+        format!("{:?}", service.retry_policy.on_max_attempts),
+    );
+    table.add_kv_row(
+        "  Initial interval:",
+        service.retry_policy.initial_interval.friendly(),
+    );
+    table.add_kv_row(
+        "  Exponentiation factor:",
+        service.retry_policy.exponentiation_factor,
+    );
+    table.add_kv_row(
+        "  Max interval:",
+        service
+            .retry_policy
+            .max_interval
+            .map(|d| d.friendly().to_string())
+            .unwrap_or_else(|| "<UNSET>".to_string()),
+    );
+    c_println!("{table}");
+    c_tip!("{}", RETRY_POLICY);
+    c_println!();
+
+    // Show handler overrides
+    for (handler_name, handler) in service.handlers {
+        let has_overrides = handler.idempotency_retention.is_some()
+            || handler.journal_retention.is_some()
+            || handler.inactivity_timeout.is_some()
+            || handler.abort_timeout.is_some()
+            || handler.enable_lazy_state.is_some()
+            || handler.public != service.public
+            || !is_retry_policy_empty(&handler.retry_policy);
+
+        if has_overrides {
+            let mut table = Table::new_styled();
+            table.add_row(vec![format!(
+                "Handler '{}' overrides:",
+                handler_name.bold()
+            )]);
+
+            if let Some(idempotency_retention) = handler.idempotency_retention {
+                table.add_kv_row(
+                    "  Idempotent requests retention:",
+                    idempotency_retention.friendly(),
+                );
+            }
+
+            if let Some(journal_retention) = handler.journal_retention {
+                table.add_kv_row("  Journal retention:", journal_retention.friendly());
+            }
+
+            if let Some(inactivity_timeout) = handler.inactivity_timeout {
+                table.add_kv_row("  Inactivity timeout:", inactivity_timeout.friendly());
+            }
+
+            if let Some(abort_timeout) = handler.abort_timeout {
+                table.add_kv_row("  Abort timeout:", abort_timeout.friendly());
+            }
+
+            if let Some(enable_lazy_state) = handler.enable_lazy_state {
+                table.add_kv_row("  Enable lazy state:", enable_lazy_state);
+            }
+
+            if handler.public != service.public {
+                table.add_kv_row("  Public:", handler.public);
+            }
+
+            c_println!("{table}");
+
+            // Show retry policy overrides if any
+            if !is_retry_policy_empty(&handler.retry_policy) {
+                let mut table = Table::new_styled();
+                table.add_row(vec!["  Retry Policy:".bold()]);
+
+                if let Some(max_attempts) = handler.retry_policy.max_attempts {
+                    table.add_kv_row("    Max attempts:", max_attempts);
+                }
+
+                if let Some(on_max_attempts) = &handler.retry_policy.on_max_attempts {
+                    table.add_kv_row("    On max attempts:", format!("{:?}", on_max_attempts));
+                }
+
+                if let Some(initial_interval) = handler.retry_policy.initial_interval {
+                    table.add_kv_row("    Initial interval:", initial_interval.friendly());
+                }
+
+                if let Some(exponentiation_factor) = handler.retry_policy.exponentiation_factor {
+                    table.add_kv_row("    Exponentiation factor:", exponentiation_factor);
+                }
+
+                if let Some(max_interval) = handler.retry_policy.max_interval {
+                    table.add_kv_row("    Max interval:", max_interval.friendly());
+                }
+
+                c_println!("{table}");
+            }
+
+            c_println!();
+        }
+    }
+
     Ok(())
+}
+
+fn is_retry_policy_empty(
+    retry_policy: &restate_types::schema::service::HandlerRetryPolicyMetadata,
+) -> bool {
+    retry_policy.initial_interval.is_none()
+        && retry_policy.exponentiation_factor.is_none()
+        && retry_policy.max_attempts.is_none()
+        && retry_policy.max_interval.is_none()
+        && retry_policy.on_max_attempts.is_none()
 }
