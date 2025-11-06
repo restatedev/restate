@@ -70,7 +70,7 @@ pub struct Member {
 
     min_expected_nodes_config_version: Version,
 
-    raw_node: RawNode<RocksDbStorage>,
+    raw_node: Option<RawNode<RocksDbStorage>>,
     networking: Networking<Message>,
     raft_rx: mpsc::Receiver<Message>,
 
@@ -182,7 +182,7 @@ impl Member {
             my_member_id,
             min_expected_nodes_config_version,
             configuration,
-            raw_node,
+            raw_node: Some(raw_node),
             connection_manager,
             networking,
             raft_rx,
@@ -207,6 +207,14 @@ impl Member {
         Ok(member)
     }
 
+    fn raw_node(&self) -> &RawNode<RocksDbStorage> {
+        self.raw_node.as_ref().unwrap()
+    }
+
+    fn raw_node_mut(&mut self) -> &mut RawNode<RocksDbStorage> {
+        self.raw_node.as_mut().unwrap()
+    }
+
     #[instrument(level = "info", skip_all, fields(member_id = %self.my_member_id))]
     pub async fn run(mut self) -> Result<Standby, Error> {
         info!(configuration = %self.configuration, "Run as member of the metadata cluster");
@@ -220,20 +228,33 @@ impl Member {
             tokio::select! {
                 biased;
                 Some(raft) = self.raft_rx.recv() => {
-                    if let Err(err) = self.raw_node.step(raft) {
-                        match err {
-                            RaftError::StepPeerNotFound => {
-                                info!("Ignoring raft message from unknown node. This can happen if \
-                                the node has been removed from the cluster. If not, then this \
-                                indicates a misconfiguration of your cluster!");
-                            }
-                            // escalate, as we can't handle this error
-                            err => Err(err)?
-                        }
+                    let mut raw_node = self.raw_node.take().unwrap();
+                    match instrument_fut(
+                        tokio::task::spawn_blocking(move || {
+                            let result = raw_node.step(raft);
+                            (result, raw_node)
+                        }),
+                        histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "step")
+                    ).await {
+                        Ok((Ok(()), raw_node)) => {
+                            self.raw_node = Some(raw_node)
+                        },
+                        Ok((Err(RaftError::StepPeerNotFound), raw_node)) => {
+                            info!("Ignoring raft message from unknown node. This can happen if \
+                            the node has been removed from the cluster. If not, then this \
+                            indicates a misconfiguration of your cluster!");
+                            self.raw_node = Some(raw_node)
+                        },
+                        // escalate, as we can't handle this error
+                        Ok((Err(err), _)) => return Err(err.into()),
+                        Err(_join_error) => return Err(Error::Shutdown(restate_core::ShutdownError))
                     }
                 },
                 _ = self.tick_interval.tick() => {
-                    self.raw_node.tick();
+                    instrument_fn(
+                        || self.raw_node_mut().tick(),
+                        histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "tick")
+                    );
                 },
                 Ok(()) = nodes_config_watch.changed() => {
                     let nodes_config = nodes_config.live_load();
@@ -273,7 +294,7 @@ impl Member {
             }
 
             let metadata_nodes_config = nodes_config.live_load();
-            if self.raw_node.has_ready() {
+            if self.raw_node().has_ready() {
                 instrument_fut(
                     self.on_ready(metadata_nodes_config),
                     histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "on_ready"),
@@ -293,7 +314,7 @@ impl Member {
 
         self.fail_pending_requests(nodes_config.live_load());
 
-        let mut storage = self.raw_node.raft.r.raft_log.store;
+        let mut storage = self.raw_node.unwrap().raft.r.raft_log.store;
 
         let nodes_config =
             Self::latest_nodes_configuration(&self.kv_storage, nodes_config.live_load());
@@ -369,7 +390,7 @@ impl Member {
 
     fn update_leadership(&mut self, metadata_nodes_config: &NodesConfiguration) {
         let previous_is_leader = self.is_leader;
-        self.is_leader = self.raw_node.raft.leader_id == self.raw_node.raft.id;
+        self.is_leader = self.raw_node().raft.leader_id == self.raw_node().raft.id;
 
         if previous_is_leader && !self.is_leader {
             let known_leader = self.fail_pending_requests(metadata_nodes_config);
@@ -422,14 +443,16 @@ impl Member {
             Request::ReadOnly(read_only_request) => {
                 let read_ctx = read_only_request.request_id.to_bytes().to_vec();
 
-                let previous_ready_read_count = self.raw_node.raft.ready_read_count();
-                let previous_pending_read_count = self.raw_node.raft.pending_read_count();
+                let raw_node = self.raw_node_mut();
 
-                self.raw_node.read_index(read_ctx);
+                let previous_ready_read_count = raw_node.raft.ready_read_count();
+                let previous_pending_read_count = raw_node.raft.pending_read_count();
+
+                raw_node.read_index(read_ctx);
 
                 // check whether the read request was silently dropped
-                if previous_ready_read_count == self.raw_node.raft.ready_read_count()
-                    && previous_pending_read_count == self.raw_node.raft.pending_read_count()
+                if previous_ready_read_count == raw_node.raft.ready_read_count()
+                    && previous_pending_read_count == raw_node.raft.pending_read_count()
                 {
                     // fail the request if we cannot serve read-only requests yet
                     read_only_request.fail(RequestError::Unavailable("Cannot serve read-only queries yet because the latest commit index has not been retrieved. Try again in a bit".into(), self.known_leader(metadata_nodes_config)));
@@ -483,7 +506,7 @@ impl Member {
                     .encode_to_vec()
                     .map_err(Into::into)
                     .and_then(|request| {
-                        self.raw_node
+                        self.raw_node_mut()
                             .propose(vec![], request)
                             .map_err(RequestError::from)
                     })
@@ -523,7 +546,7 @@ impl Member {
             return;
         }
 
-        if self.raw_node.raft.has_pending_conf() {
+        if self.raw_node().raft.has_pending_conf() {
             let _ = response_tx.send(Err(JoinClusterError::PendingReconfiguration));
             return;
         }
@@ -563,7 +586,7 @@ impl Member {
             grpc::MetadataServerConfiguration::from(next_configuration).encode_to_vec();
 
         if let Err(err) = self
-            .raw_node
+            .raw_node_mut()
             .propose_conf_change(next_configuration_bytes, conf_change)
         {
             let response = match err {
@@ -626,22 +649,28 @@ impl Member {
     }
 
     async fn on_ready(&mut self, metadata_nodes_config: &NodesConfiguration) -> Result<(), Error> {
-        if !self.raw_node.has_ready() {
+        if !self.raw_node().has_ready() {
             return Ok(());
         }
-
-        // let start = tokio::time::Instant::now();
-        let mut ready = instrument_fn(
-            || self.raw_node.ready(),
+        let mut raw_node = self.raw_node.take().unwrap();
+        let (mut ready, raw_node) = instrument_fut(
+            tokio::task::spawn_blocking(move || {
+                let ready = raw_node.ready();
+                (ready, raw_node)
+            }),
             histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "raw_node_ready"),
-        );
+        )
+        .await
+        .map_err(|_| Error::Shutdown(restate_core::ShutdownError))?;
+        self.raw_node = Some(raw_node);
 
         // first need to send outgoing messages
         if !ready.messages().is_empty() {
-            instrument_fn(
-                || self.send_messages(ready.take_messages()),
+            instrument_fut(
+                self.send_messages(ready.take_messages()),
                 histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "send_messages"),
             )
+            .await
         }
 
         // apply snapshot if one was sent
@@ -655,10 +684,10 @@ impl Member {
 
         // handle read states
         if !ready.read_states().is_empty() {
-            instrument_fn(
-                || self.handle_read_states(ready.take_read_states()),
+            instrument_fut(
+                self.handle_read_states(ready.take_read_states()),
                 histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "handle_read_states"),
-            )?;
+            ).await?;
         }
 
         // then handle committed entries
@@ -673,7 +702,7 @@ impl Member {
         if !ready.entries().is_empty() {
             // append new Raft entries to storage
             instrument_fut(
-                self.raw_node.mut_store().append(ready.entries()),
+                self.raw_node_mut().mut_store().append(ready.entries()),
                 histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "append"),
             )
             .await?;
@@ -682,7 +711,7 @@ impl Member {
         // update the hard state if an update was produced (e.g. vote has happened)
         if let Some(hs) = ready.hs() {
             instrument_fut(
-                self.raw_node.mut_store().store_hard_state(hs.clone()),
+                self.raw_node_mut().mut_store().store_hard_state(hs.clone()),
                 histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "store_hard_state"),
             )
             .await?;
@@ -690,15 +719,15 @@ impl Member {
 
         // send persisted messages (after entries were appended and hard state was updated)
         if !ready.persisted_messages().is_empty() {
-            instrument_fn(
-                || self.send_messages(ready.take_persisted_messages()),
+            instrument_fut(
+                self.send_messages(ready.take_persisted_messages()),
                 histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "send_persisted_messages"),
-            );
+            ).await
         }
 
         // advance the raft node
         let mut light_ready = instrument_fn(
-            || self.raw_node.advance(ready),
+            || self.raw_node_mut().advance(ready),
             histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "raw_node_advance"),
         );
 
@@ -709,10 +738,10 @@ impl Member {
 
         // send outgoing messages
         if !light_ready.messages().is_empty() {
-            instrument_fn(
-                || self.send_messages(light_ready.take_messages()),
+            instrument_fut(
+                self.send_messages(light_ready.take_messages()),
                 histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "send_light_messages"),
-            )
+            ).await
         }
 
         // handle committed entries
@@ -728,7 +757,7 @@ impl Member {
         }
 
         instrument_fn(
-            || self.raw_node.advance_apply(),
+            || self.raw_node_mut().advance_apply(),
             histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "raw_node_advance_apply"),
         );
 
@@ -751,7 +780,10 @@ impl Member {
 
         self.validate_metadata_server_configuration();
 
-        self.raw_node.mut_store().apply_snapshot(snapshot).await?;
+        self.raw_node_mut()
+            .mut_store()
+            .apply_snapshot(snapshot)
+            .await?;
 
         self.snapshot_summary = Some(SnapshotSummary::from_snapshot(snapshot));
 
@@ -778,7 +810,7 @@ impl Member {
         Ok(())
     }
 
-    fn send_messages(&mut self, messages: Vec<Message>) {
+    async fn send_messages(&mut self, messages: Vec<Message>) {
         for message in messages {
             let snapshot_target = if message.has_snapshot() {
                 Some(message.to)
@@ -791,39 +823,47 @@ impl Member {
 
                 if let Some(message) = err.into_message() {
                     if message.has_snapshot() {
-                        self.raw_node
+                        self.raw_node_mut()
                             .report_snapshot(message.to, SnapshotStatus::Failure);
                     } else {
-                        self.raw_node.report_unreachable(message.to);
+                        self.raw_node_mut().report_unreachable(message.to);
                     }
                 }
             } else if let Some(snapshot_target) = snapshot_target {
-                self.raw_node
+                self.raw_node_mut()
                     .report_snapshot(snapshot_target, SnapshotStatus::Finish);
             }
+
+            // Allow other tasks on this thread to run, but only if we have exhausted the coop
+            // budget.
+            tokio::task::consume_budget().await;
         }
     }
 
-    fn handle_read_states(&mut self, read_states: Vec<raft::ReadState>) -> Result<(), Error> {
+    async fn handle_read_states(&mut self, read_states: Vec<raft::ReadState>) -> Result<(), Error> {
         for read_state in read_states {
             let request_id =
                 Ulid::from_bytes(read_state.request_ctx.try_into().map_err(|_err| {
                     Error::DecodeRequest("could not deserialize Ulid from read request ctx".into())
                 })?);
 
-            if read_state.index <= self.raw_node.raft.raft_log.applied {
+            if read_state.index <= self.raw_node().raft.raft_log.applied {
                 self.kv_storage.handle_read_only_request(request_id);
             } else {
                 self.read_index_to_request_id
                     .push_back((read_state.index, request_id));
             }
+
+            // Allow other tasks on this thread to run, but only if we have exhausted the coop
+            // budget.
+            tokio::task::consume_budget().await;
         }
 
         Ok(())
     }
 
     fn handle_read_only_requests(&mut self) {
-        let applied_index = self.raw_node.raft.raft_log.applied;
+        let applied_index = self.raw_node().raft.raft_log.applied;
         while self
             .read_index_to_request_id
             .front()
@@ -930,7 +970,7 @@ impl Member {
         }
 
         if config_change_rejections.is_empty() {
-            self.raw_node.apply_conf_change(&cc_v2)?;
+            self.raw_node_mut().apply_conf_change(&cc_v2)?;
 
             // sanity checks
             assert_eq!(
@@ -971,10 +1011,10 @@ impl Member {
     fn validate_metadata_server_configuration(&self) {
         assert_eq!(
             self.configuration.members.len(),
-            self.raw_node.raft.prs().conf().voters().ids().len(),
+            self.raw_node().raft.prs().conf().voters().ids().len(),
             "number of members in configuration doesn't match number of voters in Raft"
         );
-        for voter in self.raw_node.raft.prs().conf().voters().ids().iter() {
+        for voter in self.raw_node().raft.prs().conf().voters().ids().iter() {
             assert!(
                 self.configuration
                     .members
@@ -986,18 +1026,19 @@ impl Member {
 
     /// Checks whether it's time to snapshot the state machine and trim the Raft log.
     async fn try_trim_log(&mut self) -> Result<(), Error> {
-        let applied_index = self.raw_node.raft.raft_log.applied();
-        if applied_index.saturating_sub(self.raw_node.store().get_first_index())
+        let applied_index = self.raw_node().raft.raft_log.applied();
+        if applied_index.saturating_sub(self.raw_node().store().get_first_index())
             >= self.log_trim_threshold
         {
             debug!(
                 "Trimming Raft log: [{}, {applied_index}]",
-                self.raw_node.store().get_first_index()
+                self.raw_node().store().get_first_index()
             );
+            let term = self.raw_node().raft.raft_log.term(applied_index)?;
             instrument_fut(
                 self.create_snapshot(
                     applied_index,
-                    self.raw_node.raft.raft_log.term(applied_index)?,
+                   term,
                 ),
                 histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "trim_log_create_snapshot")
             )
@@ -1009,14 +1050,16 @@ impl Member {
 
     /// Checks whether Raft requested a newer snapshot.
     async fn check_requested_snapshot(&mut self) -> Result<(), Error> {
-        if let Some(index) = self.raw_node.mut_store().requested_snapshot() {
-            let applied_index = self.raw_node.raft.raft_log.applied;
+        let raw_node = self.raw_node_mut();
+        if let Some(index) = raw_node.mut_store().requested_snapshot() {
+            let applied_index = raw_node.raft.raft_log.applied;
             if index <= applied_index {
                 debug!("Creating requested snapshot for index '{index}'.");
+                let term = raw_node.raft.raft_log.term(applied_index)?;
                 instrument_fut(
                     self.create_snapshot(
                         applied_index,
-                        self.raw_node.raft.raft_log.term(applied_index)?,
+                        term,
                     ),
                     histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "requested_create_snapshot")
                 )
@@ -1042,13 +1085,16 @@ impl Member {
         let mut metadata = SnapshotMetadata::new();
         metadata.set_index(index);
         metadata.set_term(term);
-        metadata.set_conf_state(self.raw_node.raft.prs().conf().to_conf_state());
+        metadata.set_conf_state(self.raw_node().raft.prs().conf().to_conf_state());
         snapshot.set_data(data.freeze());
         snapshot.set_metadata(metadata);
 
         debug!(%index, %term, "Created snapshot: '{}' bytes", snapshot.get_data().len());
 
-        self.raw_node.mut_store().apply_snapshot(&snapshot).await?;
+        self.raw_node_mut()
+            .mut_store()
+            .apply_snapshot(&snapshot)
+            .await?;
         self.snapshot_summary = Some(SnapshotSummary::from_snapshot(&snapshot));
 
         Ok(())
@@ -1171,7 +1217,8 @@ impl Member {
             nodes_config.version()
         );
 
-        for node_id in self.raw_node.raft.prs().conf().voters().ids().iter() {
+        let raw_node = self.raw_node.as_ref().unwrap();
+        for node_id in raw_node.raft.prs().conf().voters().ids().iter() {
             let plain_node_id = to_plain_node_id(node_id);
             if let Ok(node_config) = nodes_config.find_node_by_id(plain_node_id) {
                 // todo remove addresses from nodes that are no longer needed
@@ -1183,10 +1230,10 @@ impl Member {
 
     fn update_status(&self) {
         self.status_tx.send_modify(|current_status| {
-            let current_leader = if self.raw_node.raft.leader_id == INVALID_ID {
+            let current_leader = if self.raw_node().raft.leader_id == INVALID_ID {
                 None
             } else {
-                Some(to_plain_node_id(self.raw_node.raft.leader_id))
+                Some(to_plain_node_id(self.raw_node().raft.leader_id))
             };
 
             if let MetadataServerSummary::Member {
@@ -1259,7 +1306,7 @@ impl Member {
             return;
         }
 
-        if self.raw_node.raft.has_pending_conf() {
+        if self.raw_node().raft.has_pending_conf() {
             let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
                 RemoveNodeError::PendingReconfiguration,
             )));
@@ -1321,7 +1368,7 @@ impl Member {
             grpc::MetadataServerConfiguration::from(new_configuration).encode_to_vec();
 
         match self
-            .raw_node
+            .raw_node_mut()
             .propose_conf_change(next_configuration_bytes, conf_change)
         {
             Ok(()) => {
@@ -1370,12 +1417,13 @@ impl Member {
     }
 
     fn raft_summary(&self) -> RaftSummary {
+        let raw_node = self.raw_node();
         RaftSummary {
-            term: self.raw_node.raft.term,
-            committed: self.raw_node.raft.raft_log.committed,
-            applied: self.raw_node.raft.raft_log.applied,
-            last_index: self.raw_node.store().get_last_index(),
-            first_index: self.raw_node.store().get_first_index(),
+            term: raw_node.raft.term,
+            committed: raw_node.raft.raft_log.committed,
+            applied: raw_node.raft.raft_log.applied,
+            last_index: raw_node.store().get_last_index(),
+            first_index: raw_node.store().get_first_index(),
         }
     }
 
@@ -1403,11 +1451,12 @@ impl Member {
     /// Returns the known leader from the Raft instance or a random known leader from the
     /// current nodes configuration.
     fn known_leader(&self, metadata_nodes_config: &NodesConfiguration) -> Option<KnownLeader> {
-        if self.raw_node.raft.leader_id == INVALID_ID {
+        let raw_node = self.raw_node();
+        if raw_node.raft.leader_id == INVALID_ID {
             return None;
         }
 
-        let leader = to_plain_node_id(self.raw_node.raft.leader_id);
+        let leader = to_plain_node_id(raw_node.raft.leader_id);
 
         let nodes_config =
             Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
