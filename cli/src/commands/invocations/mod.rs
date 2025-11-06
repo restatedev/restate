@@ -20,7 +20,9 @@ mod resume;
 use cling::prelude::*;
 use restate_types::identifiers::InvocationId;
 
-const DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT: usize = 100;
+const DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT: usize = 500;
+const DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT: usize =
+    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Invocations {

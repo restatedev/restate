@@ -7,6 +7,9 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+
+use super::DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT;
+
 use anyhow::Result;
 use cling::prelude::*;
 
@@ -28,7 +31,7 @@ pub struct Kill {
     /// * `workflowName/key/handler`
     query: String,
     /// Limit the number of fetched invocations
-    #[clap(long, default_value = "500")]
+    #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
 }
 

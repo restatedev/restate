@@ -20,7 +20,8 @@ use crate::clients::batch_execute;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface};
 use crate::commands::invocations::{
-    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, create_query_filter,
+    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    create_query_filter,
 };
 use crate::ui::invocations::render_simple_invocation_list;
 use crate::ui::with_progress;
@@ -43,7 +44,7 @@ pub struct Cancel {
     #[clap(long)]
     pub(super) kill: bool,
     /// Limit the number of fetched invocations
-    #[clap(long, default_value = "DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT")]
+    #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     pub(super) limit: usize,
 }
 
@@ -70,7 +71,10 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
         );
     };
 
-    render_simple_invocation_list(&invocations, DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT);
+    render_simple_invocation_list(
+        &invocations,
+        DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    );
 
     // Get the invocation and confirm
     let prompt = format!(

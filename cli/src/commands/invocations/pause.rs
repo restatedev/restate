@@ -13,7 +13,9 @@ use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface, batch_execute};
 use crate::ui::invocations::render_simple_invocation_list;
 
-use crate::commands::invocations::DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT;
+use crate::commands::invocations::{
+    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+};
 use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
 use comfy_table::{Cell, Color, Table};
@@ -33,7 +35,7 @@ pub struct Pause {
     /// * `virtualObjectName/key/handler`
     query: String,
     /// Limit the number of fetched invocations
-    #[clap(long, default_value = "DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT")]
+    #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
 }
 
@@ -67,7 +69,10 @@ pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
         );
     };
 
-    render_simple_invocation_list(&invocations, DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT);
+    render_simple_invocation_list(
+        &invocations,
+        DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    );
 
     // Get the invocation and confirm
     confirm_or_exit("Are you sure you want to pause these invocations?")?;

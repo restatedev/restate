@@ -14,7 +14,8 @@ use crate::clients::{self, AdminClientInterface, batch_execute};
 use crate::ui::invocations::render_simple_invocation_list;
 
 use crate::commands::invocations::{
-    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, create_query_filter,
+    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    create_query_filter,
 };
 use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
@@ -35,7 +36,7 @@ pub struct RestartAsNew {
     /// * `virtualObjectName/key/handler`
     query: String,
     /// Limit the number of fetched invocations
-    #[clap(long, default_value = "DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT")]
+    #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
 }
 
@@ -57,7 +58,10 @@ pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) 
         );
     };
 
-    render_simple_invocation_list(&invocations, DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT);
+    render_simple_invocation_list(
+        &invocations,
+        DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    );
 
     // Get the invocation and confirm
     confirm_or_exit("Are you sure you want to restart these invocations?")?;

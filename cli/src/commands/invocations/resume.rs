@@ -14,7 +14,8 @@ use crate::clients::{self, AdminClientInterface, batch_execute};
 use crate::ui::invocations::render_simple_invocation_list;
 
 use crate::commands::invocations::{
-    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, create_query_filter,
+    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    create_query_filter,
 };
 use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
@@ -41,7 +42,7 @@ pub struct Resume {
     #[clap(long)]
     deployment: Option<String>,
     /// Limit the number of fetched invocations
-    #[clap(long, default_value = "DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT")]
+    #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
 }
 
@@ -64,21 +65,30 @@ pub async fn run_resume(State(env): State<CliEnv>, opts: &Resume) -> Result<()> 
         );
     };
 
-    render_simple_invocation_list(&invocations, DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT);
+    render_simple_invocation_list(
+        &invocations,
+        DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    );
 
     // Get the invocation and confirm
     confirm_or_exit("Are you sure you want to resume these invocations?")?;
 
     // Resume invocations
-    let deployment = opts.deployment.as_deref();
-    let (resumed, failed_to_resume) =
-        batch_execute(client, invocations, |client, invocation| async move {
+    let deployment = opts.deployment.clone();
+    let (resumed, failed_to_resume) = batch_execute(
+        client,
+        invocations
+            .into_iter()
+            .map(|i| (i, deployment.clone()))
+            .collect(),
+        |client, (invocation, deployment)| async move {
             client
-                .resume_invocation(&invocation.id, deployment)
+                .resume_invocation(&invocation.id, deployment.as_deref())
                 .await
                 .map_err(anyhow::Error::from)
-        })
-        .await;
+        },
+    )
+    .await;
     let succeeded_count = resumed.len();
     let failed_count = failed_to_resume.len();
 
@@ -90,7 +100,7 @@ pub async fn run_resume(State(env): State<CliEnv>, opts: &Resume) -> Result<()> 
         c_warn!("Failed to resume:");
         let mut failed_to_restart_table = Table::new_styled();
         failed_to_restart_table.set_styled_header(vec!["ID", "REASON"]);
-        for (inv, reason) in failed_to_resume {
+        for ((inv, _), reason) in failed_to_resume {
             failed_to_restart_table.add_row(vec![
                 Cell::new(&inv.id),
                 Cell::new(reason).fg(Color::DarkRed),

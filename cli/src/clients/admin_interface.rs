@@ -65,7 +65,7 @@ pub trait AdminClientInterface {
         id: &str,
     ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
 
-    async fn resume_invocation(
+    fn resume_invocation(
         &self,
         id: &str,
         deployment: Option<&str>,
@@ -180,6 +180,18 @@ impl AdminClientInterface for AdminClient {
         )
     }
 
+    fn resume_invocation(
+        &self,
+        id: &str,
+        deployment: Option<&str>,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
+        let mut url = self.versioned_url(["invocations", id, "resume"]);
+        if let Some(deployment) = deployment {
+            url.set_query(Some(&format!("deployment={deployment}")));
+        }
+        self.run(reqwest::Method::PATCH, url)
+    }
+
     fn kill_invocation(
         &self,
         id: &str,
@@ -206,18 +218,6 @@ impl AdminClientInterface for AdminClient {
     ) -> impl Future<Output = reqwest::Result<Envelope<RestartAsNewInvocationResponse>>> + Send + 'static
     {
         let url = self.versioned_url(["invocations", id, "restart-as-new"]);
-        self.run(reqwest::Method::PATCH, url)
-    }
-
- fn resume_invocation(
-        &self,
-        id: &str,
-        deployment: Option<&str>,
-    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
-        let mut url = self.versioned_url(["invocations", id, "resume"]);
-        if let Some(deployment) = deployment {
-            url.set_query(Some(&format!("deployment={deployment}")));
-        }
         self.run(reqwest::Method::PATCH, url)
     }
 

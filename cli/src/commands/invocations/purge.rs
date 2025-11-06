@@ -12,7 +12,8 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface, batch_execute};
 use crate::commands::invocations::{
-    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, create_query_filter,
+    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    create_query_filter,
 };
 use crate::ui::invocations::render_simple_invocation_list;
 
@@ -38,7 +39,7 @@ pub struct Purge {
     /// * `workflowName/key/handler`
     query: String,
     /// Limit the number of fetched invocations
-    #[clap(long, default_value = "DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT")]
+    #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
 }
 
@@ -61,7 +62,10 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
         );
     };
 
-    render_simple_invocation_list(&invocations, DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT);
+    render_simple_invocation_list(
+        &invocations,
+        DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    );
 
     // Get the invocation and confirm
     confirm_or_exit("Are you sure you want to purge these invocations?")?;
