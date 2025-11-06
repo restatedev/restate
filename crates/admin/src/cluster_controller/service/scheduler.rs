@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
 
 use ahash::HashMap;
+use futures::{StreamExt, TryStreamExt};
 use tracing::{debug, info, trace};
 
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
@@ -221,6 +222,18 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
+        // bulk get all EpochMetadata if self.partitions.is_empty()
+        self.load_all_partition_configuration(partition_table)
+            .await?;
+
+        // prioritise leadership changes over partition reconfiguration
+        // when a pp leader shuts down, the time until we instruct a new leader is partition unavailability.
+        // instructing a new leader when we already have the metadata requires no new metadata operations and can be done nearly instantly
+        // by comparison, ensure_valid_partition_configuration can take (metadata operation latency * affected partitions)
+        // which might be several seconds, and leader instruction would only happen at the end.
+        self.ensure_valid_leaders(cluster_state, legacy_cluster_state, partition_table);
+        self.instruct_nodes(legacy_cluster_state)?;
+
         self.ensure_valid_partition_configuration(
             cluster_state,
             legacy_cluster_state,
@@ -228,6 +241,8 @@ impl<T: TransportConnect> Scheduler<T> {
             partition_table,
         )
         .await?;
+        // we may have chosen new leaders, so we instruct again
+        self.instruct_nodes(legacy_cluster_state)?;
 
         // todo move draining workers to disabled if they no longer run any partition processors;
         //  since the worker state is stored in the NodesConfiguration and the replica sets are
@@ -236,9 +251,61 @@ impl<T: TransportConnect> Scheduler<T> {
         //  they learn about the updated nodes configuration. To reduce the risk of this, we should
         //  wait a little bit to give the nodes configuration time to be spread across the cluster.
 
-        self.instruct_nodes(legacy_cluster_state)?;
+        Ok(())
+    }
+
+    async fn load_all_partition_configuration(
+        &mut self,
+        partition_table: &PartitionTable,
+    ) -> Result<(), Error> {
+        if !self.partitions.is_empty() {
+            return Ok(());
+        }
+
+        self.partitions = futures::stream::iter(partition_table.iter_ids().cloned().map(
+            async |partition_id| {
+                Result::<_, Error>::Ok((
+                    partition_id,
+                    Self::load_partition_configuration(
+                        self.metadata_writer.raw_metadata_store_client(),
+                        partition_id,
+                    )
+                    .await?,
+                ))
+            },
+        ))
+        // load partitions concurrently - we choose 24 to match the default partition count
+        .buffer_unordered(24)
+        .try_filter_map(
+            async |(partition_id, partition_state)| match partition_state {
+                Some(partition_state) => {
+                    Self::note_observed_membership_update(
+                        partition_id,
+                        &partition_state,
+                        &self.replica_set_states,
+                    );
+
+                    Ok(Some((partition_id, partition_state)))
+                }
+                None => Ok(None),
+            },
+        )
+        .try_collect::<HashMap<_, _>>()
+        .await?;
 
         Ok(())
+    }
+
+    fn ensure_valid_leaders(
+        &mut self,
+        cluster_state: &ClusterState,
+        legacy_cluster_state: &LegacyClusterState,
+        partition_table: &PartitionTable,
+    ) {
+        for partition_id in partition_table.iter_ids() {
+            // select the leader based on the observed cluster state
+            self.select_leader(partition_id, cluster_state, legacy_cluster_state);
+        }
     }
 
     async fn ensure_valid_partition_configuration(
@@ -248,8 +315,6 @@ impl<T: TransportConnect> Scheduler<T> {
         nodes_config: &NodesConfiguration,
         partition_table: &PartitionTable,
     ) -> Result<(), Error> {
-        // todo a bulk get of all EpochMetadata if self.partitions.is_empty()
-
         for partition_id in partition_table.iter_ids().copied() {
             let entry = self.partitions.entry(partition_id);
 
@@ -425,6 +490,24 @@ impl<T: TransportConnect> Scheduler<T> {
                 ReplicationProperty::new_unchecked(candidates.min(usize::from(u8::MAX)) as u8)
             }
             PartitionReplication::Limit(partition_replication) => partition_replication.clone(),
+        }
+    }
+
+    async fn load_partition_configuration(
+        metadata_store_client: &MetadataStoreClient,
+        partition_id: PartitionId,
+    ) -> Result<Option<PartitionState>, Error> {
+        match metadata_store_client
+            .get::<EpochMetadata>(partition_processor_epoch_key(partition_id))
+            .await
+        {
+            Ok(Some(epoch_metadata)) if epoch_metadata.current().version() != Version::INVALID => {
+                let (_, _, current, next) = epoch_metadata.into_inner();
+
+                Ok(Some(PartitionState::new(current, next)))
+            }
+            Ok(_) => Ok(None), // none or invalid partition state
+            Err(err) => Err(err.into()),
         }
     }
 
