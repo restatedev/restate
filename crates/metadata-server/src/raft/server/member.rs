@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
-use metrics::gauge;
+use metrics::{gauge, histogram};
 use prost::Message as ProstMessage;
 use protobuf::Message as ProtobufMessage;
 use raft::{
@@ -48,8 +48,8 @@ use restate_types::{PlainNodeId, Version};
 use crate::metric_definitions::{
     METADATA_SERVER_REPLICATED_APPLIED_LSN, METADATA_SERVER_REPLICATED_COMMITTED_LSN,
     METADATA_SERVER_REPLICATED_FIRST_INDEX, METADATA_SERVER_REPLICATED_LAST_INDEX,
-    METADATA_SERVER_REPLICATED_LEADER_ID, METADATA_SERVER_REPLICATED_SNAPSHOT_SIZE_BYTES,
-    METADATA_SERVER_REPLICATED_TERM,
+    METADATA_SERVER_REPLICATED_LEADER_ID, METADATA_SERVER_REPLICATED_PERF_DURATION,
+    METADATA_SERVER_REPLICATED_SNAPSHOT_SIZE_BYTES, METADATA_SERVER_REPLICATED_TERM,
 };
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::network::{ConnectionManager, Networking};
@@ -128,6 +128,7 @@ impl Member {
             id: to_raft_id(my_member_id.node_id),
             election_tick: raft_options.raft_election_tick.get(),
             heartbeat_tick: raft_options.raft_heartbeat_tick.get(),
+            batch_append: raft_options.raft_batch_append,
             read_only_option: ReadOnlyOption::Safe,
             check_quorum: true,
             pre_vote: true,
@@ -240,25 +241,50 @@ impl Member {
                         break;
                     }
 
-                    self.update_node_addresses(nodes_config);
+                    instrument_fn(
+                        || self.update_node_addresses(nodes_config),
+                        histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "update_node_addresses")
+                    );
                 },
                 Some(request) = self.request_rx.recv() => {
-                    self.handle_request(request, nodes_config.live_load());
+                    instrument_fn(
+                        || self.handle_request(request, nodes_config.live_load()),
+                        histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "handle_request")
+                    );
                 },
                 Some(request) = self.join_cluster_rx.recv() => {
-                    self.handle_join_request(request, nodes_config.live_load());
+                    instrument_fn(
+                        || self.handle_join_request(request, nodes_config.live_load()),
+                        histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "handle_join_request")
+                    )
                 }
                 Some(command) = self.command_rx.recv() => {
-                    self.handle_command(command, nodes_config.live_load());
+                    instrument_fn(
+                        || self.handle_command(command, nodes_config.live_load()),
+                        histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "handle_command")
+                    )
                 }
                 _ = self.status_update_interval.tick() => {
-                    self.update_status();
+                    instrument_fn(
+                        || self.update_status(),
+                        histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "update_status")
+                    )
                 },
             }
 
             let metadata_nodes_config = nodes_config.live_load();
-            self.on_ready(metadata_nodes_config).await?;
-            self.update_leadership(metadata_nodes_config);
+            if self.raw_node.has_ready() {
+                instrument_fut(
+                    self.on_ready(metadata_nodes_config),
+                    histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "on_ready"),
+                )
+                .await?;
+            }
+
+            instrument_fn(
+                || self.update_leadership(metadata_nodes_config),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "update_leadership"),
+            );
 
             if self.is_leaving {
                 break;
@@ -604,43 +630,77 @@ impl Member {
             return Ok(());
         }
 
-        let mut ready = self.raw_node.ready();
+        // let start = tokio::time::Instant::now();
+        let mut ready = instrument_fn(
+            || self.raw_node.ready(),
+            histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "raw_node_ready"),
+        );
 
         // first need to send outgoing messages
         if !ready.messages().is_empty() {
-            self.send_messages(ready.take_messages());
+            instrument_fn(
+                || self.send_messages(ready.take_messages()),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "send_messages"),
+            )
         }
 
         // apply snapshot if one was sent
         if !ready.snapshot().is_empty() {
-            self.apply_snapshot(ready.snapshot()).await?;
+            instrument_fut(
+                self.apply_snapshot(ready.snapshot()),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "apply_snapshot"),
+            )
+            .await?;
         }
 
         // handle read states
-        self.handle_read_states(ready.take_read_states()).await?;
+        if !ready.read_states().is_empty() {
+            instrument_fn(
+                || self.handle_read_states(ready.take_read_states()),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "handle_read_states"),
+            )?;
+        }
 
         // then handle committed entries
-        self.handle_committed_entries(ready.take_committed_entries(), metadata_nodes_config)
+        if !ready.committed_entries().is_empty() {
+            instrument_fut(
+                self.handle_committed_entries(ready.take_committed_entries(), metadata_nodes_config),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "handle_committed_entries"),
+            )
             .await?;
+        }
 
-        // append new Raft entries to storage
-        self.raw_node.mut_store().append(ready.entries()).await?;
+        if !ready.entries().is_empty() {
+            // append new Raft entries to storage
+            instrument_fut(
+                self.raw_node.mut_store().append(ready.entries()),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "append"),
+            )
+            .await?;
+        }
 
         // update the hard state if an update was produced (e.g. vote has happened)
         if let Some(hs) = ready.hs() {
-            self.raw_node
-                .mut_store()
-                .store_hard_state(hs.clone())
-                .await?;
+            instrument_fut(
+                self.raw_node.mut_store().store_hard_state(hs.clone()),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "store_hard_state"),
+            )
+            .await?;
         }
 
         // send persisted messages (after entries were appended and hard state was updated)
         if !ready.persisted_messages().is_empty() {
-            self.send_messages(ready.take_persisted_messages());
+            instrument_fn(
+                || self.send_messages(ready.take_persisted_messages()),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "send_persisted_messages"),
+            );
         }
 
         // advance the raft node
-        let mut light_ready = self.raw_node.advance(ready);
+        let mut light_ready = instrument_fn(
+            || self.raw_node.advance(ready),
+            histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "raw_node_advance"),
+        );
 
         // update the commit index if it changed
         if let Some(_commit) = light_ready.commit_index() {
@@ -649,19 +709,28 @@ impl Member {
 
         // send outgoing messages
         if !light_ready.messages().is_empty() {
-            self.send_messages(light_ready.take_messages());
+            instrument_fn(
+                || self.send_messages(light_ready.take_messages()),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "send_light_messages"),
+            )
         }
 
         // handle committed entries
         if !light_ready.committed_entries().is_empty() {
-            self.handle_committed_entries(
-                light_ready.take_committed_entries(),
-                metadata_nodes_config,
+            instrument_fut(
+                self.handle_committed_entries(
+                    light_ready.take_committed_entries(),
+                    metadata_nodes_config,
+                ),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "handle_light_committed_entries"),
             )
             .await?;
         }
 
-        self.raw_node.advance_apply();
+        instrument_fn(
+            || self.raw_node.advance_apply(),
+            histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "raw_node_advance_apply"),
+        );
 
         // after we have applied new entries, check whether we can fulfill some read-only requests
         self.handle_read_only_requests();
@@ -735,7 +804,7 @@ impl Member {
         }
     }
 
-    async fn handle_read_states(&mut self, read_states: Vec<raft::ReadState>) -> Result<(), Error> {
+    fn handle_read_states(&mut self, read_states: Vec<raft::ReadState>) -> Result<(), Error> {
         for read_state in read_states {
             let request_id =
                 Ulid::from_bytes(read_state.request_ctx.try_into().map_err(|_err| {
@@ -782,8 +851,11 @@ impl Member {
             match entry.get_entry_type() {
                 EntryType::EntryNormal => self.handle_normal_entry(entry)?,
                 EntryType::EntryConfChange | EntryType::EntryConfChangeV2 => {
-                    self.handle_conf_change(entry, metadata_nodes_config)
-                        .await?
+                    instrument_fut(
+                        self.handle_conf_change(entry, metadata_nodes_config),
+                        histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "handle_conf_change"),
+                    )
+                    .await?
                 }
             }
         }
@@ -922,9 +994,12 @@ impl Member {
                 "Trimming Raft log: [{}, {applied_index}]",
                 self.raw_node.store().get_first_index()
             );
-            self.create_snapshot(
-                applied_index,
-                self.raw_node.raft.raft_log.term(applied_index)?,
+            instrument_fut(
+                self.create_snapshot(
+                    applied_index,
+                    self.raw_node.raft.raft_log.term(applied_index)?,
+                ),
+                histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "trim_log_create_snapshot")
             )
             .await?;
         }
@@ -938,9 +1013,12 @@ impl Member {
             let applied_index = self.raw_node.raft.raft_log.applied;
             if index <= applied_index {
                 debug!("Creating requested snapshot for index '{index}'.");
-                self.create_snapshot(
-                    applied_index,
-                    self.raw_node.raft.raft_log.term(applied_index)?,
+                instrument_fut(
+                    self.create_snapshot(
+                        applied_index,
+                        self.raw_node.raft.raft_log.term(applied_index)?,
+                    ),
+                    histogram!(METADATA_SERVER_REPLICATED_PERF_DURATION, "name" => "requested_create_snapshot")
                 )
                 .await?;
             }
@@ -1341,4 +1419,19 @@ impl Member {
                 address: node_config.address.clone(),
             })
     }
+}
+
+#[must_use]
+async fn instrument_fut<O, F: Future<Output = O>>(fut: F, histogram: metrics::Histogram) -> O {
+    let start = tokio::time::Instant::now();
+    let output = fut.await;
+    histogram.record(start.elapsed());
+    output
+}
+
+fn instrument_fn<O, F: FnOnce() -> O>(f: F, histogram: metrics::Histogram) -> O {
+    let start = tokio::time::Instant::now();
+    let output = f();
+    histogram.record(start.elapsed());
+    output
 }
