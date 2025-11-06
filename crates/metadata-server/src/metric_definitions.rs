@@ -51,6 +51,9 @@ pub(crate) const METADATA_SERVER_REPLICATED_FIRST_INDEX: &str =
 pub(crate) const METADATA_SERVER_REPLICATED_LAST_INDEX: &str =
     "restate.metadata_server.replicated.last_index";
 
+pub(crate) const METADATA_SERVER_REPLICATED_PERF_DURATION: &str =
+    "restate.metadata_server.replicated.perf.duration";
+
 pub(crate) fn describe_metrics() {
     describe_histogram!(
         METADATA_SERVER_GET_DURATION,
@@ -162,5 +165,11 @@ pub(crate) fn describe_metrics() {
         METADATA_SERVER_REPLICATED_LAST_INDEX,
         Unit::Count,
         "Raft Metadata raft last index"
+    );
+
+    describe_histogram!(
+        METADATA_SERVER_REPLICATED_PERF_DURATION,
+        Unit::Seconds,
+        "Raft Metadata perf duration in seconds"
     );
 }

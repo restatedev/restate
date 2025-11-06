@@ -144,6 +144,7 @@ pub struct RaftOptions {
     /// A leader sends heartbeat messages to maintain its leadership every heartbeat ticks.
     /// Decrease this value to send heartbeats more often.
     pub raft_heartbeat_tick: NonZeroUsize,
+    pub raft_batch_append: bool,
     /// The raft tick interval
     ///
     /// The interval at which the raft node will tick. Decrease this value in order to let the Raft
@@ -169,6 +170,7 @@ impl Default for RaftOptions {
         RaftOptions {
             raft_election_tick: NonZeroUsize::new(10).expect("be non zero"),
             raft_heartbeat_tick: NonZeroUsize::new(2).expect("be non zero"),
+            raft_batch_append: false,
             raft_tick_interval: NonZeroFriendlyDuration::from_millis_unchecked(100),
             status_update_interval: NonZeroFriendlyDuration::from_secs_unchecked(5),
             log_trim_threshold: Some(1000),
