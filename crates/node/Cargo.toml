@@ -13,6 +13,7 @@ all-metadata-providers = [
     "restate-metadata-providers/replicated",
     "restate-metadata-providers/etcd",
     "restate-metadata-providers/objstore",
+    "restate-metadata-providers/dynamodb",
 ]
 
 memory-loglet = ["restate-bifrost/memory-loglet"]

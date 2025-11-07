@@ -16,6 +16,8 @@
     clippy::mutex_atomic
 )]
 
+#[cfg(feature = "dynamodb")]
+pub mod dynamodb;
 #[cfg(feature = "etcd")]
 pub mod etcd;
 #[cfg(feature = "objstore")]
@@ -67,6 +69,22 @@ pub async fn create_client(
 
             #[cfg(not(feature = "objstore"))]
             anyhow::bail!("object-store metadata store is not supported in this build")
+        }
+        MetadataClientKind::DynamoDb {
+            table,
+            key_prefix,
+            dynamo_db,
+        } => {
+            #[cfg(feature = "dynamodb")]
+            {
+                use crate::dynamodb::DynamoDbMetadataStore;
+
+                let store = DynamoDbMetadataStore::new(table, key_prefix, dynamo_db).await?;
+                Ok(MetadataStoreClient::new(store, backoff_policy))
+            }
+
+            #[cfg(not(feature = "dynamodb"))]
+            anyhow::bail!("dynamodb metadata store is not supported in this build")
         }
     }
 }
