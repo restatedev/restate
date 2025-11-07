@@ -97,6 +97,7 @@ async-channel = "2.3.1"
 async-trait = "0.1.88"
 axum = { version = "0.7.9", default-features = false }
 aws-config = "1.8.0"
+aws-sdk-dynamodb = "1.97.0"
 aws-credential-types = "1.2.2"
 aws-smithy-async = { version = "1.2.5", default-features = false }
 aws-smithy-runtime-api = "1.7.4"

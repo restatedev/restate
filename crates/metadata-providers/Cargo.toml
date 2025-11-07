@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["dynamodb"]
 etcd = ["etcd-client"]
 objstore = [
   "restate-core",
@@ -31,6 +31,7 @@ replicated = [
   "serde",
   "serde_json",
 ]
+dynamodb = ["aws-config", "aws-sdk-dynamodb"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -45,9 +46,12 @@ restate-object-store-util = { workspace = true, optional = true }
 
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+aws-config = { workspace = true, optional = true }
+aws-sdk-dynamodb = { workspace = true, optional = true }
 bilrost = { workspace = true, optional = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
+const_format = "0.2.32"
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }

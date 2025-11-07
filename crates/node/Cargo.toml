@@ -28,7 +28,7 @@ restate-log-server = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-metadata-store = { workspace = true, features = ["grpc-server"] }
 restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
-restate-metadata-providers = { workspace = true, features = ["replicated", "objstore", "etcd"] }
+restate-metadata-providers = { workspace = true, features = ["replicated", "objstore", "etcd", "dynamodb"] }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
