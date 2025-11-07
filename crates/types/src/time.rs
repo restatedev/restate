@@ -54,7 +54,7 @@ impl MillisSinceEpoch {
             .unwrap_or(Self::MAX)
     }
 
-    pub fn as_u64(&self) -> u64 {
+    pub const fn as_u64(&self) -> u64 {
         self.0
     }
 
@@ -70,6 +70,12 @@ impl MillisSinceEpoch {
     pub fn elapsed(&self) -> Duration {
         let now = Self::now();
         Duration::from_millis(now.0.saturating_sub(self.0))
+    }
+
+    /// Calculates the number of milliseconds between this timestamp and the earlier timestamp
+    /// If the earlier timestamp is later than this timestamp, this will return zero.
+    pub fn saturating_sub_ms(&self, earlier: Self) -> u64 {
+        self.0.saturating_sub(earlier.0)
     }
 }
 

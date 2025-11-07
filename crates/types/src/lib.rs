@@ -23,6 +23,7 @@ pub mod cluster;
 pub mod cluster_state;
 pub mod health;
 
+pub mod clock;
 pub mod config;
 pub mod config_loader;
 pub mod deployment;
@@ -60,6 +61,7 @@ pub mod timer;
 pub use id_util::IdResourceType;
 pub use node_id::*;
 pub use restate_version::*;
+pub use unique_time::UniqueTimestamp;
 pub use version::*;
 
 // Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
