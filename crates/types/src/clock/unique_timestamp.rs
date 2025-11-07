@@ -106,6 +106,7 @@ impl UniqueTimestamp {
         (self.0.get() >> LC_BITS) & PHY_TIME_MAX
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     fn logical_raw(&self) -> u64 {
         // extract the logical clock
