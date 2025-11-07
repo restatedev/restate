@@ -61,6 +61,7 @@ pub mod timer;
 pub use id_util::IdResourceType;
 pub use node_id::*;
 pub use restate_version::*;
+pub use unique_time::UniqueTimestamp;
 pub use version::*;
 
 // Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
