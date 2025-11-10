@@ -100,6 +100,8 @@ quanta = { version = "0.12" }
 quote = { version = "1" }
 rand = { version = "0.8", features = ["small_rng"] }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
+rdkafka = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "ecb20231178b74f213c46694060d894e55225ed2", features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored"] }
+rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "ecb20231178b74f213c46694060d894e55225ed2", default-features = false, features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored"] }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "unicode"] }
 regex-syntax = { version = "0.8" }
@@ -231,6 +233,8 @@ quanta = { version = "0.12" }
 quote = { version = "1" }
 rand = { version = "0.8", features = ["small_rng"] }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
+rdkafka = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "ecb20231178b74f213c46694060d894e55225ed2", features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored"] }
+rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "ecb20231178b74f213c46694060d894e55225ed2", default-features = false, features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored"] }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "unicode"] }
 regex-syntax = { version = "0.8" }

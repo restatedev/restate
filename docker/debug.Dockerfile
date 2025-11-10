@@ -8,11 +8,11 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0.
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.5 AS planner
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.7 AS planner
 COPY . .
 RUN just chef-prepare
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.5 AS base
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.7 AS base
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 
@@ -29,6 +29,16 @@ ARG TARGETARCH
 
 ENV RUSTC_WRAPPER=/usr/bin/sccache
 ENV SCCACHE_DIR=/var/cache/sccache
+
+# todo only enable those env variables when cross compiling
+# Set krb5 cross-compilation env variables (because we cannot run cross compiled tests)
+ENV krb5_cv_attr_constructor_destructor=yes
+ENV ac_cv_func_regcomp=yes
+ENV ac_cv_printf_positional=yes
+
+# todo only enable this env variable when cross compiling
+# Set sasl2-sys cross-compilation env variables (because we cannot run cross compiled tests)
+ENV ac_cv_gssapi_supports_spnego=yes
 
 # Avoids feature unification by building the three binaries individually
 ARG BUILD_INDIVIDUALLY=false
