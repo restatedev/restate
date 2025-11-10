@@ -174,7 +174,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
     "https://github.com/apache/arrow-rs.git",
     "https://github.com/tikv/raft-rs.git",
-    "https://github.com/fede1024/rust-rdkafka.git",
 ]
 
 [sources.allow-org]

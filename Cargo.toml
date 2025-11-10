@@ -260,6 +260,12 @@ zstd = { version = "0.13" }
 [patch.crates-io.restate-workspace-hack]
 path = "workspace-hack"
 
+[patch.crates-io]
+# Cross compilation fixes: Use autotools to detect cross compilation tool chain.
+# The fixes are based on rust-sasl v0.1.22.
+# Todo: Upstream changes and get rid of patch
+sasl2-sys = { git = "https://github.com/restatedev/rust-sasl", rev = "d3e87c54e87327ddbd226881d7546ab7696bf683" }
+
 [profile.release]
 opt-level = 3
 lto = "thin"
