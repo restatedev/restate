@@ -56,7 +56,7 @@ const DEFAULT_JITTER_MULTIPLIER: f32 = 0.3;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(
     tag = "type",
     rename_all = "kebab-case",
@@ -71,6 +71,7 @@ pub enum RetryPolicy {
     /// # None
     ///
     /// No retry strategy.
+    #[default]
     None,
     /// # Fixed delay
     ///
@@ -121,12 +122,6 @@ pub enum RetryPolicy {
         #[cfg_attr(feature = "schemars", schemars(with = "Option<FriendlyDuration>"))]
         max_interval: Option<Duration>,
     },
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl RetryPolicy {

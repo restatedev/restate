@@ -44,21 +44,16 @@ use crate::{BifrostAdmin, Error, InputRecord, LogReadStream, Result};
 /// a sealed loglet while it's tailing a log.
 ///
 /// Please keep this enum ordered, i.e. anything > Allowed should still mean allowed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord, derive_more::Display)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, PartialOrd, Ord, derive_more::Display)]
 pub enum ErrorRecoveryStrategy {
     /// Do not extend the chain, wait indefinitely instead until the error disappears.
     Wait = 1,
     /// Extend the chain only running out of patience, others might be better suited to reconfigure
     /// the chain, but when desperate, we are allowed to seal and extend.
+    #[default]
     ExtendChainAllowed,
     /// Eagerly extend the chain by creating a new loglet and appending to it.
     ExtendChainPreferred,
-}
-
-impl Default for ErrorRecoveryStrategy {
-    fn default() -> Self {
-        Self::ExtendChainAllowed
-    }
 }
 
 /// Bifrost is Restate's durable interconnect system
