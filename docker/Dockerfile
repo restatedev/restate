@@ -32,6 +32,16 @@ ARG TARGETARCH
 ENV RUSTC_WRAPPER=/usr/bin/sccache
 ENV SCCACHE_DIR=/var/cache/sccache
 
+# todo only enable those env variables when cross compiling
+# Set krb5 cross-compilation env variables (because we cannot run cross compiled tests)
+ENV krb5_cv_attr_constructor_destructor=yes
+ENV ac_cv_func_regcomp=yes
+ENV ac_cv_printf_positional=yes
+
+# todo only enable this env variable when cross compiling
+# Set sasl2-sys cross-compilation env variables (because we cannot run cross compiled tests)
+ENV ac_cv_gssapi_supports_spnego=yes
+
 # Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
 ARG CARGO_PROFILE_RELEASE_DEBUG=false

@@ -1000,7 +1000,7 @@ checksum = "8c3c1a368f70d6cf7302d78f8f7093da241fb8e8807c05cc9e51a125895a6d5b"
 
 [[package]]
 name = "bifrost-benchpress"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "codederror"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "codederror-derive",
  "restate-workspace-hack",
@@ -1966,6 +1966,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90eeab0aa92f3f9b4e87f258c72b139c207d251f9cbc1080a0086b86a8870dd3"
 dependencies = [
  "nix 0.29.0",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "curl-sys"
+version = "0.4.84+curl-8.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc4294dc41b882eaff37973c2ec3ae203d0091341ee68fbadd1d06e0c18a73b"
+dependencies = [
+ "cc",
+ "libc",
+ "libz-sys",
+ "openssl-sys",
+ "pkg-config",
+ "vcpkg",
  "windows-sys 0.59.0",
 ]
 
@@ -2780,6 +2795,18 @@ name = "downcast-rs"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea8a8b81cacc08888170eef4d13b775126db426d0b348bee9d18c2c1eaf123cf"
+
+[[package]]
+name = "duct"
+version = "0.13.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4ab5718d1224b63252cd0c6f74f6480f9ffeb117438a2e0f5cf6d9a4798929c"
+dependencies = [
+ "libc",
+ "once_cell",
+ "os_pipe",
+ "shared_child",
+]
 
 [[package]]
 name = "dunce"
@@ -4228,6 +4255,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "krb5-src"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a04b2f0dfefd7b54af22d22768dc3ab1ed5e55e6d5ff6af3f619069aa17c0ba4"
+dependencies = [
+ "duct",
+]
+
+[[package]]
 name = "lambda_runtime"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4365,7 +4401,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -4708,7 +4744,7 @@ dependencies = [
 
 [[package]]
 name = "mock-service-endpoint"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "assert2",
  "async-stream",
@@ -5013,7 +5049,7 @@ version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77e878c846a8abae00dd069496dbe8751b16ac1c3d6bd2a7283a938e8228f90d"
 dependencies = [
- "proc-macro-crate 3.2.0",
+ "proc-macro-crate 1.3.1",
  "proc-macro2",
  "quote",
  "syn 2.0.104",
@@ -5197,9 +5233,9 @@ checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
 name = "openssl-src"
-version = "300.4.1+3.4.0"
+version = "300.5.4+3.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faa4eac4138c62414b5622d1b31c5c304f34b406b013c079c2bbc652fdd6678c"
+checksum = "a507b3792995dae9b0df8a1c1e3771e8418b7c2d9f0baeba32e6fe8b06c7cb72"
 dependencies = [
  "cc",
 ]
@@ -5337,6 +5373,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "os_pipe"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
+dependencies = [
+ "libc",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -6223,7 +6269,7 @@ dependencies = [
 [[package]]
 name = "rdkafka"
 version = "0.38.0"
-source = "git+https://github.com/fede1024/rust-rdkafka.git?rev=47d86d71e340896491b65521594bbf081186201e#47d86d71e340896491b65521594bbf081186201e"
+source = "git+https://github.com/restatedev/rust-rdkafka.git?rev=ecb20231178b74f213c46694060d894e55225ed2#ecb20231178b74f213c46694060d894e55225ed2"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -6239,15 +6285,17 @@ dependencies = [
 
 [[package]]
 name = "rdkafka-sys"
-version = "4.9.0+2.10.0"
-source = "git+https://github.com/fede1024/rust-rdkafka.git?rev=47d86d71e340896491b65521594bbf081186201e#47d86d71e340896491b65521594bbf081186201e"
+version = "4.9.0+2.12.1"
+source = "git+https://github.com/restatedev/rust-rdkafka.git?rev=ecb20231178b74f213c46694060d894e55225ed2#ecb20231178b74f213c46694060d894e55225ed2"
 dependencies = [
  "cmake",
+ "curl-sys",
  "libc",
  "libz-sys",
  "num_enum 0.7.4",
  "openssl-sys",
  "pkg-config",
+ "sasl2-sys",
 ]
 
 [[package]]
@@ -6434,7 +6482,7 @@ dependencies = [
 
 [[package]]
 name = "restate-admin"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "anyhow",
@@ -6491,7 +6539,7 @@ dependencies = [
 
 [[package]]
 name = "restate-admin-rest-model"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "bytes",
  "derive_more",
@@ -6511,7 +6559,7 @@ dependencies = [
 
 [[package]]
 name = "restate-base64-util"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "base64 0.22.1",
  "restate-workspace-hack",
@@ -6519,7 +6567,7 @@ dependencies = [
 
 [[package]]
 name = "restate-benchmarks"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "criterion",
@@ -6545,7 +6593,7 @@ dependencies = [
 
 [[package]]
 name = "restate-bifrost"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "anyhow",
@@ -6599,7 +6647,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6660,7 +6708,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli-util"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -6689,7 +6737,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cloud-tunnel-client"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "bs58",
@@ -6712,7 +6760,7 @@ dependencies = [
 
 [[package]]
 name = "restate-core"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "anyhow",
@@ -6782,7 +6830,7 @@ dependencies = [
 
 [[package]]
 name = "restate-encoding"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "bilrost",
  "bytes",
@@ -6804,7 +6852,7 @@ dependencies = [
 
 [[package]]
 name = "restate-errors"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "codederror",
  "paste",
@@ -6817,7 +6865,7 @@ dependencies = [
 
 [[package]]
 name = "restate-fs-util"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "restate-workspace-hack",
  "tokio",
@@ -6827,7 +6875,7 @@ dependencies = [
 
 [[package]]
 name = "restate-futures-util"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "futures",
@@ -6845,7 +6893,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-http"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -6891,7 +6939,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-kafka"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6920,7 +6968,7 @@ dependencies = [
 
 [[package]]
 name = "restate-invoker-api"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -6938,7 +6986,7 @@ dependencies = [
 
 [[package]]
 name = "restate-invoker-impl"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -6982,7 +7030,7 @@ dependencies = [
 
 [[package]]
 name = "restate-local-cluster-runner"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7019,7 +7067,7 @@ dependencies = [
 
 [[package]]
 name = "restate-log-server"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7057,7 +7105,7 @@ dependencies = [
 
 [[package]]
 name = "restate-log-server-grpc"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "prost",
  "restate-types",
@@ -7068,7 +7116,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-providers"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7101,7 +7149,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-server"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7149,7 +7197,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-server-grpc"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "bytes",
  "bytestring",
@@ -7169,7 +7217,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-store"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "async-trait",
  "bytes",
@@ -7189,7 +7237,7 @@ dependencies = [
 
 [[package]]
 name = "restate-node"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7244,7 +7292,7 @@ dependencies = [
 
 [[package]]
 name = "restate-object-store-util"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -7262,7 +7310,7 @@ dependencies = [
 
 [[package]]
 name = "restate-partition-store"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7310,7 +7358,7 @@ dependencies = [
 
 [[package]]
 name = "restate-queue"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "bincode",
  "criterion",
@@ -7326,7 +7374,7 @@ dependencies = [
 
 [[package]]
 name = "restate-rocksdb"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7355,7 +7403,7 @@ dependencies = [
 
 [[package]]
 name = "restate-serde-util"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "bytes",
  "bytesize",
@@ -7372,7 +7420,7 @@ dependencies = [
 
 [[package]]
 name = "restate-server"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7427,7 +7475,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-client"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "arc-swap",
  "aws-config",
@@ -7467,7 +7515,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-protocol"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -7497,7 +7545,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-protocol-v4"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "assert2",
  "bytes",
@@ -7523,7 +7571,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-api"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "bytes",
@@ -7545,7 +7593,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-query-datafusion"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7582,7 +7630,7 @@ dependencies = [
 
 [[package]]
 name = "restate-test-util"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "assert2",
  "bytes",
@@ -7597,7 +7645,7 @@ dependencies = [
 
 [[package]]
 name = "restate-time-util"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "jiff",
  "restate-workspace-hack",
@@ -7610,7 +7658,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "futures-util",
@@ -7629,7 +7677,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer-queue"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "futures",
  "restate-workspace-hack",
@@ -7638,7 +7686,7 @@ dependencies = [
 
 [[package]]
 name = "restate-tracing-instrumentation"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "arc-swap",
  "console-subscriber",
@@ -7671,7 +7719,7 @@ dependencies = [
 
 [[package]]
 name = "restate-types"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7764,7 +7812,7 @@ dependencies = [
 
 [[package]]
 name = "restate-utoipa"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "assert-json-diff",
  "indexmap 2.10.0",
@@ -7776,7 +7824,7 @@ dependencies = [
 
 [[package]]
 name = "restate-wal-protocol"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "bilrost",
@@ -7806,7 +7854,7 @@ dependencies = [
 
 [[package]]
 name = "restate-worker"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8012,7 +8060,7 @@ dependencies = [
 
 [[package]]
 name = "restatectl"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "arrow",
@@ -8296,6 +8344,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sasl2-sys"
+version = "0.1.22+2.1.28"
+source = "git+https://github.com/restatedev/rust-sasl?rev=d3e87c54e87327ddbd226881d7546ab7696bf683#d3e87c54e87327ddbd226881d7546ab7696bf683"
+dependencies = [
+ "autotools",
+ "cc",
+ "duct",
+ "krb5-src",
+ "libc",
+ "pkg-config",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8515,7 +8576,7 @@ dependencies = [
 
 [[package]]
 name = "service-protocol-wireshark-dissector"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "bytes",
  "mlua",
@@ -8554,6 +8615,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shared_child"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e297bd52991bbe0686c086957bee142f13df85d1e79b0b21630a99d374ae9dc"
+dependencies = [
+ "libc",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10185,7 +10256,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -10488,7 +10559,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "1.5.3"
+version = "1.5.3-kafkaoidc"
 dependencies = [
  "anyhow",
  "reqwest",
