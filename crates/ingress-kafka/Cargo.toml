@@ -10,6 +10,10 @@ publish = false
 [features]
 default = []
 options_schema = ["dep:schemars"]
+# support for OIDC based authentication via the Kafka consumer, building with rdkafka/curl-static does not work as it
+# fails with "SSL certificate OpenSSL verify result: unable to get local issuer certificate (20) (-1)" when trying to
+# obtain the OIDC token.
+oidc = ["rdkafka/curl-static", "rdkafka/gssapi-vendored"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -31,8 +35,10 @@ metrics = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 parking_lot = { workspace = true }
-# 0.38 was not released yet at the time of writing, so when this happens, remove the pin.
-rdkafka = { version = "0.38", git = "https://github.com/fede1024/rust-rdkafka.git", rev = "47d86d71e340896491b65521594bbf081186201e", features = ["libz-static", "cmake-build", "ssl-vendored"] }
+# Use https://github.com/restatedev/rust-rdkafka/tree/fix-build-script which is based on
+# https://github.com/fede1024/rust-rdkafka/pull/803. The PR bumps librdkafka to 2.12.1 and enables WITH_CURL for
+# librdkafka if the feature curl-static is enabled. The additional fixes in fix-build-script fix the musl build.
+rdkafka = { version = "0.38", git = "https://github.com/restatedev/rust-rdkafka.git", rev = "22895f8c22471309e1615b0686cd31be5966d575", features = ["libz-static", "cmake-build", "ssl-vendored"] }
 schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt"] }

@@ -17,6 +17,7 @@ options_schema = [
   "restate-storage-query-datafusion/options_schema",
   "restate-timer/options_schema",
 ]
+kafka-oidc = ["restate-ingress-kafka/oidc"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }

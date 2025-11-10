@@ -120,6 +120,8 @@ impl Service {
         task_orchestrator: &mut TaskOrchestrator,
     ) -> anyhow::Result<()> {
         let mut client_config = rdkafka::ClientConfig::new();
+        // enabling probing for the ca certificates if the user does not specify anything else
+        client_config.set("https.ca.location", "probe");
 
         let Source::Kafka { cluster, topic, .. } = subscription.source();
 
