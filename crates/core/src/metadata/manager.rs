@@ -39,16 +39,11 @@ use crate::network::{
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
 pub(super) type CommandReceiver = mpsc::UnboundedReceiver<Command>;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, derive_more::Display)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, derive_more::Display)]
 pub enum TargetVersion {
+    #[default]
     Latest,
     Version(Version),
-}
-
-impl Default for TargetVersion {
-    fn default() -> Self {
-        Self::Latest
-    }
 }
 
 impl From<Option<Version>> for TargetVersion {
