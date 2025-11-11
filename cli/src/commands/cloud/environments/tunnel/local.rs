@@ -10,7 +10,7 @@
 
 use std::error::Error;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -20,10 +20,13 @@ use http::{
     Uri,
     uri::{PathAndQuery, Scheme},
 };
+use hyper_rustls::ConfigBuilderExt;
 use restate_cli_util::CliContext;
 use restate_cloud_tunnel_client::client::{HandlerNotification, ServeError};
 use restate_types::retries::RetryPolicy;
+use rustls::ClientConfig;
 use tokio_util::sync::CancellationToken;
+use tower::Service;
 use tracing::{Instrument, error, info, info_span};
 
 use crate::clients::cloud::generated::DescribeEnvironmentResponse;
@@ -32,6 +35,15 @@ use super::renderer::TunnelRenderer;
 
 const HTTP_VERSION: http::HeaderName =
     http::HeaderName::from_static("x-restate-tunnel-http-version");
+
+pub static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
+    ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .with_protocol_versions(rustls::DEFAULT_VERSIONS)
+        .expect("default versions are supported")
+        .with_native_roots()
+        .expect("Can load native certificates")
+        .with_no_client_auth()
+});
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_local(
@@ -70,6 +82,19 @@ pub(crate) async fn run_local(
         std::sync::atomic::Ordering::Relaxed,
     );
 
+    let mut http_connector = hyper_util::client::legacy::connect::HttpConnector::new();
+    http_connector.set_nodelay(true);
+    http_connector.set_connect_timeout(Some(CliContext::get().connect_timeout()));
+    http_connector.enforce_http(false);
+    // default interval on linux is 75 secs, also use this as the start-after
+    http_connector.set_keepalive(Some(Duration::from_secs(75)));
+
+    let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(TLS_CLIENT_CONFIG.clone())
+        .https_or_http()
+        .enable_http2()
+        .wrap_connector(http_connector);
+
     let mut futures: FuturesUnordered<_> = tunnel_urls.into_iter().enumerate().map(async |(tunnel_index, tunnel_url)| {
         let alpn_client = alpn_client.clone();
         let h1_client = h1_client.clone();
@@ -86,7 +111,6 @@ pub(crate) async fn run_local(
             hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
                 do_proxy(&alpn_client, &h1_client, &h2_client, req)
             }),
-            CliContext::get().connect_timeout(),
             &environment_info.environment_id,
             &environment_info.signing_public_key,
             bearer_token,
@@ -117,11 +141,17 @@ pub(crate) async fn run_local(
             || {
                 let tunnel_url = tunnel_url.clone();
                 let handler = handler.clone();
+                let mut https_connector = https_connector.clone();
 
                 async move {
+                    let io = https_connector
+                                .call(tunnel_url)
+                                .await
+                                .map_err(ServeError::Connection)?;
+
                     let err = handler
                         .serve(
-                            tunnel_url,
+                            io,
                             CancellationToken::new(),
                             CancellationToken::new(),
                         )
