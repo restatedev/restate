@@ -1,0 +1,24 @@
+[package]
+name = "restate-ingress-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description.workspace = true
+
+[dependencies]
+arc-swap = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+pin-project-lite = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+restate-core = { workspace = true }
+restate-types = { workspace = true }
