@@ -10,6 +10,7 @@ members = [
     "benchmarks",
     "tools/bifrost-benchpress",
     "tools/mock-service-endpoint",
+    "tools/mock-lambda-invoker",
     "tools/restatectl",
     "tools/service-protocol-wireshark-dissector",
     "tools/xtask",
@@ -39,6 +40,7 @@ description = "Restate makes distributed applications easy!"
 # Own crates
 codederror = { path = "crates/codederror" }
 mock-service-endpoint = { path = "tools/mock-service-endpoint" }
+mock-lambda-invoker = { path = "tools/mock-lambda-invoker" }
 restate-admin = { path = "crates/admin" }
 restate-admin-rest-model = { path = "crates/admin-rest-model" }
 restate-base64-util = { path = "crates/base64-util" }
