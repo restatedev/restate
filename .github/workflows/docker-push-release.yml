@@ -124,9 +124,9 @@ jobs:
 
           FROM alpine
           ARG TARGETARCH
-          COPY --from=builder /restatectl-${TARGETARCH}/*/restatectl /
-          COPY --from=builder /restate-cli-${TARGETARCH}/*/* /
-          ENTRYPOINT [ "/restate" ]
+          COPY --from=builder /restate-cli-${TARGETARCH}/*/restate /usr/local/bin/restate
+          COPY --from=builder /restatectl-${TARGETARCH}/*/restatectl /usr/local/bin/restatectl
+          ENTRYPOINT [ "restate" ]
           EOF
 
       - name: Build and push multiplatform image

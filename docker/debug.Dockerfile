@@ -8,11 +8,11 @@
 # the Business Source License, use of this software will be governed
 # by the Apache License, Version 2.0.
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.4 AS planner
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.5 AS planner
 COPY . .
 RUN just chef-prepare
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.4 AS base
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.5 AS base
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 

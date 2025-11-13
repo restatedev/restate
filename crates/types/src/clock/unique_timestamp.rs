@@ -175,6 +175,8 @@ mod bilrost_encoding {
         }
     }
 
+    bilrost::empty_state_via_for_overwrite!(UniqueTimestamp);
+
     bilrost::delegate_proxied_encoding!(
         use encoding (bilrost::encoding::Varint)
         to encode proxied type (UniqueTimestamp)

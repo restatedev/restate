@@ -16,6 +16,6 @@ restate-workspace-hack = { workspace = true }
 http = { workspace = true }
 hyper-util = { workspace = true, features = ["tokio"] }
 pin-project = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 tower = { workspace = true }
 
