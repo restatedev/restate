@@ -15,19 +15,22 @@ restate-workspace-hack = { workspace = true }
 
 restate-types = { workspace = true }
 
-prost = { workspace = true }
-prost-types = { workspace = true }
+ahash = { workspace = true }
 anyhow = { workspace = true }
+bilrost = { workspace = true, features = ["smallvec"] }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
 num-traits = { workspace = true }
+opentelemetry = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
+rangemap = { workspace = true }
 serde = { workspace = true }
+smallvec = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
-rangemap = { workspace = true }
-opentelemetry = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
