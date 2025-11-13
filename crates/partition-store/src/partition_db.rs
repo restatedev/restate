@@ -28,7 +28,9 @@ use restate_types::config::Configuration;
 use restate_types::logs::Lsn;
 use restate_types::partitions::{CfName, Partition};
 
+use crate::TableKind;
 use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};
+use crate::keys::KeyKind;
 use crate::memory::MemoryBudget;
 use crate::snapshots::LocalPartitionSnapshot;
 
@@ -78,6 +80,10 @@ impl PartitionDb {
 
     pub fn cf_handle(&self) -> &Arc<BoundColumnFamily<'_>> {
         &self.cf.0
+    }
+
+    pub(crate) fn table_cf_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
+        self.cf_handle()
     }
 
     pub fn cf_names(&self) -> Vec<SmartString> {
@@ -515,6 +521,12 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             Some(global_cache),
         );
         cf_options.set_block_based_table_factory(&block_options);
+        cf_options.set_merge_operator(
+            "PartitionMerge",
+            KeyKind::full_merge,
+            KeyKind::partial_merge,
+        );
+        cf_options.set_max_successive_merges(100);
 
         // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
         // in the C API nor the rust binding. That's okay and we can change it later.
