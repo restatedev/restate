@@ -22,8 +22,6 @@ pub struct CloudConfig {
     pub environment_info: Option<EnvironmentInfo>, // Set on a profile on login
     pub api_base_url: Url,
     pub login_base_url: Url,
-    pub tunnel_base_url: Url,
-    pub proxy_base_url: Url,
     pub client_id: String,
     pub redirect_ports: Vec<u16>,
     #[serde(flatten)]
@@ -47,9 +45,6 @@ impl Default for CloudConfig {
             environment_info: None,
             api_base_url: Url::parse("https://api.us.restate.cloud").unwrap(),
             login_base_url: Url::parse("https://auth.restate.cloud").unwrap(),
-            tunnel_base_url: Url::parse("https://tunnel.us.restate.cloud:19080").unwrap(),
-            // no port as this is inserted as needed
-            proxy_base_url: Url::parse("https://tunnel.us.restate.cloud").unwrap(),
             client_id: "5q3dsdnrr5r400jvibd8d3k66l".into(),
             redirect_ports: vec![33912, 44643, 47576, 54788, 61844],
             credentials: None,

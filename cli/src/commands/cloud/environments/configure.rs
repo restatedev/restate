@@ -250,8 +250,6 @@ fn write_environment(
     let cloud = profile_block["cloud"].or_insert(table());
     cloud["account_id"] = value(account_id);
     cloud["environment_id"] = value(&environment.environment_id);
-    cloud["tunnel_base_url"] = value(&environment.tunnel_base_url);
-    cloud["proxy_base_url"] = value(&environment.proxy_base_url);
 
     Ok(())
 }

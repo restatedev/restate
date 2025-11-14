@@ -78,6 +78,11 @@ pub struct Register {
     /// Lambda ARN, the ARN should include the function version.
     #[clap(value_parser = parse_deployment)]
     deployment: DeploymentEndpoint,
+
+    /// The name of a Restate Cloud tunnel through which to register the uri
+    #[cfg(feature = "cloud")]
+    #[clap(long = "tunnel-name")]
+    tunnel_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -199,7 +204,11 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     let deployment = match &discover_opts.deployment {
         #[cfg(feature = "cloud")]
-        DeploymentEndpoint::Uri(uri) if uri.scheme_str() == Some("tunnel") => {
+        DeploymentEndpoint::Uri(uri) if discover_opts.tunnel_name.is_some() => {
+            use crate::clients::cloud::{CloudClient, CloudClientInterface};
+
+            let tunnel_name = discover_opts.tunnel_name.as_ref().unwrap();
+
             let environment_info = match (
                 &env.config.environment_type,
                 &env.config.cloud.environment_info,
@@ -209,7 +218,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 }
                 _ => {
                     return Err(anyhow::anyhow!(
-                        "To register tunnel:// URLs, first switch to the Cloud environment you're tunnelling to using `restate config use-environment`"
+                        "To register URLs with --tunnel-name, first switch to the Cloud environment you're tunnelling to using `restate config use-environment`"
                     ));
                 }
             };
@@ -222,28 +231,69 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                     environment_info.environment_id
                 ))?;
 
-            let authority = uri
-                .authority()
-                .ok_or(anyhow::anyhow!("tunnel:// URLs must have an authority"))?;
+            let cloud_client = CloudClient::new(&env)?;
 
-            let port = authority
-                .port_u16()
-                .ok_or(anyhow::anyhow!("tunnel:// URLs must have a port"))?;
+            let proxy_base_url = cloud_client
+                .describe_environment(
+                    &environment_info.account_id,
+                    &environment_info.environment_id,
+                )
+                .await?
+                .into_body()
+                .await?
+                .proxy_base_url;
 
-            let proxy_host = &env
-                .config
-                .cloud
-                .proxy_base_url
+            let proxy_base_url = url::Url::from_str(&proxy_base_url)
+                .context("invalid proxy_base_url in describe environment response")?;
+
+            let proxy_host = proxy_base_url
                 .host_str()
                 .expect("proxy_base_url must have a host");
 
+            // proxy base url doesn't currently have a port but may in future
+            let proxy_port = proxy_base_url.port().unwrap_or(9080);
+
+            let destination_scheme = uri
+                .scheme_str()
+                .context("tunneled URLs must have a scheme")?;
+
+            let destination_host = uri.host().context("tunneled URLs must have a host")?;
+
+            let destination_port = match uri.port_u16() {
+                Some(port) => port,
+                None => match destination_scheme {
+                    "http" => 80,
+                    "https" => 443,
+                    _ => {
+                        return Err(anyhow::anyhow!(
+                            "tunneled URLs must have scheme http or https"
+                        ));
+                    }
+                },
+            };
+
+            let destination_path = uri.path();
+
             let uri = Uri::builder()
-                .scheme(env.config.cloud.proxy_base_url.scheme())
-                .authority(format!("{proxy_host}:{port}"))
-                .path_and_query(format!("/{unprefixed_environment_id}/{}", authority.host()))
+                .scheme(proxy_base_url.scheme())
+                .authority(format!("{proxy_host}:{proxy_port}"))
+                .path_and_query(format!(
+                    "/{unprefixed_environment_id}/{tunnel_name}/{destination_scheme}/{destination_host}/{destination_port}{destination_path}",
+                ))
                 .build()?;
 
             DeploymentEndpoint::Uri(uri)
+        }
+        DeploymentEndpoint::Uri(uri) if uri.scheme_str() == Some("tunnel") => {
+            return Err(anyhow::anyhow!(
+                "tunnel:// URLs are no longer supported; instead use the destination URL and --tunnel-name"
+            ));
+        }
+        #[cfg(feature = "cloud")]
+        _ if discover_opts.tunnel_name.is_some() => {
+            return Err(anyhow::anyhow!(
+                "--tunnel-name is only valid for HTTP endpoints"
+            ));
         }
         other => other.clone(),
     };
