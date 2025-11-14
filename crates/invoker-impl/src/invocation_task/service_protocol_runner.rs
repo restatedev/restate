@@ -16,6 +16,7 @@ use futures::{Stream, StreamExt};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
+use http_body_util::Channel;
 use opentelemetry::trace::TraceFlags;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -216,8 +217,7 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
     ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
         // Just an arbitrary buffering size
-        let (http_stream_tx, http_stream_rx) = mpsc::channel(10);
-        let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
+        let (http_stream_tx, req_body) = Channel::new(10);
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
@@ -458,7 +458,7 @@ where
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
-        if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
+        if http_stream_tx.send(Frame::data(buf)).await.is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())

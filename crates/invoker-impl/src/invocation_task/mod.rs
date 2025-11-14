@@ -129,10 +129,9 @@ impl From<InvokerError> for InvocationTaskOutputInner {
     }
 }
 
-type InvokerBodyStream =
-    http_body_util::StreamBody<ReceiverStream<Result<Frame<Bytes>, Infallible>>>;
+type InvokerBodyStream = http_body_util::channel::Channel<Bytes, Infallible>;
 
-type InvokerRequestStreamSender = mpsc::Sender<Result<Frame<Bytes>, Infallible>>;
+type InvokerRequestStreamSender = http_body_util::channel::Sender<Bytes, Infallible>;
 
 /// Represents an open invocation stream
 pub(super) struct InvocationTask<IR, EE, DMR> {

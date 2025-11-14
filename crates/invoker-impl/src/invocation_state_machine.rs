@@ -499,6 +499,18 @@ impl InvocationStateMachine {
         true
     }
 
+    /// Returns true if it was an open bidi stream, thus this suspend had some effect.
+    pub(super) fn suspend(&mut self) -> bool {
+        if let AttemptState::InFlight {
+            notifications_tx, ..
+        } = &mut self.invocation_state
+        {
+            // Close notifications_tx to trigger suspension
+            return notifications_tx.take().is_some_and(|tx| !tx.is_closed());
+        }
+        false
+    }
+
     pub(crate) fn should_emit_transient_error_event(
         &mut self,
         new_error_event: &TransientErrorEvent,
@@ -565,6 +577,26 @@ mod tests {
     impl InvocationStateMachine {
         pub(crate) fn is_waiting_retry(&self) -> bool {
             matches!(self.invocation_state, AttemptState::WaitingRetry { .. })
+        }
+
+        pub(crate) fn in_flight_with_notifications_tx_closed(&self) -> bool {
+            matches!(
+                self.invocation_state,
+                AttemptState::InFlight {
+                    notifications_tx: None,
+                    ..
+                }
+            )
+        }
+
+        pub(crate) fn in_flight_with_notifications_tx_open(&self) -> bool {
+            matches!(
+                &self.invocation_state,
+                AttemptState::InFlight {
+                    notifications_tx: Some(_),
+                    ..
+                }
+            )
         }
     }
 
