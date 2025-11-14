@@ -141,10 +141,8 @@ where
         )
         .route("/health", get(openapi_handler!(health::health)))
         .route("/version", get(openapi_handler!(version::version)))
-        .route(
-            "/cluster-health",
-            get(openapi_handler!(cluster_health::cluster_health)),
-        );
+        // The cluster_health endpoint is hidden from the OpenAPI spec in preparation for removing it
+        .route("/cluster-health", get(cluster_health::cluster_health));
 
     // Add some additional OpenAPI metadata
     router.openapi_builder_template_mut()
@@ -184,11 +182,6 @@ where
         .tag(Tag {
             name: "service_handler".to_string(),
             description: Some("Service handlers metadata".to_string()),
-            ..Default::default()
-        })
-        .tag(Tag {
-            name: "cluster_health".to_string(),
-            description: Some("Cluster health".to_string()),
             ..Default::default()
         })
         .tag(Tag {
