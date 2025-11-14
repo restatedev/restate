@@ -95,13 +95,13 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
     let new_value = Value::new(1337);
     let new_value_version = new_value.version();
     assert_that!(
-        client
-            .put(
-                key.clone(),
-                &new_value,
-                Precondition::MatchesVersion(value_version.next()),
-            )
-            .await,
+        retry_on_retryable_error(retry_policy.clone(), || client.put(
+            key.clone(),
+            &new_value,
+            Precondition::MatchesVersion(value_version.next()),
+        ))
+        .await
+        .map_err(|err| err.into_inner()),
         err(pat!(WriteError::FailedPrecondition(_)))
     );
     assert_that!(
@@ -123,14 +123,19 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
         )
     })
     .await?;
-    let stored_new_value = client.get::<Value>(key.clone()).await?;
+    let stored_new_value =
+        retry_on_retryable_error(retry_policy.clone(), || client.get::<Value>(key.clone())).await?;
     assert_eq!(stored_new_value, Some(new_value));
 
     retry_on_retryable_error(retry_policy.clone(), || {
         client.delete(key.clone(), Precondition::MatchesVersion(new_value_version))
     })
     .await?;
-    assert!(client.get::<Value>(key.clone()).await?.is_none());
+    assert!(
+        retry_on_retryable_error(retry_policy.clone(), || client.get::<Value>(key.clone()))
+            .await?
+            .is_none()
+    );
 
     cluster.graceful_shutdown(Duration::from_secs(3)).await?;
 
