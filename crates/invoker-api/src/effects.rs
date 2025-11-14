@@ -11,16 +11,17 @@
 use crate::EffectKind::JournalEntryV2;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::InvocationEpoch;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
-use restate_types::journal_v2;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawEntry;
+use restate_types::logs::{HasRecordKeys, Keys};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{flexbuffers_storage_encode_decode, journal_v2};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +34,14 @@ pub struct Effect {
     )]
     pub invocation_epoch: InvocationEpoch,
     pub kind: EffectKind,
+}
+
+flexbuffers_storage_encode_decode!(Effect);
+
+impl HasRecordKeys for Effect {
+    fn record_keys(&self) -> restate_types::logs::Keys {
+        Keys::Single(self.invocation_id.partition_key())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

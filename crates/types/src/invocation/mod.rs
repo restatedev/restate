@@ -12,25 +12,30 @@
 
 pub mod client;
 
-use crate::errors::InvocationError;
-use crate::identifiers::{
-    DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
-    PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
-};
-use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
-use crate::time::MillisSinceEpoch;
-use crate::{GenerationalNodeId, RestateVersion};
-
-use bytes::Bytes;
-use bytestring::ByteString;
-use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
-use serde_with::{DisplayFromStr, FromInto, serde_as};
 use std::borrow::Cow;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::str::FromStr;
 use std::time::Duration;
 use std::{cmp, fmt};
+
+use bytes::Bytes;
+use bytestring::ByteString;
+use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
+use serde_with::{DisplayFromStr, FromInto, serde_as};
+
+use crate::errors::InvocationError;
+use crate::identifiers::{
+    DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
+    PartitionProcessorRpcRequestId, ServiceId, SubscriptionId, WithInvocationId, WithPartitionKey,
+};
+use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
+use crate::logs::{HasRecordKeys, Keys};
+use crate::time::MillisSinceEpoch;
+use crate::{
+    GenerationalNodeId, RestateVersion, bilrost_storage_encode_decode,
+    flexbuffers_storage_encode_decode,
+};
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
@@ -435,6 +440,14 @@ pub struct ServiceInvocation {
     pub restate_version: RestateVersion,
 }
 
+flexbuffers_storage_encode_decode!(ServiceInvocation);
+
+impl HasRecordKeys for ServiceInvocation {
+    fn record_keys(&self) -> Keys {
+        Keys::Single(self.invocation_id.partition_key())
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     from = "serde_hacks::SubmitNotificationSink",
@@ -577,9 +590,17 @@ pub struct InvocationResponse {
     pub result: ResponseResult,
 }
 
+flexbuffers_storage_encode_decode!(InvocationResponse);
+
 impl WithInvocationId for InvocationResponse {
     fn invocation_id(&self) -> InvocationId {
         self.target.invocation_id()
+    }
+}
+
+impl HasRecordKeys for InvocationResponse {
+    fn record_keys(&self) -> Keys {
+        Keys::Single(self.partition_key())
     }
 }
 
@@ -623,9 +644,17 @@ pub struct GetInvocationOutputResponse {
     pub result: GetInvocationOutputResult,
 }
 
+bilrost_storage_encode_decode!(GetInvocationOutputResponse);
+
 impl WithInvocationId for GetInvocationOutputResponse {
     fn invocation_id(&self) -> InvocationId {
         self.target.invocation_id()
+    }
+}
+
+impl HasRecordKeys for GetInvocationOutputResponse {
+    fn record_keys(&self) -> Keys {
+        Keys::Single(self.partition_key())
     }
 }
 
@@ -944,6 +973,14 @@ pub struct InvocationTermination {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
+flexbuffers_storage_encode_decode!(InvocationTermination);
+
+impl HasRecordKeys for InvocationTermination {
+    fn record_keys(&self) -> crate::logs::Keys {
+        Keys::Single(self.invocation_id.partition_key())
+    }
+}
+
 /// Flavor of the termination. Can be kill (hard stop) or graceful cancel.
 #[derive(
     Debug, Clone, Copy, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Enumeration,
@@ -963,9 +1000,17 @@ pub struct PurgeInvocationRequest {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
+flexbuffers_storage_encode_decode!(PurgeInvocationRequest);
+
 impl WithInvocationId for PurgeInvocationRequest {
     fn invocation_id(&self) -> InvocationId {
         self.invocation_id
+    }
+}
+
+impl HasRecordKeys for PurgeInvocationRequest {
+    fn record_keys(&self) -> Keys {
+        Keys::Single(self.invocation_id.partition_key())
     }
 }
 
@@ -979,9 +1024,17 @@ pub struct ResumeInvocationRequest {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
+flexbuffers_storage_encode_decode!(ResumeInvocationRequest);
+
 impl WithInvocationId for ResumeInvocationRequest {
     fn invocation_id(&self) -> InvocationId {
         self.invocation_id
+    }
+}
+
+impl HasRecordKeys for ResumeInvocationRequest {
+    fn record_keys(&self) -> Keys {
+        Keys::Single(self.invocation_id.partition_key())
     }
 }
 
@@ -1001,9 +1054,17 @@ pub struct RestartAsNewInvocationRequest {
     pub response_sink: Option<InvocationMutationResponseSink>,
 }
 
+flexbuffers_storage_encode_decode!(RestartAsNewInvocationRequest);
+
 impl WithInvocationId for RestartAsNewInvocationRequest {
     fn invocation_id(&self) -> InvocationId {
         self.invocation_id
+    }
+}
+
+impl HasRecordKeys for RestartAsNewInvocationRequest {
+    fn record_keys(&self) -> Keys {
+        Keys::Single(self.invocation_id.partition_key())
     }
 }
 
@@ -1320,9 +1381,17 @@ pub struct AttachInvocationRequest {
     pub response_sink: ServiceInvocationResponseSink,
 }
 
+flexbuffers_storage_encode_decode!(AttachInvocationRequest);
+
 impl WithPartitionKey for AttachInvocationRequest {
     fn partition_key(&self) -> PartitionKey {
         self.invocation_query.partition_key()
+    }
+}
+
+impl HasRecordKeys for AttachInvocationRequest {
+    fn record_keys(&self) -> Keys {
+        Keys::Single(self.partition_key())
     }
 }
 
@@ -1333,9 +1402,17 @@ pub struct NotifySignalRequest {
     pub signal: Signal,
 }
 
+flexbuffers_storage_encode_decode!(NotifySignalRequest);
+
 impl WithInvocationId for NotifySignalRequest {
     fn invocation_id(&self) -> InvocationId {
         self.invocation_id
+    }
+}
+
+impl HasRecordKeys for NotifySignalRequest {
+    fn record_keys(&self) -> Keys {
+        Keys::Single(self.partition_key())
     }
 }
 
