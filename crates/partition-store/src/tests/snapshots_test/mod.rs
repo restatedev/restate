@@ -52,6 +52,7 @@ pub(crate) async fn run_tests(
         min_applied_lsn: snapshot.min_applied_lsn,
         db_comparator_name: snapshot.db_comparator_name.clone(),
         files: snapshot.files.clone(),
+        file_keys: std::collections::BTreeMap::new(),
     };
     let metadata_json = serde_json::to_string_pretty(&snapshot_meta).unwrap();
 
