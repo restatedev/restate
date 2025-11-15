@@ -1137,6 +1137,7 @@ dependencies = [
  "bilrost-derive",
  "bytes",
  "bytestring",
+ "smallvec",
  "thin-vec",
 ]
 
@@ -7685,6 +7686,7 @@ version = "1.6.0-dev"
 dependencies = [
  "ahash",
  "anyhow",
+ "bilrost",
  "bytes",
  "bytestring",
  "codederror",
@@ -7945,7 +7947,9 @@ dependencies = [
 name = "restate-storage-api"
 version = "1.6.0-dev"
 dependencies = [
+ "ahash",
  "anyhow",
+ "bilrost",
  "bytes",
  "bytestring",
  "derive_more",
@@ -7959,6 +7963,7 @@ dependencies = [
  "restate-types",
  "restate-workspace-hack",
  "serde",
+ "smallvec",
  "strum 0.27.1",
  "thiserror 2.0.17",
 ]

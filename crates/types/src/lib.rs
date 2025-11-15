@@ -57,6 +57,7 @@ pub mod state_mut;
 pub mod storage;
 pub mod time;
 pub mod timer;
+pub mod vqueue;
 
 pub use id_util::IdResourceType;
 pub use node_id::*;
