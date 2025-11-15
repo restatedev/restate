@@ -146,6 +146,7 @@ impl SnapshotPartitionTask {
             min_applied_lsn: snapshot.min_applied_lsn,
             db_comparator_name: snapshot.db_comparator_name.clone(),
             files: snapshot.files.clone(),
+            file_keys: std::collections::BTreeMap::new(),
         }
     }
 }
