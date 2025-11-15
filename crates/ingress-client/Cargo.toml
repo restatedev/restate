@@ -1,0 +1,29 @@
+[package]
+name = "restate-ingress-client"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+arc-swap = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
+pin-project-lite = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+restate-workspace-hack = { workspace = true }
+restate-core = { workspace = true }
+restate-types = { workspace = true }
+
+[dev-dependencies]
+restate-core = { workspace = true, features = ["test-util"] }
+test-log = { workspace = true }
+bytes = { workspace = true }
+googletest = { workspace = true }

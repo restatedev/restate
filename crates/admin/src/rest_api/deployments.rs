@@ -58,8 +58,8 @@ use serde::Deserialize;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_deployment<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn create_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Extension(version): Extension<AdminApiVersion>,
     #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError>
@@ -188,8 +188,8 @@ where
         schema = "std::string::String"
     ))
 )]
-pub async fn get_deployment<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn get_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(deployment_id): Path<DeploymentId>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError>
 where
@@ -210,8 +210,8 @@ where
     operation_id = "list_deployments",
     tags = "deployment"
 )]
-pub async fn list_deployments<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn list_deployments<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
 ) -> Json<ListDeploymentsResponse>
 where
     Metadata: MetadataService,
@@ -267,8 +267,8 @@ pub struct DeleteDeploymentParams {
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_deployment<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn delete_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(deployment_id): Path<DeploymentId>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
 ) -> Result<StatusCode, MetaApiError>
@@ -302,8 +302,8 @@ where
         schema = "std::string::String"
     ))
 )]
-pub async fn update_deployment<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn update_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Extension(version): Extension<AdminApiVersion>,
     method: Method,
     Path(deployment_id): Path<DeploymentId>,

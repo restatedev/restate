@@ -23,7 +23,6 @@ use restate_types::journal_v2::raw::RawNotification;
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::timer::TimerKeyValue;
-use std::time::Duration;
 
 pub type ActionCollector = Vec<Action>;
 
@@ -75,10 +74,6 @@ pub enum Action {
         /// If true, this request_id created a "fresh invocation",
         /// otherwise the invocation was previously submitted.
         is_new_invocation: bool,
-    },
-    ScheduleInvocationStatusCleanup {
-        invocation_id: InvocationId,
-        retention: Duration,
     },
     ForwardKillResponse {
         request_id: PartitionProcessorRpcRequestId,
