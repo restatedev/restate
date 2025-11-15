@@ -14,7 +14,11 @@ use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use prost::encoding::encoded_len_varint;
+use rocksdb::MergeOperands;
 use strum::EnumIter;
+use tracing::{error, trace};
+
+use restate_types::clock::UniqueTimestamp;
 
 /// Every table key needs to have a key kind. This allows to multiplex different keys in the same
 /// column family and to evolve a key if necessary.
@@ -42,6 +46,17 @@ pub enum KeyKind {
     State,
     Timers,
     Promise,
+    // VQueues --> owned by restate-vqueues
+    //
+    // todo: split this into empty and non-empty, or add the status in the key prefix
+    // for instance, make this VQueueStatus (S | VQueueId)
+    // or have empty_vqueues that carry the empty_since in their key prefix. Note that
+    // doing so would require that we know the empty_since when we attempt to delete it
+    VQueueActive,
+    VQueueInbox,
+    VQueueMeta,
+    // Resources' canonical key(s)
+    VQueueEntryState,
 }
 
 impl KeyKind {
@@ -86,6 +101,13 @@ impl KeyKind {
             KeyKind::State => b"st",
             KeyKind::Timers => b"ti",
             KeyKind::Promise => b"pr",
+            // ** VQueues ** //
+            // VQueues own all keys that start with b"q".
+            KeyKind::VQueueActive => b"qa",
+            KeyKind::VQueueInbox => b"qi",
+            KeyKind::VQueueMeta => b"qm",
+            // Queue Entry State (canonical state of vqueue entries)
+            KeyKind::VQueueEntryState => b"qe",
         }
     }
 
@@ -115,6 +137,11 @@ impl KeyKind {
             b"st" => Some(KeyKind::State),
             b"ti" => Some(KeyKind::Timers),
             b"pr" => Some(KeyKind::Promise),
+            // VQueues own all keys that start with b"q"
+            b"qa" => Some(KeyKind::VQueueActive),
+            b"qi" => Some(KeyKind::VQueueInbox),
+            b"qm" => Some(KeyKind::VQueueMeta),
+            b"qe" => Some(KeyKind::VQueueEntryState),
             _ => None,
         }
     }
@@ -133,6 +160,50 @@ impl KeyKind {
         buf.copy_to_slice(&mut bytes);
         Self::from_bytes(&bytes)
             .ok_or_else(|| StorageError::Generic(anyhow::anyhow!("unknown key kind: {:x?}", bytes)))
+    }
+
+    // Rocksdb merge operator function (full merge)
+    pub fn full_merge(
+        key: &[u8],
+        existing_val: Option<&[u8]>,
+        operands: &MergeOperands,
+    ) -> Option<Vec<u8>> {
+        let mut kind_buf = key;
+        let kind = match KeyKind::deserialize(&mut kind_buf) {
+            Ok(kind) => kind,
+            Err(e) => {
+                error!("Cannot apply merge operator; {e}");
+                return None;
+            }
+        };
+        trace!(?kind, "full merge");
+
+        match kind {
+            KeyKind::VQueueMeta => vqueue_meta_merge::full_merge(key, existing_val, operands),
+            _ => None,
+        }
+    }
+
+    // Rocksdb merge operator function (partial merge)
+    pub fn partial_merge(
+        key: &[u8],
+        _unused: Option<&[u8]>,
+        operands: &MergeOperands,
+    ) -> Option<Vec<u8>> {
+        let mut kind_buf = key;
+        let kind = match KeyKind::deserialize(&mut kind_buf) {
+            Ok(kind) => kind,
+            Err(e) => {
+                error!("Cannot apply merge operator; {e}");
+                return None;
+            }
+        };
+        trace!(?kind, "partial merge");
+
+        match kind {
+            KeyKind::VQueueMeta => vqueue_meta_merge::partial_merge(key, operands),
+            _ => None,
+        }
     }
 }
 
@@ -350,6 +421,7 @@ macro_rules! define_table_key {
 
 use crate::PaddedPartitionId;
 use crate::TableKind;
+use crate::vqueue_table::vqueue_meta_merge;
 pub(crate) use define_table_key;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::ProducerId;
@@ -408,6 +480,41 @@ impl KeyCodec for PaddedPartitionId {
 
     fn serialized_length(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+impl KeyCodec for UniqueTimestamp {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        // store u64 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
+        target.put_u64(self.as_u64());
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        UniqueTimestamp::try_from(source.get_u64()).map_err(|e| StorageError::Conversion(e.into()))
+    }
+
+    fn serialized_length(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+}
+
+impl<const L: usize> KeyCodec for [u8; L] {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        // stores the array as is.
+        target.put_slice(self.as_ref());
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        if source.remaining() < L {
+            return Err(StorageError::DataIntegrityError);
+        }
+        let mut buf = [0u8; L];
+        source.copy_to_slice(&mut buf);
+        Ok(buf)
+    }
+
+    fn serialized_length(&self) -> usize {
+        L
     }
 }
 

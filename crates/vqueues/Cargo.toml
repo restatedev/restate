@@ -1,5 +1,5 @@
 [package]
-name = "restate-storage-api"
+name = "restate-vqueues"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -7,30 +7,23 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
-[features]
-test-util = []
-
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-rocksdb = { workspace = true }
+restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 
-ahash = { workspace = true }
 anyhow = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
-bytes = { workspace = true }
-bytestring = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
-num-traits = { workspace = true }
-opentelemetry = { workspace = true }
-prost = { workspace = true }
-prost-types = { workspace = true }
-rangemap = { workspace = true }
-serde = { workspace = true }
+hashbrown = { version = "0.16"  }
+pin-project = { workspace = true }
+rocksdb = { workspace = true }
 smallvec = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
-
-[build-dependencies]
-prost-build = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }

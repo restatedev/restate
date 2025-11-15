@@ -139,6 +139,7 @@ pub enum TableKind {
     Journal,
     JournalEvent,
     Promise,
+    VQueue,
 }
 
 impl TableKind {
@@ -162,6 +163,12 @@ impl TableKind {
             ],
             Self::JournalEvent => &[KeyKind::JournalEvent],
             Self::Promise => &[KeyKind::Promise],
+            Self::VQueue => &[
+                KeyKind::VQueueMeta,
+                KeyKind::VQueueInbox,
+                KeyKind::VQueueActive,
+                KeyKind::VQueueEntryState,
+            ],
         }
     }
 
@@ -250,8 +257,8 @@ impl PartitionStore {
         self.db.partition().key_range.contains(&key)
     }
 
-    fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
-        self.db.cf_handle()
+    pub(crate) fn table_handle(&self, table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
+        self.db.table_cf_handle(table_kind)
     }
 
     fn new_prefix_iterator_opts(&self, _key_kind: KeyKind, prefix: Bytes) -> ReadOptions {
@@ -820,6 +827,34 @@ impl PartitionStoreTransaction<'_> {
         }
 
         opts
+    }
+
+    #[inline]
+    pub fn raw_put_cf(
+        &mut self,
+        _key_kind: KeyKind,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) {
+        self.write_batch_with_index
+            .put_cf(self.data_cf_handle, key, value);
+    }
+
+    #[inline]
+    pub fn raw_merge_cf(
+        &mut self,
+        _key_kind: KeyKind,
+        key: impl AsRef<[u8]>,
+        value: impl AsRef<[u8]>,
+    ) {
+        self.write_batch_with_index
+            .merge_cf(self.data_cf_handle, key, value);
+    }
+
+    #[inline]
+    pub fn raw_delete_cf(&mut self, _key_kind: KeyKind, key: impl AsRef<[u8]>) {
+        self.write_batch_with_index
+            .delete_cf(self.data_cf_handle, key);
     }
 
     pub(crate) fn prefix_iterator(

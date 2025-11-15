@@ -32,6 +32,7 @@ pub mod service_status_table;
 pub mod snapshots;
 pub mod state_table;
 pub mod timer_table;
+pub mod vqueue_table;
 
 #[cfg(test)]
 mod tests;
