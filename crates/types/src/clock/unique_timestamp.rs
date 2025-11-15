@@ -112,6 +112,12 @@ impl UniqueTimestamp {
         // extract the logical clock
         self.0.get() & LC_MAX
     }
+
+    /// Calculates the number of milliseconds by which this timestamp is ahead of the other,
+    /// or return 0 if the other timestamp is ahead.
+    pub fn milliseconds_since(&self, other: Self) -> u64 {
+        self.physical_raw().saturating_sub(other.physical_raw())
+    }
 }
 
 impl From<SystemTime> for UniqueTimestamp {
@@ -174,6 +180,8 @@ mod bilrost_encoding {
             UniqueTimestamp::MIN
         }
     }
+
+    bilrost::empty_state_via_for_overwrite!(UniqueTimestamp);
 
     bilrost::delegate_proxied_encoding!(
         use encoding (bilrost::encoding::Varint)
