@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 
@@ -74,6 +75,13 @@ pub struct PartitionSnapshotMetadata {
     /// The RocksDB SST files comprising the snapshot.
     #[serde_as(as = "Vec<SnapshotSstFile>")]
     pub files: Vec<LiveFile>,
+
+    /// Mapping from SST filename to repository object key.
+    /// Key: exact filename as it appears in LiveFile.name (e.g., "/000752.sst")
+    /// Value: relative object store key (e.g., "`ssts/a1b2c3d4e5f67890a1b2c3d4e5f67890.sst`")
+    /// When empty/missing, fallback to legacy path: {lsn}-{snap_id}/{filename}
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub file_keys: BTreeMap<String, String>,
 }
 
 impl PartitionSnapshotMetadata {
@@ -123,6 +131,8 @@ struct PartitionSnapshotMetadataShadow {
     pub db_comparator_name: String,
     #[serde_as(as = "Vec<SnapshotSstFile>")]
     pub files: Vec<LiveFile>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub file_keys: BTreeMap<String, String>,
 }
 
 impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
@@ -145,6 +155,7 @@ impl From<PartitionSnapshotMetadataShadow> for PartitionSnapshotMetadata {
             min_applied_lsn: value.min_applied_lsn,
             db_comparator_name: value.db_comparator_name,
             files: value.files,
+            file_keys: value.file_keys,
         }
     }
 }
