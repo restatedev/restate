@@ -30,6 +30,7 @@ restate-admin = { workspace = true, features = ["storage-query"]}
 restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
 restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
+restate-ingress-client = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-log-server = { workspace = true }
 restate-metadata-providers = { workspace = true }

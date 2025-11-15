@@ -23,6 +23,7 @@ use restate_core::network::TransportConnect;
 use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::PartitionProcessorInvocationClient;
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
+use restate_ingress_client::IngressClient;
 use restate_partition_store::PartitionStoreManager;
 use restate_service_client::{AssumeRoleCacheMode, HttpClient, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
@@ -67,6 +68,7 @@ pub struct AdminRole<T> {
         ServiceDiscovery,
         TelemetryClient,
         PartitionProcessorInvocationClient<T>,
+        T,
     >,
     storage_accounting_task: Option<StorageAccountingTask>,
 }
@@ -76,6 +78,7 @@ impl<T: TransportConnect> AdminRole<T> {
     pub async fn create(
         health_status: HealthStatus<AdminStatus>,
         bifrost: Bifrost,
+        ingress: IngressClient<T>,
         updateable_config: Live<Configuration>,
         partition_routing: PartitionRouting,
         partition_table: Live<PartitionTable>,
@@ -127,7 +130,7 @@ impl<T: TransportConnect> AdminRole<T> {
         let admin = AdminService::new(
             listeners,
             metadata_writer.clone(),
-            bifrost.clone(),
+            ingress,
             PartitionProcessorInvocationClient::new(
                 networking.clone(),
                 partition_table,

@@ -42,8 +42,8 @@ use restate_types::schema::registry::MetadataService;
         from_type = "MetaApiError",
     )
 )]
-pub async fn create_subscription<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn create_subscription<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     #[request_body(required = true)] Json(payload): Json<CreateSubscriptionRequest>,
 ) -> Result<impl axum::response::IntoResponse, MetaApiError>
 where
@@ -77,8 +77,8 @@ where
         schema = "std::string::String"
     ))
 )]
-pub async fn get_subscription<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn get_subscription<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<Json<SubscriptionResponse>, MetaApiError>
 where
@@ -117,8 +117,8 @@ where
         )
     )
 )]
-pub async fn list_subscriptions<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn list_subscriptions<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Query(ListSubscriptionsParams { sink, source }): Query<ListSubscriptionsParams>,
 ) -> Json<ListSubscriptionsResponse>
 where
@@ -168,8 +168,8 @@ where
         from_type = "MetaApiError",
     )
 )]
-pub async fn delete_subscription<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn delete_subscription<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(subscription_id): Path<SubscriptionId>,
 ) -> Result<StatusCode, MetaApiError>
 where
