@@ -23,7 +23,6 @@ pub struct ServiceHandlerUsage {
 pub struct SimpleInvocation {
     pub id: String,
     pub target: String,
-    pub status: InvocationState,
 }
 
 #[derive(

@@ -11,3 +11,4 @@
 pub mod command;
 pub mod overdue;
 pub mod pipe;
+pub mod streams;

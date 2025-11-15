@@ -254,18 +254,20 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
     }
 }
 
-pub fn render_simple_invocation_list(invocations: &[SimpleInvocation]) {
+pub fn render_simple_invocation_list(invocations: &[SimpleInvocation], limit: usize) {
     let mut invocations_table = Table::new_styled();
-    invocations_table.set_styled_header(vec!["ID", "TARGET", "STATUS"]);
+    invocations_table.set_styled_header(vec!["ID", "TARGET"]);
 
-    for inv in invocations {
+    for inv in invocations.iter().take(limit) {
         invocations_table.add_row(vec![
             Cell::new(&inv.id).add_attribute(Attribute::Bold),
             Cell::new(&inv.target),
-            Cell::new(invocation_status(inv.status)),
         ]);
     }
     c_indent_table!(0, invocations_table);
+    if invocations.len() > limit {
+        c_println!("And other {} invocations...", invocations.len() - limit)
+    }
     c_println!();
 }
 
