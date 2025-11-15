@@ -14,7 +14,9 @@ use futures::never::Never;
 
 use restate_bifrost::{Bifrost, CommitToken, ErrorRecoveryStrategy};
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber};
-use restate_types::{identifiers::PartitionKey, logs::LogId};
+use restate_types::{
+    identifiers::PartitionKey, logs::LogId, net::ingress::IngestRecord, storage::StorageCodec,
+};
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
 use crate::partition::leadership::Error;
@@ -98,6 +100,44 @@ impl SelfProposer {
             .map_err(|_| Error::SelfProposer)?;
 
         Ok(commit_token)
+    }
+
+    pub async fn propose_many_with_notification(
+        &mut self,
+        records: impl ExactSizeIterator<Item = IngestRecord>,
+    ) -> Result<CommitToken, Error> where {
+        let sender = self.bifrost_appender.sender();
+
+        // This is ideally should be implemented
+        // by using `sender.enqueue_many`
+        // but since we have no guarantee over the
+        // underlying channel size. a `reserve_many()` might
+        // block forever waiting for n permits that will
+        // never be available.
+        //
+        // sender
+        //     .enqueue_many(records)
+        //     .await
+        //     .map_err(|_| Error::SelfProposer)?;
+        //
+        // so instead we do this.
+
+        for mut record in records {
+            // todo: unfortunately we need to decode tha pyaload first although
+            // the appended will need to encode it eventually. Maybe if there
+            // is a way to pass the raw encoded data directly to the appender
+            let envelope = StorageCodec::decode(&mut record.record)?;
+
+            sender
+                .enqueue(Arc::new(envelope))
+                .await
+                .map_err(|_| Error::SelfProposer)?;
+        }
+
+        sender
+            .notify_committed()
+            .await
+            .map_err(|_| Error::SelfProposer)
     }
 
     fn create_header(&mut self, partition_key: PartitionKey) -> Header {
