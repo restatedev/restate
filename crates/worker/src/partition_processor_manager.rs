@@ -989,7 +989,13 @@ where
             });
 
         for partition_id in &unknown_latest_snapshot {
-            self.spawn_update_archived_lsn_task(*partition_id);
+            // Skip if we already have a pending refresh for this partition
+            if !self
+                .pending_snapshot_status_refreshes
+                .contains(partition_id)
+            {
+                self.spawn_update_archived_lsn_task(*partition_id);
+            }
         }
 
         // Limit the number of snapshots we schedule automatically
@@ -1151,7 +1157,6 @@ where
         if !self.pending_snapshot_status_refreshes.insert(partition_id) {
             return;
         }
-
         let psm = self.partition_store_manager.clone();
         self.asynchronous_operations
             .build_task()
