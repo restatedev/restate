@@ -66,6 +66,11 @@ on:
         required: false
         default: false
         type: boolean
+      features:
+        description: "features to enable in the build"
+        required: false
+        default: ""
+        type: string
       pushToDockerHub:
         description: "push image to DockerHub"
         required: false

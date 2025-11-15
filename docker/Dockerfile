@@ -10,11 +10,11 @@
 
 ARG UPLOAD_DEBUGINFO=false
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.5 AS planner
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.7 AS planner
 COPY . .
 RUN just chef-prepare
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.5 AS base
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.14.7 AS base
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 
@@ -31,6 +31,18 @@ ARG TARGETARCH
 
 ENV RUSTC_WRAPPER=/usr/bin/sccache
 ENV SCCACHE_DIR=/var/cache/sccache
+
+# todo only enable those env variables when cross compiling
+# todo remove once https://github.com/MaterializeInc/rust-krb5-src/pull/30 has been merged and released
+# Set krb5 cross-compilation env variables (because we cannot run cross compiled tests)
+ENV krb5_cv_attr_constructor_destructor=yes
+ENV ac_cv_func_regcomp=yes
+ENV ac_cv_printf_positional=yes
+
+# todo only enable this env variable when cross compiling
+# todo remove once https://github.com/MaterializeInc/rust-sasl/pull/55 has been merged and released
+# Set sasl2-sys cross-compilation env variables (because we cannot run cross compiled tests)
+ENV ac_cv_gssapi_supports_spnego=yes
 
 # Overrides the behaviour of the release profile re including debug symbols, which in our repo is not to include them.
 # Should be set to 'false' or 'true'. See https://doc.rust-lang.org/cargo/reference/environment-variables.html
