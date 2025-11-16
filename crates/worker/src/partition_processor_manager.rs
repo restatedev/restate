@@ -91,18 +91,24 @@ use crate::partition_processor_manager::spawn_processor_task::SpawnPartitionProc
 
 #[derive(Debug, Clone, derive_more::Display)]
 #[display("{}", snapshot_id)]
-pub struct SnapshotCreated {
+pub struct LatestSnapshot {
     pub snapshot_id: SnapshotId,
     pub log_id: LogId,
-    pub min_applied_lsn: Lsn,
+    /// Safe to trim archived LSN for log
+    pub archived_lsn: Lsn,
+    /// Latest snapshot LSN, may be later than archived LSN depending on retention settings
+    pub snapshot_lsn: Lsn,
+    pub created_at: std::time::SystemTime,
 }
 
-impl From<&PartitionSnapshotMetadata> for SnapshotCreated {
-    fn from(metadata: &PartitionSnapshotMetadata) -> SnapshotCreated {
-        SnapshotCreated {
-            snapshot_id: metadata.snapshot_id,
-            log_id: metadata.log_id,
-            min_applied_lsn: metadata.min_applied_lsn,
+impl From<&SnapshotCreated> for LatestSnapshot {
+    fn from(latest: &SnapshotCreated) -> LatestSnapshot {
+        LatestSnapshot {
+            snapshot_id: latest.1.snapshot_id,
+            log_id: latest.1.log_id,
+            archived_lsn: latest.0.get_archived_lsn(),
+            snapshot_lsn: latest.1.min_applied_lsn,
+            created_at: latest.1.created_at.into(),
         }
     }
 }
@@ -129,7 +135,7 @@ pub struct PartitionProcessorManager {
     asynchronous_operations: JoinSet<AsynchronousEvent>,
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
-    latest_snapshots: HashMap<PartitionId, SnapshotCreated>,
+    latest_snapshots: HashMap<PartitionId, LatestSnapshot>, // NB: latest snapshot min LSN != archived LSN, necessarily
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
     snapshot_repository: Option<SnapshotRepository>,
     fast_forward_on_startup: HashMap<PartitionId, Lsn>,
@@ -142,8 +148,9 @@ pub struct PartitionProcessorManager {
     action_token_bucket: Option<TokenBucket>,
 }
 
-type SnapshotResult = Result<SnapshotCreated, SnapshotError>;
-type SnapshotResultInternal = Result<PartitionSnapshotMetadata, SnapshotError>;
+type SnapshotResult = Result<LatestSnapshot, SnapshotError>;
+type SnapshotCreated = (ArchivedLsn, PartitionSnapshotMetadata);
+type SnapshotResultInternal = Result<SnapshotCreated, SnapshotError>;
 
 struct PendingSnapshotTask {
     snapshot_id: SnapshotId,
@@ -387,10 +394,11 @@ impl PartitionProcessorManager {
                     self.on_partition_processor_rpc(partition_processor_rpc);
                 }
                 Some(result) = self.snapshot_export_tasks.next() => {
-                    if let Ok(result) = result {
-                        self.on_create_snapshot_task_completed(result);
-                    } else {
-                        debug!("Create snapshot task failed: {}", result.unwrap_err());
+                    match result {
+                        Ok(snapshot_result) => self.on_create_snapshot_task_completed(snapshot_result),
+                        Err(join_error) => {
+                            debug!("Create snapshot task panicked: {}", join_error);
+                        }
                     }
                 }
                 () = &mut replica_set_states_changed => {
@@ -807,7 +815,7 @@ impl PartitionProcessorManager {
                 // it is a bit unfortunate that we share PartitionProcessorStatus between the
                 // PP and the PPManager :-(. Maybe at some point we want to split the struct for it.
                 let archived_lsn = self.archived_lsns.get(partition_id);
-                status.last_archived_log_lsn = archived_lsn.map(|a| a.get_min_applied_lsn());
+                status.last_archived_log_lsn = archived_lsn.map(|a| a.get_archived_lsn());
                 let current_tail_lsn = self.target_tail_lsns.get(partition_id).cloned();
 
                 let target_tail_lsn = if current_tail_lsn > status.target_tail_lsn {
@@ -936,21 +944,23 @@ impl PartitionProcessorManager {
 
     fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
         let (partition_id, response) = match result {
-            Ok(metadata) => {
-                self.archived_lsns
-                    .insert(metadata.partition_id, ArchivedLsn::from(&metadata));
+            Ok(created_snapshot) => {
+                let latest_snapshot = LatestSnapshot::from(&created_snapshot);
 
-                let response = SnapshotCreated::from(&metadata);
+                let (archived_lsn, metadata) = created_snapshot;
+                self.archived_lsns
+                    .insert(metadata.partition_id, archived_lsn);
+
                 self.latest_snapshots
                     .entry(metadata.partition_id)
                     .and_modify(|e| {
-                        if response.min_applied_lsn > e.min_applied_lsn {
-                            *e = response.clone();
+                        if latest_snapshot.archived_lsn > e.archived_lsn {
+                            *e = latest_snapshot.clone();
                         }
                     })
-                    .or_insert_with(|| response.clone());
+                    .or_insert_with(|| latest_snapshot.clone());
 
-                (metadata.partition_id, Ok(response))
+                (metadata.partition_id, Ok(latest_snapshot))
             }
             Err(snapshot_error) => (snapshot_error.partition_id, Err(snapshot_error)),
         };
@@ -993,42 +1003,72 @@ impl PartitionProcessorManager {
                     .map(|status| (*partition_id, status))
             });
 
-        let (mut known_archived_lsn, unknown_archived_lsn): (Vec<_>, Vec<_>) =
+        let (mut known_snapshot_with_status, unknown_snapshot): (Vec<_>, Vec<_>) =
             potential_snapshot_partitions.partition_map(|(partition_id, status)| {
-                match self.archived_lsns.get(&partition_id) {
-                    Some(&archived_lsn) => Either::Left((
-                        partition_id,
-                        status.last_applied_log_lsn.unwrap_or(Lsn::INVALID),
-                        archived_lsn,
-                    )),
-                    None => Either::Right(partition_id),
+                match self.latest_snapshots.get(&partition_id) {
+                    Some(latest_snapshot) => {
+                        Either::Left((partition_id, latest_snapshot.clone(), status))
+                    }
+                    None => Either::Right((partition_id, status)),
                 }
             });
 
-        for partition_id in unknown_archived_lsn {
-            self.spawn_update_archived_lsn_task(partition_id);
+        for (partition_id, status) in unknown_snapshot {
+            match self.archived_lsns.get(&partition_id) {
+                Some(&archived_lsn) => {
+                    known_snapshot_with_status.push((
+                        partition_id,
+                        LatestSnapshot {
+                            snapshot_id: SnapshotId::new(),
+                            log_id: LogId::default_for_partition(partition_id),
+                            snapshot_lsn: archived_lsn.get_latest_snapshot_lsn(),
+                            archived_lsn: archived_lsn.get_archived_lsn(),
+                            created_at: archived_lsn
+                                .get_created_at()
+                                .unwrap_or(std::time::UNIX_EPOCH),
+                        },
+                        status,
+                    ));
+                }
+                None => {
+                    self.spawn_update_archived_lsn_task(partition_id);
+                }
+            }
         }
 
         // Limit the number of snapshots we schedule automatically
         const MAX_CONCURRENT_SNAPSHOTS: usize = 4;
         let limit = MAX_CONCURRENT_SNAPSHOTS.saturating_sub(self.pending_snapshots.len());
 
-        known_archived_lsn.shuffle(&mut rand::rng());
-        let snapshot_partitions = known_archived_lsn
+        known_snapshot_with_status.shuffle(&mut rand::rng());
+        let snapshot_partitions = known_snapshot_with_status
             .into_iter()
-            .filter_map(|(partition_id, applied_lsn, archived_lsn)| {
+            .filter_map(|(partition_id, latest_snapshot, status)| {
+                let applied_lsn = status.last_applied_log_lsn.unwrap_or(Lsn::INVALID);
                 // At this point, at least one of time-based or record-based interval is set; if
                 // both requirements are configured, then both must be met.
-                if records_per_snapshot.is_none_or(|num_records| {
-                    applied_lsn
-                        >= archived_lsn
-                            .get_min_applied_lsn()
-                            .add(Lsn::from(num_records.get()))
-                }) && snapshot_interval.is_none_or(|interval| {
-                    archived_lsn.get_age() > with_jitter(interval.into(), 0.1)
-                }) {
+                let next_snapshot_target_lsn = records_per_snapshot.map(|target_delta| {
+                    latest_snapshot
+                        .snapshot_lsn
+                        .add(Lsn::from(target_delta.get()))
+                });
+                let latest_snapshot_age = latest_snapshot.created_at.elapsed().unwrap_or_default();
+                if next_snapshot_target_lsn.is_none_or(|target| applied_lsn >= target)
+                    && snapshot_interval.is_none_or(|interval| {
+                        latest_snapshot.created_at.elapsed().unwrap_or_default()
+                            > with_jitter(interval.into(), 0.1)
+                    })
+                {
                     Some(partition_id)
                 } else {
+                    trace!(
+                        ?partition_id,
+                        ?applied_lsn,
+                        latest_snapshot_lsn = ?latest_snapshot.snapshot_lsn,
+                        ?latest_snapshot_age,
+                        ?next_snapshot_target_lsn,
+                        "Not snapshotting partition yet"
+                    );
                     None
                 }
             })
@@ -1051,7 +1091,7 @@ impl PartitionProcessorManager {
         sender: Option<oneshot::Sender<SnapshotResult>>,
     ) {
         if let Some(snapshot) = self.latest_snapshots.get(&partition_id)
-            && min_target_lsn.is_some_and(|target_lsn| snapshot.min_applied_lsn >= target_lsn)
+            && min_target_lsn.is_some_and(|target_lsn| snapshot.archived_lsn >= target_lsn)
             && let Some(sender) = sender
         {
             sender
@@ -1060,7 +1100,7 @@ impl PartitionProcessorManager {
                             debug!(
                                 ?min_target_lsn,
                                 snapshot_id = ?snapshot.snapshot_id,
-                                latest_snapshot_min_applied_lsn = ?snapshot.min_applied_lsn,
+                                latest_snapshot_min_applied_lsn = ?snapshot.archived_lsn,
                                 "New snapshot was not created because the target LSN was already covered by existing snapshot. \
                                 However, we failed to notify the request sender: {:?}",
                                 err
@@ -1222,7 +1262,7 @@ impl PartitionProcessorManager {
                     result: Ok(Snapshot {
                         snapshot_id: snapshot.snapshot_id,
                         log_id: snapshot.log_id,
-                        min_applied_lsn: snapshot.min_applied_lsn,
+                        min_applied_lsn: snapshot.archived_lsn,
                     }),
                 }),
                 Err(err) => reciprocal.send(CreateSnapshotResponse {

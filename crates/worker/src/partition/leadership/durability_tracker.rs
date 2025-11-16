@@ -13,13 +13,13 @@ use std::task::Poll;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use restate_partition_store::snapshots::ArchivedLsn;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_stream::wrappers::{IntervalStream, WatchStream};
 use tracing::{debug, warn};
 
 use restate_core::Metadata;
+use restate_partition_store::snapshots::ArchivedLsn;
 use restate_types::config::{Configuration, DurabilityMode};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{Lsn, SequenceNumber};
@@ -30,8 +30,8 @@ use restate_wal_protocol::control::PartitionDurability;
 
 const WARN_PERIOD: Duration = Duration::from_secs(60);
 
-/// A stream that tracks the last reported durable Lsn, replica-set durable points, and
-/// last archived lsn and emits a [`PartitionDurability`] when the durable Lsn changes.
+/// A stream that tracks the last reported durable Lsn, replica-set durable points, and archived LSN
+/// (from snapshot repository), and emits a [`PartitionDurability`] when the durable lSN changes.
 ///
 /// The stream has an internal timer that is used to check regularly if the durable Lsn has
 /// changed in the replica-set, but it'll react immediately to changes in the archived Lsn
@@ -44,7 +44,8 @@ pub struct DurabilityTracker {
     check_timer: IntervalStream,
     last_warning_at: Instant,
     /// cache of the last archived_lsn
-    last_archived: Lsn,
+    archived_lsn: Lsn,
+    archived_at: Option<MillisSinceEpoch>,
     terminated: bool,
 }
 
@@ -68,7 +69,8 @@ impl DurabilityTracker {
             archived_lsn_watch: WatchStream::new(archived_lsn_watch),
             check_timer,
             last_warning_at: Instant::now() - WARN_PERIOD,
-            last_archived: Lsn::INVALID,
+            archived_lsn: Lsn::INVALID,
+            archived_at: None,
             terminated: false,
         }
     }
@@ -162,17 +164,23 @@ impl Stream for DurabilityTracker {
         let watch_tick = self.archived_lsn_watch.poll_next_unpin(cx);
         let timer_tick = self.check_timer.poll_next_unpin(cx);
 
-        self.last_archived = match (watch_tick, timer_tick) {
+        match (watch_tick, timer_tick) {
             (Poll::Ready(None), _) | (_, Poll::Ready(None)) => {
                 self.terminated = true;
                 return Poll::Ready(None);
             }
-            (Poll::Ready(Some(archived)), _) => archived
-                .map(|a| a.get_min_applied_lsn())
-                .unwrap_or(Lsn::INVALID),
-            (_, Poll::Ready(_)) => self.last_archived,
+            (Poll::Ready(Some(archived)), _) => {
+                if let Some(archived) = archived {
+                    self.archived_lsn = archived.get_archived_lsn();
+                    self.archived_at = archived.get_created_at().map(MillisSinceEpoch::from);
+                } else {
+                    self.archived_lsn = Lsn::INVALID;
+                    self.archived_at = None;
+                }
+            }
+            (_, Poll::Ready(_)) => {}
             (Poll::Pending, Poll::Pending) => return Poll::Pending,
-        };
+        }
 
         let durability_mode =
             self.sanitize_durability_mode(Configuration::pinned().worker.durability_mode);
@@ -189,21 +197,21 @@ impl Stream for DurabilityTracker {
                 let min_durable_lsn = self
                     .replica_set_states
                     .get_min_durable_lsn(self.partition_id);
-                self.last_archived.min(min_durable_lsn)
+                self.archived_lsn.min(min_durable_lsn)
             }
             // disabled until ad-hoc snapshot sharing is supported
             // DurabilityMode::SnapshotOrReplicaSet => {
             //     let min_durable_lsn = self
             //         .replica_set_states
             //         .get_min_durable_lsn(self.partition_id);
-            //     self.last_archived.max(min_durable_lsn)
+            //     self.archived_lsn.max(min_durable_lsn)
             // }
-            DurabilityMode::SnapshotOnly => self.last_archived,
+            DurabilityMode::SnapshotOnly => self.archived_lsn,
             DurabilityMode::Balanced => {
                 let max_durable_lsn = self
                     .replica_set_states
                     .get_max_durable_lsn(self.partition_id);
-                self.last_archived.min(max_durable_lsn)
+                self.archived_lsn.min(max_durable_lsn)
             }
         };
 
