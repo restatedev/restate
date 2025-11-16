@@ -594,6 +594,15 @@ pub struct SnapshotsOptions {
     /// Default: `Full`
     #[serde(default)]
     pub experimental_snapshot_kind: SnapshotType,
+
+    /// # Snapshot check interval
+    ///
+    /// How frequently to check snapshot trigger conditions. Lower values will result in snapshots
+    /// kicked off sooner, once preconditions are met. Jitter will be added to configured value.
+    ///
+    /// Default: `30s`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_interval: Option<FriendlyDuration>,
 }
 
 impl Default for SnapshotsOptions {
@@ -608,6 +617,7 @@ impl Default for SnapshotsOptions {
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
             experimental_snapshot_kind: SnapshotType::default(),
+            check_interval: None,
         }
     }
 }
@@ -620,6 +630,12 @@ impl SnapshotsOptions {
             Some(10),
             Some(Duration::from_secs(10)),
         )
+    }
+
+    pub fn check_interval(&self) -> Duration {
+        self.check_interval
+            .map(|d| d.into())
+            .unwrap_or_else(|| Duration::from_secs(30))
     }
 
     pub fn snapshots_base_dir(&self) -> PathBuf {
