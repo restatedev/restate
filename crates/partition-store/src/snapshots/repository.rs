@@ -365,8 +365,13 @@ impl SnapshotRepository {
         snapshot: &PartitionSnapshotMetadata,
         local_snapshot_path: PathBuf,
     ) -> anyhow::Result<PartitionSnapshotStatus> {
+        use crate::metric_definitions::{
+            SNAPSHOT_UPLOAD_DURATION, SNAPSHOT_UPLOAD_FAILED, SNAPSHOT_UPLOAD_SUCCESS,
+        };
+
         debug!("Publishing partition snapshot to: {}", self.destination);
 
+        let start = std::time::Instant::now();
         let put_result = self
             .put_snapshot_inner(snapshot, local_snapshot_path.as_path())
             .await;
@@ -378,9 +383,15 @@ impl SnapshotRepository {
             warn!(%err, "Failed to delete local snapshot files");
         }
 
+        metrics::histogram!(SNAPSHOT_UPLOAD_DURATION).record(start.elapsed().as_secs_f64());
+
         match put_result {
-            Ok(status) => Ok(status),
+            Ok(status) => {
+                metrics::counter!(SNAPSHOT_UPLOAD_SUCCESS).increment(1);
+                Ok(status)
+            }
             Err(put_error) => {
+                metrics::counter!(SNAPSHOT_UPLOAD_FAILED).increment(1);
                 for filename in put_error.uploaded_files {
                     let path = put_error.full_snapshot_path.child(filename);
 
@@ -691,6 +702,23 @@ impl SnapshotRepository {
         fields(%partition_id, snapshot_id = tracing::field::Empty),
     )]
     pub async fn get_latest(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
+        use crate::metric_definitions::{SNAPSHOT_DOWNLOAD_DURATION, SNAPSHOT_DOWNLOAD_FAILED};
+
+        let start = std::time::Instant::now();
+        let result = self.get_latest_inner(partition_id).await;
+
+        if result.is_err() {
+            metrics::counter!(SNAPSHOT_DOWNLOAD_FAILED).increment(1);
+        }
+        metrics::histogram!(SNAPSHOT_DOWNLOAD_DURATION).record(start.elapsed().as_secs_f64());
+
+        result
+    }
+
+    async fn get_latest_inner(
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {

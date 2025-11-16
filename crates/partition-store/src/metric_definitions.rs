@@ -1,0 +1,53 @@
+// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use metrics::{Unit, describe_counter, describe_histogram};
+
+pub(crate) const SNAPSHOT_UPLOAD_SUCCESS: &str = "restate.partition_store.snapshots.upload.total";
+pub(crate) const SNAPSHOT_UPLOAD_FAILED: &str =
+    "restate.partition_store.snapshots.upload.failed.total";
+pub(crate) const SNAPSHOT_UPLOAD_DURATION: &str =
+    "restate.partition_store.snapshots.upload.duration.seconds";
+pub(crate) const SNAPSHOT_DOWNLOAD_DURATION: &str =
+    "restate.partition_store.snapshots.download.duration.seconds";
+pub(crate) const SNAPSHOT_DOWNLOAD_FAILED: &str =
+    "restate.partition_store.snapshots.download.failed.total";
+
+pub(crate) fn describe_metrics() {
+    describe_counter!(
+        SNAPSHOT_UPLOAD_SUCCESS,
+        Unit::Count,
+        "Number of successful partition snapshot uploads"
+    );
+
+    describe_counter!(
+        SNAPSHOT_UPLOAD_FAILED,
+        Unit::Count,
+        "Number of failed partition snapshot uploads"
+    );
+
+    describe_histogram!(
+        SNAPSHOT_UPLOAD_DURATION,
+        Unit::Seconds,
+        "Duration of partition snapshot upload operations"
+    );
+
+    describe_histogram!(
+        SNAPSHOT_DOWNLOAD_DURATION,
+        Unit::Seconds,
+        "Duration of partition snapshot download operations"
+    );
+
+    describe_counter!(
+        SNAPSHOT_DOWNLOAD_FAILED,
+        Unit::Count,
+        "Number of failed partition snapshot download operations"
+    );
+}
