@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
+
 use metrics::gauge;
 
 use crate::{
@@ -28,15 +30,17 @@ pub(super) struct InvokerConcurrencyQuota {
 }
 
 impl InvokerConcurrencyQuota {
-    pub(super) fn new(invoker_id: impl Into<InvokerId>, quota: Option<usize>) -> Self {
+    pub(super) fn new(invoker_id: impl Into<InvokerId>, quota: Option<NonZeroUsize>) -> Self {
         let invoker_id = invoker_id.into();
         let inner = match quota {
             Some(available_slots) => {
                 gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => ID_LOOKUP.get(invoker_id))
-                    .set(available_slots as f64);
+                    .set(available_slots.get() as f64);
                 gauge!(INVOKER_AVAILABLE_SLOTS, "invoker_id" => ID_LOOKUP.get(invoker_id))
-                    .set(available_slots as f64);
-                InvokerConcurrencyQuotaInner::Limited { available_slots }
+                    .set(available_slots.get() as f64);
+                InvokerConcurrencyQuotaInner::Limited {
+                    available_slots: available_slots.get(),
+                }
             }
             None => {
                 gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => ID_LOOKUP.get(invoker_id))

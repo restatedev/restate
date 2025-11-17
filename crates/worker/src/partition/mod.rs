@@ -33,6 +33,7 @@ use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
 use restate_core::network::{Oneshot, Reciprocal, ServiceMessage, Verdict};
 use restate_core::{Metadata, ShutdownError, cancellation_watcher, my_node_id};
+use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
@@ -76,13 +77,13 @@ pub enum TargetLeaderState {
     Follower,
 }
 
-#[derive(Debug)]
 pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     status: PartitionProcessorStatus,
     invoker_tx: InvokerInputSender,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
+    invoker_capacity: InvokerCapacity,
 }
 
 impl<InvokerInputSender> PartitionProcessorBuilder<InvokerInputSender>
@@ -96,6 +97,7 @@ where
         network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_tx: InvokerInputSender,
+        invoker_capacity: InvokerCapacity,
     ) -> Self {
         Self {
             status,
@@ -103,6 +105,7 @@ where
             target_leader_state_rx,
             network_svc_rx,
             status_watch_tx,
+            invoker_capacity,
         }
     }
 
@@ -118,6 +121,7 @@ where
             network_svc_rx: rpc_rx,
             status_watch_tx,
             status,
+            invoker_capacity,
             ..
         } = self;
 
@@ -154,6 +158,7 @@ where
         let leadership_state = LeadershipState::new(
             Arc::clone(partition_store.partition()),
             invoker_tx,
+            invoker_capacity,
             bifrost.clone(),
             last_seen_leader_epoch,
             trim_queue.clone(),
