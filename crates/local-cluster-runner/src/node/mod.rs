@@ -28,9 +28,11 @@ use arc_swap::ArcSwapOption;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt, TryStreamExt, stream};
 use itertools::Itertools;
+use rand::seq::IteratorRandom;
 use regex::{Regex, RegexSet};
 use rev_lines::RevLines;
 use serde::{Deserialize, Serialize};
+use strum::IntoEnumIterator;
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -571,9 +573,19 @@ impl StartedNode {
         }
     }
 
-    pub async fn restart(&mut self) -> anyhow::Result<()> {
+    pub async fn restart(&mut self, termination_signal: TerminationSignal) -> anyhow::Result<()> {
         info!("Restarting node '{}'", self.config().node_name());
-        self.kill().await?;
+
+        match termination_signal {
+            TerminationSignal::SIGKILL => {
+                self.kill().await?;
+            }
+            TerminationSignal::SIGTERM => {
+                self.terminate()?;
+                (&mut self.status).await?;
+            }
+        }
+
         assert!(
             !matches!(self.status, StartedNodeStatus::Running { .. }),
             "Node should not be in status running after killing it."
@@ -919,6 +931,19 @@ impl StartedNode {
         ));
         let response = client.status(()).await?.into_inner();
         Ok(response)
+    }
+}
+
+/// How to terminate a running Restate process
+#[derive(Debug, Clone, Copy, strum::EnumIter)]
+pub enum TerminationSignal {
+    SIGKILL,
+    SIGTERM,
+}
+
+impl TerminationSignal {
+    pub fn random() -> Self {
+        Self::iter().choose(&mut rand::rng()).unwrap()
     }
 }
 

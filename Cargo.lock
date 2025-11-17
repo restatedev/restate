@@ -7466,6 +7466,7 @@ dependencies = [
  "rev_lines",
  "rlimit",
  "serde",
+ "strum 0.27.1",
  "tempfile",
  "test_bin",
  "thiserror 2.0.17",

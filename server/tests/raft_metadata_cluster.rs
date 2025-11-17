@@ -18,7 +18,7 @@ use rand::Rng;
 use rand::seq::IndexedMutRandom;
 use restate_core::{TaskCenter, TaskKind, cancellation_token};
 use restate_local_cluster_runner::cluster::{Cluster, StartedCluster};
-use restate_local_cluster_runner::node::{BinarySource, HealthCheck, NodeSpec};
+use restate_local_cluster_runner::node::{BinarySource, HealthCheck, NodeSpec, TerminationSignal};
 use restate_metadata_providers::create_client;
 use restate_metadata_server::tests::Value;
 use restate_metadata_store::{MetadataStoreClient, WriteError, retry_on_retryable_error};
@@ -200,7 +200,8 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
                     .nodes
                     .choose_mut(&mut rand::rng())
                     .expect("at least one node being present");
-                node.restart().await?;
+
+                node.restart(TerminationSignal::random()).await?;
                 success_rx.mark_unchanged();
                 cluster
                     .wait_check_healthy(HealthCheck::MetadataServer, Duration::from_secs(10))

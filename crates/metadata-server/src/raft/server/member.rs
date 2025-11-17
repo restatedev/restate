@@ -8,10 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{HashMap, VecDeque};
-use std::mem;
-use std::sync::Arc;
-
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
 use metrics::gauge;
@@ -25,7 +21,11 @@ use raft_proto::eraftpb::{
     ConfChange, ConfChangeSingle, ConfChangeType, ConfChangeV2, Entry, EntryType, Message,
     Snapshot, SnapshotMetadata,
 };
+use raft_proto::prelude::MessageType;
 use slog::o;
+use std::collections::{HashMap, VecDeque};
+use std::mem;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
@@ -43,7 +43,7 @@ use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
-use restate_types::{PlainNodeId, Version};
+use restate_types::{NodeId, PlainNodeId, Version};
 
 use crate::metric_definitions::{
     METADATA_SERVER_REPLICATED_APPLIED_LSN, METADATA_SERVER_REPLICATED_COMMITTED_LSN,
@@ -54,7 +54,10 @@ use crate::metric_definitions::{
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::network::{ConnectionManager, Networking};
 use crate::raft::server::standby::Standby;
-use crate::raft::server::{ConfChangeError, CreateSnapshotError, Error, RestoreSnapshotError};
+use crate::raft::server::uninitialized::Uninitialized;
+use crate::raft::server::{
+    ConfChangeError, CreateSnapshotError, Error, RaftServerComponents, RestoreSnapshotError,
+};
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{to_plain_node_id, to_raft_id};
 use crate::{
@@ -210,8 +213,74 @@ impl Member {
         Ok(member)
     }
 
+    pub fn try_from_uninitialized(
+        my_member_id: MemberId,
+        min_expected_nodes_config_version: Version,
+        unitialized: Uninitialized,
+    ) -> Result<Self, Error> {
+        let RaftServerComponents {
+            storage,
+            connection_manager,
+            request_rx,
+            status_tx,
+            command_rx,
+            join_cluster_rx,
+            metadata_writer,
+        } = unitialized.into_inner();
+        Self::create(
+            my_member_id,
+            min_expected_nodes_config_version,
+            connection_manager,
+            storage,
+            request_rx,
+            join_cluster_rx,
+            metadata_writer,
+            status_tx,
+            command_rx,
+        )
+    }
+
+    pub fn try_from_standby(
+        my_member_id: MemberId,
+        min_expected_nodes_config_version: Version,
+        standby: Standby,
+    ) -> Result<Self, Error> {
+        let RaftServerComponents {
+            storage,
+            connection_manager,
+            request_rx,
+            status_tx,
+            command_rx,
+            join_cluster_rx,
+            metadata_writer,
+        } = standby.into_inner();
+        Self::create(
+            my_member_id,
+            min_expected_nodes_config_version,
+            connection_manager,
+            storage,
+            request_rx,
+            join_cluster_rx,
+            metadata_writer,
+            status_tx,
+            command_rx,
+        )
+    }
+
+    pub fn into_inner(self) -> RaftServerComponents {
+        RaftServerComponents {
+            storage: self.raw_node.raft.r.raft_log.store,
+            connection_manager: self.connection_manager,
+            request_rx: self.request_rx,
+            status_tx: self.status_tx,
+            command_rx: self.command_rx,
+            join_cluster_rx: self.join_cluster_rx,
+            metadata_writer: self.metadata_writer,
+        }
+    }
+
     #[instrument(level = "info", skip_all, fields(member_id = %self.my_member_id))]
-    pub async fn run(mut self) -> Result<Standby, Error> {
+    pub async fn run(&mut self) -> Result<(), Error> {
         info!(configuration = %self.configuration, "Run as member of the metadata cluster");
         self.update_status();
 
@@ -269,9 +338,9 @@ impl Member {
             }
         }
 
-        self.fail_pending_requests(nodes_config.live_load());
+        self.shutdown().await?;
 
-        let mut storage = self.raw_node.raft.r.raft_log.store;
+        let storage = self.raw_node.mut_store();
 
         let nodes_config =
             Self::latest_nodes_configuration(&self.kv_storage, nodes_config.live_load());
@@ -290,16 +359,59 @@ impl Member {
             .wait_for_version(MetadataKind::NodesConfiguration, nodes_config.version())
             .await?;
 
-        // todo if I am the leader, then tell others to immediately start campaigning to avoid the leader election timeout
-        Ok(Standby::new(
-            storage,
-            self.connection_manager,
-            self.request_rx,
-            self.join_cluster_rx,
-            self.metadata_writer,
-            self.status_tx,
-            self.command_rx,
-        ))
+        Ok(())
+    }
+
+    /// Shuts the member down by failing all pending requests and transferring leadership if it is the
+    /// leader.
+    pub async fn shutdown(&mut self) -> Result<(), Error> {
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        self.fail_pending_requests(&nodes_config);
+
+        if self.is_leader {
+            debug!("Shutting down as leading member. Trying to transfer leadership.");
+
+            let cluster_state = TaskCenter::with_current(|h| h.cluster_state().clone());
+
+            if let Some(dedicated_leader) = self
+                .configuration
+                .members
+                .keys()
+                .filter(|&member| {
+                    // only pick alive nodes that aren't me
+                    member != &self.my_member_id.node_id
+                        && cluster_state.is_alive(NodeId::from(*member))
+                })
+                .max_by_key(|&member| {
+                    // pick the node with the most matched state
+                    self.raw_node
+                        .raft
+                        .prs()
+                        .get(to_raft_id(*member))
+                        .map(|pr| pr.matched)
+                })
+            {
+                info!(
+                    "Transferring metadata cluster leadership to {dedicated_leader} because of shut down."
+                );
+                let dedicated_leader = to_raft_id(*dedicated_leader);
+
+                // Prepare timeout now message for the dedicated leader. This will cause the
+                // dedicated leader to start a leader election w/o pre-election.
+                let mut timeout_now_message = Message::default();
+                timeout_now_message.set_msg_type(MessageType::MsgTimeoutNow);
+                timeout_now_message.from = self.raw_node.raft.id;
+                timeout_now_message.to = dedicated_leader;
+                timeout_now_message.term = self.raw_node.raft.term;
+                self.send_messages(vec![timeout_now_message]);
+            } else {
+                debug!(
+                    "Failed transferring metadata cluster leadership because there is no alive member."
+                );
+            }
+        }
+
+        Ok(())
     }
 
     fn should_leave(&self, nodes_config: &NodesConfiguration) -> bool {

@@ -27,6 +27,7 @@ use tracing::{debug, info};
 
 use restate_core::{TaskCenter, TaskKind, cancellation_token};
 use restate_local_cluster_runner::cluster::StartedCluster;
+use restate_local_cluster_runner::node::TerminationSignal;
 use restate_local_cluster_runner::{
     cluster::Cluster,
     node::{BinarySource, NodeSpec},
@@ -217,7 +218,7 @@ async fn cluster_chaos_test() -> googletest::Result<()> {
                     .choose_mut(&mut rand::rng())
                     .expect("at least one node being present");
 
-                node.restart().await?;
+                node.restart(TerminationSignal::random()).await?;
 
                 success_rx.mark_unchanged();
                 cluster.wait_healthy(Duration::from_secs(10)).await?;

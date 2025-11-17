@@ -31,7 +31,9 @@ use restate_types::retries::RetryPolicy;
 
 use crate::raft::network::ConnectionManager;
 use crate::raft::network::grpc_svc::new_metadata_server_network_client;
-use crate::raft::server::{Error, Member};
+use crate::raft::server::member::Member;
+use crate::raft::server::uninitialized::Uninitialized;
+use crate::raft::server::{Error, RaftServerComponents};
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{RaftServerState, network};
 use crate::{
@@ -73,23 +75,26 @@ impl Standby {
         }
     }
 
+    pub fn into_inner(self) -> RaftServerComponents {
+        RaftServerComponents {
+            storage: self.storage,
+            connection_manager: self.connection_manager,
+            request_rx: self.request_rx,
+            status_tx: self.status_tx,
+            command_rx: self.command_rx,
+            join_cluster_rx: self.join_cluster_rx,
+            metadata_writer: self.metadata_writer,
+        }
+    }
+
     #[instrument(level = "info", skip_all, fields(member_id = tracing::field::Empty))]
-    pub async fn run(self) -> Result<Member, Error> {
+    pub async fn run(&mut self) -> Result<(MemberId, Version), Error> {
         debug!("Run as standby metadata server.");
 
-        let Standby {
-            connection_manager,
-            mut storage,
-            mut request_rx,
-            mut join_cluster_rx,
-            metadata_writer,
-            status_tx,
-            mut command_rx,
-        } = self;
+        let _ = self.status_tx.send(MetadataServerSummary::Standby);
 
-        let _ = status_tx.send(MetadataServerSummary::Standby);
-
-        let created_at_millis = storage
+        let created_at_millis = self
+            .storage
             .get_marker()?
             .expect("StorageMarker must be present")
             .created_at()
@@ -106,17 +111,17 @@ impl Standby {
 
         loop {
             tokio::select! {
-                Some(request) = request_rx.recv() => {
+                Some(request) = self.request_rx.recv() => {
                     let request = request.into_request();
                     request.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
                         Standby::random_member(),
                     ))
                 },
-                Some(request) = join_cluster_rx.recv() => {
+                Some(request) = self.join_cluster_rx.recv() => {
                     let _ = request.response_tx.send(Err(JoinClusterError::NotMember(Standby::random_member())));
                 },
-                Some(request) = command_rx.recv() => {
+                Some(request) = self.command_rx.recv() => {
                     match request {
                         MetadataCommand::AddNode(result_tx) => {
                             if my_member_id.is_some() {
@@ -136,7 +141,7 @@ impl Standby {
                     }
                 },
                 Some((my_member_id, min_expected_nodes_config_version)) = &mut join_cluster => {
-                    let mut txn = storage.txn();
+                    let mut txn = self.storage.txn();
                     txn.store_raft_server_state(&RaftServerState::Member{ my_member_id, min_expected_nodes_config_version: Some(min_expected_nodes_config_version) })?;
                     // Persist the latest NodesConfiguration so that we know about the peers as of now.
                     txn.store_nodes_configuration(nodes_config.live_load())?;
@@ -146,16 +151,7 @@ impl Standby {
                         let _ = response_tx.send(Ok(()));
                     }
 
-                    return Member::create(
-                        my_member_id,
-                        min_expected_nodes_config_version,
-                        connection_manager,
-                        storage,
-                        request_rx,
-                        join_cluster_rx,
-                        metadata_writer,
-                        status_tx,
-                        command_rx,);
+                    return Ok((my_member_id, min_expected_nodes_config_version));
                 }
                 _ = nodes_config_watcher.changed() => {
                     let nodes_config = nodes_config.live_load();
@@ -173,7 +169,7 @@ impl Standby {
 
                             // Persist the latest NodesConfiguration so that we know about the MetadataServerState at least
                             // as of now when restarting.
-                            storage
+                            self.storage
                                 .store_nodes_configuration(nodes_config)
                                 .await?;
                             join_cluster.set(Some(Self::join_cluster(my_member_id.expect("MemberId to be known")).fuse()).into());
@@ -302,5 +298,51 @@ impl Standby {
                 node_id,
                 address: node_config.address.clone(),
             })
+    }
+}
+
+impl From<Uninitialized> for Standby {
+    fn from(value: Uninitialized) -> Self {
+        let RaftServerComponents {
+            storage,
+            connection_manager,
+            request_rx,
+            status_tx,
+            command_rx,
+            join_cluster_rx,
+            metadata_writer,
+        } = value.into_inner();
+        Standby::new(
+            storage,
+            connection_manager,
+            request_rx,
+            join_cluster_rx,
+            metadata_writer,
+            status_tx,
+            command_rx,
+        )
+    }
+}
+
+impl From<Member> for Standby {
+    fn from(value: Member) -> Self {
+        let RaftServerComponents {
+            storage,
+            connection_manager,
+            request_rx,
+            status_tx,
+            command_rx,
+            join_cluster_rx,
+            metadata_writer,
+        } = value.into_inner();
+        Standby::new(
+            storage,
+            connection_manager,
+            request_rx,
+            join_cluster_rx,
+            metadata_writer,
+            status_tx,
+            command_rx,
+        )
     }
 }
