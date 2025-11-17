@@ -23,6 +23,7 @@ restate-types = { workspace = true }
 
 ahash = { workspace = true }
 anyhow = { workspace = true }
+bilrost = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
