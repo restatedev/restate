@@ -15,8 +15,10 @@ use std::future::Future;
 pub enum StorageError {
     #[error("generic storage error: {0}")]
     Generic(#[from] anyhow::Error),
-    #[error("failed to convert Rust objects to/from protobuf: {0}")]
+    #[error("failed to convert Rust objects to/from serialized format: {0}")]
     Conversion(anyhow::Error),
+    #[error("cannot decode bilrost-encoded payload: {0}")]
+    BilrostDecode(#[from] bilrost::DecodeError),
     #[error("integrity constraint is violated")]
     DataIntegrityError,
     #[error("operational error that can be caused during a graceful shutdown")]
@@ -27,7 +29,7 @@ pub enum StorageError {
     PreconditionFailed(anyhow::Error),
 }
 
-pub type Result<T> = std::result::Result<T, StorageError>;
+pub type Result<T, E = StorageError> = std::result::Result<T, E>;
 
 pub mod deduplication_table;
 pub mod fsm_table;
@@ -43,6 +45,7 @@ pub mod protobuf_types;
 pub mod service_status_table;
 pub mod state_table;
 pub mod timer_table;
+pub mod vqueue_table;
 
 /// Isolation level of a storage transaction
 #[derive(Debug, Default)]
