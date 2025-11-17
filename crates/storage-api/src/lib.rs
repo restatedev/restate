@@ -101,6 +101,8 @@ pub trait Transaction:
     + promise_table::ReadPromiseTable
     + promise_table::WritePromiseTable
     + journal_events::WriteJournalEventsTable
+    + vqueue_table::ReadVQueueTable
+    + vqueue_table::WriteVQueueTable
     + Send
 {
     fn commit(self) -> impl Future<Output = Result<()>> + Send;

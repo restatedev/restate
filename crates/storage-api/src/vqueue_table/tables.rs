@@ -61,12 +61,12 @@ pub trait WriteVQueueTable {
     fn mark_queue_as_empty(&mut self, qid: &VQueueId);
 
     /// Updates a vqueue's entry's state
-    fn update_vqueue_entry_state<E>(
+    fn put_vqueue_entry_state<E>(
         &mut self,
         qid: &VQueueId,
         card: &EntryCard,
         stage: Stage,
-        entry_state: E,
+        state: E,
     ) where
         E: EntryStateKind + bilrost::Message + bilrost::encoding::RawMessage,
         (): bilrost::encoding::EmptyState<(), E>;
