@@ -234,7 +234,7 @@ fn fill_in_flight_invocation_metadata(
     {
         row.pinned_service_protocol_version(service_protocol_version.as_repr().unsigned_abs());
     }
-    if row.is_scheduled_at_defined()
+    if row.is_scheduled_start_at_defined()
         && let Some(execution_time) = status.inner.execution_time
     {
         row.scheduled_start_at(execution_time as i64)
