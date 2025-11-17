@@ -434,11 +434,12 @@ impl Default for StorageOptions {
     }
 }
 
-/// # Snapshot options.
+/// # Snapshot options
 ///
-/// Partition store snapshotting settings. At a minimum, set `destination` and
-/// `snapshot-interval-num-records` to enable snapshotting. For a complete example, see
-/// [Snapshots](https://docs.restate.dev/operate/snapshots).
+/// Partition store object-store snapshotting settings. At a minimum, set `destination` to enable
+/// manual snapshotting via `restatectl`. Additionally, `snapshot-interval` and
+/// `snapshot-interval-num-records` can be used to configure automated periodic snapshots. For a
+/// complete example, see [Snapshots](https://docs.restate.dev/operate/snapshots).
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -448,20 +449,35 @@ impl Default for StorageOptions {
 pub struct SnapshotsOptions {
     /// # Snapshot destination URL
     ///
-    /// Base URL for cluster snapshots. Supports `s3://` and `file://` protocol scheme.
+    /// Base URL for cluster snapshots. Currently only supports the `s3://` protocol scheme.
     /// S3-compatible object stores must support ETag-based conditional writes.
     ///
     /// Default: `None`
     pub destination: Option<String>,
 
-    /// # Automatic snapshot creation frequency
+    /// # Automatic snapshot time interval
+    ///
+    /// A time interval at which partition snapshots will be created. If
+    /// `snapshot-interval-num-records` is also set, it will be treated as an additional requirement
+    /// before a snapshot is taken. Use both time-based and record-based intervals to reduce the
+    /// number of snapshots created during times of low activity.
+    ///
+    /// Snapshot intervals are calculated based on the wall clock timestamps reported by cluster
+    /// nodes, assuming a basic level of clock synchronization within the cluster.
+    ///
+    /// This setting does not influence explicitly requested snapshots triggered using `restatectl`.
+    ///
+    /// Default: `None` - automatic snapshots are disabled
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub snapshot_interval: Option<FriendlyDuration>,
+
+    /// # Automatic snapshot minimum records
     ///
     /// Number of log records that trigger a snapshot to be created.
     ///
     /// As snapshots are created asynchronously, the actual number of new records that will trigger
     /// a snapshot will vary. The counter for the subsequent snapshot begins from the LSN at which
-    /// the previous snapshot export was initiated. Only leader Partition Processors will take
-    /// snapshots for a given partition.
+    /// the previous snapshot export was initiated.
     ///
     /// This setting does not influence explicitly requested snapshots triggered using `restatectl`.
     ///
@@ -481,6 +497,7 @@ impl Default for SnapshotsOptions {
     fn default() -> Self {
         Self {
             destination: None,
+            snapshot_interval: None,
             snapshot_interval_num_records: None,
             object_store: Default::default(),
             object_store_retry_policy: Self::default_retry_policy(),

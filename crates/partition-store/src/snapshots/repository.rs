@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
@@ -149,6 +150,54 @@ impl LatestSnapshot {
         }
 
         Ok(())
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+pub enum ArchivedLsn {
+    None,
+    Snapshot {
+        // Ordering is intentional: LSN takes priority over elapsed wall clock time for comparisons
+        min_applied_lsn: Lsn,
+        created_at: SystemTime,
+    },
+}
+
+impl ArchivedLsn {
+    pub fn get_min_applied_lsn(&self) -> Lsn {
+        match self {
+            ArchivedLsn::None => Lsn::INVALID,
+            ArchivedLsn::Snapshot {
+                min_applied_lsn, ..
+            } => *min_applied_lsn,
+        }
+    }
+
+    pub fn get_age(&self) -> Duration {
+        match self {
+            ArchivedLsn::None => Duration::MAX,
+            ArchivedLsn::Snapshot { created_at, .. } => SystemTime::now()
+                .duration_since(*created_at)
+                .unwrap_or_default(), // zero if created-at is earlier than current system time
+        }
+    }
+}
+
+impl From<&LatestSnapshot> for ArchivedLsn {
+    fn from(latest: &LatestSnapshot) -> Self {
+        ArchivedLsn::Snapshot {
+            min_applied_lsn: latest.min_applied_lsn,
+            created_at: latest.created_at.into(),
+        }
+    }
+}
+
+impl From<&PartitionSnapshotMetadata> for ArchivedLsn {
+    fn from(metadata: &PartitionSnapshotMetadata) -> Self {
+        ArchivedLsn::Snapshot {
+            min_applied_lsn: metadata.min_applied_lsn,
+            created_at: metadata.created_at.into(),
+        }
     }
 }
 
@@ -542,15 +591,17 @@ impl SnapshotRepository {
     }
 
     /// Retrieve the latest known LSN to be archived to the snapshot repository.
-    /// Response of `Ok(Lsn::INVALID)` indicates no existing snapshot for the partition.
-    pub async fn get_latest_archived_lsn(&self, partition_id: PartitionId) -> anyhow::Result<Lsn> {
+    pub async fn get_latest_archived_lsn(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<ArchivedLsn> {
         let latest_path = self.get_latest_snapshot_pointer(partition_id);
 
         let latest = match self.object_store.get(&latest_path).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => {
                 debug!("Latest snapshot data not found in repository");
-                return Ok(Lsn::INVALID);
+                return Ok(ArchivedLsn::None);
             }
             Err(e) => {
                 return Err(anyhow::Error::new(e).context(format!(
@@ -562,7 +613,7 @@ impl SnapshotRepository {
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
         debug!(partition_id = %partition_id, snapshot_id = %latest.snapshot_id, "Latest snapshot metadata: {:?}", latest);
 
-        Ok(latest.min_applied_lsn)
+        Ok(ArchivedLsn::from(&latest))
     }
 
     async fn get_latest_snapshot_metadata_for_update(

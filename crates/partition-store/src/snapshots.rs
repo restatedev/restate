@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::{PartitionDb, PartitionStore, SnapshotError, SnapshotErrorKind};
 
 pub use self::metadata::*;
-pub use self::repository::SnapshotRepository;
+pub use self::repository::{ArchivedLsn, SnapshotRepository};
 pub use self::snapshot_task::*;
 
 use tokio::sync::Semaphore;
@@ -26,7 +26,7 @@ use tracing::{debug, instrument, warn};
 
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, SnapshotId};
-use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::logs::Lsn;
 
 #[derive(Clone)]
 pub struct Snapshots {
@@ -85,7 +85,7 @@ impl Snapshots {
             })
     }
 
-    pub async fn refresh_latest_archived_lsn(&self, db: PartitionDb) -> Option<Lsn> {
+    pub async fn refresh_latest_archived_lsn(&self, db: PartitionDb) -> Option<ArchivedLsn> {
         let Some(repository) = &self.repository else {
             return None;
         };
@@ -94,10 +94,9 @@ impl Snapshots {
         let archived_lsn = repository
             .get_latest_archived_lsn(partition_id)
             .await
-            .inspect(|lsn| debug!(?partition_id, "Latest archived LSN: {}", lsn))
             .inspect_err(|err| warn!(?partition_id, "Unable to get latest archived LSN: {}", err))
             .ok()
-            .unwrap_or(Lsn::INVALID);
+            .unwrap_or(ArchivedLsn::None);
         db.note_archived_lsn(archived_lsn);
         Some(archived_lsn)
     }
