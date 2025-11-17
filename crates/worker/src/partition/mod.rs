@@ -25,6 +25,7 @@ use assert2::let_assert;
 use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt};
 use metrics::{SharedString, gauge, histogram};
+use restate_invoker_api::capacity::InvokerCapacity;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{Span, debug, error, info, instrument, trace, warn};
@@ -76,13 +77,14 @@ pub enum TargetLeaderState {
     Follower,
 }
 
-#[derive(Debug)]
+// #[derive(Debug)]
 pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     status: PartitionProcessorStatus,
     invoker_tx: InvokerInputSender,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
     network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
+    invoker_capacity: InvokerCapacity,
 }
 
 impl<InvokerInputSender> PartitionProcessorBuilder<InvokerInputSender>
@@ -96,6 +98,7 @@ where
         network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_tx: InvokerInputSender,
+        invoker_capacity: InvokerCapacity,
     ) -> Self {
         Self {
             status,
@@ -103,6 +106,7 @@ where
             target_leader_state_rx,
             network_svc_rx,
             status_watch_tx,
+            invoker_capacity,
         }
     }
 
@@ -118,6 +122,7 @@ where
             network_svc_rx: rpc_rx,
             status_watch_tx,
             status,
+            invoker_capacity,
             ..
         } = self;
 
@@ -154,6 +159,7 @@ where
         let leadership_state = LeadershipState::new(
             Arc::clone(partition_store.partition()),
             invoker_tx,
+            invoker_capacity,
             bifrost.clone(),
             last_seen_leader_epoch,
             trim_queue.clone(),

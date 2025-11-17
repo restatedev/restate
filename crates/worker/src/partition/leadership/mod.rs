@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
+use restate_invoker_api::capacity::InvokerCapacity;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
@@ -154,8 +155,10 @@ pub(crate) struct LeadershipState<I> {
 
     partition: Arc<Partition>,
     invoker_tx: I,
-    bifrost: Bifrost,
+    // to be used by the scheduler
     #[allow(unused)]
+    invoker_capacity: InvokerCapacity,
+    bifrost: Bifrost,
     trim_queue: TrimQueue,
 }
 
@@ -167,6 +170,7 @@ where
     pub(crate) fn new(
         partition: Arc<Partition>,
         invoker_tx: I,
+        invoker_capacity: InvokerCapacity,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
         trim_queue: TrimQueue,
@@ -175,6 +179,7 @@ where
             state: State::Follower,
             partition,
             invoker_tx,
+            invoker_capacity,
             bifrost,
             last_seen_leader_epoch,
             trim_queue,
