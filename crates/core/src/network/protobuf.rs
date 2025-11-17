@@ -47,7 +47,7 @@ pub mod network {
         pub fn new(
             my_node_id: Option<GenerationalNodeId>,
             cluster_name: String,
-            cluster_fingerprint: Option<ClusterFingerprint>,
+            cluster_fingerprint: ClusterFingerprint,
             direction: ConnectionDirection,
             swimlane: Swimlane,
         ) -> Self {
@@ -57,7 +57,7 @@ pub mod network {
                 max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
                 my_node_id: my_node_id.map(Into::into),
                 cluster_name,
-                cluster_fingerprint: cluster_fingerprint.map_or(0, ClusterFingerprint::to_u64),
+                cluster_fingerprint: cluster_fingerprint.to_u64(),
                 swimlane: swimlane.into(),
             }
         }

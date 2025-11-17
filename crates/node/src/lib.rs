@@ -487,8 +487,7 @@ impl Node {
             location = %my_node_config.location,
             nodes_config_version = %metadata.nodes_config_version(),
             cluster_name = %nodes_config.cluster_name(),
-            cluster_fingerprint = %nodes_config.cluster_fingerprint().map(|f|
-                f.to_string()).unwrap_or_default(),
+            cluster_fingerprint = %nodes_config.cluster_fingerprint().to_string(),
             %partition_table_version,
             %logs_version,
             "My Node ID is {}", my_node_config.current_generation,
