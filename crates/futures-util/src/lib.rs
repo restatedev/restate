@@ -9,5 +9,6 @@
 // by the Apache License, Version 2.0.
 
 pub mod command;
+pub mod concurrency;
 pub mod overdue;
 pub mod pipe;
