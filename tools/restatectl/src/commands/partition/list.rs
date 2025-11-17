@@ -191,7 +191,7 @@ pub async fn list_partitions(
                 Cell::new(
                     processor
                         .status
-                        .last_persisted_log_lsn
+                        .durable_lsn
                         .map(|x| x.to_string())
                         .unwrap_or("-".to_owned()),
                 ),

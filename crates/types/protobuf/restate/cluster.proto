@@ -68,7 +68,7 @@ message PartitionProcessorStatus {
   optional google.protobuf.Timestamp last_record_applied_at = 7;
   uint64 num_skipped_records = 8;
   ReplayStatus replay_status = 9;
-  optional restate.common.Lsn last_persisted_log_lsn = 10;
+  optional restate.common.Lsn durable_lsn = 10;
   optional restate.common.Lsn last_archived_log_lsn = 12;
   // Set if replay_status is CATCHING_UP
   optional restate.common.Lsn target_tail_lsn = 11;

@@ -43,7 +43,7 @@ pub fn gen_partition_processor_status() -> PartitionProcessorStatus {
         target_tail_lsn: lsn(),
         last_applied_log_lsn: lsn(),
         last_archived_log_lsn: lsn(),
-        last_persisted_log_lsn: lsn(),
+        durable_lsn: lsn(),
         ..Default::default()
     }
 }
@@ -57,25 +57,6 @@ pub fn gen_node_state_response() -> NodeStateResponse {
         ),
         uptime: Duration::from_secs(rand::random_range(500..1000)),
     }
-}
-
-pub fn flexbuffer_serialization(c: &mut Criterion) {
-    let message = gen_node_state_response();
-
-    let serialized = flexbuffers::to_vec(&message).expect("serializes");
-    println!("Flexbuffers Message Size: {}", serialized.len());
-
-    c.bench_function("flexbuffers-serialize", |b| {
-        b.iter(|| black_box(flexbuffers::to_vec(&message)));
-    });
-
-    c.bench_function("flexbuffers-deserialize", |b| {
-        b.iter(|| {
-            black_box(
-                flexbuffers::from_slice::<NodeStateResponse>(&serialized).expect("deserializes"),
-            )
-        });
-    });
 }
 
 pub fn bilrost_serialization(c: &mut Criterion) {
@@ -99,7 +80,7 @@ pub fn bilrost_serialization(c: &mut Criterion) {
 criterion_group!(
     name=benches;
     config=Criterion::default();
-    targets=flexbuffer_serialization, bilrost_serialization
+    targets=bilrost_serialization
 );
 
 criterion_main!(benches);

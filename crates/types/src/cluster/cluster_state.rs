@@ -177,7 +177,7 @@ pub enum ReplayStatus {
     CatchingUp = 2,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, IntoProst, bilrost::Message, NetSerde)]
 #[prost(target = "crate::protobuf::cluster::PartitionProcessorStatus")]
 pub struct PartitionProcessorStatus {
     #[prost(required)]
@@ -199,10 +199,8 @@ pub struct PartitionProcessorStatus {
     pub num_skipped_records: u64,
     #[bilrost(9)]
     pub replay_status: ReplayStatus,
-    /// Also known as Durable LSN. Old name kept for compatibility with V1 networking clients.
-    // todo: rename in 1.5 (or as soon as we no longer support interop with V1 cluster controllers)
     #[bilrost(10)]
-    pub last_persisted_log_lsn: Option<Lsn>,
+    pub durable_lsn: Option<Lsn>,
     #[bilrost(11)]
     pub last_archived_log_lsn: Option<Lsn>,
     // Set if replay_status is CatchingUp
@@ -222,7 +220,7 @@ impl Default for PartitionProcessorStatus {
             last_record_applied_at: None,
             num_skipped_records: 0,
             replay_status: ReplayStatus::Starting,
-            last_persisted_log_lsn: None,
+            durable_lsn: None,
             last_archived_log_lsn: None,
             target_tail_lsn: None,
         }
