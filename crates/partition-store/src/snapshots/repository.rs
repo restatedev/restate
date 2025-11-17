@@ -117,7 +117,7 @@ impl LatestSnapshot {
     pub fn validate(
         &self,
         cluster_name: &str,
-        cluster_fingerprint: Option<ClusterFingerprint>,
+        cluster_fingerprint: ClusterFingerprint,
     ) -> anyhow::Result<()> {
         if cluster_name != self.cluster_name {
             anyhow::bail!(
@@ -127,19 +127,9 @@ impl LatestSnapshot {
             );
         }
 
-        // Does our nodes configuration have a fingerprint?
-        //
-        // If not, we will completely ignore the fingerprint check because we assume
-        // that there is a race and the nodes configuration will be updated soon. This
-        // can be made more strict in v1.6.0 since we'll be sure that nodes
-        // configuration will always contain a fingerprint.
-        //
-        //
-        // If we have a fingerprint in nodes configuration, we will use it to compare
-        // with the snapshot's fingerprint, if and only if the snapshot has a
-        // fingerprint as well.
-        if let Some(cluster_fingerprint) = cluster_fingerprint
-            && let Some(incoming_fingerprint) = self.cluster_fingerprint
+        // Snapshots from earlier Restate versions might not have the fingerprint set. Hence, only
+        // compare the fingerprints if the snapshot's fingerprint is present.
+        if let Some(incoming_fingerprint) = self.cluster_fingerprint
             && cluster_fingerprint != incoming_fingerprint
         {
             bail!(
@@ -1028,9 +1018,9 @@ mod tests {
             cluster_name: Metadata::with_current(|m| {
                 m.nodes_config_ref().cluster_name().to_string()
             }),
-            cluster_fingerprint: Metadata::with_current(|m| {
+            cluster_fingerprint: Some(Metadata::with_current(|m| {
                 m.nodes_config_ref().cluster_fingerprint()
-            }),
+            })),
             node_name: "node".to_string(),
             partition_id: PartitionId::MIN,
             created_at: humantime::Timestamp::from(SystemTime::now()),

@@ -302,8 +302,7 @@ impl ConnectionManager {
         // check cluster fingerprint if it's set on the hello message *and* our nodes config has it
         // set as well.
         if let Ok(incoming_fingerprint) = ClusterFingerprint::try_from(hello.cluster_fingerprint)
-            && let Some(cluster_fingerprint) = nodes_config.cluster_fingerprint()
-            && incoming_fingerprint != cluster_fingerprint
+            && incoming_fingerprint != nodes_config.cluster_fingerprint()
         {
             return Err(HandshakeError::Failed("cluster fingerprint mismatch".to_owned()).into());
         }
@@ -716,10 +715,7 @@ mod tests {
             max_protocol_version: ProtocolVersion::Unknown.into(),
             my_node_id: Some(my_node_id.into()),
             cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
-            cluster_fingerprint: metadata
-                .nodes_config_ref()
-                .cluster_fingerprint()
-                .map_or(0, ClusterFingerprint::to_u64),
+            cluster_fingerprint: metadata.nodes_config_ref().cluster_fingerprint().to_u64(),
             direction: ConnectionDirection::Bidirectional.into(),
             swimlane: Swimlane::default().into(),
         };
@@ -745,10 +741,7 @@ mod tests {
             max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
             my_node_id: Some(my_node_id.into()),
             cluster_name: "Random-cluster".to_owned(),
-            cluster_fingerprint: metadata
-                .nodes_config_ref()
-                .cluster_fingerprint()
-                .map_or(0, ClusterFingerprint::to_u64),
+            cluster_fingerprint: metadata.nodes_config_ref().cluster_fingerprint().to_u64(),
             direction: ConnectionDirection::Bidirectional.into(),
             swimlane: Swimlane::default().into(),
         };
@@ -813,7 +806,7 @@ mod tests {
         let hello = Hello::new(
             Some(my_node_id),
             metadata.nodes_config_ref().cluster_name().to_owned(),
-            None,
+            metadata.nodes_config_ref().cluster_fingerprint(),
             ConnectionDirection::Bidirectional,
             Swimlane::default(),
         );

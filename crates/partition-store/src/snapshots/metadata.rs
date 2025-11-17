@@ -80,7 +80,7 @@ impl PartitionSnapshotMetadata {
     pub fn validate(
         &self,
         cluster_name: &str,
-        cluster_fingerprint: Option<ClusterFingerprint>,
+        cluster_fingerprint: ClusterFingerprint,
     ) -> anyhow::Result<()> {
         if cluster_name != self.cluster_name {
             anyhow::bail!(
@@ -92,8 +92,7 @@ impl PartitionSnapshotMetadata {
         // If the snapshot doesn't have a fingerprint on it, we'll ignore the
         // check. Eventually all new snapshots will have a fingerprint and this
         // check will be kept for very old snapshots only.
-        if let Some(cluster_fingerprint) = cluster_fingerprint
-            && let Some(snapshot_cluster_fingerprint) = self.cluster_fingerprint
+        if let Some(snapshot_cluster_fingerprint) = self.cluster_fingerprint
             && snapshot_cluster_fingerprint != cluster_fingerprint
         {
             // If nodes_config and snapshot both contain a fingerprint, they must match.
