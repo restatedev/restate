@@ -313,8 +313,8 @@ impl InvokerOptions {
         })
     }
 
-    pub fn concurrent_invocations_limit(&self) -> Option<usize> {
-        self.concurrent_invocations_limit.map(Into::into)
+    pub fn concurrent_invocations_limit(&self) -> Option<NonZeroUsize> {
+        self.concurrent_invocations_limit
     }
 
     pub fn in_memory_queue_length_limit(&self) -> usize {

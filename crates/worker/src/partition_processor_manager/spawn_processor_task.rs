@@ -11,6 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use restate_invoker_api::capacity::InvokerCapacity;
 use tokio::sync::{mpsc, watch};
 use tracing::info;
 use tracing::{instrument, warn};
@@ -18,7 +19,6 @@ use tracing::{instrument, warn};
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
 use restate_invoker_impl::Service as InvokerService;
-use restate_invoker_impl::TokenBucket;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_types::SharedString;
@@ -45,8 +45,7 @@ pub struct SpawnPartitionProcessorTask {
     replica_set_states: PartitionReplicaSetStates,
     partition_store_manager: Arc<PartitionStoreManager>,
     fast_forward_lsn: Option<Lsn>,
-    invocation_token_bucket: Option<TokenBucket>,
-    action_token_bucket: Option<TokenBucket>,
+    invoker_capacity: InvokerCapacity,
 }
 
 impl SpawnPartitionProcessorTask {
@@ -59,8 +58,7 @@ impl SpawnPartitionProcessorTask {
         replica_set_states: PartitionReplicaSetStates,
         partition_store_manager: Arc<PartitionStoreManager>,
         fast_forward_lsn: Option<Lsn>,
-        invocation_token_bucket: Option<TokenBucket>,
-        action_token_bucket: Option<TokenBucket>,
+        invoker_capacity: InvokerCapacity,
     ) -> Self {
         Self {
             task_name,
@@ -70,8 +68,7 @@ impl SpawnPartitionProcessorTask {
             replica_set_states,
             partition_store_manager,
             fast_forward_lsn,
-            invocation_token_bucket,
-            action_token_bucket,
+            invoker_capacity,
         }
     }
 
@@ -98,8 +95,7 @@ impl SpawnPartitionProcessorTask {
             replica_set_states,
             partition_store_manager,
             fast_forward_lsn,
-            invocation_token_bucket,
-            action_token_bucket,
+            invoker_capacity,
         } = self;
 
         let config = configuration.pinned();
@@ -114,8 +110,8 @@ impl SpawnPartitionProcessorTask {
             &config.worker.invoker,
             EntryEnricher::new(schema.clone()),
             schema,
-            invocation_token_bucket,
-            action_token_bucket,
+            invoker_capacity.invocation_token_bucket.clone(),
+            invoker_capacity.action_token_bucket.clone(),
         )?;
 
         let status_reader = invoker.status_reader();
@@ -125,8 +121,14 @@ impl SpawnPartitionProcessorTask {
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());
 
-        let pp_builder =
-            PartitionProcessorBuilder::new(status, control_rx, net_rx, watch_tx, invoker.handle());
+        let pp_builder = PartitionProcessorBuilder::new(
+            status,
+            control_rx,
+            net_rx,
+            watch_tx,
+            invoker.handle(),
+            invoker_capacity,
+        );
 
         let invoker_name = Arc::from(format!("invoker-{}", partition.partition_id));
         let invoker_config = configuration.clone().map(|c| &c.worker.invoker);
