@@ -15,7 +15,8 @@ build = "build.rs"
 dist = true
 
 [features]
-default = ["no-trace-logging"]
+# kafka-oidc should work on all targets, so let's enable it by default
+default = ["no-trace-logging", "kafka-oidc"]
 console = [
     "tokio/full",
     "tokio/tracing",
@@ -31,6 +32,7 @@ options_schema = [
 memory-loglet = ["restate-node/memory-loglet"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 metadata-api = ["restate-admin/metadata-api"]
+kafka-oidc = ["restate-node/kafka-oidc"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }

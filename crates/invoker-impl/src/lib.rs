@@ -2139,7 +2139,7 @@ mod tests {
                 Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
                 Some(OnMaxAttempts::Kill),
             ),
-            Some(2),
+            Some(NonZeroUsize::new(2).unwrap()),
         );
         let _ = service_inner.register_mock_partition(EmptyStorageReader);
 
