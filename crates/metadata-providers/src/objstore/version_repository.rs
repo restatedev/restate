@@ -55,10 +55,9 @@ pub enum EncodingError {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum ValueEncoding {
-    #[default]
     Cbor,
-    // TODO: Switch default to bilrost in v1.6.0
-    // Bilrost V1
+    // default since version v1.6
+    #[default]
     Bilrost,
 }
 
