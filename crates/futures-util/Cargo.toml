@@ -16,6 +16,7 @@ pin-project = { workspace = true }
 pin-project-lite = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
