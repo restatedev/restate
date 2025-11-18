@@ -11,7 +11,6 @@
 extern crate core;
 
 pub mod grpc;
-pub mod local;
 mod metric_definitions;
 pub mod raft;
 

@@ -80,8 +80,6 @@ pub enum Error {
     RestoreSnapshot(#[from] RestoreSnapshotError),
     #[error("failed creating snapshot: {0}")]
     CreateSnapshot(#[from] CreateSnapshotError),
-    #[error("failed provisioning from local metadata: {0}")]
-    ProvisionFromLocal(GenericError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
 }

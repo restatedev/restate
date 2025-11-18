@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::local::migrate_nodes_configuration;
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::network::ConnectionManager;
 use crate::raft::server::{
@@ -19,7 +18,7 @@ use crate::raft::{RaftServerState, StorageMarker, to_raft_id};
 use crate::{
     JoinClusterError, JoinClusterReceiver, MemberId, MetadataCommandError, MetadataCommandReceiver,
     MetadataServerSummary, ProvisionError, ProvisionReceiver, RequestError, RequestReceiver,
-    StatusSender, local, nodes_configuration_for_metadata_cluster_seed,
+    StatusSender, nodes_configuration_for_metadata_cluster_seed,
 };
 use arc_swap::ArcSwapOption;
 use prost::Message as ProstMessag;
@@ -28,8 +27,7 @@ use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_metadata_server_grpc::MetadataServerConfiguration;
 use restate_metadata_server_grpc::grpc::MetadataServerSnapshot;
 use restate_metadata_store::serialize_value;
-use restate_rocksdb::RocksError;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, data_dir};
 use restate_types::health::{HealthStatus, MetadataServerStatus};
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -38,7 +36,8 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::{PlainNodeId, Version};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use thiserror::__private17::AsDisplay;
+use tracing::{debug, info, warn};
 
 pub struct Uninitialized {
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
@@ -111,22 +110,6 @@ impl Uninitialized {
             debug!("Replicated metadata store is already provisioned");
         }
 
-        // todo: drop the local metadata store db in v1.5.0
-
-        // By always sealing the local metadata store, we enable a safe downgrade to v1.3.x. This
-        // prevents creating an empty local metadata store and ending up with split-brain.
-        if let Err(err) = Self::try_sealing_local_metadata_server().await {
-            // If we are in this branch, then we assume that users have explicitly configured the
-            // replicated metadata server. Hence, if sealing fails, it is not a catastrophe. With
-            // Restate 1.4.0, the minimum version is 1.3.0 which means that this installation can
-            // not be rolled back to 1.2.x or earlier, which are not aware of the seal marker.
-            warn!(%err, "Failed sealing local metadata store. This can be problematic if you \
-            ever switch back to the local metadata server explicitly and downgrade to Restate \
-            version <= v1.4.0");
-        } else {
-            debug!("Sealed local metadata store to prevent Restate v1.3.x from using it");
-        }
-
         let mut provision_rx = self.provision_rx.take().expect("must be present");
         TaskCenter::spawn_unmanaged(TaskKind::Background, "provision-responder", async move {
             while let Some(request) = provision_rx.recv().await {
@@ -140,24 +123,26 @@ impl Uninitialized {
     async fn provision(&mut self) -> Result<(), Error> {
         let _ = self.status_tx.send(MetadataServerSummary::Provisioning);
 
-        if local::storage::RocksDbStorage::data_dir_exists() {
-            info!("Trying to migrate local to replicated metadata");
-
-            let my_member_id = self
-                .initialize_storage_from_local_metadata_server()
-                .await
-                .map_err(|err| {
-                    error!(%err, "Failed to migrate local to replicated metadata. Please make sure \
-                    that {} exists and has not been corrupted. If the directory does not contain \
-                    local metadata you want to migrate from, then please remove it", local::storage::RocksDbStorage::data_dir().display());
-                    Error::ProvisionFromLocal(err.into())
-                })?;
-
-            info!(member_id = %my_member_id, "Successfully migrated local to replicated metadata");
-        } else {
-            self.await_provisioning_signal().await?
+        // This check has been introduced with v1.6.0 when the local metadata store was completely
+        // removed. See https://github.com/restatedev/restate/issues/4040.
+        const LOCAL_METADATA_STORE_DATA_DIR: &str = "local-metadata-store";
+        let local_metadata_store_data_dir = data_dir(LOCAL_METADATA_STORE_DATA_DIR);
+        if local_metadata_store_data_dir.exists() {
+            // safety check which should only trigger if users didn't migrate properly from v1.3
+            // through v1.4 to the current version. Migrating from v1.3 to v1.4 should have
+            // automatically migrated the local metadata store to the replicated metadata store.
+            panic!(
+                "Detected a non empty local metadata store data directory at {}. This indicates \
+            that you might have missed running migration from the local to the replicated metadata \
+            store which happens in Restate v1.4 and v1.5. When upgrading Restate make sure to not \
+            jump minor versions but instead go through all minor versions to run all required \
+            migrations. If you are sure that the local metadata store data directory does not contain \
+            relevant data, then you can also delete it to allow this node to provision on restart.",
+                local_metadata_store_data_dir.as_display()
+            );
         }
 
+        self.await_provisioning_signal().await?;
         Ok(())
     }
 
@@ -237,62 +222,6 @@ impl Uninitialized {
             .await
     }
 
-    async fn initialize_storage_from_local_metadata_server(&mut self) -> anyhow::Result<MemberId> {
-        let mut initial_state = self.load_initial_state_from_local_metadata_server().await?;
-        let mut nodes_configuration = initial_state.last_seen_nodes_configuration().clone();
-
-        let previous_version = nodes_configuration.version();
-        let my_plain_node_id = nodes_configuration_for_metadata_cluster_seed(
-            &Configuration::pinned(),
-            &mut nodes_configuration,
-        )?;
-        nodes_configuration.increment_version();
-
-        let versioned_value = serialize_value(&nodes_configuration)?;
-        initial_state
-            .put(
-                NODES_CONFIG_KEY.clone(),
-                versioned_value,
-                Precondition::MatchesVersion(previous_version),
-            )
-            .expect("no precondition violation");
-
-        self.initialize_storage(my_plain_node_id, initial_state)
-            .await
-    }
-
-    async fn load_initial_state_from_local_metadata_server(
-        &mut self,
-    ) -> anyhow::Result<KvMemoryStorage> {
-        let mut local_storage = Self::open_local_metadata_storage().await?;
-
-        // if the local storage is sealed, then someone has run the if block before
-        if !local_storage.is_sealed() {
-            // Try to migrate older nodes configuration versions
-            migrate_nodes_configuration(&mut local_storage).await?;
-        }
-
-        // make sure that no more changes can be made to the local metadata server when rolling back
-        local_storage.seal().await?;
-
-        let iter = local_storage.iter();
-        let mut kv_memory_storage = KvMemoryStorage::new(None);
-
-        for kv_pair in iter {
-            let (key, value) = kv_pair?;
-            debug!(
-                "Migrate key-value pair '{key}' with version '{}' from local to replicated metadata server",
-                value.version
-            );
-            kv_memory_storage
-                .put(key, value, Precondition::DoesNotExist)
-                .expect("initial values should not exist");
-        }
-
-        // todo close underlying RocksDb instance of local_storage
-
-        Ok(kv_memory_storage)
-    }
     async fn initialize_storage(
         &mut self,
         my_plain_node_id: PlainNodeId,
@@ -349,19 +278,6 @@ impl Uninitialized {
         txn.commit().await?;
 
         Ok(my_member_id)
-    }
-
-    async fn try_sealing_local_metadata_server() -> anyhow::Result<()> {
-        let mut local_storage = Self::open_local_metadata_storage().await?;
-
-        if !local_storage.is_sealed() {
-            local_storage.seal().await?;
-        }
-        Ok(())
-    }
-
-    async fn open_local_metadata_storage() -> Result<local::storage::RocksDbStorage, RocksError> {
-        local::storage::RocksDbStorage::open_or_create().await
     }
 
     fn create_storage_marker() -> StorageMarker {
