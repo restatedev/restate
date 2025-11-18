@@ -10,7 +10,9 @@
 
 use std::fmt::Debug;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use http::Uri;
@@ -19,6 +21,7 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::io;
 use tokio::net::UnixStream;
+use tokio::task::JoinHandle;
 use tokio_util::either::Either;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
@@ -32,12 +35,20 @@ use restate_types::net::listener::Listeners;
 
 use crate::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 
+pub enum DNSResolution {
+    // use whatever order getaddressinfo returns (http connector will use the first v4 and v6 ips it finds)
+    Gai,
+    // pick a single random v4 and v6 ip; useful where the record points to multiple distinct nodes
+    Headless,
+}
+
 pub fn create_tonic_channel<
     T: CommonClientConnectionOptions + Send + Sync + ?Sized,
     P: ListenerPort + GrpcPort,
 >(
     address: AdvertisedAddress<P>,
     options: &T,
+    dns_resolution: DNSResolution,
 ) -> Channel {
     let address = address.into_address().expect("valid address");
     let endpoint = match &address {
@@ -59,7 +70,25 @@ pub fn create_tonic_channel<
                 }
             }))
         }
-        PeerNetAddress::Http(_) => endpoint.connect_lazy()
+        PeerNetAddress::Http(_) => {
+            match dns_resolution {
+                DNSResolution::Gai => endpoint.connect_lazy(),
+                DNSResolution::Headless => {
+                    // headless dns names need special consideration:
+                    // 1. We need to ensure all ips are used across retries
+                    // 2. The http connector will split the conn timeout between all resolved addresses, so we don't want too many
+                    let mut http = hyper_util::client::legacy::connect::HttpConnector::new_with_resolver(RandomAddressResolver);
+                    http.enforce_http(false);
+                    http.set_nodelay(endpoint.get_tcp_nodelay());
+                    http.set_keepalive(endpoint.get_tcp_keepalive());
+                    http.set_keepalive_interval(endpoint.get_tcp_keepalive_interval());
+                    http.set_keepalive_retries(endpoint.get_tcp_keepalive_retries());
+                    http.set_connect_timeout(endpoint.get_connect_timeout());
+
+                    endpoint.connect_with_connector_lazy(http)
+                },
+            }
+        }
     }
 }
 
@@ -251,5 +280,68 @@ where
             let _ = fut.await;
             Ok(())
         });
+    }
+}
+
+/// RandomAddressResolver is adapted from the default GaiResolver used in hyper_util:
+/// https://github.com/hyperium/hyper-util/blob/v0.1.18/src/client/legacy/connect/dns.rs#L44
+/// But instead of returning the full list of resolved ips in the order from getaddressinfo,
+/// we choose a single random ipv4 and ipv6.
+/// This allows us to handle headless initial addresses much better, as even if the dns server returns a random
+/// address order, gai tends to reorder based on some proximity heuristics which mean we will never
+/// hit all the IPs; resolving 100 times may have the same ip as the first returned every time.
+#[derive(Clone)]
+struct RandomAddressResolver;
+
+pub struct RandomAddressResolverFuture<R>(JoinHandle<Result<R, io::Error>>);
+
+impl tower::Service<hyper_util::client::legacy::connect::dns::Name> for RandomAddressResolver {
+    type Response = std::iter::Chain<
+        std::option::IntoIter<std::net::SocketAddr>,
+        std::option::IntoIter<std::net::SocketAddr>,
+    >;
+    type Error = io::Error;
+    type Future = RandomAddressResolverFuture<Self::Response>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, name: hyper_util::client::legacy::connect::dns::Name) -> Self::Future {
+        RandomAddressResolverFuture(tokio::task::spawn_blocking(move || {
+            use rand::seq::IteratorRandom;
+
+            let addrs: Vec<_> =
+                std::net::ToSocketAddrs::to_socket_addrs(&(name.as_str(), 0))?.collect();
+
+            // the http connector cares about whether the first ip is ipv4 or ipv6 for the purposes of happy eyeballs
+            // ie, if the first ip is v6, it will prefer v6
+            let first_ipv4 = addrs.first().map(|addr| addr.is_ipv4()).unwrap_or(true);
+
+            let ipv4s = addrs.iter().filter(|addr| addr.is_ipv4());
+            let ipv6s = addrs.iter().filter(|addr| addr.is_ipv6());
+
+            let rand = &mut rand::rng();
+            let random_ipv4 = ipv4s.choose(rand).cloned();
+            let random_ipv6 = ipv6s.choose(rand).cloned();
+
+            if first_ipv4 {
+                Ok(random_ipv4.into_iter().chain(random_ipv6))
+            } else {
+                Ok(random_ipv6.into_iter().chain(random_ipv4))
+            }
+        }))
+    }
+}
+
+impl<R> Future for RandomAddressResolverFuture<R> {
+    type Output = Result<R, io::Error>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.0).poll(cx).map(|res| match res {
+            Ok(Ok(addrs)) => Ok(addrs),
+            Ok(Err(err)) => Err(err),
+            Err(join_err) => Err(io::Error::new(io::ErrorKind::Interrupted, join_err)),
+        })
     }
 }

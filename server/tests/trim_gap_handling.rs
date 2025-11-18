@@ -21,7 +21,7 @@ use tonic::transport::Channel;
 use tracing::info;
 use url::Url;
 
-use restate_core::network::net_util::create_tonic_channel;
+use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::cluster_ctrl_svc::{
     ClusterStateRequest, CreatePartitionSnapshotRequest,
     cluster_ctrl_svc_client::ClusterCtrlSvcClient, new_cluster_ctrl_client,
@@ -110,6 +110,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let mut client = new_cluster_ctrl_client(create_tonic_channel(
         cluster.nodes[0].advertised_address().clone(),
         &NetworkingOptions::default(),
+        DNSResolution::Gai,
     ));
 
     info!("Waiting until the partition processor has become the leader");

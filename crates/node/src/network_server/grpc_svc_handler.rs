@@ -24,7 +24,7 @@ use restate_metadata_store::protobuf::metadata_proxy_svc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest,
 };
 
-use restate_core::network::net_util::create_tonic_channel;
+use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
 use restate_core::protobuf::node_ctl_svc::{
     ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
@@ -212,6 +212,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
                 node_config.address.clone(),
                 &Configuration::pinned().networking,
+                DNSResolution::Gai,
             ));
 
             let response = match metadata_server_client.status(()).await {

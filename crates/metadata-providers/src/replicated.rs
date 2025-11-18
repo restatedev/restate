@@ -21,7 +21,7 @@ use tonic::transport::Channel;
 use tonic::{Code, Status};
 use tracing::{debug, instrument, trace};
 
-use restate_core::network::net_util::create_tonic_channel;
+use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::{Metadata, TaskCenter, TaskKind, cancellation_watcher};
 use restate_metadata_server_grpc::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_metadata_server_grpc::grpc::new_metadata_server_client;
@@ -370,7 +370,11 @@ impl MetadataStore for GrpcMetadataServerClient {
 
         let mut client = MetadataServerSvcClientWithAddress::new(ChannelWithAddress::new(
             advertised_address.clone(),
-            create_tonic_channel(advertised_address.clone(), &config.networking),
+            create_tonic_channel(
+                advertised_address.clone(),
+                &config.networking,
+                DNSResolution::Gai,
+            ),
         ));
 
         let mut buffer = BytesMut::new();
@@ -476,7 +480,7 @@ impl ChannelManager {
     ) -> ChannelWithAddress {
         let channel = ChannelWithAddress::new(
             address.clone(),
-            create_tonic_channel(address, self.connection_options.deref()),
+            create_tonic_channel(address, self.connection_options.deref(), DNSResolution::Gai),
         );
         self.channels
             .lock()
@@ -533,6 +537,7 @@ impl ChannelManager {
                             create_tonic_channel(
                                 node_config.address.clone(),
                                 self.connection_options.deref(),
+                                DNSResolution::Gai,
                             ),
                         ),
                     ))
@@ -584,7 +589,12 @@ impl ChannelOrInitialAddress {
         match self {
             ChannelOrInitialAddress::InitialAddress(address) => ChannelWithAddress::new(
                 address.clone(),
-                create_tonic_channel(address, connection_options),
+                create_tonic_channel(
+                    address,
+                    connection_options,
+                    // initial addresses may be headless, ie they point to multiple nodes
+                    DNSResolution::Headless,
+                ),
             ),
             ChannelOrInitialAddress::Channel(channel) => channel,
         }

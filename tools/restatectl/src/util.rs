@@ -19,7 +19,7 @@ use cling::{Collect, prelude::Parser};
 use tonic::transport::Channel;
 
 use restate_cli_util::CliContext;
-use restate_core::network::net_util::create_tonic_channel;
+use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_types::{
     logs::metadata::ProviderConfiguration,
     net::address::{AdvertisedAddress, GrpcPort, ListenerPort},
@@ -27,7 +27,7 @@ use restate_types::{
 
 pub fn grpc_channel<P: ListenerPort + GrpcPort>(address: AdvertisedAddress<P>) -> Channel {
     let ctx = CliContext::get();
-    create_tonic_channel(address, &ctx.network)
+    create_tonic_channel(address, &ctx.network, DNSResolution::Gai)
 }
 
 pub fn write_default_provider<W: fmt::Write>(
