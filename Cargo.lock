@@ -7542,6 +7542,7 @@ dependencies = [
  "const_format",
  "derive_more",
  "etcd-client",
+ "hyper-util",
  "indexmap 2.11.4",
  "object_store",
  "parking_lot",

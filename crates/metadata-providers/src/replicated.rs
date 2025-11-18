@@ -370,7 +370,7 @@ impl MetadataStore for GrpcMetadataServerClient {
 
         let mut client = MetadataServerSvcClientWithAddress::new(ChannelWithAddress::new(
             advertised_address.clone(),
-            create_tonic_channel(advertised_address.clone(), &config.networking),
+            create_tonic_channel(advertised_address.clone(), &config.networking, false),
         ));
 
         let mut buffer = BytesMut::new();
@@ -476,7 +476,7 @@ impl ChannelManager {
     ) -> ChannelWithAddress {
         let channel = ChannelWithAddress::new(
             address.clone(),
-            create_tonic_channel(address, self.connection_options.deref()),
+            create_tonic_channel(address, self.connection_options.deref(), false),
         );
         self.channels
             .lock()
@@ -533,6 +533,7 @@ impl ChannelManager {
                             create_tonic_channel(
                                 node_config.address.clone(),
                                 self.connection_options.deref(),
+                                false,
                             ),
                         ),
                     ))
@@ -584,7 +585,11 @@ impl ChannelOrInitialAddress {
         match self {
             ChannelOrInitialAddress::InitialAddress(address) => ChannelWithAddress::new(
                 address.clone(),
-                create_tonic_channel(address, connection_options),
+                create_tonic_channel(
+                    address,
+                    connection_options,
+                    /* maybe_headless_address */ true,
+                ),
             ),
             ChannelOrInitialAddress::Channel(channel) => channel,
         }

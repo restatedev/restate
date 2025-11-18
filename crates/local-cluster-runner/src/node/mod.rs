@@ -805,6 +805,7 @@ impl StartedNode {
         let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
             self.fabric_advertised_address.clone(),
             &self.config().networking,
+            false,
         ));
 
         let Ok(response) = metadata_server_client
@@ -829,6 +830,7 @@ impl StartedNode {
         let channel = create_tonic_channel(
             self.advertised_address().clone(),
             &Configuration::default().networking,
+            false,
         );
 
         let request = ProtoProvisionClusterRequest {
@@ -889,6 +891,7 @@ impl StartedNode {
         let mut client = new_metadata_server_client(create_tonic_channel(
             self.advertised_address().clone(),
             &self.config().networking,
+            false,
         ));
 
         client.add_node(()).await?;
@@ -900,6 +903,7 @@ impl StartedNode {
         let mut client = new_metadata_server_client(create_tonic_channel(
             self.advertised_address().clone(),
             &self.config().networking,
+            false,
         ));
 
         client
@@ -916,6 +920,7 @@ impl StartedNode {
         let mut client = new_metadata_server_client(create_tonic_channel(
             self.advertised_address().clone(),
             &self.config().networking,
+            false,
         ));
         let response = client.status(()).await?.into_inner();
         Ok(response)
