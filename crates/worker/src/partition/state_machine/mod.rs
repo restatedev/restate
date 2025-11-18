@@ -96,9 +96,9 @@ use restate_types::journal::enriched::{
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
 use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
-use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::raw::{RawEntry, RawNotification};
 use restate_types::journal_v2::{
-    CommandType, CompletionId, EntryMetadata, NotificationId, Signal, SignalResult,
+    CommandIndex, CommandType, CompletionId, EntryMetadata, NotificationId, Signal, SignalResult,
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
@@ -2409,29 +2409,30 @@ impl<S> StateMachineApplyContext<'_, S> {
             InvokerEffectKind::JournalEntryV2 {
                 command_index_to_ack,
                 entry,
+            } => {
+                let raw_entry = entry.inner;
+
+                self.on_journal_entry(
+                    effect.invocation_id,
+                    effect.invocation_epoch,
+                    invocation_status,
+                    command_index_to_ack,
+                    raw_entry,
+                )
+                .await?;
+            }
+            InvokerEffectKind::JournalEntryV2RawEntry {
+                command_index_to_ack,
                 raw_entry,
             } => {
-                // Starting from v1.5.0 the system is populating the raw_entry field instead of the
-                // entry field. For backwards compatibility we fall back to entry if raw_entry is
-                // not set.
-                let entry = raw_entry
-                    .or(entry.map(|entry| entry.inner))
-                    .expect("Either the raw_entry field or the legacy entry field must be set");
-
-                entries::OnJournalEntryCommand::from_raw_entry(
+                self.on_journal_entry(
                     effect.invocation_id,
+                    effect.invocation_epoch,
                     invocation_status,
-                    entry,
+                    command_index_to_ack,
+                    raw_entry,
                 )
-                .apply(self)
                 .await?;
-                if let Some(command_index_to_ack) = command_index_to_ack {
-                    self.action_collector.push(Action::AckStoredCommand {
-                        invocation_id: effect.invocation_id,
-                        invocation_epoch: effect.invocation_epoch,
-                        command_index: command_index_to_ack,
-                    });
-                }
             }
             InvokerEffectKind::JournalEvent { event } => {
                 lifecycle::OnInvokerEventCommand {
@@ -2523,6 +2524,44 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
         }
 
+        Ok(())
+    }
+
+    #[inline]
+    async fn on_journal_entry(
+        &mut self,
+        invocation_id: InvocationId,
+        invocation_epoch: InvocationEpoch,
+        invocation_status: InvocationStatus,
+        command_index_to_ack: Option<CommandIndex>,
+        raw_entry: RawEntry,
+    ) -> Result<(), Error>
+    where
+        S: WriteJournalTable
+            + ReadJournalTable
+            + journal_table_v2::WriteJournalTable
+            + journal_table_v2::ReadJournalTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
+            + WriteTimerTable
+            + WriteFsmTable
+            + WriteOutboxTable
+            + ReadPromiseTable
+            + WritePromiseTable
+            + ReadStateTable
+            + WriteStateTable,
+    {
+        entries::OnJournalEntryCommand::from_raw_entry(invocation_id, invocation_status, raw_entry)
+            .apply(self)
+            .await?;
+
+        if let Some(command_index_to_ack) = command_index_to_ack {
+            self.action_collector.push(Action::AckStoredCommand {
+                invocation_id,
+                invocation_epoch,
+                command_index: command_index_to_ack,
+            });
+        }
         Ok(())
     }
 

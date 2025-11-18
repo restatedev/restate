@@ -51,14 +51,11 @@ pub enum EffectKind {
     Suspended {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     },
+    // todo remove once we no longer support Bifrost commands written by <= v1.6
     JournalEntryV2 {
-        // todo stop writing with v1.5.0 and remove once we no longer support Bifrost commands written by <= v1.4.0
-        // legacy field which will be superseded by raw_entry
-        entry: Option<restate_types::storage::StoredRawEntry>,
+        entry: StoredRawEntry,
         /// This is used by the invoker to establish when it's safe to retry
         command_index_to_ack: Option<CommandIndex>,
-        // todo start writing with v1.5.0 and make non-optional once we no longer support Bifrost commands written by v1.4.0
-        raw_entry: Option<journal_v2::raw::RawEntry>,
     },
     JournalEvent {
         event: RawEvent,
@@ -73,6 +70,14 @@ pub enum EffectKind {
     End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
     Failed(InvocationError),
+    // New journal entry v2 which only carries the raw entry.
+    // Introduced in v1.6.0
+    // Start writing in v1.7.0
+    JournalEntryV2RawEntry {
+        /// This is used by the invoker to establish when it's safe to retry
+        command_index_to_ack: Option<CommandIndex>,
+        raw_entry: RawEntry,
+    },
 }
 
 impl EffectKind {
@@ -81,12 +86,16 @@ impl EffectKind {
         command_index_to_ack: Option<CommandIndex>,
     ) -> Self {
         JournalEntryV2 {
-            entry: Some(StoredRawEntry::new(
+            entry: StoredRawEntry::new(
                 StoredRawEntryHeader::new(MillisSinceEpoch::now()),
                 raw_entry.into(),
-            )),
+            ),
             command_index_to_ack,
-            raw_entry: None,
         }
+        // todo enable in v1.7.0
+        // JournalEntryV2RawEntry {
+        //     command_index_to_ack,
+        //     raw_entry: raw_entry.into(),
+        // }
     }
 }
