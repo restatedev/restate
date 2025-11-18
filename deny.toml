@@ -5,7 +5,6 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 version = 2
 yanked = "deny"
 ignore = [
-    { id = "RUSTSEC-2024-0370", reason = "crate is unmaintained. This needs `arrow_convert` to use an alternative to `err-derive`" },
     { id = "RUSTSEC-2024-0436", reason = "crate is unmaintained. We need to migrate to a different crate than `paste`" },
     { id = "RUSTSEC-2024-0437", reason = "protobuf-rs stackoverflow in deep nested messages, not fixed yet" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash is not maintained anymore, currently used only by raft-rs" },

@@ -60,7 +60,7 @@ hickory-resolver = "0.25.2"
 http = { workspace = true }
 hyper = { workspace = true }
 humantime = { workspace = true }
-indicatif = "0.17.7"
+indicatif = "0.18.3"
 indoc = { version = "2.0.4" }
 itertools = { workspace = true }
 json-patch = "2.0.0"
