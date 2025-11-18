@@ -185,3 +185,26 @@ just flamegraph --bin restate-server
 This command will produce a `flamegraph.svg` in the current working directory when the process is stopped.
 
 See the [flamegraph documentation](https://github.com/flamegraph-rs/flamegraph#usage) for more details.
+
+## Troubleshooting
+On many systems `cargo build` invokes `gcc` by default. Some `gcc` versions fail to compile certain dependencies, leading to errors like:
+```
+.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/krb5-src-0.3.4/krb5/src/lib/rpc/auth_none.c: In function 'authnone_wrap':
+  /home/slinkydeveloper/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/krb5-src-0.3.4/krb5/src/lib/rpc/auth_none.c:146:18: error: too many arguments to function 'xfunc'; expected 0, have 2
+    146 |         return ((*xfunc)(xdrs, xwhere));
+        |                 ~^~~~~~~ ~~~~
+  make[1]: *** [Makefile:500: auth_none.o] Error 1
+  make: *** [Makefile:1005: all-recurse] Error 1
+```
+If you see this type of failure, rebuild with `clang`:
+```
+CC=clang cargo build
+```
+When that resolves the issue, you can make `clang` the default compiler by adding the following to `~/.cargo/config.toml`:
+```
+# cat ~/.cargo/config.toml
+ 
+[env]
+CC = "clang"
+CXX = "clang++"
+```
