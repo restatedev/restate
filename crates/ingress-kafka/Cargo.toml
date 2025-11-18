@@ -37,8 +37,9 @@ opentelemetry_sdk = { workspace = true }
 parking_lot = { workspace = true }
 # Use https://github.com/restatedev/rust-rdkafka/tree/fix-build-script which is based on
 # https://github.com/fede1024/rust-rdkafka/pull/803. The PR bumps librdkafka to 2.12.1 and enables WITH_CURL for
-# librdkafka if the feature curl-static is enabled. The additional fixes in fix-build-script fix the musl build.
-rdkafka = { version = "0.38", git = "https://github.com/restatedev/rust-rdkafka.git", rev = "22895f8c22471309e1615b0686cd31be5966d575", features = ["libz-static", "cmake-build", "ssl-vendored"] }
+# librdkafka if the feature curl-static is enabled. Additionally, it cherry-picks https://github.com/confluentinc/librdkafka/pull/5182
+# which prevents pulling in curl if it is not activated. The additional fixes in fix-build-script fix the musl build.
+rdkafka = { version = "0.38", git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", features = ["libz-static", "cmake-build", "ssl-vendored"] }
 schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt"] }
