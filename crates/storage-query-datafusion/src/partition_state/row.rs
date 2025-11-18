@@ -47,7 +47,7 @@ pub(crate) fn append_partition_row(
     }
 
     row.fmt_replay_status(state.replay_status);
-    if let Some(lsn) = state.last_persisted_log_lsn {
+    if let Some(lsn) = state.durable_lsn {
         row.durable_log_lsn(lsn.into());
     }
 

@@ -341,7 +341,7 @@ where
         let durable_lsn = durable_lsn_watch
             .borrow_and_update()
             .unwrap_or(Lsn::INVALID);
-        self.status.last_persisted_log_lsn = Some(durable_lsn);
+        self.status.durable_lsn = Some(durable_lsn);
         self.replica_set_states
             .note_durable_lsn(partition_id, my_node, durable_lsn);
 
@@ -478,7 +478,7 @@ where
                         let durable_lsn = durable_lsn_watch
                                 .borrow_and_update()
                                 .unwrap_or(Lsn::INVALID);
-                        self.status.last_persisted_log_lsn = Some(durable_lsn);
+                        self.status.durable_lsn = Some(durable_lsn);
                         self.replica_set_states.note_durable_lsn(
                             partition_id,
                             my_node,
