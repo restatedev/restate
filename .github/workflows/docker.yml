@@ -104,27 +104,20 @@ jobs:
 
       # this is needed to be able to load and push a multiplatform image in one step
       - name: Set up Docker containerd snapshotter
-        uses: crazy-max/ghaction-setup-docker@v3
+        uses: docker/setup-docker-action@v4
         with:
-          # Docker 28.0.1 seems to fail on GHA: https://github.com/restatedev/restate/actions/runs/13562737120/job/37909085871#step:6:47
-          # todo set to latest once new Docker version that is working on GHA is released
-          version: "27.5.1"
           daemon-config: |
             {
               "features": {
                 "containerd-snapshotter": true
               }
             }
-
-      - name: Set up QEMU dependency
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+            
+      - name: Configure new WarpBuild Docker Builders
+        uses: Warpbuilds/docker-configure@v1
         with:
-          # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
-          driver-opts: |
-            network=host
+          profile-name: "warp-docker-32x"
+          should-setup-buildx: "true"
 
       - name: Cache sccache
         id: cache
@@ -191,7 +184,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # on main, always push both platforms, otherwise use platform input
           platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
-          network: host
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug || inputs.parca }}
             BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
@@ -199,9 +191,6 @@ jobs:
             RESTATE_FEATURES=${{ inputs.features || '' }}
           secrets: |
             parca=${{ secrets.PARCA_TOKEN }}
-          cache-from: type=gha,url=http://127.0.0.1:49160/,version=1
-          # don't cache debug/parca builds, its just too big
-          cache-to: ${{ (!inputs.debug && !inputs.parca) && 'type=gha,url=http://127.0.0.1:49160/,mode=max,version=1' || '' }}
 
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball != '' }}
