@@ -16,7 +16,6 @@ pub mod trim_queue;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::mem;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,6 +31,9 @@ use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::PartitionStore;
+use restate_storage_api::{StorageError, vqueue_table};
+use restate_vqueues::scheduler::{self};
+
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::invocation_status_table::{
@@ -55,6 +57,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::storage::StorageEncodeError;
+use restate_vqueues::{SchedulerService, VQueuesMeta, VQueuesMetaMut};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
 use restate_wal_protocol::timer::TimerKeyValue;
@@ -79,7 +82,7 @@ pub(crate) enum Error {
     #[error("invoker is unreachable. This indicates a bug or the system is shutting down: {0}")]
     Invoker(NotRunningError),
     #[error(transparent)]
-    Storage(#[from] restate_storage_api::StorageError),
+    Storage(#[from] StorageError),
     #[error("failed writing to bifrost: {0}")]
     Bifrost(#[from] restate_bifrost::Error),
     #[error("failed serializing payload: {0}")]
@@ -121,6 +124,7 @@ pub(crate) enum TaskTermination {
 
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
+    Scheduler(Result<scheduler::Decision<vqueue_table::EntryCard>, StorageError>),
     Invoker(Box<restate_invoker_api::Effect>),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
@@ -155,8 +159,6 @@ pub(crate) struct LeadershipState<I> {
 
     partition: Arc<Partition>,
     invoker_tx: I,
-    // to be used by the scheduler
-    #[allow(unused)]
     invoker_capacity: InvokerCapacity,
     bifrost: Bifrost,
     trim_queue: TrimQueue,
@@ -291,6 +293,7 @@ where
         partition_store: &mut PartitionStore,
         replica_set_states: &PartitionReplicaSetStates,
         config: &Configuration,
+        vqueues_cache: &mut VQueuesMetaMut,
     ) -> Result<bool, Error> {
         self.last_seen_leader_epoch = Some(announce_leader.leader_epoch);
 
@@ -306,8 +309,13 @@ where
                     }
                     Ordering::Equal => {
                         debug!("Won the leadership campaign. Becoming the strong leader now.");
-                        self.become_leader(partition_store, replica_set_states.clone(), config)
-                            .await?
+                        self.become_leader(
+                            partition_store,
+                            replica_set_states.clone(),
+                            vqueues_cache,
+                            config,
+                        )
+                        .await?
                     }
                     Ordering::Greater => {
                         debug!(
@@ -347,6 +355,7 @@ where
         &mut self,
         partition_store: &mut PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
+        vqueues_cache: &mut VQueuesMetaMut,
         config: &Configuration,
     ) -> Result<(), Error> {
         if let State::Candidate {
@@ -354,14 +363,37 @@ where
             self_proposer,
         } = &mut self.state
         {
-            let invoker_rx = Self::resume_invoked_invocations(
-                &mut self.invoker_tx,
-                (self.partition.partition_id, *leader_epoch),
-                self.partition.key_range.clone(),
-                partition_store,
-                config.worker.internal_queue_length(),
-            )
-            .await?;
+            let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
+            let invoker_rx = ReceiverStream::new(invoker_rx);
+
+            self.invoker_tx
+                .register_partition(
+                    (self.partition.partition_id, *leader_epoch),
+                    self.partition.key_range.clone(),
+                    InvokerStorageReader::new(partition_store.clone()),
+                    invoker_tx,
+                )
+                .map_err(Error::Invoker)?;
+
+            let scheduler_service = if config.common.experimental_enable_vqueues {
+                SchedulerService::create(
+                    self.invoker_capacity.concurrency.clone(),
+                    partition_store.partition_db().clone(),
+                    vqueues_cache,
+                )
+                .await?
+            } else {
+                // we only perform the mass-resumption if vqueues are disabled
+                Self::resume_invoked_invocations(
+                    &mut self.invoker_tx,
+                    (self.partition.partition_id, *leader_epoch),
+                    partition_store,
+                )
+                .await?;
+
+                // noop scheduler if vqueues are disabled
+                SchedulerService::new_disabled()
+            };
 
             let timer_service = TimerService::new(
                 TokioClock,
@@ -426,6 +458,7 @@ where
                 trimmer_task_id,
                 shuffle_hint_tx,
                 timer_service,
+                scheduler_service,
                 self_proposer,
                 invoker_rx,
                 shuffle_rx,
@@ -441,26 +474,14 @@ where
     async fn resume_invoked_invocations(
         invoker_handle: &mut I,
         partition_leader_epoch: PartitionLeaderEpoch,
-        partition_key_range: RangeInclusive<PartitionKey>,
         partition_store: &mut PartitionStore,
-        channel_size: usize,
-    ) -> Result<InvokerStream, Error> {
-        let (invoker_tx, invoker_rx) = mpsc::channel(channel_size);
-
-        invoker_handle
-            .register_partition(
-                partition_leader_epoch,
-                partition_key_range,
-                InvokerStorageReader::new(partition_store.clone()),
-                invoker_tx,
-            )
-            .map_err(Error::Invoker)?;
-
+    ) -> Result<(), Error> {
         {
-            let invoked_invocations = partition_store
-                .scan_invoked_invocations()
-                .map_err(Error::Storage)?;
-            tokio::pin!(invoked_invocations);
+            let mut invoked_invocations = std::pin::pin!(
+                partition_store
+                    .scan_invoked_invocations()
+                    .map_err(Error::Storage)?
+            );
 
             let start = tokio::time::Instant::now();
             let mut count = 0;
@@ -488,7 +509,7 @@ where
             );
         }
 
-        Ok(ReceiverStream::new(invoker_rx))
+        Ok(())
     }
 
     async fn become_follower(&mut self) {
@@ -507,13 +528,17 @@ where
         }
     }
 
-    pub fn handle_actions(&mut self, actions: impl Iterator<Item = Action>) -> Result<(), Error> {
+    pub fn handle_actions(
+        &mut self,
+        actions: impl Iterator<Item = Action>,
+        vqueues: VQueuesMeta<'_>,
+    ) -> Result<(), Error> {
         match &mut self.state {
             State::Follower | State::Candidate { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_actions(&mut self.invoker_tx, actions)?;
+                leader_state.handle_actions(&mut self.invoker_tx, actions, vqueues)?;
             }
         }
 
@@ -525,7 +550,11 @@ where
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
     /// * Leader: Await action effects and monitor appender task
-    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(
+        &mut self,
+        state_machine: &StateMachine,
+        vqueues: VQueuesMeta<'_>,
+    ) -> Result<Vec<ActionEffect>, Error> {
         match &mut self.state {
             State::Follower => Ok(futures::future::pending::<Vec<_>>().await),
             State::Candidate { self_proposer, .. } => Err(self_proposer
@@ -534,7 +563,7 @@ where
                 .join_on_err()
                 .await
                 .expect_err("never should never be returned")),
-            State::Leader(leader_state) => leader_state.run(state_machine).await,
+            State::Leader(leader_state) => leader_state.run(state_machine, vqueues).await,
         }
     }
 
@@ -547,7 +576,9 @@ where
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_action_effects(action_effects).await?
+                leader_state
+                    .handle_action_effects(action_effects /*, &mut self.invoker_tx */)
+                    .await?
             }
         }
 

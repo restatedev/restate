@@ -10,10 +10,13 @@
 
 use super::*;
 
+use restate_futures_util::concurrency::Permit;
+use restate_invoker_api::capacity::InvokerToken;
 use restate_types::journal::Completion;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
+use restate_types::vqueue::VQueueId;
 use std::fmt;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -22,6 +25,10 @@ use tokio::task::AbortHandle;
 /// Component encapsulating the business logic of the invocation state machine
 #[derive(Debug)]
 pub(super) struct InvocationStateMachine {
+    #[allow(dead_code)]
+    pub(super) qid: Option<VQueueId>,
+    #[allow(dead_code)]
+    pub(super) permit: Permit<InvokerToken>,
     pub(super) invocation_target: InvocationTarget,
     pub(super) invocation_epoch: InvocationEpoch,
     pub(super) last_transient_error_event: Option<TransientErrorEvent>,
@@ -172,12 +179,16 @@ struct RetryPolicyState {
 
 impl InvocationStateMachine {
     pub(super) fn create(
+        qid: Option<VQueueId>,
+        permit: Permit<InvokerToken>,
         invocation_target: InvocationTarget,
         invocation_epoch: InvocationEpoch,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
     ) -> InvocationStateMachine {
         Self {
+            qid,
+            permit,
             invocation_target,
             invocation_epoch,
             last_transient_error_event: None,
@@ -571,6 +582,8 @@ mod tests {
     #[test]
     fn handle_error_when_waiting_for_retry() {
         let mut invocation_state_machine = InvocationStateMachine::create(
+            None,
+            Permit::new_empty(),
             InvocationTarget::mock_virtual_object(),
             0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
@@ -596,6 +609,8 @@ mod tests {
     #[test(tokio::test)]
     async fn handle_error_counts_attempts_on_same_entry() {
         let mut invocation_state_machine = InvocationStateMachine::create(
+            None,
+            Permit::new_empty(),
             InvocationTarget::mock_virtual_object(),
             0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
@@ -655,6 +670,8 @@ mod tests {
     #[test(tokio::test)]
     async fn handle_requires_ack() {
         let mut invocation_state_machine = InvocationStateMachine::create(
+            None,
+            Permit::new_empty(),
             InvocationTarget::mock_virtual_object(),
             0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
@@ -687,6 +704,8 @@ mod tests {
     #[test(tokio::test)]
     async fn journal_tracker_correctly_tracks_commands() {
         let mut invocation_state_machine = InvocationStateMachine::create(
+            None,
+            Permit::new_empty(),
             InvocationTarget::mock_service(),
             0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
@@ -720,6 +739,8 @@ mod tests {
     #[test(tokio::test)]
     async fn journal_tracker_correctly_tracks_notification_proposals() {
         let mut invocation_state_machine = InvocationStateMachine::create(
+            None,
+            Permit::new_empty(),
             InvocationTarget::mock_service(),
             0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
