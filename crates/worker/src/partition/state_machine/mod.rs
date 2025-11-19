@@ -29,7 +29,7 @@ use bytestring::ByteString;
 use enumset::EnumSet;
 use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
-use tracing::{Instrument, Span, debug, error, trace, warn};
+use tracing::{Instrument, Span, debug, error, info, trace, warn};
 
 use restate_invoker_api::InvokeInputJournal;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -58,15 +58,19 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, WriteTimerTable};
+use restate_storage_api::vqueue_table::{self, EntryId, EntryKind, Stage};
+use restate_storage_api::vqueue_table::{EntryCard, ReadVQueueTable, VisibleAt, WriteVQueueTable};
 use restate_tracing_instrumentation as instrumentation;
+use restate_types::clock::UniqueTimestamp;
+use restate_types::config::Configuration;
 use restate_types::errors::{
     ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError,
     InvocationErrorCode, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
     NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, PartitionKey,
-    PartitionProcessorRpcRequestId, ServiceId,
+    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, InvocationUuid,
+    PartitionKey, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::identifiers::{IdempotencyId, WithPartitionKey};
 use restate_types::invocation::client::{
@@ -103,8 +107,10 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::vqueue::{NewEntryPriority, VQueueId, VQueueInstance, VQueueParent};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
+use restate_vqueues::{VQueues, VQueuesMetaMut};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
@@ -237,6 +243,7 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     record_created_at: MillisSinceEpoch,
     record_lsn: Lsn,
     action_collector: &'a mut ActionCollector,
+    vqueues_cache: &'a mut VQueuesMetaMut,
     inbox_seq_number: &'a mut MessageIndex,
     outbox_seq_number: &'a mut MessageIndex,
     outbox_head_seq_number: &'a mut Option<MessageIndex>,
@@ -257,6 +264,7 @@ impl StateMachine {
     // - This should accept `LsnEnvelope` instead of `Command` to get access to created_at, header,
     // and lsn.
     // - Accept `LsnEnvelope` by reference.
+    #[allow(clippy::too_many_arguments)]
     pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
         &mut self,
         command: Command,
@@ -264,6 +272,7 @@ impl StateMachine {
         record_lsn: Lsn,
         transaction: &mut TransactionType,
         action_collector: &mut ActionCollector,
+        vqueues_cache: &mut VQueuesMetaMut,
         is_leader: bool,
     ) -> Result<(), Error> {
         let span = utils::state_machine_apply_command_span(is_leader, &command);
@@ -280,6 +289,7 @@ impl StateMachine {
                 outbox_seq_number: &mut self.outbox_seq_number,
                 outbox_head_seq_number: &mut self.outbox_head_seq_number,
                 min_restate_version: &mut self.min_restate_version,
+                vqueues_cache,
                 schema: &mut self.schema,
                 partition_key_range: self.partition_key_range.clone(),
                 experimental_features: &self.experimental_features,
@@ -308,9 +318,6 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         if let Some(invocation_target) = status.invocation_target() {
             Span::current().record_invocation_target(invocation_target);
-        }
-        if let Some(invocation_metadata) = status.get_invocation_metadata() {
-            Span::current().record_invocation_epoch(&invocation_metadata.current_invocation_epoch);
         }
         Ok(status)
     }
@@ -441,11 +448,48 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInboxTable
             + ReadStateTable
             + WriteStateTable
+            + WriteVQueueTable
+            + ReadVQueueTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable,
     {
         match command {
+            Command::VQWaitingToRunning(cards) => {
+                // move the entry from inbox and notify the scheduler that it has started
+                // also, ship to invoker.
+                self.attempt_to_run(&cards).await?;
+                Ok(())
+            }
+            // perhaps consolidate with the one above.
+            Command::VQYieldRunning(cmd) => {
+                // move the entry from inbox and notify the scheduler that it has started
+                // also, ship to invoker.
+                tracing::info!(
+                    "Entry in qid_parent={}, instance={} should be placed back to the waiting queue",
+                    cmd.parent,
+                    cmd.instance
+                );
+                let qid = VQueueId::new(
+                    VQueueParent::from_raw(cmd.parent),
+                    cmd.partition_key,
+                    VQueueInstance::from_raw(cmd.instance),
+                );
+                let mut inbox = VQueues::new(
+                    qid,
+                    self.storage,
+                    self.vqueues_cache,
+                    self.is_leader.then_some(self.action_collector),
+                );
+
+                let record_unique_ts =
+                    UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+                for card in cmd.decode_entry_cards() {
+                    let card = card?;
+                    inbox.yield_running(record_unique_ts, &card).await?;
+                }
+                Ok(())
+            }
             Command::UpdatePartitionDurability(_) => {
                 // no-op :-)
                 //
@@ -650,6 +694,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteTimerTable
             + WriteInboxTable
             + WriteFsmTable
+            + WriteVQueueTable
+            + ReadVQueueTable
             + WriteJournalTable,
     {
         let invocation_id = service_invocation.invocation_id;
@@ -708,8 +754,21 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteTimerTable
             + WriteInboxTable
             + WriteFsmTable
+            + WriteVQueueTable
+            + ReadVQueueTable
             + WriteJournalTable,
     {
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            // skips the rest of this logic and jumps straight to vqueues' implementation
+            return self
+                .vqueue_enqueue(
+                    invocation_id,
+                    pre_flight_invocation_metadata,
+                    submit_notification_sink,
+                )
+                .await;
+        }
+
         // A pre-flight invocation has been already deduplicated
 
         // 1. Check if we need to schedule it
@@ -767,6 +826,97 @@ impl<S> StateMachineApplyContext<'_, S> {
             in_flight_invocation_metadata,
             invocation_input,
         )
+    }
+
+    // Uses vqueues, replaces on_pre_flight_invocation
+    async fn vqueue_enqueue(
+        &mut self,
+        invocation_id: InvocationId,
+        metadata: PreFlightInvocationMetadata,
+        submit_notification_sink: Option<SubmitNotificationSink>,
+    ) -> Result<(), Error>
+    where
+        S: IdempotencyTable
+            + WriteInvocationStatusTable
+            + WriteFsmTable
+            + ReadVirtualObjectStatusTable
+            + WriteVirtualObjectStatusTable
+            + WriteTimerTable
+            + WriteInboxTable
+            + WriteFsmTable
+            + WriteVQueueTable
+            + ReadVQueueTable
+            + WriteJournalTable,
+    {
+        // Where is the qid? it should be in service invocation somewhere.
+        let qid = VQueueId::new(
+            // todo(asoli): This is temporary, replace with the real src id.
+            VQueueParent::from_raw(1),
+            invocation_id.partition_key(),
+            VQueueInstance::Default,
+        );
+
+        let record_unique_ts = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+        let visible_at = if let Some(execution_time) = metadata.execution_time {
+            VisibleAt::from_unix_millis(execution_time)
+        } else {
+            VisibleAt::At(record_unique_ts)
+        };
+
+        VQueues::new(
+            qid,
+            self.storage,
+            self.vqueues_cache,
+            self.is_leader.then_some(self.action_collector),
+        )
+        .enqueue_new(
+            record_unique_ts,
+            visible_at,
+            NewEntryPriority::default(),
+            vqueue_table::EntryKind::Invocation,
+            vqueue_table::EntryId::from(invocation_id),
+        )
+        .await?;
+
+        // 1. Check if we need to schedule it
+        // only schedule the invocation if it's actually in the future
+        let invocation_status = if visible_at > record_unique_ts {
+            InvocationStatus::Scheduled(ScheduledInvocation::from_pre_flight_invocation_metadata(
+                metadata,
+                self.record_created_at,
+            ))
+        } else {
+            InvocationStatus::Inboxed(InboxedInvocation::from_pre_flight_invocation_metadata(
+                metadata,
+                // todo: what do we do with this sequence number?
+                1,
+                self.record_created_at,
+            ))
+        };
+
+        self.storage
+            .put_invocation_status(&invocation_id, &invocation_status)
+            .map_err(Error::Storage)?;
+
+        // Invocation was scheduled, send back the ingress attach notification and return
+        // Notify the ingress, if needed, of the chosen invocation_id
+        if self.is_leader
+            && let Some(SubmitNotificationSink::Ingress { request_id }) = submit_notification_sink
+        {
+            let execution_time = invocation_status.execution_time();
+            debug!(
+                "Sending ingress attach invocation for {invocation_id}, will run at: {execution_time:?}"
+            );
+
+            self.action_collector
+                .push(Action::IngressSubmitNotification {
+                    request_id,
+                    execution_time,
+                    is_new_invocation: true,
+                });
+        }
+
+        Ok(())
     }
 
     /// Returns the invocation in case the invocation is not a duplicate
@@ -866,8 +1016,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 Some(invocation_id),
                 None,
                 Some(&service_invocation.invocation_target),
-            )
-            .await?;
+            )?;
         }
 
         // For all the other type of duplicate requests, append the response sink or return back the original result
@@ -902,8 +1051,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     Some(invocation_id),
                     completion_expiry_time,
                     Some(&completed.invocation_target),
-                )
-                .await?;
+                )?;
             }
             InvocationStatus::Free => {
                 unreachable!("This was checked before!")
@@ -933,7 +1081,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
             self.storage
                 .put_invocation_status(
-                    &invocation_id.clone(),
+                    &invocation_id,
                     &InvocationStatus::Scheduled(
                         ScheduledInvocation::from_pre_flight_invocation_metadata(
                             metadata,
@@ -1018,6 +1166,47 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(Some(metadata))
     }
 
+    fn init_journal_and_vqueue_invoke(
+        &mut self,
+        qid: VQueueId,
+        item_hash: u64,
+        invocation_id: InvocationId,
+        mut in_flight_invocation_metadata: InFlightInvocationMetadata,
+        invocation_input: Option<InvocationInput>,
+    ) -> Result<(), Error>
+    where
+        S: WriteJournalTable + WriteInvocationStatusTable,
+    {
+        // Usage metering for "actions" should include the Input journal entry
+        // type, but it gets filtered out before reaching the state machine.
+        // Therefore we count it here, as a special case.
+        if self.is_leader {
+            counter!(
+                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                "entry" => "Command/Input",
+            )
+            .increment(1);
+        }
+
+        let invoke_input_journal = if let Some(invocation_input) = invocation_input {
+            self.init_journal(
+                invocation_id,
+                &mut in_flight_invocation_metadata,
+                invocation_input,
+            )?
+        } else {
+            InvokeInputJournal::NoCachedJournal
+        };
+
+        self.vqueue_invoke(
+            qid,
+            item_hash,
+            invocation_id,
+            in_flight_invocation_metadata,
+            invoke_input_journal,
+        )
+    }
+
     fn init_journal_and_invoke(
         &mut self,
         invocation_id: InvocationId,
@@ -1092,8 +1281,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .clone(),
                 None,
                 in_flight_invocation_metadata.current_invocation_epoch,
-                // This is safe to do as only the leader will execute the invoker command
-                MillisSinceEpoch::now(),
+                self.record_created_at,
                 in_flight_invocation_metadata
                     .random_seed
                     .unwrap_or_else(|| invocation_id.to_random_seed()),
@@ -1104,6 +1292,39 @@ impl<S> StateMachineApplyContext<'_, S> {
                 ),
             ],
         ))
+    }
+
+    fn vqueue_invoke(
+        &mut self,
+        qid: VQueueId,
+        item_hash: u64,
+        invocation_id: InvocationId,
+        in_flight_invocation_metadata: InFlightInvocationMetadata,
+        invoke_input_journal: InvokeInputJournal,
+    ) -> Result<(), Error>
+    where
+        S: WriteInvocationStatusTable,
+    {
+        debug_if_leader!(self.is_leader, "Invoke");
+
+        let status = InvocationStatus::Invoked(in_flight_invocation_metadata);
+
+        self.storage
+            .put_invocation_status(&invocation_id, &status)
+            .map_err(Error::Storage)?;
+
+        if self.is_leader {
+            let invocation_target = status.into_invocation_metadata().unwrap().invocation_target;
+            self.action_collector.push(Action::VQInvoke {
+                qid,
+                item_hash,
+                invocation_id,
+                invocation_target,
+                invoke_input_journal,
+            });
+        }
+
+        Ok(())
     }
 
     fn invoke(
@@ -1207,6 +1428,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
+            + ReadVQueueTable
+            + WriteVQueueTable
             + WriteJournalEventsTable,
     {
         match termination_flavor {
@@ -1238,6 +1461,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable
             + WriteJournalEventsTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
@@ -1310,6 +1535,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalEventsTable
             + ReadPromiseTable
             + WritePromiseTable
+            + ReadVQueueTable
+            + WriteVQueueTable
             + WriteTimerTable,
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
@@ -1459,6 +1686,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + WriteJournalTable
             + journal_table_v2::WriteJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable
             + WriteJournalEventsTable,
     {
         let error = match termination_flavor {
@@ -1484,8 +1713,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(invocation_id),
             None,
             Some(&invocation_target),
-        )
-        .await?;
+        )?;
 
         // Delete inbox entry and invocation status.
         self.do_delete_inbox_entry(
@@ -1516,8 +1744,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
 
         self.notify_invocation_result(
-            invocation_id,
-            invocation_target,
+            &invocation_id,
+            &invocation_target,
             input.span_context(),
             MillisSinceEpoch::now(),
             Err((error.code(), error.to_string())),
@@ -1564,8 +1792,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(invocation_id),
             None,
             Some(&invocation_target),
-        )
-        .await?;
+        )?;
 
         // Delete timer
         if let Some(execution_time) = execution_time {
@@ -1600,8 +1827,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
 
         self.notify_invocation_result(
-            invocation_id,
-            invocation_target,
+            &invocation_id,
+            &invocation_target,
             input.span_context(),
             MillisSinceEpoch::now(),
             Err((error.code(), error.to_string())),
@@ -1629,6 +1856,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable
             + WriteJournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
@@ -1663,6 +1892,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable
             + WriteJournalEventsTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
@@ -1896,6 +2127,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WritePromiseTable
             + ReadStateTable
             + WriteStateTable
+            + WriteVQueueTable
+            + ReadVQueueTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable,
@@ -2024,6 +2257,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVirtualObjectStatusTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable
             + WriteJournalEventsTable,
     {
         let status = self
@@ -2055,7 +2290,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVirtualObjectStatusTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + ReadVQueueTable
+            + WriteVQueueTable,
     {
         let is_status_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
 
@@ -2242,6 +2479,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable
             + WriteJournalEventsTable,
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
@@ -2287,13 +2526,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                 Some(invocation_id),
                 None,
                 Some(&invocation_metadata.invocation_target),
-            )
-            .await?;
+            )?;
 
             // Notify invocation result
             self.notify_invocation_result(
-                invocation_id,
-                invocation_metadata.invocation_target.clone(),
+                &invocation_id,
+                &invocation_metadata.invocation_target,
                 &invocation_metadata.journal_metadata.span_context,
                 invocation_metadata.timestamps.creation_time(),
                 match &response_result {
@@ -2319,8 +2557,8 @@ impl<S> StateMachineApplyContext<'_, S> {
         } else {
             // Just notify Ok, no need to read the output entry
             self.notify_invocation_result(
-                invocation_id,
-                invocation_target.clone(),
+                &invocation_id,
+                &invocation_target,
                 &invocation_metadata.journal_metadata.span_context,
                 invocation_metadata.timestamps.creation_time(),
                 Ok(()),
@@ -2341,14 +2579,45 @@ impl<S> StateMachineApplyContext<'_, S> {
             .await?;
         }
 
-        // Consume inbox and move on
-        self.consume_inbox(&invocation_target).await?;
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            if invocation_target.invocation_target_ty()
+                == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+            {
+                let keyed_service_id = invocation_target.as_keyed_service_id().expect(
+                    "When the handler type is Exclusive, the invocation target must have a key",
+                );
+                // We consumed the inbox, nothing else to do here
+                self.storage
+                    .put_virtual_object_status(&keyed_service_id, &VirtualObjectStatus::Unlocked)
+                    .map_err(Error::Storage)?;
+            }
+
+            let record_unique_ts =
+                UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+
+            // we need to remove the invocation from the running list
+            VQueues::end_by_id(
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+                record_unique_ts,
+                EntryKind::Invocation,
+                invocation_id.partition_key(),
+                &EntryId::from(invocation_id),
+            )
+            .await?;
+
+            return Ok(());
+        } else {
+            // Consume inbox and move on
+            self.consume_inbox(&invocation_target).await?;
+        }
 
         Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn send_response_to_sinks(
+    fn send_response_to_sinks(
         &mut self,
         response_sinks: impl IntoIterator<Item = ServiceInvocationResponseSink>,
         res: impl Into<ResponseResult>,
@@ -2391,6 +2660,171 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
+    // [vqueues only]
+    async fn attempt_to_run(
+        &mut self,
+        cards: &restate_wal_protocol::vqueues::Cards,
+    ) -> Result<(), Error>
+    where
+        S: WriteInboxTable
+            + WriteVirtualObjectStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
+            + WriteVirtualObjectStatusTable
+            + ReadVirtualObjectStatusTable
+            + WriteJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable,
+    {
+        let qid = VQueueId::new(
+            VQueueParent::from_raw(cards.parent),
+            cards.partition_key,
+            VQueueInstance::from_raw(cards.instance),
+        );
+
+        let record_unique_ts = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+        for card in cards.decode_entry_cards() {
+            let card = card?;
+            VQueues::new(
+                qid,
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+            )
+            .attempt_to_run(record_unique_ts, &card)
+            .await?;
+
+            match card.kind {
+                EntryKind::Unknown => {
+                    panic!("Unknown card kind in inbox, cannot proceed");
+                }
+                EntryKind::StateMutation => {
+                    panic!("State mutations are not supported yet with vqueues");
+                    // self.mutate_state(state_mutation).await?;
+                }
+                EntryKind::Invocation => {
+                    let invocation_id = InvocationId::from_parts(
+                        qid.partition_key,
+                        InvocationUuid::from_slice(card.id.as_bytes()).unwrap(),
+                    );
+                    self.run_invocation(qid, &card, invocation_id, record_unique_ts)
+                        .await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // [vqueues only]
+    async fn run_invocation(
+        &mut self,
+        qid: VQueueId,
+        card: &EntryCard,
+        invocation_id: InvocationId,
+        at: UniqueTimestamp,
+    ) -> Result<(), Error>
+    where
+        S: WriteInboxTable
+            + WriteVirtualObjectStatusTable
+            + ReadInvocationStatusTable
+            + WriteInvocationStatusTable
+            + WriteVirtualObjectStatusTable
+            + ReadVirtualObjectStatusTable
+            + WriteJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable,
+    {
+        let status = self.get_invocation_status(&invocation_id).await?;
+        match status {
+            InvocationStatus::Scheduled(ScheduledInvocation { metadata, .. })
+            | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
+                // Validate that if VO, that it's not locked already.
+                let invocation_target = &metadata.invocation_target;
+                if matches!(
+                    invocation_target.invocation_target_ty(),
+                    InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+                ) {
+                    let keyed_service_id = invocation_target.as_keyed_service_id().expect(
+                        "When the handler type is Exclusive, the invocation target must have a key",
+                    );
+                    match self
+                        .storage
+                        .get_virtual_object_status(&keyed_service_id)
+                        .await?
+                    {
+                        VirtualObjectStatus::Locked(iid) => {
+                            panic!(
+                                "invariant violated trying to run an invocation {invocation_id} on a VO while another invocation {iid} is holding the lock"
+                            );
+                        }
+                        VirtualObjectStatus::Unlocked => {
+                            // Lock the service
+                            self.storage
+                                .put_virtual_object_status(
+                                    &keyed_service_id,
+                                    &VirtualObjectStatus::Locked(invocation_id),
+                                )
+                                .map_err(Error::Storage)?;
+                        }
+                    }
+                }
+
+                let (metadata, invocation_input) =
+                    InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
+                        metadata,
+                        self.record_created_at,
+                    );
+
+                self.init_journal_and_vqueue_invoke(
+                    qid,
+                    card.unique_hash(),
+                    invocation_id,
+                    metadata,
+                    invocation_input,
+                )?;
+            }
+            InvocationStatus::Invoked(metadata) if self.is_leader => {
+                // just send to invoker
+                debug_if_leader!(self.is_leader, "Invoke");
+                self.action_collector.push(Action::VQInvoke {
+                    qid,
+                    item_hash: card.unique_hash(),
+                    invocation_id,
+                    invocation_target: metadata.invocation_target,
+                    invoke_input_journal: InvokeInputJournal::NoCachedJournal,
+                });
+            }
+            InvocationStatus::Invoked(_) => { /* do nothing when not leader */ }
+            // Suspended invocations must first be put back on inbox. On wake-up, they
+            // transition back into Invoked state. So seeing a suspended invocation
+            // here means that some state transition is missing.
+            InvocationStatus::Suspended { .. } | InvocationStatus::Paused(..) => {
+                panic!(
+                    "Parked invocation {invocation_id} cannot be attempted to run without first being woken up"
+                );
+            }
+            // it's not okay, ignore the attempt, possibly pop the item from running queue
+            // and mark completed.
+            InvocationStatus::Completed(..) | InvocationStatus::Free => {
+                info!(
+                    "Will not run invocation {invocation_id} because it has been marked as completed/deleted already!"
+                );
+                VQueues::new(
+                    qid,
+                    self.storage,
+                    self.vqueues_cache,
+                    self.is_leader.then_some(self.action_collector),
+                )
+                .end(at, Stage::Inbox, card)
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    // deprecated: will be replaced by vqueues
     async fn consume_inbox(&mut self, invocation_target: &InvocationTarget) -> Result<(), Error>
     where
         S: WriteInboxTable
@@ -2402,6 +2836,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable
             + WriteJournalTable,
     {
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            return Ok(());
+        }
+
         // Inbox exists only for virtual object exclusive handler cases
         if invocation_target.invocation_target_ty()
             == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
@@ -3484,8 +3922,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
     fn notify_invocation_result(
         &mut self,
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
+        invocation_id: &InvocationId,
+        invocation_target: &InvocationTarget,
         span_context: &ServiceInvocationSpanContext,
         creation_time: MillisSinceEpoch,
         result: Result<(), (InvocationErrorCode, String)>,
@@ -3579,16 +4017,13 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
         };
         match self.get_invocation_status(&invocation_id).await? {
-            InvocationStatus::Free => {
-                self.send_response_to_sinks(
-                    vec![attach_invocation_request.response_sink],
-                    NOT_FOUND_INVOCATION_ERROR,
-                    Some(invocation_id),
-                    None,
-                    None,
-                )
-                .await?
-            }
+            InvocationStatus::Free => self.send_response_to_sinks(
+                vec![attach_invocation_request.response_sink],
+                NOT_FOUND_INVOCATION_ERROR,
+                Some(invocation_id),
+                None,
+                None,
+            )?,
             is @ InvocationStatus::Invoked(_)
             | is @ InvocationStatus::Suspended { .. }
             | is @ InvocationStatus::Inboxed(_)
@@ -3607,8 +4042,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         Some(invocation_id),
                         None,
                         is.invocation_target(),
-                    )
-                    .await?;
+                    )?;
                 }
             }
             InvocationStatus::Completed(completed) => {
@@ -3619,8 +4053,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     Some(invocation_id),
                     completion_expiry_time,
                     Some(&completed.invocation_target),
-                )
-                .await?;
+                )?;
             }
         }
 

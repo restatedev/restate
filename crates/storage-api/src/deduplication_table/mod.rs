@@ -95,6 +95,23 @@ impl EpochSequenceNumber {
         self.sequence_number += 1;
         self
     }
+
+    pub fn advance_by(mut self, n: u64) -> Self {
+        self.sequence_number += n;
+        self
+    }
+}
+
+impl std::ops::RangeBounds<EpochSequenceNumber>
+    for std::ops::Range<std::ops::Bound<EpochSequenceNumber>>
+{
+    fn start_bound(&self) -> std::ops::Bound<&EpochSequenceNumber> {
+        self.start.as_ref()
+    }
+
+    fn end_bound(&self) -> std::ops::Bound<&EpochSequenceNumber> {
+        self.end.as_ref()
+    }
 }
 
 /// Epoch sequence numbers are lexicographically ordered with respect to leader_epoch and then

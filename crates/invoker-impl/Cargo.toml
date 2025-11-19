@@ -31,6 +31,7 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 dashmap = { workspace = true }
+derive_more = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true , features = ["async"]}
 http = { workspace = true }

@@ -25,7 +25,7 @@ use crate::partition::leadership::Error;
 // The queue size is small to reduce the tail latency. This comes at the cost of throughput but
 // this runs within a single processor and the expected throughput is bound by the overall
 // throughput of the processor itself.
-const BIFROST_QUEUE_SIZE: usize = 20;
+const BIFROST_QUEUE_SIZE: usize = 50;
 const MAX_BIFROST_APPEND_BATCH: usize = 5000;
 
 static BIFROST_APPENDER_TASK: &str = "bifrost-appender";
@@ -64,6 +64,55 @@ impl SelfProposer {
     pub async fn mark_as_non_leader(&mut self) {
         // we wouldn't fail if this didn't work out, subsequent operations will fail anyway.
         let _ = self.bifrost_appender.sender().forget_preference().await;
+    }
+
+    /// Propose many commands to bifrost
+    ///
+    /// Note that propose_many will return an error if the number of commands is greater than the
+    /// internal channel's max capacity.
+    pub async fn propose_many(
+        &mut self,
+        cmds: impl ExactSizeIterator<Item = (PartitionKey, Command)>,
+    ) -> Result<(), Error> {
+        // allocate a sequence number range for the batch
+        let leader_epoch = self.epoch_sequence_number.leader_epoch;
+
+        let start_seq = self.epoch_sequence_number.sequence_number;
+        let end_seq = start_seq + cmds.len() as u64;
+
+        let envelopes = cmds.enumerate().map(|(idx, (partition_key, cmd))| {
+            let esn = EpochSequenceNumber {
+                leader_epoch,
+                sequence_number: start_seq + idx as u64,
+            };
+            let header = Header {
+                dest: Destination::Processor {
+                    partition_key,
+                    dedup: Some(DedupInformation::self_proposal(esn)),
+                },
+                source: Source::Processor {
+                    partition_id: None,
+                    partition_key: Some(partition_key),
+                    leader_epoch,
+                },
+            };
+            Arc::new(Envelope::new(header, cmd))
+        });
+
+        // Only blocks if background append is pushing back (queue full)
+        self.bifrost_appender
+            .sender()
+            .enqueue_many(envelopes)
+            .await
+            .map_err(|_| Error::SelfProposer)?;
+
+        // update the sequence number range for the next batch
+        self.epoch_sequence_number = EpochSequenceNumber {
+            leader_epoch,
+            sequence_number: end_seq,
+        };
+
+        Ok(())
     }
 
     pub async fn propose(

@@ -58,6 +58,7 @@ use restate_types::schema::Schema;
 use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
+use restate_vqueues::VQueuesMetaMut;
 use restate_wal_protocol::control::AnnounceLeader;
 use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
@@ -429,6 +430,11 @@ where
             tokio::time::interval(with_jitter(Duration::from_millis(500), 0.5));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let mut vqueues = VQueuesMetaMut::default();
+        vqueues
+            .load_all_active_vqueues(partition_store.partition_db())
+            .await?;
+
         let mut action_collector = ActionCollector::default();
         let mut command_buffer =
             Vec::with_capacity(live_config.live_load().worker.max_command_batch_size());
@@ -527,6 +533,7 @@ where
                             record,
                             &mut transaction,
                             &mut action_collector,
+                            &mut vqueues,
                         ).await?;
 
                         if let Some(announce_leader) = maybe_announce_leader {
@@ -548,7 +555,7 @@ where
                                     self.status.last_observed_leader_node.unwrap_or(GenerationalNodeId::INVALID),
                                 });
 
-                            let is_leader = self.leadership_state.on_announce_leader(&announce_leader, &mut partition_store, &self.replica_set_states, config).await?;
+                            let is_leader = self.leadership_state.on_announce_leader(&announce_leader, &mut partition_store, &self.replica_set_states, config, &mut vqueues).await?;
 
                             Span::current().record("is_leader", is_leader);
 
@@ -566,9 +573,9 @@ where
 
                     // Commit our changes and notify actuators about actions if we are the leader
                     transaction.commit().await?;
-                    self.leadership_state.handle_actions(action_collector.drain(..))?;
+                    self.leadership_state.handle_actions(action_collector.drain(..), vqueues.view())?;
                 },
-                result = self.leadership_state.run(&self.state_machine) => {
+                result = self.leadership_state.run(&self.state_machine, vqueues.view()) => {
                     let action_effects = result?;
                     // We process the action_effects not directly in the run future because it
                     // requires the run future to be cancellation safe. In the future this could be
@@ -690,6 +697,7 @@ where
         record: LsnEnvelope,
         transaction: &mut PartitionStoreTransaction<'_>,
         action_collector: &mut ActionCollector,
+        vqueues_cache: &mut VQueuesMetaMut,
     ) -> Result<Option<Box<AnnounceLeader>>, state_machine::Error> {
         trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.command.name(), record.envelope.header);
 
@@ -747,6 +755,7 @@ where
                         record_lsn,
                         transaction,
                         action_collector,
+                        vqueues_cache,
                         self.leadership_state.is_leader(),
                     )
                     .await?;

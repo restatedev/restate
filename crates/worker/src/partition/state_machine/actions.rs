@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
+use restate_storage_api::vqueue_table::EntryCard;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
@@ -22,13 +25,24 @@ use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::vqueue::VQueueId;
+use restate_vqueues::VQueueEvent;
 use restate_wal_protocol::timer::TimerKeyValue;
-use std::time::Duration;
 
 pub type ActionCollector = Vec<Action>;
 
-#[derive(Debug, Eq, PartialEq, strum::IntoStaticStr)]
+#[derive(derive_more::Debug, Eq, PartialEq, strum::IntoStaticStr)]
 pub enum Action {
+    /// Notifies the scheduler about a vqueue inbox event (e.g, enqueue, run permitted, etc.)
+    VQEvent(VQueueEvent<EntryCard>),
+    /// Tells invoker to run this invocation (similar to Invoke) but carries more information
+    VQInvoke {
+        qid: VQueueId,
+        item_hash: u64,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
+        invoke_input_journal: InvokeInputJournal,
+    },
     Invoke {
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
@@ -104,6 +118,13 @@ pub enum Action {
         request_id: PartitionProcessorRpcRequestId,
         response: RestartAsNewInvocationResponse,
     },
+}
+
+impl From<VQueueEvent<EntryCard>> for Action {
+    #[inline(always)]
+    fn from(value: VQueueEvent<EntryCard>) -> Self {
+        Self::VQEvent(value)
+    }
 }
 
 impl Action {
