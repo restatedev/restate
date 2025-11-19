@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
 use futures::stream::{FuturesUnordered, StreamExt};
-use gardal::Limit;
 use itertools::{Either, Itertools};
 use metrics::gauge;
 use rand::Rng;
@@ -44,7 +43,8 @@ use restate_core::{
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
 use restate_invoker_api::StatusHandle;
-use restate_invoker_impl::{ChannelStatusReader, TokenBucket};
+use restate_invoker_api::capacity::InvokerCapacity;
+use restate_invoker_impl::ChannelStatusReader;
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
@@ -137,9 +137,7 @@ pub struct PartitionProcessorManager {
     partition_table: Live<PartitionTable>,
     wait_for_partition_table_update: bool,
 
-    // throttling
-    invocation_token_bucket: Option<TokenBucket>,
-    action_token_bucket: Option<TokenBucket>,
+    invoker_capacity: InvokerCapacity,
 }
 
 type SnapshotResult = Result<SnapshotCreated, SnapshotError>;
@@ -262,32 +260,11 @@ impl PartitionProcessorManager {
 
         let config = updateable_config.pinned();
 
-        let invocation_token_bucket =
-            config
-                .worker
-                .invoker
-                .invocation_throttling
-                .as_ref()
-                .map(|opts| {
-                    let limit = Limit::from(opts.clone());
-                    let capacity = limit.burst();
-                    let bucket = TokenBucket::from_parts(limit, gardal::TokioClock::default());
-                    bucket.add_tokens(capacity.get());
-                    bucket
-                });
-
-        let action_token_bucket = config
-            .worker
-            .invoker
-            .action_throttling
-            .as_ref()
-            .map(|opts| {
-                let limit = Limit::from(opts.clone());
-                let capacity = limit.burst();
-                let bucket = TokenBucket::from_parts(limit, gardal::TokioClock::default());
-                bucket.add_tokens(capacity.get());
-                bucket
-            });
+        let invoker_capacity = InvokerCapacity::new(
+            config.worker.invoker.concurrent_invocations_limit(),
+            config.worker.invoker.invocation_throttling.as_ref(),
+            config.worker.invoker.action_throttling.as_ref(),
+        );
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());
         Self {
@@ -314,8 +291,7 @@ impl PartitionProcessorManager {
             fast_forward_on_startup: HashMap::default(),
             partition_table: Metadata::with_current(|m| m.updateable_partition_table()),
             wait_for_partition_table_update: false,
-            invocation_token_bucket,
-            action_token_bucket,
+            invoker_capacity,
         }
     }
 
@@ -1323,8 +1299,7 @@ impl PartitionProcessorManager {
             self.replica_set_states.clone(),
             self.partition_store_manager.clone(),
             self.fast_forward_on_startup.remove(&partition_id),
-            self.invocation_token_bucket.clone(),
-            self.action_token_bucket.clone(),
+            self.invoker_capacity.clone(),
         );
 
         self.asynchronous_operations

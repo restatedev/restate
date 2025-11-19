@@ -30,7 +30,6 @@ use futures::StreamExt;
 use gardal::futures::ThrottledStream;
 use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
 use metrics::counter;
-use restate_time_util::DurationExt;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace, warn};
@@ -38,6 +37,7 @@ use tracing::{error, instrument};
 
 use restate_core::cancellation_watcher;
 use restate_errors::warn_it;
+use restate_invoker_api::capacity::TokenBucket;
 use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
@@ -45,6 +45,7 @@ use restate_invoker_api::{
 };
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+use restate_time_util::DurationExt;
 use restate_timer_queue::TimerQueue;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
@@ -77,9 +78,6 @@ use crate::status_store::InvocationStatusStore;
 
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
-
-pub type TokenBucket<C = gardal::TokioClock> =
-    gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -1707,7 +1705,7 @@ mod tests {
         fn mock(
             invocation_task_runner: ITR,
             schemas: Schemas,
-            concurrency_limit: Option<usize>,
+            concurrency_limit: Option<NonZeroUsize>,
         ) -> (
             mpsc::UnboundedSender<InputCommand<IR>>,
             mpsc::UnboundedSender<
@@ -2014,7 +2012,7 @@ mod tests {
                 Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
                 Some(OnMaxAttempts::Kill),
             ),
-            Some(1),
+            Some(NonZeroUsize::new(1).unwrap()),
         );
         let _ = service_inner.register_mock_partition(EmptyStorageReader);
 
@@ -2141,7 +2139,7 @@ mod tests {
                 Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
                 Some(OnMaxAttempts::Kill),
             ),
-            Some(2),
+            Some(NonZeroUsize::new(2).unwrap()),
         );
         let _ = service_inner.register_mock_partition(EmptyStorageReader);
 

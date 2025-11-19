@@ -36,8 +36,6 @@ gardal = { workspace = true , features = ["async"]}
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
-tokio-stream = { workspace = true }
-tokio-util = { workspace = true, features = ["rt"] }
 itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
@@ -46,6 +44,8 @@ schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
