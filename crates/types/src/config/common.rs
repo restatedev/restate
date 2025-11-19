@@ -436,6 +436,11 @@ pub struct CommonOptions {
     /// Options of gossip-based failure detector
     #[serde(flatten)]
     pub gossip: GossipOptions,
+
+    /// Current in heavy development, do not enable this feature unless you are a contributor
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub experimental_enable_vqueues: bool,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -643,6 +648,7 @@ impl Default for CommonOptions {
             initialization_timeout: NonZeroFriendlyDuration::from_secs_unchecked(5 * 60),
             disable_telemetry: false,
             gossip: GossipOptions::default(),
+            experimental_enable_vqueues: false,
         }
     }
 }

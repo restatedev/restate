@@ -26,6 +26,7 @@ use self::control::PartitionDurability;
 
 pub mod control;
 pub mod timer;
+pub mod vqueues;
 
 /// The primary envelope for all messages in the system.
 #[derive(Debug, Clone)]
@@ -189,6 +190,12 @@ pub enum Command {
     /// Upsert schema for consistent schema across replicas
     /// *Since v1.6.0
     UpsertSchema(UpsertSchema),
+    // # Commands for VQueues management
+    // ----------------------------------
+    /// A command to attempt a run an entry in the vqueue (invocation, or otherwise)
+    /// *Since v1.6.0
+    VQWaitingToRunning(vqueues::Cards),
+    VQYieldRunning(vqueues::Cards),
 }
 
 impl Command {
@@ -240,6 +247,8 @@ impl HasRecordKeys for Envelope {
             Command::NotifySignal(sig) => Keys::Single(sig.partition_key()),
             Command::NotifyGetInvocationOutputResponse(res) => Keys::Single(res.partition_key()),
             Command::UpsertSchema(schema) => schema.partition_key_range.clone(),
+            Command::VQWaitingToRunning(_) => Keys::Single(self.partition_key()),
+            Command::VQYieldRunning(_) => Keys::Single(self.partition_key()),
         }
     }
 }

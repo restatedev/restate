@@ -30,6 +30,7 @@ use futures::StreamExt;
 use gardal::futures::ThrottledStream;
 use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
 use metrics::counter;
+use restate_futures_util::concurrency::Permit;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
 use tracing::{debug, trace, warn};
@@ -78,6 +79,8 @@ use crate::status_store::InvocationStatusStore;
 
 pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
+
+use self::input_command::VQueueInvokeCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -441,6 +444,10 @@ where
                         counter!(INVOKER_ENQUEUE, "partition_id" => invoke_command.partition.0.to_string()).increment(1);
                         segmented_input_queue.inner_pin_mut().enqueue(invoke_command).await;
                     },
+                    InputCommand::VQInvoke(command) => {
+                        counter!(INVOKER_ENQUEUE, "status" => TASK_OP_COMPLETED, "partition_id" => ID_LOOKUP.get(command.partition.0)).increment(1);
+                        self.handle_vqueue_invoke(options, *command);
+                    },
                     // --- Other commands (they don't go through the segment queue)
                     InputCommand::RegisterPartition { partition, partition_key_range, storage_reader, sender, } => {
                         self.handle_register_partition(partition, partition_key_range,
@@ -591,6 +598,57 @@ where
         level = "trace",
         skip_all,
         fields(
+            rpc.service = %command.invocation_target.service_name(),
+            rpc.method = %command.invocation_target.handler_name(),
+            restate.invocation.id = %command.invocation_id,
+            restate.invocation.target = %command.invocation_target,
+            restate.invoker.partition_leader_epoch = ?command.partition,
+        )
+    )]
+    fn handle_vqueue_invoke(&mut self, options: &InvokerOptions, command: VQueueInvokeCommand) {
+        if self
+            .invocation_state_machine_manager
+            .has_partition(command.partition)
+        {
+            let (retry_iter, on_max_attempts) =
+                self.schemas.live_load().resolve_invocation_retry_policy(
+                    None,
+                    command.invocation_target.service_name(),
+                    command.invocation_target.handler_name(),
+                );
+
+            let storage_reader = self
+                .invocation_state_machine_manager
+                .partition_storage_reader(command.partition)
+                .expect("partition is registered");
+            self.quota.reserve_slot();
+            self.start_invocation_task(
+                options,
+                command.partition,
+                storage_reader.clone(),
+                command.invocation_id,
+                command.journal,
+                InvocationStateMachine::create(
+                    Some(command.qid),
+                    command.permit,
+                    command.invocation_target,
+                    0,
+                    retry_iter,
+                    on_max_attempts,
+                ),
+            )
+        } else {
+            trace!(
+                "No registered partition {:?} was found for the invocation {}",
+                command.partition, command.invocation_id
+            );
+        }
+    }
+
+    #[instrument(
+        level = "trace",
+        skip_all,
+        fields(
             rpc.service = %invocation_target.service_name(),
             rpc.method = %invocation_target.handler_name(),
             restate.invocation.id = %invocation_id,
@@ -612,36 +670,6 @@ where
             .invocation_state_machine_manager
             .has_partition(partition)
         {
-            if let Some((_, ism)) = self
-                .invocation_state_machine_manager
-                .resolve_invocation(partition, &invocation_id)
-            {
-                if invocation_epoch > ism.invocation_epoch {
-                    // Important constraints to keep in mind here:
-                    // * For a given epoch, an Abort command can overtake the Invoke, but not viceversa
-                    // * Messages of an epoch can overtake messages of another epoch
-                    //
-                    // The following message ordering is possible:
-                    //
-                    // Abort(epoch 0) -> this aborts InvocationStateMachine epoch 0
-                    // Abort(epoch 1) -> this gets ignored
-                    // Invoke(epoch 1) -> this starts InvocationStateMachine epoch 1
-                    // Invoke(epoch 2) -> THIS BRANCH
-                    trace!(
-                        "Got an invoke for an invocation that already exists, with a lower invocation epoch. \
-                        Existing invocation epoch {} < new invocation epoch {}",
-                        ism.invocation_epoch, invocation_epoch
-                    );
-                    let this_invocation_epoch = ism.invocation_epoch;
-                    self.handle_abort_invocation(partition, invocation_id, this_invocation_epoch)
-                } else {
-                    panic!(
-                        "Got an Invoke command with InvocationEpoch {} <= Invoker state InvocationEpoch {}, this is an unexpected logical/sync issue between PP and invoker!",
-                        invocation_epoch, ism.invocation_epoch
-                    );
-                }
-            }
-
             let (retry_iter, on_max_attempts) =
                 self.schemas.live_load().resolve_invocation_retry_policy(
                     None,
@@ -661,6 +689,8 @@ where
                 invocation_id,
                 journal,
                 InvocationStateMachine::create(
+                    None,
+                    Permit::new_empty(),
                     invocation_target,
                     invocation_epoch,
                     retry_iter,
@@ -1657,6 +1687,7 @@ mod tests {
     use bytes::Bytes;
     use gardal::StreamExt as GardalStreamExt;
     use googletest::prelude::*;
+    use restate_types::vqueue::{VQueueId, VQueueInstance, VQueueParent};
     use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
@@ -2417,6 +2448,12 @@ mod tests {
 
         // Create an invocation state machine
         let mut ism = InvocationStateMachine::create(
+            Some(VQueueId::new(
+                VQueueParent::from_raw(1),
+                invocation_id.partition_key(),
+                VQueueInstance::Default,
+            )),
+            Permit::new_empty(),
             invocation_target.clone(),
             0,
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),

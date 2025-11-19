@@ -8,15 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::invocation::InvocationEpoch;
+use tracing::{Level, Span, debug_span, event_enabled, trace_span};
+
 use restate_types::{identifiers::InvocationId, invocation::InvocationTarget};
 use restate_wal_protocol::Command;
-use tracing::{Level, Span, debug_span, event_enabled, trace_span};
 
 pub(super) trait SpanExt {
     fn record_invocation_id(&self, id: &InvocationId);
     fn record_invocation_target(&self, target: &InvocationTarget);
-    fn record_invocation_epoch(&self, target: &InvocationEpoch);
 }
 
 impl SpanExt for tracing::Span {
@@ -32,10 +31,6 @@ impl SpanExt for tracing::Span {
         );
         self.record("rpc.method", tracing::field::display(target.handler_name()));
     }
-
-    fn record_invocation_epoch(&self, id: &InvocationEpoch) {
-        self.record("restate.invocation.epoch", id);
-    }
 }
 
 pub(super) fn state_machine_apply_command_span(is_leader: bool, cmd: &Command) -> Span {
@@ -44,7 +39,6 @@ pub(super) fn state_machine_apply_command_span(is_leader: bool, cmd: &Command) -
             "apply_command",
             otel.name = format!("apply-command: {}", cmd.name()),
             restate.invocation.id = tracing::field::Empty,
-            restate.invocation.epoch = tracing::field::Empty,
             restate.invocation.target = tracing::field::Empty,
             rpc.service = tracing::field::Empty,
             rpc.method = tracing::field::Empty,
@@ -55,7 +49,6 @@ pub(super) fn state_machine_apply_command_span(is_leader: bool, cmd: &Command) -
             "apply_command",
             otel.name = format!("apply-command: {}", cmd.name()),
             restate.invocation.id = tracing::field::Empty,
-            restate.invocation.epoch = tracing::field::Empty,
             restate.invocation.target = tracing::field::Empty,
             rpc.service = tracing::field::Empty,
             rpc.method = tracing::field::Empty,

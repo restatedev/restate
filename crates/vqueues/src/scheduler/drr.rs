@@ -351,6 +351,7 @@ where
     }
 
     fn wake_up(&mut self) {
+        info!("[scheduler] waking up");
         self.waker.wake_by_ref();
     }
 }
