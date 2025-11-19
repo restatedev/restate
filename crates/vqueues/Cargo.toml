@@ -1,0 +1,31 @@
+[package]
+name = "restate-vqueues"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-futures-util = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-storage-api = { workspace = true }
+restate-types = { workspace = true }
+
+anyhow = { workspace = true }
+bilrost = { workspace = true, features = ["smallvec"] }
+derive_more = { workspace = true }
+futures = { workspace = true }
+hashbrown = { version = "0.16"  }
+pin-project = { workspace = true }
+rocksdb = { workspace = true }
+smallvec = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
