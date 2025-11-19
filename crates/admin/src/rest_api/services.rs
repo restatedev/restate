@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
 use tracing::{debug, warn};
 
 use axum::Json;
@@ -20,9 +19,12 @@ use okapi_operation::*;
 use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
 use restate_core::TaskCenter;
+use restate_core::network::TransportConnect;
 use restate_errors::warn_it;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
+use restate_types::logs::HasRecordKeys;
+use restate_types::net::ingress::IngestRecord;
 use restate_types::schema;
 use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::ServiceMetadata;
@@ -40,8 +42,8 @@ use crate::state::AdminServiceState;
     operation_id = "list_services",
     tags = "service"
 )]
-pub async fn list_services<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn list_services<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
 ) -> Result<Json<ListServicesResponse>, MetaApiError>
 where
     Metadata: MetadataService,
@@ -63,8 +65,8 @@ where
         schema = "std::string::String"
     ))
 )]
-pub async fn get_service<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn get_service<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ServiceMetadata>, MetaApiError>
 where
@@ -98,8 +100,8 @@ where
         from_type = "MetaApiError",
     )
 )]
-pub async fn get_service_openapi<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn get_service_openapi<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<serde_json::Value>, MetaApiError>
 where
@@ -131,8 +133,8 @@ where
         schema = "std::string::String"
     ))
 )]
-pub async fn modify_service<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn modify_service<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceRequest {
         public,
@@ -196,8 +198,8 @@ where
         from_type = "MetaApiError",
     )
 )]
-pub async fn modify_service_state<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn modify_service_state<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(service_name): Path<String>,
     #[request_body(required = true)] Json(ModifyServiceStateRequest {
         version,
@@ -207,6 +209,7 @@ pub async fn modify_service_state<Metadata, Discovery, Telemetry, Invocations>(
 ) -> Result<StatusCode, MetaApiError>
 where
     Metadata: MetadataService,
+    Transport: TransportConnect,
 {
     if let Some(svc) = state.schema_registry.get_service(&service_name) {
         if !svc.ty.has_state() {
@@ -236,14 +239,27 @@ where
         state: new_state,
     };
 
-    let result = restate_bifrost::append_to_bifrost(
-        &state.bifrost,
-        Arc::new(Envelope::new(
-            create_envelope_header(partition_key),
-            Command::PatchState(patch_state),
-        )),
-    )
-    .await;
+    let envelope = Envelope::new(
+        create_envelope_header(partition_key),
+        Command::PatchState(patch_state),
+    );
+
+    let to_err = |err| {
+        warn!("Could not append state patching command to Bifrost: {err}");
+        MetaApiError::Internal("Failed sending state patching command to the cluster.".to_owned())
+    };
+
+    let result = state
+        .ingress
+        .reserve()
+        .await
+        .map_err(to_err)?
+        .ingest(
+            partition_key,
+            IngestRecord::from_parts(envelope.record_keys(), envelope),
+        )
+        .map_err(to_err)?
+        .await;
 
     if let Err(err) = result {
         warn!("Could not append state patching command to Bifrost: {err}");

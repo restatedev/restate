@@ -34,6 +34,7 @@ use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_ingress_client::IngressClient;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_partition_store::snapshots::SnapshotRepository;
@@ -91,21 +92,26 @@ pub enum BuildError {
     SnapshotRepository(#[from] anyhow::Error),
 }
 
-pub struct Worker {
+pub struct Worker<T> {
     storage_query_context: QueryContext,
     datafusion_remote_scanner: RemoteQueryScannerServer,
-    ingress_kafka: IngressKafkaService,
+    ingress_kafka: IngressKafkaService<T>,
     subscription_controller_handle: SubscriptionControllerHandle,
     partition_processor_manager: PartitionProcessorManager,
 }
 
-impl Worker {
-    pub async fn create<T: TransportConnect>(
+impl<T> Worker<T>
+where
+    T: TransportConnect,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
         health_status: HealthStatus<WorkerStatus>,
         replica_set_states: PartitionReplicaSetStates,
         partition_store_manager: Arc<PartitionStoreManager>,
         networking: Networking<T>,
         bifrost: Bifrost,
+        ingress_client: IngressClient<T>,
         router_builder: &mut MessageRouterBuilder,
         metadata_writer: MetadataWriter,
     ) -> Result<Self, BuildError> {
@@ -121,7 +127,7 @@ impl Worker {
         let schema = metadata.updateable_schema();
 
         // ingress_kafka
-        let ingress_kafka = IngressKafkaService::new(bifrost.clone(), schema.clone());
+        let ingress_kafka = IngressKafkaService::new(ingress_client, schema.clone());
         let subscription_controller_handle =
             SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
 
