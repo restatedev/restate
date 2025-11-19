@@ -12,6 +12,18 @@
 
 pub mod client;
 
+use std::borrow::Cow;
+use std::hash::Hash;
+use std::ops::Deref;
+use std::str::FromStr;
+use std::time::Duration;
+use std::{cmp, fmt};
+
+use bytes::Bytes;
+use bytestring::ByteString;
+use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
+use serde_with::{DisplayFromStr, FromInto, serde_as};
+
 use crate::errors::InvocationError;
 use crate::identifiers::{
     DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
@@ -20,17 +32,6 @@ use crate::identifiers::{
 use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, RestateVersion};
-
-use bytes::Bytes;
-use bytestring::ByteString;
-use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceState};
-use serde_with::{DisplayFromStr, FromInto, serde_as};
-use std::borrow::Cow;
-use std::hash::Hash;
-use std::ops::Deref;
-use std::str::FromStr;
-use std::time::Duration;
-use std::{cmp, fmt};
 
 // Re-exporting opentelemetry [`TraceId`] to avoid having to import opentelemetry in all crates.
 pub use opentelemetry::trace::TraceId;
