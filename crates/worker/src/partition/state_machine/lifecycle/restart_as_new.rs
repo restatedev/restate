@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 use ahash::HashSet;
 use opentelemetry::trace::Span;
+
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::idempotency_table::IdempotencyTable;
@@ -27,6 +26,7 @@ use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::timer_table::WriteTimerTable;
+use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId};
 use restate_types::invocation::client::RestartAsNewInvocationResponse;
 use restate_types::invocation::{
@@ -34,6 +34,9 @@ use restate_types::invocation::{
 };
 use restate_types::journal_v2;
 use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType, NotificationId};
+
+use crate::debug_if_leader;
+use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnRestartAsNewInvocationCommand {
     pub invocation_id: InvocationId,
@@ -78,6 +81,8 @@ where
         + WriteVirtualObjectStatusTable
         + WriteTimerTable
         + WriteInboxTable
+        + ReadVQueueTable
+        + WriteVQueueTable
         + journal_table_v1::WriteJournalTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
