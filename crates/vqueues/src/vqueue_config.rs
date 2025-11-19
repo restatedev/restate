@@ -18,7 +18,7 @@ use restate_types::rate::Rate;
 use restate_types::vqueue::VQueueParent;
 
 static UNLIMITED: VQueueConfig = const { VQueueConfig::new() };
-static VO: VQueueConfig = const {
+static SINGLETON: VQueueConfig = const {
     VQueueConfig {
         is_paused: false,
         concurrency: Some(NonZeroU32::new(1).unwrap()),
@@ -35,7 +35,15 @@ pub struct ConfigPool {
 impl ConfigPool {
     #[inline]
     pub fn find(&self, parent: &VQueueParent) -> &VQueueConfig {
-        self.vqueues.get(parent).unwrap_or(&VO)
+        if parent == &VQueueParent::SYSTEM_UNLIMITED {
+            &UNLIMITED
+        } else if parent == &VQueueParent::SYSTEM_SINGLETON {
+            &SINGLETON
+        } else {
+            // it's safe to fallback to singleton instead of unlimited if this parent
+            // is unknown
+            self.vqueues.get(parent).unwrap_or(&SINGLETON)
+        }
     }
 
     #[inline]
