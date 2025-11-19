@@ -84,7 +84,7 @@ impl VQueueCursor for VQueueWaitingReader {
             .kind(item.kind)
             .id(item.id);
 
-        tracing::info!("Seeking after {key:?}");
+        tracing::trace!("Seeking after {key:?}");
 
         key.serialize_to(&mut buf);
         let success = super::convert_to_upper_bound(&mut key_buf);
