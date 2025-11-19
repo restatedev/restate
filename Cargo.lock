@@ -8238,6 +8238,7 @@ dependencies = [
  "bilrost",
  "bytes",
  "bytestring",
+ "derive_more",
  "enum-map",
  "prost 0.14.1",
  "restate-invoker-api",
