@@ -22,7 +22,6 @@ use std::time::Duration;
 
 use anyhow::Context;
 use assert2::let_assert;
-use enumset::EnumSet;
 use futures::{FutureExt, Stream, StreamExt};
 use metrics::{SharedString, gauge, histogram};
 use tokio::sync::{mpsc, watch};
@@ -183,7 +182,11 @@ where
         let min_restate_version = partition_store.get_min_restate_version().await?;
         let schema = partition_store.get_schema().await?;
 
-        if !SemanticRestateVersion::current().is_equal_or_newer_than(&min_restate_version) {
+        // We ignore dev to enable testing in dev version
+        if !SemanticRestateVersion::current()
+            .strip_dev()
+            .is_equal_or_newer_than(&min_restate_version)
+        {
             gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL =>
                 partition_store.partition_id().to_string())
             .set(1);
@@ -199,7 +202,6 @@ where
             outbox_head_seq_number,
             partition_store.partition_key_range().clone(),
             min_restate_version,
-            EnumSet::empty(),
             schema,
         );
 

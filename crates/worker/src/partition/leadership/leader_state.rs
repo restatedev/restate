@@ -39,7 +39,7 @@ use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{SemanticRestateVersion, Version, Versioned};
+use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyValue;
 
@@ -309,10 +309,11 @@ impl LeaderState {
                         .await?;
                 }
                 ActionEffect::UpsertSchema(schema) => {
-                    const GATE_VERSION: SemanticRestateVersion =
-                        SemanticRestateVersion::new(1, 7, 0);
-
-                    if SemanticRestateVersion::current().is_equal_or_newer_than(&GATE_VERSION) {
+                    // treat dev version as released version to enable testing
+                    if SemanticRestateVersion::current()
+                        .strip_dev()
+                        .is_equal_or_newer_than(&RESTATE_VERSION_1_7_0)
+                    {
                         self.self_proposer
                             .propose(
                                 *self.partition_key_range.start(),

@@ -108,6 +108,19 @@ impl SemanticRestateVersion {
         self.0.pre == semver::Prerelease::new("dev").unwrap()
     }
 
+    /// Returns the major.minor.patch part of the semantic version (ignoring the dev part).
+    pub fn strip_dev(&self) -> Cow<'_, SemanticRestateVersion> {
+        if self.is_dev() {
+            Cow::Owned(SemanticRestateVersion::new(
+                self.major(),
+                self.minor(),
+                self.patch(),
+            ))
+        } else {
+            Cow::Borrowed(self)
+        }
+    }
+
     pub fn parse(s: &str) -> Result<Self, RestateVersionError> {
         Self::from_str(s)
     }
@@ -199,6 +212,10 @@ impl TryFrom<&RestateVersion> for SemanticRestateVersion {
         Ok(Self(version))
     }
 }
+
+// Version constants
+pub const RESTATE_VERSION_1_6_0: SemanticRestateVersion = SemanticRestateVersion::new(1, 6, 0);
+pub const RESTATE_VERSION_1_7_0: SemanticRestateVersion = SemanticRestateVersion::new(1, 7, 0);
 
 #[cfg(test)]
 mod tests {

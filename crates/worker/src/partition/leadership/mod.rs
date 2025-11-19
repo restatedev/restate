@@ -39,12 +39,12 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable};
 use restate_storage_api::timer_table::{ReadTimerTable, TimerKey};
 use restate_timer::TokioClock;
-use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::identifiers::{LeaderEpoch, PartitionLeaderEpoch};
+use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
@@ -54,8 +54,11 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::storage::StorageEncodeError;
+use restate_types::{
+    GenerationalNodeId, RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion,
+};
 use restate_wal_protocol::Command;
-use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
+use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability, VersionBarrier};
 use restate_wal_protocol::timer::TimerKeyValue;
 
 use crate::partition::cleaner::Cleaner;
@@ -398,6 +401,53 @@ where
 
             let mut self_proposer = self_proposer.take().expect("must be present");
             self_proposer.mark_as_leader().await;
+
+            let mut min_restate_version = partition_store.get_min_restate_version().await?;
+
+            // Force the provided min Restate version, this is used for internal testing only
+            if let Some(forced_min_restate_version) =
+                std::env::var("RESTATE_INTERNAL_FORCE_MIN_RESTATE_VERSION")
+                    .ok()
+                    .and_then(|min_restate_version| {
+                        SemanticRestateVersion::parse(&min_restate_version).ok()
+                    })
+            {
+                self_proposer
+                    .propose(
+                        *self.partition.key_range.start(),
+                        Command::VersionBarrier(VersionBarrier {
+                            version: forced_min_restate_version.clone(),
+                            partition_key_range: Keys::RangeInclusive(
+                                self.partition.key_range.clone(),
+                            ),
+                            human_reason: Some("Force min Restate version".to_owned()),
+                        }),
+                    )
+                    .await?;
+
+                min_restate_version = min_restate_version.max(forced_min_restate_version);
+            }
+
+            // In v1.7.0 we enable by default writing to the journal v2 which requires min Restate v1.6.0
+            // We ignore dev to enable testing
+            if SemanticRestateVersion::current()
+                .strip_dev()
+                .is_equal_or_newer_than(&RESTATE_VERSION_1_7_0)
+                && min_restate_version.cmp_precedence(&RESTATE_VERSION_1_6_0) == Ordering::Less
+            {
+                self_proposer
+                    .propose(
+                        *self.partition.key_range.start(),
+                        Command::VersionBarrier(VersionBarrier {
+                            version: RESTATE_VERSION_1_6_0,
+                            partition_key_range: Keys::RangeInclusive(
+                                self.partition.key_range.clone(),
+                            ),
+                            human_reason: Some("Enable journal v2 by default".to_owned()),
+                        }),
+                    )
+                    .await?;
+            }
 
             let last_reported_durable_lsn = partition_store
                 .get_partition_durability()
