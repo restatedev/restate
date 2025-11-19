@@ -104,20 +104,14 @@ jobs:
 
       # this is needed to be able to load and push a multiplatform image in one step
       - name: Set up Docker containerd snapshotter
-        uses: crazy-max/ghaction-setup-docker@v3
+        uses: docker/setup-docker-action@v4
         with:
-          # Docker 28.0.1 seems to fail on GHA: https://github.com/restatedev/restate/actions/runs/13562737120/job/37909085871#step:6:47
-          # todo set to latest once new Docker version that is working on GHA is released
-          version: "27.5.1"
           daemon-config: |
             {
               "features": {
                 "containerd-snapshotter": true
               }
             }
-
-      - name: Set up QEMU dependency
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
