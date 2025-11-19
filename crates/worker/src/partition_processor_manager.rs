@@ -35,7 +35,8 @@ use tracing::{debug, error, info, info_span, instrument, trace, warn};
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{
-    BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver, Verdict,
+    BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver,
+    TransportConnect, Verdict,
 };
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{
@@ -43,6 +44,7 @@ use restate_core::{
     my_node_id,
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
+use restate_ingress_client::IngressClient;
 use restate_invoker_api::StatusHandle;
 use restate_invoker_impl::{ChannelStatusReader, TokenBucket};
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
@@ -107,7 +109,7 @@ impl From<&PartitionSnapshotMetadata> for SnapshotCreated {
     }
 }
 
-pub struct PartitionProcessorManager {
+pub struct PartitionProcessorManager<T> {
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
     processor_states: BTreeMap<PartitionId, ProcessorState>,
@@ -140,6 +142,9 @@ pub struct PartitionProcessorManager {
     // throttling
     invocation_token_bucket: Option<TokenBucket>,
     action_token_bucket: Option<TokenBucket>,
+
+    // ingress client
+    ingress: IngressClient<T>,
 }
 
 type SnapshotResult = Result<SnapshotCreated, SnapshotError>;
@@ -245,7 +250,10 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
     }
 }
 
-impl PartitionProcessorManager {
+impl<T> PartitionProcessorManager<T>
+where
+    T: TransportConnect,
+{
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         health_status: HealthStatus<WorkerStatus>,
@@ -256,6 +264,7 @@ impl PartitionProcessorManager {
         router_builder: &mut MessageRouterBuilder,
         bifrost: Bifrost,
         snapshot_repository: Option<SnapshotRepository>,
+        ingress: IngressClient<T>,
     ) -> Self {
         let ppm_svc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
         let pp_rpc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
@@ -316,6 +325,7 @@ impl PartitionProcessorManager {
             wait_for_partition_table_update: false,
             invocation_token_bucket,
             action_token_bucket,
+            ingress,
         }
     }
 
@@ -1325,6 +1335,7 @@ impl PartitionProcessorManager {
             self.fast_forward_on_startup.remove(&partition_id),
             self.invocation_token_bucket.clone(),
             self.action_token_bucket.clone(),
+            self.ingress.clone(),
         );
 
         self.asynchronous_operations
@@ -1482,7 +1493,9 @@ mod tests {
     use googletest::IntoTestResult;
     use restate_bifrost::BifrostService;
     use restate_bifrost::providers::memory_loglet;
+    use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
+    use restate_ingress_client::IngressClient;
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
@@ -1530,6 +1543,14 @@ mod tests {
 
         let partition_store_manager = PartitionStoreManager::create().await?;
 
+        let ingress = IngressClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            1000,
+            None,
+        );
+
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             Live::from_value(Configuration::default()),
@@ -1539,6 +1560,7 @@ mod tests {
             &mut env_builder.router_builder,
             bifrost,
             None,
+            ingress,
         );
 
         // only needed for setting up the metadata

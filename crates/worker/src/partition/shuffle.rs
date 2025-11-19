@@ -9,13 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
-use std::sync::Arc;
 
 use async_channel::{TryRecvError, TrySendError};
+use restate_core::network::TransportConnect;
+use restate_ingress_client::IngressClient;
+use restate_types::logs::HasRecordKeys;
+use restate_types::net::ingress::IngestRecord;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use restate_bifrost::Bifrost;
 use restate_core::cancellation_watcher;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
@@ -161,12 +163,12 @@ impl ShuffleMetadata {
     }
 }
 
-pub(super) struct Shuffle<OR> {
+pub(super) struct Shuffle<T, OR> {
     metadata: ShuffleMetadata,
 
     outbox_reader: OR,
 
-    bifrost: Bifrost,
+    ingress: IngressClient<T>,
 
     // used to tell partition processor about outbox truncations
     truncation_tx: mpsc::Sender<OutboxTruncation>,
@@ -177,8 +179,9 @@ pub(super) struct Shuffle<OR> {
     hint_tx: async_channel::Sender<NewOutboxMessage>,
 }
 
-impl<OR> Shuffle<OR>
+impl<T, OR> Shuffle<T, OR>
 where
+    T: TransportConnect,
     OR: OutboxReader + Send + Sync + 'static,
 {
     pub(super) fn new(
@@ -186,7 +189,7 @@ where
         outbox_reader: OR,
         truncation_tx: mpsc::Sender<OutboxTruncation>,
         channel_size: usize,
-        bifrost: Bifrost,
+        ingress: IngressClient<T>,
     ) -> Self {
         let (hint_tx, hint_rx) = async_channel::bounded(channel_size);
 
@@ -196,7 +199,7 @@ where
             truncation_tx,
             hint_rx,
             hint_tx,
-            bifrost,
+            ingress,
         }
     }
 
@@ -210,7 +213,7 @@ where
             mut hint_rx,
             outbox_reader,
             truncation_tx,
-            bifrost,
+            ingress,
             ..
         } = self;
 
@@ -220,9 +223,12 @@ where
             metadata,
             outbox_reader,
             move |msg| {
-                let bifrost = bifrost.clone();
+                let ingress = ingress.clone();
                 async move {
-                    restate_bifrost::append_to_bifrost(&bifrost, Arc::new(msg)).await?;
+                    ingress.reserve().await?.ingest(
+                        msg.partition_key(),
+                        IngestRecord::from_parts(msg.record_keys(), msg),
+                    )?;
                     Ok(())
                 }
             },
@@ -252,10 +258,11 @@ where
 }
 
 mod state_machine {
-    use pin_project::pin_project;
     use std::cmp::Ordering;
     use std::future::Future;
     use std::pin::Pin;
+
+    use pin_project::pin_project;
     use tokio_util::sync::ReusableBoxFuture;
     use tracing::trace;
 
@@ -429,21 +436,28 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use anyhow::anyhow;
+    use anyhow::{Context, anyhow};
     use assert2::let_assert;
-    use futures::{Stream, StreamExt};
+    use futures::StreamExt;
+    use restate_core::partitions::PartitionRouting;
+    use restate_ingress_client::IngressClient;
+    use restate_types::net::RpcRequest;
+    use restate_types::net::ingress::{IngestResponse, ReceivedIngestRequest};
+    use restate_types::net::partition_processor::PartitionLeaderService;
+    use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
+    use restate_types::storage::StorageCodec;
     use test_log::test;
     use tokio::sync::mpsc;
 
-    use restate_bifrost::{Bifrost, LogEntry};
-    use restate_core::network::FailingConnector;
+    use restate_core::network::{
+        BackPressureMode, FailingConnector, ServiceMessage, ServiceStream,
+    };
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_storage_api::StorageError;
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
     use restate_types::invocation::ServiceInvocation;
-    use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::PartitionTable;
     use restate_wal_protocol::{Command, Envelope};
@@ -556,22 +570,27 @@ mod tests {
     }
 
     async fn collect_invoke_commands_until(
-        stream: impl Stream<Item = restate_bifrost::Result<LogEntry>>,
+        stream: &mut ServiceStream<PartitionLeaderService>,
         last_invocation_id: InvocationId,
     ) -> anyhow::Result<Vec<ServiceInvocation>> {
         let mut messages = Vec::new();
         let mut stream = std::pin::pin!(stream);
 
-        while let Some(record) = stream.next().await {
-            let record = record?;
+        'out: while let Some(ServiceMessage::Rpc(incoming)) = stream.next().await {
+            assert_eq!(incoming.msg_type(), ReceivedIngestRequest::TYPE);
+            let incoming = incoming.into_typed::<ReceivedIngestRequest>();
+            let (r, body) = incoming.split();
+            r.send(IngestResponse::Ack);
+            for mut record in body.records {
+                let envelope = StorageCodec::decode::<Envelope, _>(&mut record.record)
+                    .context("Failed to decode envelope")?;
 
-            if let Some(envelope) = record.try_decode::<Envelope>().transpose()? {
                 let_assert!(Command::Invoke(service_invocation) = envelope.command);
                 let invocation_id = service_invocation.invocation_id;
                 messages.push(*service_invocation);
 
                 if last_invocation_id == invocation_id {
-                    break;
+                    break 'out;
                 }
             }
         }
@@ -608,31 +627,55 @@ mod tests {
     struct ShuffleEnv<OR> {
         #[allow(dead_code)]
         env: TestCoreEnv<FailingConnector>,
-        bifrost: Bifrost,
-        shuffle: Shuffle<OR>,
+        stream: ServiceStream<PartitionLeaderService>,
+        ingress: IngressClient<FailingConnector>,
+        shuffle: Shuffle<FailingConnector, OR>,
     }
 
     async fn create_shuffle_env<OR: OutboxReader + Send + Sync + 'static>(
         outbox_reader: OR,
     ) -> ShuffleEnv<OR> {
         // set numbers of partitions to 1 to easily find all sent messages by the shuffle
-        let env = TestCoreEnvBuilder::with_incoming_only_connector()
-            .set_partition_table(PartitionTable::with_equally_sized_partitions(
-                Version::MIN,
-                1,
-            ))
-            .build()
-            .await;
+        let mut builder = TestCoreEnvBuilder::with_incoming_only_connector().set_partition_table(
+            PartitionTable::with_equally_sized_partitions(Version::MIN, 1),
+        );
+
         let metadata = ShuffleMetadata::new(PartitionId::from(0), LeaderEpoch::from(0));
+
+        let partition_replica_set_states = PartitionReplicaSetStates::default();
+
+        partition_replica_set_states.note_observed_leader(
+            0.into(),
+            LeadershipState {
+                current_leader: builder.my_node_id,
+                current_leader_epoch: LeaderEpoch::INITIAL,
+            },
+        );
+
+        let svc = builder
+            .router_builder
+            .register_service::<PartitionLeaderService>(10, BackPressureMode::PushBack);
+
+        let env = builder.build().await;
+
+        let stream = svc.start();
+
+        let ingress = IngressClient::new(
+            env.networking.clone(),
+            env.metadata.updateable_partition_table(),
+            PartitionRouting::new(partition_replica_set_states, TaskCenter::current()),
+            1000,
+            None,
+        );
 
         let (truncation_tx, _truncation_rx) = mpsc::channel(1);
 
-        let bifrost = Bifrost::init_in_memory(env.metadata_writer.clone()).await;
-        let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, bifrost.clone());
+        let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, ingress.clone());
 
         ShuffleEnv {
             env,
-            bifrost,
+            stream,
+            ingress,
             shuffle,
         }
     }
@@ -652,18 +695,12 @@ mod tests {
             .expect("service invocation should be present");
 
         let outbox_reader = MockOutboxReader::new(42, expected_messages.clone());
-        let shuffle_env = create_shuffle_env(outbox_reader).await;
+        let mut shuffle_env = create_shuffle_env(outbox_reader).await;
 
-        let partition_id = shuffle_env.shuffle.metadata.partition_id;
         TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
-        let reader = shuffle_env.bifrost.create_reader(
-            LogId::from(partition_id),
-            KeyFilter::Any,
-            Lsn::OLDEST,
-            Lsn::MAX,
-        )?;
 
-        let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+        let messages =
+            collect_invoke_commands_until(&mut shuffle_env.stream, last_invocation_id).await?;
 
         assert_received_invoke_commands(messages, expected_messages);
 
@@ -689,18 +726,12 @@ mod tests {
             .expect("service invocation should be present");
 
         let outbox_reader = MockOutboxReader::new(42, expected_messages.clone());
-        let shuffle_env = create_shuffle_env(outbox_reader).await;
+        let mut shuffle_env = create_shuffle_env(outbox_reader).await;
 
-        let partition_id = shuffle_env.shuffle.metadata.partition_id;
         TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
-        let reader = shuffle_env.bifrost.create_reader(
-            LogId::from(partition_id),
-            KeyFilter::Any,
-            Lsn::OLDEST,
-            Lsn::MAX,
-        )?;
 
-        let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+        let messages =
+            collect_invoke_commands_until(&mut shuffle_env.stream, last_invocation_id).await?;
 
         assert_received_invoke_commands(messages, expected_messages);
 
@@ -722,16 +753,8 @@ mod tests {
             .expect("service invocation should be present");
 
         let mut outbox_reader = Arc::new(FailingOutboxReader::new(expected_messages.clone(), 10));
-        let shuffle_env = create_shuffle_env(Arc::clone(&outbox_reader)).await;
+        let mut shuffle_env = create_shuffle_env(Arc::clone(&outbox_reader)).await;
         let total_restarts = Arc::new(AtomicUsize::new(0));
-
-        let partition_id = shuffle_env.shuffle.metadata.partition_id;
-        let reader = shuffle_env.bifrost.create_reader(
-            LogId::from(partition_id),
-            KeyFilter::Any,
-            Lsn::INVALID,
-            Lsn::MAX,
-        )?;
 
         let shuffle_task = TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", {
             let total_restarts = Arc::clone(&total_restarts);
@@ -765,7 +788,7 @@ mod tests {
                         Arc::clone(&outbox_reader),
                         truncation_tx.clone(),
                         1,
-                        shuffle_env.bifrost.clone(),
+                        shuffle_env.ingress.clone(),
                     );
                 }
 
@@ -775,7 +798,8 @@ mod tests {
             }
         })?;
 
-        let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+        let messages =
+            collect_invoke_commands_until(&mut shuffle_env.stream, last_invocation_id).await?;
 
         assert_received_invoke_commands(messages, expected_messages);
 

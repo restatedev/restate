@@ -31,8 +31,11 @@ use tracing::{Span, debug, error, info, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
-use restate_core::network::{Oneshot, Reciprocal, ServiceMessage, Verdict};
+use restate_core::network::{
+    Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, TransportConnect, Verdict,
+};
 use restate_core::{Metadata, ShutdownError, cancellation_watcher, my_node_id};
+use restate_ingress_client::IngressClient;
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
     DedupInformation, DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
@@ -47,6 +50,7 @@ use restate_types::config::Configuration;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::{KeyFilter, Lsn, Record, SequenceNumber};
 use restate_types::net::RpcRequest;
+use restate_types::net::ingress::{IngestResponse, ReceivedIngestRequest};
 use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcResponse,
@@ -106,12 +110,16 @@ where
         }
     }
 
-    pub async fn build(
+    pub async fn build<T>(
         self,
         bifrost: Bifrost,
+        ingress: IngressClient<T>,
         mut partition_store: PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
-    ) -> Result<PartitionProcessor<InvokerInputSender>, state_machine::Error> {
+    ) -> Result<PartitionProcessor<T, InvokerInputSender>, state_machine::Error>
+    where
+        T: TransportConnect,
+    {
         let PartitionProcessorBuilder {
             invoker_tx,
             target_leader_state_rx,
@@ -154,6 +162,7 @@ where
         let leadership_state = LeadershipState::new(
             Arc::clone(partition_store.partition()),
             invoker_tx,
+            ingress,
             bifrost.clone(),
             last_seen_leader_epoch,
             trim_queue.clone(),
@@ -207,9 +216,9 @@ where
     }
 }
 
-pub struct PartitionProcessor<InvokerSender> {
+pub struct PartitionProcessor<T, InvokerSender> {
     partition_id_str: SharedString,
-    leadership_state: LeadershipState<InvokerSender>,
+    leadership_state: LeadershipState<T, InvokerSender>,
     state_machine: StateMachine,
     bifrost: Bifrost,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
@@ -273,8 +282,9 @@ struct LsnEnvelope {
     pub envelope: Arc<Envelope>,
 }
 
-impl<InvokerSender> PartitionProcessor<InvokerSender>
+impl<T, InvokerSender> PartitionProcessor<T, InvokerSender>
 where
+    T: TransportConnect,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
     #[instrument(
@@ -463,15 +473,7 @@ where
                     self.status.effective_mode = self.leadership_state.effective_mode();
                 }
                 Some(msg) = self.network_leader_svc_rx.recv() => {
-                    match msg {
-                        ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
-                            let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
-                            // note: split() decodes the payload
-                            let (response_tx, body) = msg.split();
-                            self.on_rpc(response_tx, body, &mut partition_store, live_schemas.live_load()).await;
-                        }
-                        msg => { msg.fail(Verdict::MessageUnrecognized); }
-                    }
+                    self.on_rpc(msg, &mut partition_store, live_schemas.live_load()).await;
                 }
                 _ = status_update_timer.tick() => {
                     if durable_lsn_watch.has_changed().map_err(|e| ProcessorError::Other(e.into()))? {
@@ -599,7 +601,7 @@ where
         Ok(())
     }
 
-    async fn on_rpc(
+    async fn on_pp_rpc_request(
         &mut self,
         response_tx: Reciprocal<
             Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
@@ -615,6 +617,57 @@ where
         )
         .await;
     }
+
+    async fn on_rpc(
+        &mut self,
+        msg: ServiceMessage<PartitionLeaderService>,
+        partition_store: &mut PartitionStore,
+        schemas: &Schema,
+    ) {
+        match msg {
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
+                let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
+                // note: split() decodes the payload
+                let (response_tx, body) = msg.split();
+                self.on_pp_rpc_request(response_tx, body, partition_store, schemas)
+                    .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {
+                self.on_pp_ingest_request(msg.into_typed()).await;
+            }
+            msg => {
+                msg.fail(Verdict::MessageUnrecognized);
+            }
+        }
+    }
+
+    async fn on_pp_ingest_request(&mut self, msg: Incoming<Rpc<ReceivedIngestRequest>>) {
+        let (reciprocal, request) = msg.split();
+        self.leadership_state
+            .propose_many_with_callback(
+                request.records.into_iter(),
+                |result: Result<(), PartitionProcessorRpcError>| match result {
+                    Ok(_) => reciprocal.send(IngestResponse::Ack),
+                    Err(err) => match err {
+                        PartitionProcessorRpcError::NotLeader(id)
+                        | PartitionProcessorRpcError::LostLeadership(id) => {
+                            reciprocal.send(IngestResponse::NotLeader { of: id })
+                        }
+                        PartitionProcessorRpcError::Starting => {
+                            reciprocal.send(IngestResponse::Starting)
+                        }
+                        PartitionProcessorRpcError::Stopping => {
+                            reciprocal.send(IngestResponse::Stopping)
+                        }
+                        PartitionProcessorRpcError::Internal(msg) => {
+                            reciprocal.send(IngestResponse::Internal { msg })
+                        }
+                    },
+                },
+            )
+            .await;
+    }
+
     async fn maybe_advance<'a>(
         &mut self,
         maybe_record: LogEntry,

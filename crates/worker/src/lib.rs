@@ -20,6 +20,7 @@ mod subscription_controller;
 mod subscription_integration;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use codederror::CodedError;
 use tracing::info;
@@ -34,6 +35,8 @@ use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_ingress_client::IngressClient;
+use restate_ingress_client::SessionOptions;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_partition_store::snapshots::SnapshotRepository;
@@ -91,21 +94,26 @@ pub enum BuildError {
     SnapshotRepository(#[from] anyhow::Error),
 }
 
-pub struct Worker {
+pub struct Worker<T> {
     storage_query_context: QueryContext,
     datafusion_remote_scanner: RemoteQueryScannerServer,
-    ingress_kafka: IngressKafkaService,
+    ingress_kafka: IngressKafkaService<T>,
     subscription_controller_handle: SubscriptionControllerHandle,
-    partition_processor_manager: PartitionProcessorManager,
+    partition_processor_manager: PartitionProcessorManager<T>,
 }
 
-impl Worker {
-    pub async fn create<T: TransportConnect>(
+impl<T> Worker<T>
+where
+    T: TransportConnect,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
         health_status: HealthStatus<WorkerStatus>,
         replica_set_states: PartitionReplicaSetStates,
         partition_store_manager: Arc<PartitionStoreManager>,
         networking: Networking<T>,
         bifrost: Bifrost,
+        ingress_client: IngressClient<T>,
         router_builder: &mut MessageRouterBuilder,
         metadata_writer: MetadataWriter,
     ) -> Result<Self, BuildError> {
@@ -121,7 +129,7 @@ impl Worker {
         let schema = metadata.updateable_schema();
 
         // ingress_kafka
-        let ingress_kafka = IngressKafkaService::new(bifrost.clone(), schema.clone());
+        let ingress_kafka = IngressKafkaService::new(ingress_client, schema.clone());
         let subscription_controller_handle =
             SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
 
@@ -134,6 +142,20 @@ impl Worker {
                 "Periodic snapshot interval set without a specified snapshot destination"
             )));
         }
+
+        // This instance of ingress client is dedicated for the PPM.
+        // so it has separate budget AND batch_timeout (set to zero)
+        // to optimize for latency.
+        let ppm_ingress = IngressClient::new(
+            networking.clone(),
+            Metadata::with_current(|m| m.updateable_partition_table()),
+            partition_routing.clone(),
+            1000,
+            Some(SessionOptions {
+                batch_timeout: Duration::ZERO,
+                ..Default::default()
+            }),
+        );
 
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
@@ -149,6 +171,7 @@ impl Worker {
             )
             .await
             .map_err(BuildError::SnapshotRepository)?,
+            ppm_ingress,
         );
 
         let remote_scanner_manager = RemoteScannerManager::new(
