@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod capacity;
 mod effects;
 pub mod entry_enricher;
 mod handle;
