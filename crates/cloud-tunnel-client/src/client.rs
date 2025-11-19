@@ -239,6 +239,7 @@ where
                 hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
                     // use server-initiated http2 keepalives to detect stuck tunnel connections
                     .keep_alive_interval(Duration::from_secs(75))
+                    .max_concurrent_streams(Some(u32::MAX))
                     .timer(TokioTimer::new())
                     .serve_connection(
                         io,
