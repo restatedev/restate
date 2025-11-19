@@ -848,10 +848,21 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVQueueTable
             + WriteJournalTable,
     {
-        // Where is the qid? it should be in service invocation somewhere.
+        // todo(asoli): temporary until we move this to the invocation id creation site.
+        let vqueue_parent = match metadata.invocation_target.invocation_target_ty() {
+            InvocationTargetType::Service
+            | InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
+            | InvocationTargetType::Workflow(WorkflowHandlerType::Shared) => {
+                VQueueParent::default_unlimited()
+            }
+            InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+            | InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) => {
+                VQueueParent::default_singleton()
+            }
+        };
+
         let qid = VQueueId::new(
-            // todo(asoli): This is temporary, replace with the real src id.
-            VQueueParent::from_raw(1),
+            vqueue_parent,
             invocation_id.partition_key(),
             VQueueInstance::Default,
         );

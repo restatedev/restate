@@ -18,6 +18,33 @@ use crate::identifiers::PartitionKey;
 pub struct VQueueParent(u32);
 
 impl VQueueParent {
+    const USER_MASK: u32 = 0x8000_0000;
+
+    /// User-defined vqueues have the most significant bit set
+    pub const MIN_USER: VQueueParent = VQueueParent(Self::USER_MASK);
+    pub const MAX_USER: VQueueParent = VQueueParent(u32::MAX);
+
+    // Note: this is chosen such that parent=0 is the most common case (unlimited service)
+    pub const MIN_SYSTEM: VQueueParent = VQueueParent(0);
+    pub const MAX_SYSTEM: VQueueParent = VQueueParent(u32::MAX & (!Self::USER_MASK));
+
+    /// Used for unlimited vqueues (concurrency unlimited, unlimited capacity)
+    pub const SYSTEM_UNLIMITED: VQueueParent = VQueueParent::MIN_SYSTEM;
+
+    /// Used for singleton vqueues (concurrency 1, unlimited capacity)
+    pub const SYSTEM_SINGLETON: VQueueParent =
+        const { VQueueParent(VQueueParent::MIN_SYSTEM.0 + 1) };
+
+    /// Used for unlimited vqueues (concurrency unlimited, unlimited capacity)
+    pub const fn default_unlimited() -> Self {
+        Self::SYSTEM_UNLIMITED
+    }
+
+    /// Used for singleton vqueues (concurrency 1, unlimited capacity)
+    pub const fn default_singleton() -> Self {
+        Self::SYSTEM_SINGLETON
+    }
+
     #[inline]
     pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
@@ -27,7 +54,19 @@ impl VQueueParent {
     pub const fn as_u32(self) -> u32 {
         self.0
     }
+
+    #[inline]
+    pub const fn is_user_defined(self) -> bool {
+        // the highest bit is set if this is a system/internal queue parent
+        self.0 & Self::USER_MASK != 0
+    }
 }
+
+static_assertions::const_assert!(!VQueueParent::MIN_SYSTEM.is_user_defined());
+static_assertions::const_assert!(!VQueueParent::MAX_SYSTEM.is_user_defined());
+
+static_assertions::const_assert!(VQueueParent::MIN_USER.is_user_defined());
+static_assertions::const_assert!(VQueueParent::MAX_USER.is_user_defined());
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum VQueueInstance {
