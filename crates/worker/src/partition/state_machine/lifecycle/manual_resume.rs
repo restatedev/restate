@@ -13,6 +13,7 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
+use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::ResumeInvocationResponse;
@@ -27,7 +28,7 @@ pub struct OnManualResumeCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnManualResumeCommand
 where
-    S: ReadInvocationStatusTable + WriteInvocationStatusTable,
+    S: ReadInvocationStatusTable + WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnManualResumeCommand {

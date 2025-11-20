@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{CommandHandler, Error, ParkCause, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
 use restate_storage_api::journal_table_v2::ReadJournalTable;
+use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
+use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::NotificationId;
 use std::collections::HashSet;
@@ -25,7 +27,7 @@ pub struct OnSuspendCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnSuspendCommand
 where
-    S: ReadJournalTable + WriteInvocationStatusTable,
+    S: ReadJournalTable + WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         debug_assert!(
@@ -76,6 +78,16 @@ where
             in_flight_invocation_metadata
                 .timestamps
                 .update(ctx.record_created_at);
+
+            if Configuration::pinned().common.experimental_enable_vqueues {
+                ctx.vqueue_park_invocation(
+                    &self.invocation_id,
+                    &in_flight_invocation_metadata.invocation_target,
+                    ParkCause::Suspend,
+                )
+                .await?;
+            }
+
             invocation_status = InvocationStatus::Suspended {
                 metadata: in_flight_invocation_metadata,
                 waiting_for_notifications: self.waiting_for_notifications,

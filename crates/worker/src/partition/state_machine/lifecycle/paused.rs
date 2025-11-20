@@ -10,11 +10,13 @@
 
 use crate::debug_if_leader;
 use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{CommandHandler, Error, ParkCause, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
+use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
+use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
 
@@ -26,7 +28,11 @@ pub struct OnPausedCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnPausedCommand
 where
-    S: ReadInvocationStatusTable + WriteInvocationStatusTable + WriteJournalEventsTable,
+    S: ReadInvocationStatusTable
+        + WriteInvocationStatusTable
+        + WriteJournalEventsTable
+        + WriteVQueueTable
+        + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPausedCommand {
@@ -48,6 +54,16 @@ where
 
         // Invoker paused the invocation, let's record the event, then set the status to paused
         debug_if_leader!(ctx.is_leader, "Paused the invocation");
+
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            ctx.vqueue_park_invocation(
+                &self.invocation_id,
+                &invoked_meta.invocation_target,
+                ParkCause::Pause,
+            )
+            .await?;
+        }
+
         let mut invocation_status = InvocationStatus::Paused(invoked_meta);
 
         ApplyEventCommand {

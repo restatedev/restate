@@ -40,6 +40,7 @@ use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::WriteTimerTable;
+use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
@@ -116,7 +117,9 @@ where
         + ReadPromiseTable
         + WritePromiseTable
         + ReadStateTable
-        + WriteStateTable,
+        + WriteStateTable
+        + WriteVQueueTable
+        + ReadVQueueTable,
 {
     async fn apply(mut self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         if !matches!(self.invocation_status, InvocationStatus::Invoked(_))

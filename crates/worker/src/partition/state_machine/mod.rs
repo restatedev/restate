@@ -19,6 +19,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
+use std::hash::Hash;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::time::Instant;
@@ -58,8 +59,10 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, WriteTimerTable};
-use restate_storage_api::vqueue_table::{self, EntryId, EntryKind};
-use restate_storage_api::vqueue_table::{EntryCard, ReadVQueueTable, VisibleAt, WriteVQueueTable};
+use restate_storage_api::vqueue_table::{self, EntryId, EntryKind, Stage};
+use restate_storage_api::vqueue_table::{
+    AsEntryStateHeader, EntryCard, ReadVQueueTable, VisibleAt, WriteVQueueTable,
+};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::config::Configuration;
@@ -82,7 +85,7 @@ use restate_types::invocation::{
     InvocationMutationResponseSink, InvocationQuery, InvocationResponse, InvocationTarget,
     InvocationTargetType, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
     ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
-    Source, SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType,
+    ServiceType, Source, SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType,
     WorkflowHandlerType,
 };
 use restate_types::invocation::{InvocationInput, SpanRelation};
@@ -849,23 +852,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalTable,
     {
         // todo(asoli): temporary until we move this to the invocation id creation site.
-        let vqueue_parent = match metadata.invocation_target.invocation_target_ty() {
-            InvocationTargetType::Service
-            | InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
-            | InvocationTargetType::Workflow(WorkflowHandlerType::Shared) => {
-                VQueueParent::default_unlimited()
-            }
-            InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-            | InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) => {
-                VQueueParent::default_singleton()
-            }
-        };
-
-        let qid = VQueueId::new(
-            vqueue_parent,
-            invocation_id.partition_key(),
-            VQueueInstance::Default,
-        );
+        let qid = Self::vqueue_id_from_invocation(&invocation_id, &metadata.invocation_target);
 
         let record_unique_ts = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
         let visible_at = if let Some(execution_time) = metadata.execution_time {
@@ -1630,7 +1617,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     )
                     .await?
                 {
-                    self.do_resume_service( invocation_id, metadata)?;
+                    self.do_resume_service( invocation_id, metadata).await?;
                 }
                 self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
@@ -1641,7 +1628,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     metadata.journal_metadata.length,
                 )
                 .await?;
-                self.do_resume_service(invocation_id, metadata)?;
+                self.do_resume_service(invocation_id, metadata).await?;
                 self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
             }
             InvocationStatus::Inboxed(inboxed) => {
@@ -2474,13 +2461,15 @@ impl<S> StateMachineApplyContext<'_, S> {
                     }
                 }
                 if any_completed {
-                    self.do_resume_service(effect.invocation_id, invocation_metadata)?;
+                    self.do_resume_service(effect.invocation_id, invocation_metadata)
+                        .await?;
                 } else {
                     self.do_suspend_service(
                         effect.invocation_id,
                         invocation_metadata,
                         waiting_for_completed_entries,
-                    )?;
+                    )
+                    .await?;
                 }
             }
             InvokerEffectKind::SuspendedV2 {
@@ -3897,7 +3886,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInvocationStatusTable
             + WriteTimerTable
             + WriteFsmTable
-            + WriteOutboxTable,
+            + WriteOutboxTable
+            + WriteVQueueTable
+            + ReadVQueueTable,
     {
         match status {
             InvocationStatus::Invoked(_) => {
@@ -3920,7 +3911,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await?
                 {
-            self.do_resume_service(invocation_id, metadata)?;
+            self.do_resume_service(invocation_id, metadata).await?;
                 }
             }
             _ => {
@@ -4346,13 +4337,14 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    fn do_resume_service(
+    // Old code path used by the journal v1 (used by service protocols < v4)
+    async fn do_resume_service(
         &mut self,
         invocation_id: InvocationId,
         mut metadata: InFlightInvocationMetadata,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable,
+        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4368,16 +4360,22 @@ impl<S> StateMachineApplyContext<'_, S> {
             .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
             .map_err(Error::Storage)?;
 
-        self.action_collector.push(Action::Invoke {
-            invocation_id,
-            invocation_epoch: current_invocation_epoch,
-            invocation_target,
-            invoke_input_journal: InvokeInputJournal::NoCachedJournal,
-        });
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
+                .await?;
+        } else {
+            self.action_collector.push(Action::Invoke {
+                invocation_id,
+                invocation_epoch: current_invocation_epoch,
+                invocation_target,
+                invoke_input_journal: InvokeInputJournal::NoCachedJournal,
+            });
+        }
 
         Ok(())
     }
 
+    // Old code path used by the journal v1 (used by service protocols < v4)
     #[tracing::instrument(
         skip_all,
         level="info",
@@ -4387,14 +4385,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             restate.invocation.id = %invocation_id)
         )
     ]
-    fn do_suspend_service(
+    async fn do_suspend_service(
         &mut self,
         invocation_id: InvocationId,
         mut metadata: InFlightInvocationMetadata,
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable,
+        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4404,6 +4402,16 @@ impl<S> StateMachineApplyContext<'_, S> {
         );
 
         metadata.timestamps.update(self.record_created_at);
+
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            self.vqueue_park_invocation(
+                &invocation_id,
+                &metadata.invocation_target,
+                ParkCause::Suspend,
+            )
+            .await?;
+        }
+
         self.storage
             .put_invocation_status(
                 &invocation_id,
@@ -5036,6 +5044,184 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         Ok(())
     }
+
+    // [vqueues only]
+    async fn vqueue_park_invocation(
+        &mut self,
+        invocation_id: &InvocationId,
+        invocation_target: &InvocationTarget,
+        cause: ParkCause,
+    ) -> Result<(), Error>
+    where
+        S: WriteVQueueTable + ReadVQueueTable,
+    {
+        let qid = Self::vqueue_id_from_invocation(invocation_id, invocation_target);
+
+        // Not great that we have to look up the entry card here.
+        // todo remove once the reworked InvocationStatus can hold the required information
+        let Some(entry_state_header) = self
+            .storage
+            .get_entry_state_header(
+                EntryKind::Invocation,
+                invocation_id.partition_key(),
+                &EntryId::from(invocation_id),
+            )
+            .await?
+        else {
+            // todo resolve once we decided on the actual migration strategy
+            panic!(
+                "Trying to park invocation {invocation_id} which does not exist as a vqueue entry. Have you forgotten to migrate from the old inbox to vqueues?"
+            );
+        };
+
+        let mut vqueue = VQueues::new(
+            qid,
+            self.storage,
+            self.vqueues_cache,
+            self.is_leader.then_some(self.action_collector),
+        );
+
+        let now = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+
+        let should_release_concurrency_token = match cause {
+            ParkCause::Suspend => {
+                // Always hold on to your concurrency token until the invocation is completed if
+                // we are suspending for all types (services, VOs, workflows). This has the benefit
+                // of an easy to reason about concurrency model for our users. The downside is that
+                // callers might deadlock if they call a limited service which has no more
+                // concurrency tokens left and there is a cyclic dependency (e.g. a limited service
+                // calling itself).
+                false
+            }
+            ParkCause::Pause => {
+                // We release the concurrency token in case we are pausing a service because
+                // unpausing requires human intervention, and we don't want to block other service
+                // invocations.
+                //
+                // Note that we don't do this for paused VOs and workflows because they need to
+                // ensure that no other instance can run while they hold their lock. Technically,
+                // we still have the service_status_table which stores the locking information, and
+                // we need to keep things in sync until we decide what to do with this table.
+                matches!(invocation_target.service_ty(), ServiceType::Service)
+            }
+        };
+
+        vqueue
+            .park(
+                now,
+                &entry_state_header.current_entry_card(),
+                entry_state_header.stage(),
+                should_release_concurrency_token,
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// Moves the given invocation to the inbox and making it eligible for scheduling. Depending on its
+    /// current [`Stage`], it will either yield the invocation from running, wake it up or be a noop
+    /// if the invocation is already in the inbox stage.
+    // [vqueues only]
+    async fn vqueue_move_invocation_to_inbox_stage(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<(), Error>
+    where
+        S: WriteVQueueTable + ReadVQueueTable,
+    {
+        // Not great that we have to look up the entry card here.
+        // todo remove once the reworked InvocationStatus can hold the required information
+        let Some(entry_state_header) = self
+            .storage
+            .get_entry_state_header(
+                EntryKind::Invocation,
+                invocation_id.partition_key(),
+                &EntryId::from(invocation_id),
+            )
+            .await?
+        else {
+            // todo resolve once we decided on the actual migration strategy
+            panic!(
+                "Trying to wake up invocation {invocation_id} which does not exist as a vqueue entry. Have you forgotten to migrate from the old inbox to vqueues?"
+            );
+        };
+
+        let qid = entry_state_header.vqueue_id();
+
+        let mut vqueue = VQueues::new(
+            qid,
+            self.storage,
+            self.vqueues_cache,
+            self.is_leader.then_some(self.action_collector),
+        );
+
+        let now = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+
+        match entry_state_header.stage() {
+            Stage::Park => {
+                vqueue
+                    .wake_up(now, &entry_state_header.current_entry_card())
+                    .await?;
+            }
+            Stage::Run => {
+                vqueue
+                    .yield_running(now, &entry_state_header.current_entry_card())
+                    .await?;
+            }
+            Stage::Inbox => {
+                // nothing to do if we are already in the inbox
+            }
+            Stage::Unknown => {
+                panic!("Trying to move invocation from unknown stage to inbox is not supported.")
+            }
+        };
+
+        Ok(())
+    }
+
+    // todo placeholder until we have decided on the VQueueParent resolution
+    fn vqueue_id_from_invocation(
+        invocation_id: &InvocationId,
+        invocation_target: &InvocationTarget,
+    ) -> VQueueId {
+        let (parent, instance) = match invocation_target {
+            InvocationTarget::Service { .. } => {
+                (VQueueParent::default_unlimited(), VQueueInstance::Default)
+            }
+            InvocationTarget::VirtualObject {
+                handler_ty, key, ..
+            } => {
+                let parent = match handler_ty {
+                    VirtualObjectHandlerType::Exclusive => VQueueParent::default_singleton(),
+                    VirtualObjectHandlerType::Shared => VQueueParent::default_unlimited(),
+                };
+
+                (parent, VQueueInstance::infer_from(key.as_bytes()))
+            }
+            InvocationTarget::Workflow {
+                handler_ty, key, ..
+            } => {
+                let parent = match handler_ty {
+                    WorkflowHandlerType::Workflow => VQueueParent::default_singleton(),
+                    WorkflowHandlerType::Shared => VQueueParent::default_unlimited(),
+                };
+
+                (parent, VQueueInstance::infer_from(key.as_bytes()))
+            }
+        };
+        let partition_key = invocation_id.partition_key();
+
+        VQueueId::new(parent, partition_key, instance)
+    }
+}
+
+/// Cause for parking an invocation
+#[derive(Debug)]
+enum ParkCause {
+    /// The invocation suspends to await completion or signals
+    Suspend,
+    /// The invocation pauses because it depleted it retries or was manually paused
+    Pause,
 }
 
 // To write completions in the effects log

@@ -12,6 +12,7 @@ use tracing::trace;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InFlightInvocationMetadata, InvocationStatus};
 use restate_storage_api::journal_table_v2::ReadJournalTable;
+use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawNotification;
@@ -115,7 +116,7 @@ impl<'e> ApplyNotificationCommand<'e> {
 impl<'e, 'ctx: 'e, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for ApplyNotificationCommand<'e>
 where
-    S: ReadJournalTable,
+    S: ReadJournalTable + WriteVQueueTable + ReadVQueueTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         if ctx.is_leader {

@@ -4159,7 +4159,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b0f83760fb341a774ed326568e19f5a863af4a952def8c39f9ab92fd95b88e5"
 dependencies = [
  "equivalent",
- "hashbrown 0.15.2",
+ "hashbrown 0.16.0",
  "serde",
  "serde_core",
 ]
@@ -8212,6 +8212,7 @@ dependencies = [
  "restate-types",
  "restate-utoipa",
  "restate-workspace-hack",
+ "rustc-hash",
  "schemars 0.8.22",
  "semver",
  "serde",
@@ -8431,6 +8432,7 @@ dependencies = [
  "half",
  "hashbrown 0.14.5",
  "hashbrown 0.15.2",
+ "hashbrown 0.16.0",
  "hdrhistogram",
  "hex",
  "hmac",
@@ -8684,9 +8686,9 @@ checksum = "719b953e2095829ee67db738b3bfa9fa368c94900df327b3f07fe6e794d2fe1f"
 
 [[package]]
 name = "rustc-hash"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7fb8039b3032c191086b10f11f319a6e99e1e82889c5cc6046f515c9db1d497"
+checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
 name = "rustc_version"

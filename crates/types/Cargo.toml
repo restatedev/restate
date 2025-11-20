@@ -77,6 +77,7 @@ prost-types = { workspace = true }
 rand = { workspace = true }
 regex = { workspace = true }
 regress = { version = "0.10" }
+rustc-hash = "2.1.1"
 schemars = { workspace = true, optional = true }
 semver = { workspace = true }
 serde = { workspace = true, features = ["rc"] }

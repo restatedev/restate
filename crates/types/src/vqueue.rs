@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::hash::{Hash, Hasher};
 use std::num::NonZero;
 
 use crate::identifiers::PartitionKey;
@@ -82,6 +83,20 @@ impl VQueueInstance {
     #[inline]
     pub fn from_raw(raw: u32) -> Self {
         NonZero::new(raw).map_or(VQueueInstance::Default, VQueueInstance::Specific)
+    }
+
+    #[inline]
+    pub fn infer_from(key: impl AsRef<[u8]>) -> Self {
+        // todo consider using the same hasher we use for partition key (xxh3)
+        // Important to never change the seed!
+        let mut hasher = rustc_hash::FxHasher::with_seed(67);
+
+        key.as_ref().hash(&mut hasher);
+        let hash = hasher.finish();
+        // XOR upper and lower bits for better collision resistance. xxh3 might give better
+        // collision tolerance when generating an u32 hash, but we assume that the partition key spreads
+        // VOs sparsely enough to make collisions unlikely enough.
+        Self::from_raw((hash ^ (hash >> 32)) as u32)
     }
 
     #[inline]
