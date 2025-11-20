@@ -8,7 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::time::Duration;
+
 use hashbrown::HashSet;
+use tokio_util::time::{DelayQueue, delay_queue};
 use tracing::trace;
 
 use restate_storage_api::StorageError;
@@ -67,6 +70,7 @@ pub struct VQueueState<S: VQueueStore> {
     unconfirmed_assignments: HashSet<u64>,
     pub(super) deficit: Deficit,
     head: HeadStatus<S::Item>,
+    wake_up_after: Option<WakeUp>,
 }
 
 impl<S> VQueueState<S>
@@ -85,6 +89,7 @@ where
             unconfirmed_assignments: HashSet::new(),
             deficit: Deficit::new(0),
             head: HeadStatus::Unknown,
+            wake_up_after: None,
         }
     }
 
@@ -95,6 +100,7 @@ where
             unconfirmed_assignments: HashSet::new(),
             deficit: Deficit::new(current_round),
             head: HeadStatus::Empty,
+            wake_up_after: None,
         }
     }
 
@@ -126,6 +132,9 @@ where
                     assignments.push(Action::MoveToRunning, item.clone());
                     self.advance(storage)?;
                 }
+                // Unnecessary but left to be defensive against a lingering
+                // wake_up_after preventing later scheduling from happening.
+                self.wake_up_after = None;
             }
         }
 
@@ -304,7 +313,7 @@ where
             .is_none_or(|limit| tokens_used < limit.get())
     }
 
-    pub fn notify_removed(&mut self, item_hash: u64) {
+    pub fn notify_removed(&mut self, item_hash: u64) -> bool {
         // Can this be the known head?
         // Yes. Perhaps it expired/ended externally.
         if let HeadStatus::Known(ref item) = self.head
@@ -314,14 +323,17 @@ where
             self.head = HeadStatus::Unknown;
             // Ensure that next advance would re-seek to the newly added item
             self.reader = Reader::Closed;
+            return true;
         }
+        false
     }
 
     pub fn remove_from_unconfirmed_assignments(&mut self, item_hash: u64) -> bool {
         self.unconfirmed_assignments.remove(&item_hash)
     }
 
-    pub fn notify_enqueued(&mut self, item: &S::Item) {
+    /// Returns true if there was a change that could affect eligibility
+    pub fn notify_enqueued(&mut self, item: &S::Item) -> bool {
         match (&self.head, &self.reader) {
             // we are only unknown if we are new and didn't read the running list yet,
             // we might also be in a limbo state if advance() failed.
@@ -331,16 +343,78 @@ where
             (HeadStatus::Empty, _) => {
                 self.reader = Reader::Closed;
                 self.head = HeadStatus::Known(item.clone());
+                return true;
             }
             (HeadStatus::Known(current), Reader::Inbox(_) | Reader::Closed) => {
                 if item < current {
                     self.head = HeadStatus::Known(item.clone());
                     // Ensure that next advance would re-seek to the newly added item
                     self.reader = Reader::Closed;
+                    return true;
                 }
             }
         }
+        false
     }
+
+    pub fn maybe_schedule_wakeup(
+        &mut self,
+        wake_up_at: UniqueTimestamp,
+        delay_queue: &mut DelayQueue<VQueueId>,
+        now: UniqueTimestamp,
+    ) {
+        let wake_up_at_unix = wake_up_at.to_unix_millis();
+        // Note that check_eligibility already compares now with the visible_at
+        // timestamp, hence the debug_* part.
+        debug_assert!(wake_up_at_unix > now.to_unix_millis());
+
+        match &self.wake_up_after {
+            // Need to be eligible sooner than what's already scheduled
+            Some(wake_up) if wake_up.ts > wake_up_at => {
+                let timer_key = wake_up.timer_key;
+
+                let after_duration =
+                    Duration::from_millis(wake_up_at_unix.saturating_sub_ms(now.to_unix_millis()));
+                delay_queue.reset(&timer_key, after_duration);
+                self.wake_up_after = Some(WakeUp {
+                    ts: wake_up_at,
+                    timer_key,
+                });
+            }
+            Some(_) => {
+                // We are already scheduled for this timestamp or sooner.
+            }
+            None => {
+                // I need to be eligible sooner than that.
+                let after_duration =
+                    Duration::from_millis(wake_up_at_unix.saturating_sub_ms(now.to_unix_millis()));
+                let timer_key = delay_queue.insert(self.qid, after_duration);
+                self.wake_up_after = Some(WakeUp {
+                    ts: wake_up_at,
+                    timer_key,
+                });
+            }
+        }
+    }
+
+    /// It's the caller's responsibility to ensure that the timer is removed from
+    /// the delay queue before calling this method.
+    pub fn drop_scheduled_wake_up(&mut self) {
+        self.wake_up_after = None;
+    }
+
+    pub fn on_not_eligible(&mut self, delay_queue: &mut DelayQueue<VQueueId>) {
+        self.deficit.reset();
+        if let Some(previous_wake_up) = self.wake_up_after.take() {
+            delay_queue.remove(&previous_wake_up.timer_key);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct WakeUp {
+    ts: UniqueTimestamp,
+    timer_key: delay_queue::Key,
 }
 
 #[derive(Debug)]
