@@ -89,14 +89,14 @@ where
         kind: EntryKind,
         partition_key: PartitionKey,
         id: &EntryId,
-    ) -> Result<(), StorageError> {
+    ) -> Result<bool, StorageError> {
         // find the entry
         let entry_state = storage
             .get_entry_state_header(kind, partition_key, id)
             .await?;
 
         let Some(entry_state) = entry_state else {
-            return Ok(());
+            return Ok(false);
         };
 
         let mut inbox = Self::new(entry_state.vqueue_id(), storage, cache, action_collector);
@@ -104,7 +104,7 @@ where
             .end(at, entry_state.stage(), &entry_state.current_entry_card())
             .await?;
 
-        Ok(())
+        Ok(true)
     }
 
     pub async fn enqueue_new(
