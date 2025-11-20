@@ -125,6 +125,27 @@ jobs:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       serviceImage: "ghcr.io/restatedev/test-services-java:main"
 
+  sdk-java-vqueues:
+    name: Vqueues Run SDK-Java integration tests
+    # for the time being we don't expect all tests to pass
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: docker
+    uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      serviceImage: "ghcr.io/restatedev/test-services-java:main"
+      testArtifactOutput: sdk-java-integration-test-vqueues
+      envVars: |
+        RESTATE_EXPERIMENTAL_ENABLE_VQUEUES=true
+      # we don't expect all tests to pass, that's why we continue on error
+      continueOnError: true
+
   sdk-python:
     name: Run SDK-Python integration tests
     permissions:
@@ -226,6 +247,57 @@ jobs:
           # Needed for backward compatibility tests 1.6 -> 1.5
           envVars: |
             RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
+
+  e2e-vqueues:
+    name: Vqueues Run E2E tests
+    runs-on: warp-ubuntu-latest-x64-4x
+    # we don't expect all tests to pass, that's why we continue on error
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    needs: docker
+    steps:
+      - name: Set up Docker containerd snapshotter
+        uses: docker/setup-docker-action@v4
+        with:
+          version: "v28.5.2"
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      ### Download the Restate container image, if needed
+      - name: Download restate snapshot from in-progress workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: restate.tar
+      - name: Install restate snapshot
+        run: |
+          output=$(docker load --input restate.tar | head -n 1)
+          docker tag "${output#*: }" "localhost/restatedev/restate-commit-download:latest"
+          docker image ls -a
+
+      ### Run e2e tests with vqueues enabled.
+      - name: Vqueues Run E2E tests
+        uses: restatedev/e2e@main
+        with:
+          testArtifactOutput: e2e-test-vqueues-report
+          restateContainerImage: localhost/restatedev/restate-commit-download:latest
+          # Needed for backward compatibility tests 1.6 -> 1.5
+          envVars: |
+            RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
+            RESTATE_EXPERIMENTAL_ENABLE_VQUEUES=true
+          exclusions: |
+            exclusions:
+              "versionCompat":
+                - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
 
   jepsen:
     if: github.event.repository.fork == false && github.event.pull_request.head.repo.full_name == 'restatedev/restate' && github.ref == 'refs/heads/main'
