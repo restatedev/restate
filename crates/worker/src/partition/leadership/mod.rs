@@ -30,6 +30,7 @@ use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
 use restate_invoker_api::InvokeInputJournal;
+use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::fsm_table::ReadFsmTable;
@@ -154,8 +155,10 @@ pub(crate) struct LeadershipState<I> {
 
     partition: Arc<Partition>,
     invoker_tx: I,
-    bifrost: Bifrost,
+    // to be used by the scheduler
     #[allow(unused)]
+    invoker_capacity: InvokerCapacity,
+    bifrost: Bifrost,
     trim_queue: TrimQueue,
 }
 
@@ -167,6 +170,7 @@ where
     pub(crate) fn new(
         partition: Arc<Partition>,
         invoker_tx: I,
+        invoker_capacity: InvokerCapacity,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
         trim_queue: TrimQueue,
@@ -175,6 +179,7 @@ where
             state: State::Follower,
             partition,
             invoker_tx,
+            invoker_capacity,
             bifrost,
             last_seen_leader_epoch,
             trim_queue,
@@ -662,6 +667,7 @@ mod tests {
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
     use restate_core::{TaskCenter, TestCoreEnv};
+    use restate_invoker_api::capacity::InvokerCapacity;
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
@@ -697,6 +703,7 @@ mod tests {
         let mut state = LeadershipState::new(
             Arc::new(PARTITION),
             invoker_tx,
+            InvokerCapacity::new_unlimited(),
             bifrost.clone(),
             None,
             TrimQueue::default(),
