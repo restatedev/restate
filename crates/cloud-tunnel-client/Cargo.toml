@@ -18,11 +18,11 @@ bs58 = { version = "0.5.0" }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-hyper = { workspace = true, features = ["server"]}
-hyper-util = { workspace = true }
+hyper = { workspace = true, features = ["server", "http2"]}
+hyper-util = { workspace = true, features = ["tokio"] }
 jsonwebtoken = { version = "9.1.0" }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
