@@ -58,7 +58,7 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, WriteTimerTable};
-use restate_storage_api::vqueue_table::{self, EntryId, EntryKind, Stage};
+use restate_storage_api::vqueue_table::{self, EntryId, EntryKind};
 use restate_storage_api::vqueue_table::{EntryCard, ReadVQueueTable, VisibleAt, WriteVQueueTable};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::clock::UniqueTimestamp;
@@ -1726,14 +1726,41 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(&invocation_target),
         )?;
 
-        // Delete inbox entry and invocation status.
-        self.do_delete_inbox_entry(
-            invocation_target
-                .as_keyed_service_id()
-                .expect("Because the invocation is inboxed, it must have a keyed service id"),
-            inbox_sequence_number,
-        )
-        .await?;
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            let record_unique_ts =
+                UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+            // Is this an invocation that has a vqueue inbox?
+            if !VQueues::end_by_id(
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+                record_unique_ts,
+                EntryKind::Invocation,
+                invocation_id.partition_key(),
+                &EntryId::from(invocation_id),
+            )
+            .await?
+            {
+                // Assuming it's an old-style inbox, fallback to deleting it from inbox since we
+                // can't find the entry state.
+                self.do_delete_inbox_entry(
+                    invocation_target.as_keyed_service_id().expect(
+                        "Because the invocation is inboxed, it must have a keyed service id",
+                    ),
+                    inbox_sequence_number,
+                )
+                .await?;
+            }
+        } else {
+            // Delete inbox entry and invocation status.
+            self.do_delete_inbox_entry(
+                invocation_target
+                    .as_keyed_service_id()
+                    .expect("Because the invocation is inboxed, it must have a keyed service id"),
+                inbox_sequence_number,
+            )
+            .await?;
+        }
         self.do_free_invocation(invocation_id)?;
 
         // If there's a journal, delete journal
@@ -1777,6 +1804,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteOutboxTable
             + WriteFsmTable
             + WriteJournalTable
+            + ReadVQueueTable
+            + WriteVQueueTable
             + journal_table_v2::WriteJournalTable
             + WriteJournalEventsTable,
     {
@@ -1805,15 +1834,43 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(&invocation_target),
         )?;
 
-        // Delete timer
-        if let Some(execution_time) = execution_time {
-            self.do_delete_timer(TimerKey::neo_invoke(
-                execution_time.as_u64(),
-                invocation_id.invocation_uuid(),
-            ))
-            .await?;
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            let record_unique_ts =
+                UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+            // Is this an invocation that has a vqueue inbox?
+            if !VQueues::end_by_id(
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+                record_unique_ts,
+                EntryKind::Invocation,
+                invocation_id.partition_key(),
+                &EntryId::from(invocation_id),
+            )
+            .await?
+            {
+                // Assuming it's an old-style inbox, fallback to deleting the timer
+                if let Some(execution_time) = execution_time {
+                    self.do_delete_timer(TimerKey::neo_invoke(
+                        execution_time.as_u64(),
+                        invocation_id.invocation_uuid(),
+                    ))
+                    .await?;
+                } else {
+                    warn!("Scheduled invocations must always have an execution time.");
+                }
+            }
         } else {
-            warn!("Scheduled invocations must always have an execution time.");
+            // Delete timer
+            if let Some(execution_time) = execution_time {
+                self.do_delete_timer(TimerKey::neo_invoke(
+                    execution_time.as_u64(),
+                    invocation_id.invocation_uuid(),
+                ))
+                .await?;
+            } else {
+                warn!("Scheduled invocations must always have an execution time.");
+            }
         }
 
         // Free invocation
@@ -2821,13 +2878,17 @@ impl<S> StateMachineApplyContext<'_, S> {
                 info!(
                     "Will not run invocation {invocation_id} because it has been marked as completed/deleted already!"
                 );
-                VQueues::new(
-                    qid,
+                // we delete by id because we are not really sure if the invocation is still in
+                // Stage::Inbox or not.
+                VQueues::end_by_id(
                     self.storage,
                     self.vqueues_cache,
                     self.is_leader.then_some(self.action_collector),
+                    at,
+                    EntryKind::Invocation,
+                    invocation_id.partition_key(),
+                    &EntryId::from(invocation_id),
                 )
-                .end(at, Stage::Inbox, card)
                 .await?;
             }
         }
