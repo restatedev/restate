@@ -17,6 +17,7 @@ use std::task::Waker;
 use hashbrown::HashMap;
 use hashbrown::hash_map;
 use pin_project::pin_project;
+use tokio_util::time::DelayQueue;
 use tracing::{info, trace};
 
 use restate_futures_util::concurrency::Concurrency;
@@ -47,6 +48,7 @@ pub struct DRRScheduler<S: VQueueStore, Token> {
     /// Mapping of vqueue_id -> vqueue_state for possibly eligible vqueues
     q: HashMap<VQueueId, VQueueState<S>>,
     unconfirmed_capacity_permits: Permit<Token>,
+    delayed_eligibility: DelayQueue<VQueueId>,
     // Wraps to zero after 16::MAX.
     global_sched_round: u16,
     /// How many vqueues we need to still need to go visit before we start a new round
@@ -99,6 +101,7 @@ where
             eligible,
             global_sched_round: 0,
             remaining_in_round: 0,
+            delayed_eligibility: DelayQueue::new(),
             unconfirmed_capacity_permits: Permit::new_empty(),
             waker: Waker::noop().clone(),
             last_report: None,
@@ -138,18 +141,51 @@ where
             self.last_report = Some(now);
             // compact memory
             self.q.shrink_to(MIN_VQUEUES_CAPACITY);
+            self.delayed_eligibility.compact();
         }
 
         let configs = vqueues.config_pool();
         let mut decision: HashMap<VQueueId, Assignments<S::Item>> = HashMap::new();
 
         'scheduler: loop {
-            if self.remaining_in_round == 0 && !self.eligible.is_empty() {
-                // bump global scheduling round, reset remaining.
-                self.remaining_in_round = self.eligible.len();
-                self.global_sched_round = self.global_sched_round.wrapping_add(1);
-            } else if self.eligible.is_empty() {
-                break 'scheduler;
+            if self.remaining_in_round == 0 {
+                // Pop all eligible vqueues that were delayed since we are starting a new round
+                // Once we hit pending, the waker will be registered.
+                //
+                // There is currently an issue due to using two different clock sources. The timer
+                // wheel uses tokio's internal clock but our scheduler's design relies on explicit
+                // monotonic timestamps. This will cause the timer to expire slightly before or after
+                // the actual point at which the input (now) would satisfy the head item's
+                // eligibility requirements. As a result, we will see one of three scenarios:
+                //  1. Time aligns. We pop the timer and the head element will be immediately eligible.
+                //  2. We are woken up before `now` satifies the requirement, in this case will
+                //     schedule a new timer to catch up on the difference.
+                //  3. We are worken up after `now` by a few hundres of millis, in this case the
+                //     head will be eligible but we will be a little late.
+                //
+                //  This will be fixed in a later change after we reason about whether we need any
+                //  causal entanglement between the RSM's clock and the scheduler's internal clock.
+                let previous_round = self.global_sched_round;
+                while let Poll::Ready(Some(expired)) = self.delayed_eligibility.poll_expired(cx) {
+                    let Some(qstate) = self.q.get_mut(expired.get_ref()) else {
+                        // the vqueue is gone/empty, ignore.
+                        continue;
+                    };
+                    qstate.drop_scheduled_wake_up();
+                    qstate.deficit.set_last_round(previous_round);
+                    let vqueue_id = expired.into_inner();
+                    if !self.eligible.contains(&vqueue_id) {
+                        self.eligible.push_back(vqueue_id);
+                    }
+                }
+
+                if !self.eligible.is_empty() {
+                    // bump global scheduling round, reset remaining.
+                    self.remaining_in_round = self.eligible.len();
+                    self.global_sched_round = self.global_sched_round.wrapping_add(1);
+                } else {
+                    break 'scheduler;
+                }
             }
 
             while self.remaining_in_round > 0 {
@@ -182,14 +218,17 @@ where
                     // get concurrency token, but only if it's still eligible.
                     qstate.poll_head(this.storage, meta)?;
                     match qstate.check_eligibility(now, meta, config) {
-                        Eligibility::NotEligible | Eligibility::EligibleAt(_) => {
+                        Eligibility::NotEligible => {
                             // not eligible,
                             *this.remaining_in_round -= 1;
-                            qstate.deficit.reset();
+                            qstate.on_not_eligible(this.delayed_eligibility);
                             this.eligible.pop_front();
-                            // todo: remember to set the last_round correctly when becoming eligible again.
-                            // the correct last_round == the current global round.
-                            // todo: schedule a timer if it's eligible at a later time.
+                            break 'single_vqueue Outcome::ContinueRound;
+                        }
+                        Eligibility::EligibleAt(wake_up_at) => {
+                            *this.remaining_in_round -= 1;
+                            qstate.maybe_schedule_wakeup(wake_up_at, this.delayed_eligibility, now);
+                            this.eligible.pop_front();
                             break 'single_vqueue Outcome::ContinueRound;
                         }
                         Eligibility::Eligible if !qstate.deficit.can_spend() => {
@@ -282,29 +321,26 @@ where
                 let config = vqueues.config_pool().find(&qid.parent);
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
-                qstate.notify_enqueued(item);
-                if qstate.check_eligibility(now, meta, config).is_eligible()
-                    && !self.eligible.contains(&qid)
-                {
-                    self.eligible.push_back(qid);
-                    // make sure that last_round is set correctly such that next scheduler round we
-                    // credit it correctly.
-                    // General remarks:
-                    // -last_round < current_round
-                    //   - if not in current eligibility list, it means we are sure the scheduler didn't touch
-                    //   it. We need to add it to the eligible list. Safe to add to the end, and set last_round = current_round.
-                    //   - if it's in the current eligibility list. We are good.
-                    // - last_round == current_round
-                    //     - if it's in the eligble list, we are scanning it right now (head)
-                    //     - if it's not, it means we decided that it's not eligible in this round. If we think
-                    //     it should be eligible, we re-add it to the end and set last_round = current (leave
-                    //     as is basically, just add it back to eligble).
-                    //  - if last_round > current_round
-                    //    How did this happen? this is invalid state. Of course, we are taking into account the
-                    //    wrapping nature of the round counter whenever we compare. In any case, we should
-                    //    reset it to the correct value.
-                    qstate.deficit.set_last_round(self.global_sched_round);
-                    self.wake_up();
+                if !qstate.notify_enqueued(item) {
+                    // no impact on eligibility, no need to spend more cycles.
+                    return Ok(());
+                }
+
+                match qstate.check_eligibility(now, meta, config) {
+                    Eligibility::Eligible if !self.eligible.contains(&qid) => {
+                        // Make eligible immediately.
+                        qstate.deficit.set_last_round(self.global_sched_round);
+                        self.eligible.push_back(qid);
+                        self.wake_up();
+                    }
+                    Eligibility::EligibleAt(eligiblility_ts) if !self.eligible.contains(&qid) => {
+                        qstate.maybe_schedule_wakeup(
+                            eligiblility_ts,
+                            &mut self.delayed_eligibility,
+                            now,
+                        );
+                    }
+                    _ => { /* do nothing */ }
                 }
             }
             EventDetails::RunAttemptRejected { item_hash } => {
@@ -317,6 +353,7 @@ where
                 if qstate.remove_from_unconfirmed_assignments(item_hash) {
                     // drop the already acquired permit
                     let _ = self.unconfirmed_capacity_permits.split(1);
+
                     if qstate.check_eligibility(now, meta, config).is_eligible() {
                         if !self.eligible.contains(&qid) {
                             self.eligible.push_back(qid);
@@ -333,14 +370,33 @@ where
                 let Some(qstate) = self.q.get_mut(&qid) else {
                     return Ok(());
                 };
+                let config = vqueues.config_pool().find(&qid.parent);
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
                 if qstate.remove_from_unconfirmed_assignments(item_hash) {
                     // drop the already acquired permit
                     let _ = self.unconfirmed_capacity_permits.split(1);
-                } else {
-                    qstate.notify_removed(item_hash);
+                } else if qstate.notify_removed(item_hash) {
+                    match qstate.check_eligibility(now, meta, config) {
+                        Eligibility::Eligible if !self.eligible.contains(&qid) => {
+                            // Make eligible immediately.
+                            qstate.deficit.set_last_round(self.global_sched_round);
+                            self.eligible.push_back(qid);
+                            self.waker.wake_by_ref();
+                        }
+                        Eligibility::EligibleAt(eligiblility_ts)
+                            if !self.eligible.contains(&qid) =>
+                        {
+                            qstate.maybe_schedule_wakeup(
+                                eligiblility_ts,
+                                &mut self.delayed_eligibility,
+                                now,
+                            );
+                        }
+                        _ => { /* do nothing */ }
+                    }
                 }
+
                 if qstate.is_empty(meta) {
                     // retire the vqueue state
                     self.q.remove(&qid);
@@ -351,7 +407,6 @@ where
     }
 
     fn wake_up(&mut self) {
-        info!("[scheduler] waking up");
         self.waker.wake_by_ref();
     }
 }
