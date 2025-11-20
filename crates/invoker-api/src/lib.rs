@@ -24,11 +24,13 @@ pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHan
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
     use super::*;
+    use crate::capacity::InvokerToken;
     use crate::invocation_reader::{
         EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
     };
     use bytes::Bytes;
     use restate_errors::NotRunningError;
+    use restate_futures_util::concurrency::Permit;
     use restate_types::identifiers::{
         EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
@@ -38,6 +40,7 @@ pub mod test_util {
     use restate_types::journal::Completion;
     use restate_types::journal_v2::raw::RawNotification;
     use restate_types::time::MillisSinceEpoch;
+    use restate_types::vqueue::VQueueId;
     use std::convert::Infallible;
     use std::iter::empty;
     use std::marker::PhantomData;
@@ -106,6 +109,18 @@ pub mod test_util {
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _invocation_epoch: InvocationEpoch,
+            _invocation_target: InvocationTarget,
+            _journal: InvokeInputJournal,
+        ) -> Result<(), NotRunningError> {
+            Ok(())
+        }
+
+        fn vqueue_invoke(
+            &mut self,
+            _partition: PartitionLeaderEpoch,
+            _qid: VQueueId,
+            _permit: Permit<InvokerToken>,
+            _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
             _journal: InvokeInputJournal,
         ) -> Result<(), NotRunningError> {

@@ -21,27 +21,33 @@ use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use metrics::counter;
-use restate_types::logs::Keys;
-use restate_wal_protocol::control::UpsertSchema;
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, trace};
 
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
-use restate_partition_store::PartitionStore;
+use restate_invoker_api::capacity::InvokerToken;
+use restate_partition_store::{PartitionDb, PartitionStore};
+use restate_storage_api::vqueue_table::EntryCard;
+use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::{
     InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
     WithPartitionKey,
 };
 use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
+use restate_types::logs::Keys;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{SemanticRestateVersion, Version, Versioned};
+use restate_vqueues::VQueueEvent;
+use restate_vqueues::{SchedulerService, VQueuesMeta, scheduler};
 use restate_wal_protocol::Command;
+use restate_wal_protocol::control::UpsertSchema;
 use restate_wal_protocol::timer::TimerKeyValue;
+use restate_wal_protocol::vqueues::Cards;
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -70,6 +76,7 @@ pub struct LeaderState {
     // returns a [`Error:TaskFailed`] error.
     shuffle_task_handle: Option<TaskHandle<anyhow::Result<()>>>,
     pub timer_service: Pin<Box<TimerService>>,
+    scheduler: SchedulerService<PartitionDb, InvokerToken>,
     self_proposer: SelfProposer,
 
     awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
@@ -95,6 +102,7 @@ impl LeaderState {
         trimmer_task_id: TaskId,
         shuffle_hint_tx: HintSender,
         timer_service: TimerService,
+        scheduler: SchedulerService<PartitionDb, InvokerToken>,
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
@@ -112,6 +120,7 @@ impl LeaderState {
                 WatchStream::new(m.watch(MetadataKind::Schema))
             }),
             timer_service: Box::pin(timer_service),
+            scheduler,
             self_proposer,
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
@@ -127,7 +136,11 @@ impl LeaderState {
     ///
     /// Important: The future needs to be cancellation safe since it is polled as a tokio::select
     /// arm!
-    pub async fn run(&mut self, state_machine: &StateMachine) -> Result<Vec<ActionEffect>, Error> {
+    pub async fn run(
+        &mut self,
+        state_machine: &StateMachine,
+        vqueues: VQueuesMeta<'_>,
+    ) -> Result<Vec<ActionEffect>, Error> {
         let timer_stream = std::pin::pin!(stream::unfold(
             &mut self.timer_service,
             |timer_service| async {
@@ -135,6 +148,14 @@ impl LeaderState {
                 Some((ActionEffect::Timer(timer_value), timer_service))
             }
         ));
+
+        // todo(asoli): consider adding the scheduler pick_next() directly to the tokio::select!
+        // if we have problems with latency
+        let scheduler_stream =
+            std::pin::pin!(stream::unfold(&mut self.scheduler, |scheduler| async {
+                let assignment = scheduler.schedule_next(vqueues).await;
+                Some((ActionEffect::Scheduler(assignment), scheduler))
+            }));
 
         let schema_stream = (&mut self.schema_stream).filter_map(|_| {
             // only upsert schema iff version is newer than current version
@@ -173,6 +194,7 @@ impl LeaderState {
             (&mut self.awaiting_rpc_self_propose).map(|_| ActionEffect::AwaitingRpcSelfProposeDone);
 
         let all_streams = futures::stream_select!(
+            scheduler_stream,
             invoker_stream,
             shuffle_stream,
             timer_stream,
@@ -261,9 +283,43 @@ impl LeaderState {
     pub async fn handle_action_effects(
         &mut self,
         action_effects: impl IntoIterator<Item = ActionEffect>,
+        // invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
     ) -> Result<(), Error> {
         for effect in action_effects {
             match effect {
+                ActionEffect::Scheduler(decisions) => {
+                    let commands: Vec<_> = decisions?.into_iter().flat_map(|(qid, decision)| {
+                        decision.into_iter_per_action().map(move |(action, items)| {
+                            let cards = Cards::new(&qid, items);
+                            match action {
+                                scheduler::Action::MoveToRunning => {
+                                    (qid.partition_key, Command::VQWaitingToRunning(cards))
+                                }
+                                scheduler::Action::Yield => {
+                                    (qid.partition_key, Command::VQYieldRunning(cards))
+                                }
+                                scheduler::Action::ResumeAlreadyRunning => {
+                                        todo!(
+                                            "Unsupported: We don't support directly resuming at the moment"
+                                        )
+                                        // invoker_tx
+                                        //     .run(
+                                        //         self.partition_id,
+                                        //         self.leader_epoch,
+                                        //         inv_id,
+                                        //         // todo: fix/remove
+                                        //         SharedString::from_borrowed(""),
+                                        //         SharedString::from_borrowed(""),
+                                        //     )
+                                        //     .map_err(Error::Invoker)?;
+                                    }
+                                }
+                            })
+                    }).collect();
+                    self.self_proposer
+                        .propose_many(commands.into_iter())
+                        .await?;
+                }
                 ActionEffect::PartitionMaintenance(partition_durability) => {
                     // based on configuration, whether to consider partition-local durability in
                     // the replica-set as a sufficient source of durability, or only snapshots.
@@ -392,6 +448,7 @@ impl LeaderState {
         &mut self,
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
         actions: impl Iterator<Item = Action>,
+        vqueues: VQueuesMeta<'_>,
     ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
@@ -406,7 +463,7 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action, invoker_tx)?;
+            self.handle_action(action, invoker_tx, vqueues)?;
         }
 
         Ok(())
@@ -416,7 +473,11 @@ impl LeaderState {
         &mut self,
         action: Action,
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
+        vqueues: VQueuesMeta<'_>,
     ) -> Result<(), Error> {
+        // todo(asoli): update our hlc timestamp
+        let now = UniqueTimestamp::from_unix_millis(MillisSinceEpoch::now()).unwrap();
+
         let partition_leader_epoch = (self.partition_id, self.leader_epoch);
         match action {
             Action::Invoke {
@@ -588,7 +649,50 @@ impl LeaderState {
                     )));
                 }
             }
+            Action::VQEvent(inbox_event) => {
+                self.handle_vqueue_inbox_event(now, inbox_event, vqueues)?;
+            }
+            // FREEZE BLOCK:
+            // - Make sure VQInvoke is called from all vquueus paths
+            // - Make sure to release the permit from unconfirmed assignments when removing those
+            // assigmnets (in rejections)
+            // - Pass the permit down to the invocation task
+            // - test that the concurrency limiter works as expected
+            // - review the use of "ts" and "now" in inbox events handling in scheduler
+            Action::VQInvoke {
+                qid,
+                item_hash,
+                invocation_id,
+                invocation_target,
+                invoke_input_journal,
+            } => {
+                let permit = self.scheduler.confirm_assignment(&qid, item_hash);
+                let permit = permit.expect("invoke invocations assigned by scheduler");
+                invoker_tx
+                    .vqueue_invoke(
+                        partition_leader_epoch,
+                        qid,
+                        permit,
+                        invocation_id,
+                        invocation_target,
+                        invoke_input_journal,
+                    )
+                    .map_err(Error::Invoker)?
+            }
         }
+
+        Ok(())
+    }
+
+    fn handle_vqueue_inbox_event(
+        &mut self,
+        now: UniqueTimestamp,
+        event: VQueueEvent<EntryCard>,
+        vqueues: VQueuesMeta<'_>,
+    ) -> Result<(), Error> {
+        self.scheduler
+            .on_inbox_event(now, vqueues, &event)
+            .map_err(Error::Storage)?;
 
         Ok(())
     }

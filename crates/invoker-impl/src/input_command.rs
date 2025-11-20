@@ -9,12 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use restate_errors::NotRunningError;
+use restate_futures_util::concurrency::Permit;
+use restate_invoker_api::capacity::InvokerToken;
 use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, StatusHandle};
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
 use restate_types::journal::Completion;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
+use restate_types::vqueue::VQueueId;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
 // -- Input messages
@@ -29,9 +32,22 @@ pub(crate) struct InvokeCommand {
     pub(super) journal: InvokeInputJournal,
 }
 
+#[derive(derive_more::Debug)]
+pub(crate) struct VQueueInvokeCommand {
+    pub(super) qid: VQueueId,
+    #[debug(skip)]
+    pub(super) permit: Permit<InvokerToken>,
+    pub(super) partition: PartitionLeaderEpoch,
+    pub(super) invocation_id: InvocationId,
+    pub(super) invocation_target: InvocationTarget,
+    #[debug(skip)]
+    pub(super) journal: InvokeInputJournal,
+}
+
 #[derive(Debug)]
 pub(crate) enum InputCommand<SR> {
     Invoke(Box<InvokeCommand>),
+    VQInvoke(Box<VQueueInvokeCommand>),
     // TODO remove this when we remove journal v1
     // Journal V1 doesn't support epochs nor trim and restart
     Completion {
@@ -108,6 +124,27 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
                 partition,
                 invocation_id,
                 invocation_epoch,
+                invocation_target,
+                journal,
+            })))
+            .map_err(|_| NotRunningError)
+    }
+
+    fn vqueue_invoke(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        qid: VQueueId,
+        permit: Permit<InvokerToken>,
+        invocation_id: InvocationId,
+        invocation_target: InvocationTarget,
+        journal: InvokeInputJournal,
+    ) -> Result<(), NotRunningError> {
+        self.input
+            .send(InputCommand::VQInvoke(Box::new(VQueueInvokeCommand {
+                qid,
+                permit,
+                partition,
+                invocation_id,
                 invocation_target,
                 journal,
             })))

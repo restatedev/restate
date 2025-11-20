@@ -154,6 +154,7 @@ impl TestEnv {
     pub async fn apply(&mut self, command: Command) -> Vec<Action> {
         let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
+        let mut vqueues = VQueuesMetaMut::default();
         self.state_machine
             .apply(
                 command,
@@ -161,6 +162,7 @@ impl TestEnv {
                 Lsn::OLDEST,
                 &mut transaction,
                 &mut action_collector,
+                &mut vqueues,
                 true,
             )
             .await
@@ -174,6 +176,7 @@ impl TestEnv {
     pub async fn apply_fallible(&mut self, command: Command) -> Result<Vec<Action>, Error> {
         let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
+        let mut vqueues = VQueuesMetaMut::default();
         self.state_machine
             .apply(
                 command,
@@ -181,6 +184,7 @@ impl TestEnv {
                 Lsn::OLDEST,
                 &mut transaction,
                 &mut action_collector,
+                &mut vqueues,
                 true,
             )
             .await?;
