@@ -652,13 +652,6 @@ impl LeaderState {
             Action::VQEvent(inbox_event) => {
                 self.handle_vqueue_inbox_event(now, inbox_event, vqueues)?;
             }
-            // FREEZE BLOCK:
-            // - Make sure VQInvoke is called from all vquueus paths
-            // - Make sure to release the permit from unconfirmed assignments when removing those
-            // assigmnets (in rejections)
-            // - Pass the permit down to the invocation task
-            // - test that the concurrency limiter works as expected
-            // - review the use of "ts" and "now" in inbox events handling in scheduler
             Action::VQInvoke {
                 qid,
                 item_hash,
