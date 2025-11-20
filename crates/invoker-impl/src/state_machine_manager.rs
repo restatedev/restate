@@ -59,7 +59,8 @@ where
         self.partitions.get(&partition).map(|p| &p.output_tx)
     }
 
-    #[inline]
+    // todo: only used in tests of invocation_epoch.Should be removed along with invocation_epoch.
+    #[allow(dead_code)]
     pub(super) fn resolve_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,

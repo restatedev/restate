@@ -41,6 +41,7 @@ restate-time-util = { workspace = true }
 restate-timer = { workspace = true }
 restate-tracing-instrumentation = { workspace = true }
 restate-types = { workspace = true }
+restate-vqueues = { workspace = true }
 restate-wal-protocol = { workspace = true }
 
 ahash = { workspace = true }

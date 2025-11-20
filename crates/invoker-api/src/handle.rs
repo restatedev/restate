@@ -10,9 +10,11 @@
 
 use std::ops::RangeInclusive;
 
+use restate_types::vqueue::VQueueId;
 use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;
+use restate_futures_util::concurrency::Permit;
 use restate_types::identifiers::PartitionKey;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
@@ -22,6 +24,7 @@ use restate_types::journal_v2::raw::RawNotification;
 
 use super::Effect;
 use super::JournalMetadata;
+use crate::capacity::InvokerToken;
 use crate::invocation_reader::JournalEntry;
 
 #[derive(Debug, Eq, PartialEq, Default)]
@@ -37,6 +40,16 @@ pub trait InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,
+        invocation_target: InvocationTarget,
+        journal: InvokeInputJournal,
+    ) -> Result<(), NotRunningError>;
+
+    fn vqueue_invoke(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        qid: VQueueId,
+        permit: Permit<InvokerToken>,
+        invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError>;
