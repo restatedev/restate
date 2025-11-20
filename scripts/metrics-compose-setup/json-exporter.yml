@@ -1,0 +1,31 @@
+modules:
+  restate_query:
+    headers:
+      Content-Type: application/json
+      Accept: application/json
+    body:
+      content: "{ \"query\": \"SELECT 'completed' AS status, COUNT(*) AS count FROM sys_invocation_status WHERE status = 'completed' UNION ALL SELECT 'suspended' AS status, COUNT(*) AS count FROM sys_invocation_status WHERE status = 'suspended' UNION ALL SELECT 'invoked' AS status, COUNT(*) AS count FROM sys_invocation_status WHERE status = 'invoked' UNION ALL SELECT 'paused' AS status, COUNT(*) AS count FROM sys_invocation_status WHERE status = 'paused';\" }"
+
+    metrics:
+      - name: restate_invocations_total
+        help: "Number of invocations per status"
+        path: '{ .rows[?(@.status == "suspended")].count }'
+        labels:
+          status: suspended
+      - name: restate_invocations_total
+        help: "Number of invocations per status"
+        path: '{ .rows[?(@.status == "invoked")].count }'
+        labels:
+          status: invoked
+      - name: restate_invocations_total
+        help: "Number of invocations per status"
+        path: '{ .rows[?(@.status == "completed")].count }'
+        value_type: "gauge"
+        valueType: "gauge"
+        labels:
+          status: completed
+      - name: restate_invocations_total
+        help: "Number of invocations per status"
+        path: '{ .rows[?(@.status == "paused")].count }'
+        labels:
+          status: paused
