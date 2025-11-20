@@ -2451,7 +2451,7 @@ mod tests {
         // Create an invocation state machine
         let mut ism = InvocationStateMachine::create(
             Some(VQueueId::new(
-                VQueueParent::from_raw(1),
+                VQueueParent::default_unlimited(),
                 invocation_id.partition_key(),
                 VQueueInstance::Default,
             )),
