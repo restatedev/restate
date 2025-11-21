@@ -147,9 +147,9 @@ pub enum Role {
 pub struct NodesConfiguration {
     version: Version,
     cluster_name: String,
-    // a unique fingerprint for this cluster. Introduced in v1.3 for forward compatibility. Will be
-    // used to uniquely identify this cluster instance in future versions.
-    #[serde(default)]
+    // A unique fingerprint for this cluster. Introduced in v1.3 for forward compatibility. As of
+    // v1.6, we expect this cluster fingerprint to be present. Will be used to uniquely identify
+    // this cluster instance. The value is None if the nodes configuration is invalid.
     cluster_fingerprint: Option<ClusterFingerprint>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
@@ -180,18 +180,16 @@ impl GlobalMetadata for NodesConfiguration {
     }
 
     fn validate_update(&self, previous: Option<&Arc<Self>>) -> Result<(), anyhow::Error> {
-        // never accept new configuration that changes the cluster fingerprint
-        if let Some(current_config) = previous
-            && let Some(current_fingerprint) = current_config.cluster_fingerprint()
-            && self
-                .cluster_fingerprint()
-                .is_none_or(|incoming| incoming != current_fingerprint)
+        // never accept new configuration that changes the cluster fingerprint if the previous
+        // configuration was valid
+        if let Some(previous_config) = previous
+            && previous_config.is_valid()
+            && self.cluster_fingerprint() != previous_config.cluster_fingerprint()
         {
             Err(anyhow::anyhow!(
-                "Cannot accept nodes-configuration update that mutates the cluster fingerprint. Rejected a change of fingerprint from '{current_fingerprint}' to incoming value of '{}'.",
-                self.cluster_fingerprint()
-                    .map(|f| f.to_string())
-                    .unwrap_or_default()
+                "Cannot accept nodes-configuration update that mutates the cluster fingerprint. Rejected a change of fingerprint from '{}' to incoming value of '{}'.",
+                previous_config.cluster_fingerprint(),
+                self.cluster_fingerprint().to_string()
             ))
         } else {
             Ok(())
@@ -293,19 +291,11 @@ impl NodesConfiguration {
         self.name_lookup.is_empty()
     }
 
-    pub fn cluster_fingerprint(&self) -> Option<ClusterFingerprint> {
-        self.cluster_fingerprint
-    }
-
-    /// Should be carefully used.
-    ///
-    /// A cluster fingerprint should never change once it's set.
-    pub fn set_cluster_fingerprint(&mut self, fingerprint: ClusterFingerprint) {
-        assert!(
-            self.cluster_fingerprint.is_none(),
-            "cluster fingerprint cannot be changed once set"
-        );
-        self.cluster_fingerprint = Some(fingerprint);
+    #[track_caller]
+    pub fn cluster_fingerprint(&self) -> ClusterFingerprint {
+        self.cluster_fingerprint.expect(
+            "The nodes configuration has not been properly initialized and is still invalid.",
+        )
     }
 
     pub fn cluster_name(&self) -> &str {
@@ -492,6 +482,10 @@ impl NodesConfiguration {
     /// Returns the maximum known plain node id.
     pub fn max_plain_node_id(&self) -> Option<PlainNodeId> {
         self.nodes.keys().max().cloned()
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.version != Version::INVALID
     }
 }
 
