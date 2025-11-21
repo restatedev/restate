@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod cache;
+mod delay_queue;
 pub mod scheduler;
 mod vqueue_config;
 
