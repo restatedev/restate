@@ -2538,7 +2538,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadPromiseTable
             + WritePromiseTable
             + ReadStateTable
-            + WriteStateTable,
+            + WriteStateTable
+            + WriteVQueueTable
+            + ReadVQueueTable,
     {
         entries::OnJournalEntryCommand::from_raw_entry(invocation_id, invocation_status, raw_entry)
             .apply(self)
