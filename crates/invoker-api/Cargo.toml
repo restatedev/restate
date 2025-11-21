@@ -24,7 +24,7 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 futures = { workspace = true }
-gardal = { workspace = true }
+gardal = { workspace = true, features = ["tokio"] }
 num-traits = { workspace = true }
 serde = { workspace = true, optional = true }
 thiserror = { workspace = true }
