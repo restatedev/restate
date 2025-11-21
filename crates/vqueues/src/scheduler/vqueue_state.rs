@@ -11,7 +11,6 @@
 use std::time::Duration;
 
 use hashbrown::HashSet;
-use tokio_util::time::{DelayQueue, delay_queue};
 use tracing::trace;
 
 use restate_storage_api::StorageError;
@@ -21,6 +20,7 @@ use restate_types::clock::UniqueTimestamp;
 use restate_types::vqueue::VQueueId;
 
 use super::Assignments;
+use crate::delay_queue::{self, DelayQueue};
 use crate::scheduler::Action;
 use crate::vqueue_config::VQueueConfig;
 

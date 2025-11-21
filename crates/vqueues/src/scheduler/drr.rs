@@ -17,7 +17,6 @@ use std::task::Waker;
 use hashbrown::HashMap;
 use hashbrown::hash_map;
 use pin_project::pin_project;
-use tokio_util::time::DelayQueue;
 use tracing::{info, trace};
 
 use restate_futures_util::concurrency::Concurrency;
@@ -30,6 +29,7 @@ use restate_types::vqueue::VQueueId;
 use crate::EventDetails;
 use crate::VQueueEvent;
 use crate::VQueuesMeta;
+use crate::delay_queue::DelayQueue;
 use crate::scheduler::Assignments;
 use crate::scheduler::vqueue_state::Eligibility;
 
