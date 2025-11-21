@@ -212,6 +212,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
                 node_config.address.clone(),
                 &Configuration::pinned().networking,
+                false,
             ));
 
             let response = match metadata_server_client.status(()).await {

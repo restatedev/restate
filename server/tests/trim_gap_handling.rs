@@ -110,6 +110,7 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
     let mut client = new_cluster_ctrl_client(create_tonic_channel(
         cluster.nodes[0].advertised_address().clone(),
         &NetworkingOptions::default(),
+        false,
     ));
 
     info!("Waiting until the partition processor has become the leader");

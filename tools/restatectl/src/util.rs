@@ -27,7 +27,7 @@ use restate_types::{
 
 pub fn grpc_channel<P: ListenerPort + GrpcPort>(address: AdvertisedAddress<P>) -> Channel {
     let ctx = CliContext::get();
-    create_tonic_channel(address, &ctx.network)
+    create_tonic_channel(address, &ctx.network, false)
 }
 
 pub fn write_default_provider<W: fmt::Write>(

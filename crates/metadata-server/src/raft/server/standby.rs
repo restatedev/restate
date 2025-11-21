@@ -257,7 +257,7 @@ impl Standby {
                 .clone()
         };
 
-        let channel = create_tonic_channel(address, &Configuration::pinned().networking);
+        let channel = create_tonic_channel(address, &Configuration::pinned().networking, false);
 
         match new_metadata_server_network_client(channel)
             .join_cluster(network::grpc_svc::JoinClusterRequest {
