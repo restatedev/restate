@@ -114,7 +114,7 @@ impl CloudClient {
 
         Ok(Self {
             inner: raw_client,
-            base_url: env.config.cloud.api_base_url.clone(),
+            base_url: env.config.cloud.api_base_url(),
             access_token,
             request_timeout: CliContext::get().request_timeout(),
         })
