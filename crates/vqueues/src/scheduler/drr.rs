@@ -242,6 +242,7 @@ where
                     }
 
                     // Acquire a global concurrency token
+                    // todo consider not requiring concurrency tokens for state mutations
                     if this
                         .concurrency_limiter
                         .poll_and_merge(cx, this.unconfirmed_capacity_permits)

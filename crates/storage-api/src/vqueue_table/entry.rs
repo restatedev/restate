@@ -9,9 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Buf, BufMut};
-
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::InvocationId;
+use restate_types::logs::Lsn;
+use restate_types::state_mut::ExternalStateMutation;
 use restate_types::vqueue::{
     EffectivePriority, NewEntryPriority, VQueueId, VQueueInstance, VQueueParent,
 };
@@ -71,6 +72,14 @@ impl From<InvocationId> for EntryId {
     #[inline]
     fn from(id: InvocationId) -> Self {
         Self::from_bytes(id.invocation_uuid().to_bytes())
+    }
+}
+
+impl From<Lsn> for EntryId {
+    #[inline]
+    fn from(lsn: Lsn) -> Self {
+        // big endian because we want messages with higher message indices to appear later
+        Self::from_bytes(u128::from(lsn.as_u64()).to_be_bytes())
     }
 }
 
@@ -184,4 +193,8 @@ pub trait EntryStateKind: Send {
 
 impl EntryStateKind for () {
     const KIND: EntryKind = EntryKind::Unknown;
+}
+
+impl EntryStateKind for ExternalStateMutation {
+    const KIND: EntryKind = EntryKind::StateMutation;
 }

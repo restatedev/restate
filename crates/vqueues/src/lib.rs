@@ -107,14 +107,18 @@ where
         Ok(true)
     }
 
-    pub async fn enqueue_new(
+    pub async fn enqueue_new<E>(
         &mut self,
         created_at: UniqueTimestamp,
         visible_at: VisibleAt,
         priority: NewEntryPriority,
         kind: EntryKind,
         id: impl Into<EntryId>,
-    ) -> Result<(), StorageError> {
+        item: Option<E>,
+    ) -> Result<(), StorageError>
+    where
+        E: bilrost::Message,
+    {
         let visible_at = match visible_at {
             VisibleAt::Now => VisibleAt::At(created_at),
             VisibleAt::At(ts) => VisibleAt::At(ts),
@@ -146,6 +150,12 @@ where
         self.storage
             .put_vqueue_entry_state(&self.qid, &card, Stage::Inbox, ());
 
+        // store the vqueue item for later usage
+        if let Some(item) = item {
+            self.storage
+                .put_item(&self.qid, card.created_at, card.kind, &card.id, item);
+        }
+
         // do not keep putting the same queue if it's already known to be active
         if status_before == VQueueStatus::Empty
             && matches!(status_after, VQueueStatus::Active | VQueueStatus::Paused)
@@ -164,11 +174,13 @@ where
         Ok(())
     }
 
+    /// Moves a vqueue item from [`Stage::Inbox`] to [`Stage::Run`] and returns the modified
+    /// [`EntryCard`] to identify the updated vqueue item.
     pub async fn attempt_to_run(
         &mut self,
         at: UniqueTimestamp,
         card: &EntryCard,
-    ) -> Result<(), StorageError> {
+    ) -> Result<EntryCard, StorageError> {
         // Remove from inbox and move to ready
         self.storage
             .delete_inbox_entry(&self.qid, Stage::Inbox, card);
@@ -197,7 +209,7 @@ where
         self.storage
             .put_vqueue_entry_state(&self.qid, &modified_card, Stage::Run, ());
 
-        Ok(())
+        Ok(modified_card)
     }
 
     /// Wake up moves the inbox entry from (parked) back into the inbox stage.
@@ -358,6 +370,9 @@ where
         // Remove from the current stage
         self.storage
             .delete_inbox_entry(&self.qid, previous_stage, card);
+
+        self.storage
+            .delete_item(&self.qid, card.created_at, card.kind, &card.id);
 
         let mut updates = VQueueMetaUpdates::default();
         updates.push(
