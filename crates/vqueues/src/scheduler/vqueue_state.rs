@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::Duration;
-
 use hashbrown::HashSet;
+use tokio::time::Instant;
 use tracing::trace;
 
 use restate_storage_api::StorageError;
@@ -359,36 +358,25 @@ where
 
     pub fn maybe_schedule_wakeup(
         &mut self,
-        wake_up_at: UniqueTimestamp,
+        wake_up_at: Instant,
         delay_queue: &mut DelayQueue<VQueueId>,
-        now: UniqueTimestamp,
     ) {
-        let wake_up_at_unix = wake_up_at.to_unix_millis();
-        // Note that check_eligibility already compares now with the visible_at
-        // timestamp, hence the debug_* part.
-        debug_assert!(wake_up_at_unix > now.to_unix_millis());
-
         match &self.wake_up_after {
             // Need to be eligible sooner than what's already scheduled
             Some(wake_up) if wake_up.ts > wake_up_at => {
                 let timer_key = wake_up.timer_key;
 
-                let after_duration =
-                    Duration::from_millis(wake_up_at_unix.saturating_sub_ms(now.to_unix_millis()));
-                delay_queue.reset(&timer_key, after_duration);
+                delay_queue.reset_at(&timer_key, wake_up_at);
                 self.wake_up_after = Some(WakeUp {
                     ts: wake_up_at,
                     timer_key,
                 });
             }
-            Some(_) => {
+            Some(w) => {
                 // We are already scheduled for this timestamp or sooner.
             }
             None => {
-                // I need to be eligible sooner than that.
-                let after_duration =
-                    Duration::from_millis(wake_up_at_unix.saturating_sub_ms(now.to_unix_millis()));
-                let timer_key = delay_queue.insert(self.qid, after_duration);
+                let timer_key = delay_queue.insert_at(self.qid, wake_up_at);
                 self.wake_up_after = Some(WakeUp {
                     ts: wake_up_at,
                     timer_key,
@@ -413,7 +401,7 @@ where
 
 #[derive(Debug)]
 struct WakeUp {
-    ts: UniqueTimestamp,
+    ts: Instant,
     timer_key: delay_queue::Key,
 }
 

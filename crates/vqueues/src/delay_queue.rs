@@ -471,10 +471,10 @@ impl<T> DelayQueue<T> {
     ///
     /// ```ignore
     /// # use restate_vqueues::delay_queue::DelayQueue;
-    /// let delay_queue: DelayQueue<u32> = DelayQueue::new();
+    /// let delay_queue: DelayQueue<u32> = DelayQueue::new(tokio::time::Instant::now());
     /// ```
-    pub fn new() -> DelayQueue<T> {
-        DelayQueue::with_capacity(0)
+    pub fn new(start: Instant) -> DelayQueue<T> {
+        DelayQueue::with_capacity(start, 0)
     }
 
     /// Creates a new, empty, `DelayQueue` with the specified capacity.
@@ -491,7 +491,7 @@ impl<T> DelayQueue<T> {
     ///
     /// # #[tokio::main(flavor = "current_thread")]
     /// # async fn main() {
-    /// let mut delay_queue = DelayQueue::with_capacity(10);
+    /// let mut delay_queue = DelayQueue::with_capacity(tokio::time::Instant::now(), 10);
     ///
     /// // These insertions are done without further allocation
     /// for i in 0..10 {
@@ -502,14 +502,14 @@ impl<T> DelayQueue<T> {
     /// delay_queue.insert(11, Duration::from_secs(11));
     /// # }
     /// ```
-    pub fn with_capacity(capacity: usize) -> DelayQueue<T> {
+    pub fn with_capacity(start: Instant, capacity: usize) -> DelayQueue<T> {
         DelayQueue {
             wheel: Wheel::new(),
             slab: SlabStorage::with_capacity(capacity),
             expired: Stack::default(),
             delay: None,
             wheel_now: 0,
-            start: Instant::now(),
+            start,
             waker: None,
         }
     }
@@ -1214,12 +1214,6 @@ impl<T> DelayQueue<T> {
 
 // We never put `T` in a `Pin`...
 impl<T> Unpin for DelayQueue<T> {}
-
-impl<T> Default for DelayQueue<T> {
-    fn default() -> DelayQueue<T> {
-        DelayQueue::new()
-    }
-}
 
 impl<T> Stream for DelayQueue<T> {
     // DelayQueue seems much more specific, where a user may care that it
