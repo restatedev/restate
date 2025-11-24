@@ -224,7 +224,7 @@ impl HasRecordKeys for Envelope {
             // on read if needed.
             Command::TruncateOutbox(_) => Keys::Single(self.partition_key()),
             Command::ProxyThrough(_) => Keys::Single(self.partition_key()),
-            Command::AttachInvocation(_) => Keys::Single(self.partition_key()),
+            Command::AttachInvocation(req) => Keys::Single(req.partition_key()),
             Command::ResumeInvocation(req) => Keys::Single(req.partition_key()),
             Command::RestartAsNewInvocation(req) => Keys::Single(req.partition_key()),
             // todo: Handle journal entries that request cross-partition invocations

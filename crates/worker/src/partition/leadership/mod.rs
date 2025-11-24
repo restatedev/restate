@@ -405,7 +405,7 @@ where
                 .map(|d| d.durable_point);
 
             let durability_tracker = DurabilityTracker::new(
-                self.partition.partition_id,
+                Arc::clone(&self.partition),
                 last_reported_durable_lsn,
                 replica_set_states,
                 partition_store.partition_db().watch_archived_lsn(),

@@ -22,11 +22,14 @@ use crate::identifiers::ServiceId;
 /// ExternalStateMutation
 ///
 /// represents an external request to mutate a user's state.
-#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct ExternalStateMutation {
+    #[bilrost(1)]
     pub service_id: ServiceId,
+    #[bilrost(2)]
     pub version: Option<String>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
+    #[bilrost(3)]
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     pub state: HashMap<Bytes, Bytes>,
 }

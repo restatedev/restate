@@ -9,21 +9,22 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use restate_partition_store::snapshots::ArchivedLsn;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_stream::wrappers::{IntervalStream, WatchStream};
 use tracing::{debug, warn};
 
 use restate_core::Metadata;
+use restate_partition_store::snapshots::ArchivedLsn;
 use restate_types::config::{Configuration, DurabilityMode};
-use restate_types::identifiers::PartitionId;
-use restate_types::logs::{Lsn, SequenceNumber};
+use restate_types::logs::{Keys, Lsn, SequenceNumber};
 use restate_types::nodes_config::Role;
+use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::control::PartitionDurability;
@@ -37,7 +38,7 @@ const WARN_PERIOD: Duration = Duration::from_secs(60);
 /// changed in the replica-set, but it'll react immediately to changes in the archived Lsn
 /// watch.
 pub struct DurabilityTracker {
-    partition_id: PartitionId,
+    partition: Arc<Partition>,
     last_reported_durable_lsn: Lsn,
     replica_set_states: PartitionReplicaSetStates,
     archived_lsn_watch: WatchStream<Option<ArchivedLsn>>,
@@ -50,7 +51,7 @@ pub struct DurabilityTracker {
 
 impl DurabilityTracker {
     pub fn new(
-        partition_id: PartitionId,
+        partition: Arc<Partition>,
         last_reported_durable_lsn: Option<Lsn>,
         replica_set_states: PartitionReplicaSetStates,
         archived_lsn_watch: watch::Receiver<Option<ArchivedLsn>>,
@@ -62,7 +63,7 @@ impl DurabilityTracker {
         let check_timer = IntervalStream::new(check_timer);
 
         Self {
-            partition_id,
+            partition,
             last_reported_durable_lsn: last_reported_durable_lsn.unwrap_or(Lsn::INVALID),
             replica_set_states,
             archived_lsn_watch: WatchStream::new(archived_lsn_watch),
@@ -184,11 +185,11 @@ impl Stream for DurabilityTracker {
             }
             DurabilityMode::ReplicaSetOnly => self
                 .replica_set_states
-                .get_min_durable_lsn(self.partition_id),
+                .get_min_durable_lsn(self.partition.partition_id),
             DurabilityMode::SnapshotAndReplicaSet => {
                 let min_durable_lsn = self
                     .replica_set_states
-                    .get_min_durable_lsn(self.partition_id);
+                    .get_min_durable_lsn(self.partition.partition_id);
                 self.last_archived.min(min_durable_lsn)
             }
             // disabled until ad-hoc snapshot sharing is supported
@@ -202,7 +203,7 @@ impl Stream for DurabilityTracker {
             DurabilityMode::Balanced => {
                 let max_durable_lsn = self
                     .replica_set_states
-                    .get_max_durable_lsn(self.partition_id);
+                    .get_max_durable_lsn(self.partition.partition_id);
                 self.last_archived.min(max_durable_lsn)
             }
         };
@@ -213,15 +214,16 @@ impl Stream for DurabilityTracker {
         }
 
         let partition_durability = PartitionDurability {
-            partition_id: self.partition_id,
+            partition_id: self.partition.partition_id,
             durable_point: suggested,
             modification_time: MillisSinceEpoch::now(),
+            partition_key_range: Keys::RangeInclusive(self.partition.key_range.clone()),
         };
         // We don't want to keep reporting the same durable Lsn over and over.
         self.last_reported_durable_lsn = suggested;
 
         debug!(
-            partition_id = %self.partition_id,
+            partition_id = %self.partition.partition_id,
             durability_mode = %durability_mode,
             "Reporting {suggested:?} as a durable point for partition"
         );
