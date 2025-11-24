@@ -7962,6 +7962,7 @@ dependencies = [
  "aws-sdk-sts",
  "aws-sigv4",
  "aws-smithy-http",
+ "aws-smithy-http-client",
  "aws-smithy-runtime",
  "aws-smithy-runtime-api",
  "aws-smithy-types",

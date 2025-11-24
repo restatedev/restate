@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["dynamodb"]
+default = []
 etcd = ["etcd-client"]
 objstore = [
   "restate-core",
