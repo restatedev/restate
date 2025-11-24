@@ -20,8 +20,6 @@ use smallvec::SmallVec;
 use restate_futures_util::concurrency::{Concurrency, Permit};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueStore};
-use restate_types::clock::UniqueTimestamp;
-use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::VQueueId;
 
 use crate::VQueueEvent;
@@ -29,6 +27,7 @@ use crate::{VQueuesMeta, VQueuesMetaMut};
 
 use self::drr::DRRScheduler;
 
+mod clock;
 mod drr;
 mod vqueue_state;
 
@@ -185,12 +184,11 @@ where
 
     pub fn on_inbox_event(
         &mut self,
-        now: UniqueTimestamp,
         vqueues: VQueuesMeta<'_>,
         event: &VQueueEvent<S::Item>,
     ) -> Result<(), StorageError> {
         if let State::Active(ref mut drr_scheduler) = self.state {
-            drr_scheduler.as_mut().on_inbox_event(now, vqueues, event)?;
+            drr_scheduler.as_mut().on_inbox_event(vqueues, event)?;
         }
         Ok(())
     }
@@ -199,13 +197,11 @@ where
         &mut self,
         vqueues: VQueuesMeta<'_>,
     ) -> Result<Decision<S::Item>, StorageError> {
-        let now = UniqueTimestamp::from_unix_millis(MillisSinceEpoch::now()).unwrap();
-        poll_fn(|cx| self.poll_schedule_next(now, cx, vqueues)).await
+        poll_fn(|cx| self.poll_schedule_next(cx, vqueues)).await
     }
 
     pub fn poll_schedule_next(
         &mut self,
-        now: UniqueTimestamp,
         cx: &mut std::task::Context<'_>,
         vqueues: VQueuesMeta<'_>,
     ) -> Poll<Result<Decision<S::Item>, StorageError>> {
@@ -213,7 +209,7 @@ where
             // if scheduler is disabled, we always return pending.
             State::Disabled => Poll::Pending,
             State::Active(ref mut drr_scheduler) => {
-                drr_scheduler.as_mut().poll_schedule_next(now, cx, vqueues)
+                drr_scheduler.as_mut().poll_schedule_next(cx, vqueues)
             }
         }
     }

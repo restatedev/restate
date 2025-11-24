@@ -96,8 +96,20 @@ impl UniqueTimestamp {
         Ok(Self(nz))
     }
 
+    /// Compare the physical clock of both timestamps and ignore the logical clock.
+    ///
+    /// Note that this has millisecond precision.
+    pub fn cmp_physical(&self, other: &Self) -> std::cmp::Ordering {
+        self.physical_raw().cmp(&other.physical_raw())
+    }
+
     pub fn as_u64(&self) -> u64 {
         self.0.get()
+    }
+
+    /// Fails if the resulting timestamp is out of range
+    pub fn add_millis(&self, millis: u64) -> Result<Self, Error> {
+        Self::from_parts(self.physical_raw() + millis, self.logical_raw())
     }
 
     #[inline(always)]

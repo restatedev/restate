@@ -30,7 +30,6 @@ use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_api::capacity::InvokerToken;
 use restate_partition_store::{PartitionDb, PartitionStore};
 use restate_storage_api::vqueue_table::EntryCard;
-use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::{
     InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
     WithPartitionKey,
@@ -475,9 +474,6 @@ impl LeaderState {
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
         vqueues: VQueuesMeta<'_>,
     ) -> Result<(), Error> {
-        // todo(asoli): update our hlc timestamp
-        let now = UniqueTimestamp::from_unix_millis(MillisSinceEpoch::now()).unwrap();
-
         let partition_leader_epoch = (self.partition_id, self.leader_epoch);
         match action {
             Action::Invoke {
@@ -650,7 +646,7 @@ impl LeaderState {
                 }
             }
             Action::VQEvent(inbox_event) => {
-                self.handle_vqueue_inbox_event(now, inbox_event, vqueues)?;
+                self.handle_vqueue_inbox_event(inbox_event, vqueues)?;
             }
             Action::VQInvoke {
                 qid,
@@ -679,12 +675,11 @@ impl LeaderState {
 
     fn handle_vqueue_inbox_event(
         &mut self,
-        now: UniqueTimestamp,
         event: VQueueEvent<EntryCard>,
         vqueues: VQueuesMeta<'_>,
     ) -> Result<(), Error> {
         self.scheduler
-            .on_inbox_event(now, vqueues, &event)
+            .on_inbox_event(vqueues, &event)
             .map_err(Error::Storage)?;
 
         Ok(())
