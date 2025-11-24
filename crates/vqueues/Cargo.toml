@@ -22,10 +22,11 @@ futures = { workspace = true }
 hashbrown = { version = "0.16"  }
 pin-project = { workspace = true }
 rocksdb = { workspace = true }
+slab = { version = "0.4" }
 smallvec = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tokio-stream = { workspace = true }
-tokio-util = { workspace = true, features = ["time"] }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
