@@ -162,20 +162,6 @@ where
             if self.remaining_in_round == 0 {
                 // Pop all eligible vqueues that were delayed since we are starting a new round
                 // Once we hit pending, the waker will be registered.
-                //
-                // There is currently an issue due to using two different clock sources. The timer
-                // wheel uses tokio's internal clock but our scheduler's design relies on explicit
-                // monotonic timestamps. This will cause the timer to expire slightly before or after
-                // the actual point at which the input (now) would satisfy the head item's
-                // eligibility requirements. As a result, we will see one of three scenarios:
-                //  1. Time aligns. We pop the timer and the head element will be immediately eligible.
-                //  2. We are woken up before `now` satifies the requirement, in this case will
-                //     schedule a new timer to catch up on the difference.
-                //  3. We are worken up after `now` by a few hundres of millis, in this case the
-                //     head will be eligible but we will be a little late.
-                //
-                //  This will be fixed in a later change after we reason about whether we need any
-                //  causal entanglement between the RSM's clock and the scheduler's internal clock.
                 let previous_round = self.global_sched_round;
                 while let Poll::Ready(Some(expired)) = self.delayed_eligibility.poll_expired(cx) {
                     let Some(qstate) = self.q.get_mut(expired.get_ref()) else {
