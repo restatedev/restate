@@ -8,11 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
 use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
+
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnInvokerEventCommand {
     pub invocation_id: InvocationId,
@@ -87,7 +88,7 @@ mod tests {
     use restate_invoker_api::Effect;
     use restate_types::journal_events::raw::RawEvent;
     use restate_types::journal_events::{Event, TransientErrorEvent};
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
 
     #[restate_core::test]
     async fn store_event() {
@@ -106,7 +107,7 @@ mod tests {
         };
 
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(Effect {
+            .apply(records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEvent {

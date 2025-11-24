@@ -7,9 +7,8 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use tracing::{debug, trace};
 
-use crate::partition::state_machine::entries::OnJournalEntryCommand;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -28,7 +27,9 @@ use restate_types::invocation::{
     InvocationEpoch, InvocationMutationResponseSink, TerminationFlavor,
 };
 use restate_types::journal_v2::CANCEL_SIGNAL;
-use tracing::{debug, trace};
+
+use crate::partition::state_machine::entries::OnJournalEntryCommand;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnCancelCommand {
     pub invocation_id: InvocationId,
@@ -139,7 +140,7 @@ mod tests {
     use restate_types::journal_v2::CANCEL_SIGNAL;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
 
     #[restate_core::test]
     async fn cancel_invoked_invocation() {
@@ -149,11 +150,13 @@ mod tests {
 
         // Send signal notification
         let actions = test_env
-            .apply(Command::TerminateInvocation(InvocationTermination {
-                invocation_id,
-                flavor: TerminationFlavor::Cancel,
-                response_sink: None,
-            }))
+            .apply(records::TerminateInvocation::new_test(
+                InvocationTermination {
+                    invocation_id,
+                    flavor: TerminationFlavor::Cancel,
+                    response_sink: None,
+                },
+            ))
             .await;
         assert_that!(
             actions,
@@ -174,7 +177,7 @@ mod tests {
 
         // Send signal notification
         let actions = test_env
-            .apply(Command::NotifySignal(NotifySignalRequest {
+            .apply(records::NotifySignal::new_test(NotifySignalRequest {
                 invocation_id,
                 signal: CANCEL_SIGNAL.try_into().unwrap(),
             }))
@@ -197,7 +200,7 @@ mod tests {
 
         // Send signal notification before pinning the deployment
         let actions = test_env
-            .apply(Command::NotifySignal(NotifySignalRequest {
+            .apply(records::NotifySignal::new_test(NotifySignalRequest {
                 invocation_id,
                 signal: CANCEL_SIGNAL.try_into().unwrap(),
             }))
@@ -212,7 +215,7 @@ mod tests {
 
         // Now pin to protocol v4, this should apply the cancel notification
         let actions = test_env
-            .apply(Command::InvokerEffect(Box::new(Effect {
+            .apply(records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
@@ -240,7 +243,7 @@ mod tests {
         let rpc_id = PartitionProcessorRpcRequestId::new();
 
         let _ = test_env
-            .apply(Command::Invoke(Box::new(ServiceInvocation {
+            .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
                 invocation_id,
                 execution_time: Some(MillisSinceEpoch::MAX),
                 response_sink: Some(ServiceInvocationResponseSink::ingress(rpc_id)),
@@ -256,7 +259,7 @@ mod tests {
         assert!(let InvocationStatus::Scheduled(_) = current_invocation_status);
 
         let actions = test_env
-            .apply(Command::NotifySignal(NotifySignalRequest {
+            .apply(records::NotifySignal::new_test(NotifySignalRequest {
                 invocation_id,
                 signal: CANCEL_SIGNAL.try_into().unwrap(),
             }))
@@ -294,7 +297,7 @@ mod tests {
         let caller_id = InvocationId::mock_random();
 
         let _ = test_env
-            .apply(Command::Invoke(Box::new(ServiceInvocation {
+            .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 ..ServiceInvocation::mock()
@@ -302,7 +305,7 @@ mod tests {
             .await;
 
         let _ = test_env
-            .apply(Command::Invoke(Box::new(ServiceInvocation {
+            .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
                 invocation_id: inboxed_id,
                 invocation_target: inboxed_target,
                 response_sink: Some(ServiceInvocationResponseSink::PartitionProcessor(
@@ -321,7 +324,7 @@ mod tests {
         assert!(let InvocationStatus::Inboxed(_) = current_invocation_status);
 
         let actions = test_env
-            .apply(Command::NotifySignal(NotifySignalRequest {
+            .apply(records::NotifySignal::new_test(NotifySignalRequest {
                 invocation_id: inboxed_id,
                 signal: CANCEL_SIGNAL.try_into().unwrap(),
             }))

@@ -7,10 +7,10 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::time::Duration;
 
-use super::*;
+use rstest::*;
 
-use crate::partition::state_machine::tests::matchers::actions::invocation_response_to_partition_processor;
 use restate_invoker_api::Effect;
 use restate_storage_api::idempotency_table::{
     IdempotencyMetadata, IdempotencyTable, ReadOnlyIdempotencyTable,
@@ -24,8 +24,9 @@ use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
     SubmitNotificationSink,
 };
-use rstest::*;
-use std::time::Duration;
+
+use super::*;
+use crate::partition::state_machine::tests::matchers::actions::invocation_response_to_partition_processor;
 
 #[restate_core::test]
 async fn start_and_complete_idempotent_invocation() {
@@ -41,7 +42,7 @@ async fn start_and_complete_idempotent_invocation() {
 
     // Send fresh invocation with idempotency key
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
@@ -72,7 +73,7 @@ async fn start_and_complete_idempotent_invocation() {
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
         .apply_multiple([
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -82,7 +83,7 @@ async fn start_and_complete_idempotent_invocation() {
                     )),
                 },
             })),
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
@@ -132,7 +133,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
 
     // Send fresh invocation with idempotency key
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
@@ -163,7 +164,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
         .apply_multiple([
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -173,7 +174,7 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
                     )),
                 },
             })),
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
@@ -258,7 +259,7 @@ async fn complete_already_completed_invocation() {
     // Send a request, should be completed immediately with result
     let request_id = PartitionProcessorRpcRequestId::default();
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
@@ -294,7 +295,7 @@ async fn attach_with_service_invocation_command_while_executing() {
 
     // Send fresh invocation with idempotency key
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
@@ -315,7 +316,7 @@ async fn attach_with_service_invocation_command_while_executing() {
 
     // Latch to existing invocation
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
@@ -331,7 +332,7 @@ async fn attach_with_service_invocation_command_while_executing() {
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
         .apply_multiple([
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -341,7 +342,7 @@ async fn attach_with_service_invocation_command_while_executing() {
                     )),
                 },
             })),
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
@@ -397,7 +398,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
 
     // Send fresh invocation with idempotency key
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
@@ -419,7 +420,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
 
     // Latch to existing invocation, but with a send call
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
@@ -447,7 +448,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
         .apply_multiple([
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -457,7 +458,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
                     )),
                 },
             })),
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
@@ -523,7 +524,7 @@ async fn attach_inboxed_with_send_service_invocation() {
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
@@ -566,7 +567,7 @@ async fn attach_inboxed_with_send_service_invocation() {
     // Now send the request that should get the submit notification
     let idempotency_key = ByteString::from_static("my-idempotency-key");
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
@@ -608,7 +609,7 @@ async fn attach_command() {
 
     // Send fresh invocation with idempotency key
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
@@ -629,13 +630,15 @@ async fn attach_command() {
 
     // Latch to existing invocation, but with a send call
     let actions = test_env
-        .apply(Command::AttachInvocation(AttachInvocationRequest {
-            invocation_query: InvocationQuery::Invocation(invocation_id),
-            block_on_inflight: true,
-            response_sink: ServiceInvocationResponseSink::Ingress {
-                request_id: request_id_2,
+        .apply(records::AttachInvocation::new_test(
+            AttachInvocationRequest {
+                invocation_query: InvocationQuery::Invocation(invocation_id),
+                block_on_inflight: true,
+                response_sink: ServiceInvocationResponseSink::Ingress {
+                    request_id: request_id_2,
+                },
             },
-        }))
+        ))
         .await;
     assert_that!(
         actions,
@@ -646,7 +649,7 @@ async fn attach_command() {
     let response_bytes = Bytes::from_static(b"123");
     let actions = test_env
         .apply_multiple([
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
@@ -656,7 +659,7 @@ async fn attach_command() {
                     )),
                 },
             })),
-            Command::InvokerEffect(Box::new(Effect {
+            records::InvokerEffect::new_test(Box::new(Effect {
                 invocation_id,
                 invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
@@ -700,7 +703,7 @@ async fn attach_command_without_blocking_inflight() {
 
     // Send fresh invocation with idempotency key
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
@@ -722,13 +725,15 @@ async fn attach_command_without_blocking_inflight() {
     // Latch to existing invocation without blocking on inflight invocation
     let caller_invocation_id = InvocationId::mock_random();
     let actions = test_env
-        .apply(Command::AttachInvocation(AttachInvocationRequest {
-            invocation_query: InvocationQuery::Invocation(invocation_id),
-            block_on_inflight: false,
-            response_sink: ServiceInvocationResponseSink::PartitionProcessor(
-                JournalCompletionTarget::from_parts(caller_invocation_id, 1, 0),
-            ),
-        }))
+        .apply(records::AttachInvocation::new_test(
+            AttachInvocationRequest {
+                invocation_query: InvocationQuery::Invocation(invocation_id),
+                block_on_inflight: false,
+                response_sink: ServiceInvocationResponseSink::PartitionProcessor(
+                    JournalCompletionTarget::from_parts(caller_invocation_id, 1, 0),
+                ),
+            },
+        ))
         .await;
     assert_that!(
         actions,
@@ -773,7 +778,7 @@ async fn purge_completed_idempotent_invocation() {
 
     // Send purge command
     let _ = test_env
-        .apply(Command::PurgeInvocation(PurgeInvocationRequest {
+        .apply(records::PurgeInvocation::new_test(PurgeInvocationRequest {
             invocation_id,
             response_sink: None,
         }))

@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::invocation::{AttachInvocationRequest, ServiceInvocationResponseSink};
 use restate_types::journal_v2::AttachInvocationCommand;
+
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub(super) type ApplyAttachInvocationCommand<'e> =
     ApplyJournalCommandEffect<'e, AttachInvocationCommand>;
@@ -59,7 +60,7 @@ mod tests {
         AttachInvocationCommand, AttachInvocationCompletion, AttachInvocationResult,
         AttachInvocationTarget, CommandType, Entry, EntryMetadata, EntryType,
     };
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
     use rstest::rstest;
 
     #[rstest]
@@ -87,7 +88,7 @@ mod tests {
         let actions = test_env
             .apply_multiple([
                 invoker_entry_effect(invocation_id, attach_invocation_command.clone()),
-                Command::InvocationResponse(InvocationResponse {
+                records::InvocationResponse::new_test(InvocationResponse {
                     target: JournalCompletionTarget::from_parts(invocation_id, completion_id, 0),
                     result: ResponseResult::Success(success_result.clone()),
                 }),

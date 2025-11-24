@@ -7,8 +7,8 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use tracing::trace;
 
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -19,7 +19,8 @@ use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use tracing::trace;
+
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPurgeJournalCommand {
     pub invocation_id: InvocationId,
@@ -113,7 +114,7 @@ mod tests {
         InvocationTarget, PurgeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::{CommandType, OutputCommand, OutputResult};
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
     use std::time::Duration;
 
     #[restate_core::test]
@@ -131,7 +132,7 @@ mod tests {
         // Create and complete a fresh invocation
         let actions = test_env
             .apply_multiple([
-                Command::Invoke(Box::new(ServiceInvocation {
+                records::Invoke::new_test(Box::new(ServiceInvocation {
                     invocation_id,
                     invocation_target: invocation_target.clone(),
                     response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
@@ -188,7 +189,7 @@ mod tests {
 
         // Now let's purge the journal
         test_env
-            .apply(Command::PurgeJournal(PurgeInvocationRequest {
+            .apply(records::PurgeJournal::new_test(PurgeInvocationRequest {
                 invocation_id,
                 response_sink: None,
             }))
@@ -197,7 +198,7 @@ mod tests {
         // At this point we should still be able to de-duplicate the invocation
         let request_id = PartitionProcessorRpcRequestId::default();
         let actions = test_env
-            .apply(Command::Invoke(Box::new(ServiceInvocation {
+            .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
                 invocation_id,
                 invocation_target: invocation_target.clone(),
                 response_sink: Some(ServiceInvocationResponseSink::Ingress { request_id }),
@@ -232,7 +233,7 @@ mod tests {
 
         // Now purge completely
         test_env
-            .apply(Command::PurgeInvocation(PurgeInvocationRequest {
+            .apply(records::PurgeInvocation::new_test(PurgeInvocationRequest {
                 invocation_id,
                 response_sink: None,
             }))

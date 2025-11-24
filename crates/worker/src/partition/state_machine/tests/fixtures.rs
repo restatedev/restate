@@ -7,12 +7,11 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::collections::HashSet;
 
-use crate::partition::state_machine::Action;
-use crate::partition::state_machine::tests::TestEnv;
-use crate::partition::types::InvokerEffectKind;
 use bytes::Bytes;
 use googletest::prelude::*;
+
 use restate_invoker_api::{Effect, InvokeInputJournal};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
@@ -29,8 +28,12 @@ use restate_types::journal::enriched::{
 use restate_types::journal_v2;
 use restate_types::journal_v2::Entry;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_wal_protocol::Command;
-use std::collections::HashSet;
+use restate_wal_protocol::v2;
+use restate_wal_protocol::v2::{Raw, Record, records};
+
+use crate::partition::state_machine::Action;
+use crate::partition::state_machine::tests::TestEnv;
+use crate::partition::types::InvokerEffectKind;
 
 pub fn completed_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     JournalEntry::Entry(EnrichedRawEntry::new(
@@ -76,7 +79,10 @@ pub fn incomplete_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
     ))
 }
 
-pub fn invoker_entry_effect(invocation_id: InvocationId, entry: impl Into<Entry>) -> Command {
+pub fn invoker_entry_effect(
+    invocation_id: InvocationId,
+    entry: impl Into<Entry>,
+) -> v2::Envelope<Raw> {
     invoker_entry_effect_for_epoch(invocation_id, 0, entry)
 }
 
@@ -84,8 +90,8 @@ pub fn invoker_entry_effect_for_epoch(
     invocation_id: InvocationId,
     invocation_epoch: InvocationEpoch,
     entry: impl Into<Entry>,
-) -> Command {
-    Command::InvokerEffect(Box::new(Effect {
+) -> v2::Envelope<Raw> {
+    records::InvokerEffect::new_test(Box::new(Effect {
         invocation_id,
         invocation_epoch,
         kind: InvokerEffectKind::journal_entry(
@@ -95,15 +101,15 @@ pub fn invoker_entry_effect_for_epoch(
     }))
 }
 
-pub fn invoker_end_effect(invocation_id: InvocationId) -> Command {
+pub fn invoker_end_effect(invocation_id: InvocationId) -> v2::Envelope<Raw> {
     invoker_end_effect_for_epoch(invocation_id, 0)
 }
 
 pub fn invoker_end_effect_for_epoch(
     invocation_id: InvocationId,
     invocation_epoch: InvocationEpoch,
-) -> Command {
-    Command::InvokerEffect(Box::new(Effect {
+) -> v2::Envelope<Raw> {
+    records::InvokerEffect::new_test(Box::new(Effect {
         invocation_id,
         invocation_epoch,
         kind: InvokerEffectKind::End,
@@ -113,8 +119,8 @@ pub fn invoker_end_effect_for_epoch(
 pub fn pinned_deployment(
     invocation_id: InvocationId,
     service_protocol_version: ServiceProtocolVersion,
-) -> Command {
-    Command::InvokerEffect(Box::new(Effect {
+) -> v2::Envelope<Raw> {
+    records::InvokerEffect::new_test(Box::new(Effect {
         invocation_id,
         invocation_epoch: 0,
         kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
@@ -127,8 +133,8 @@ pub fn pinned_deployment(
 pub fn invoker_suspended(
     invocation_id: InvocationId,
     waiting_for_notifications: impl Into<HashSet<journal_v2::NotificationId>>,
-) -> Command {
-    Command::InvokerEffect(Box::new(Effect {
+) -> v2::Envelope<Raw> {
+    records::InvokerEffect::new_test(Box::new(Effect {
         invocation_id,
         invocation_epoch: 0,
         kind: InvokerEffectKind::SuspendedV2 {
@@ -155,11 +161,13 @@ pub async fn mock_start_invocation_with_invocation_target(
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
     let actions = state_machine
-        .apply(Command::Invoke(Box::new(ServiceInvocation::initialize(
-            invocation_id,
-            invocation_target.clone(),
-            Source::Ingress(PartitionProcessorRpcRequestId::new()),
-        ))))
+        .apply(records::Invoke::new_test(Box::new(
+            ServiceInvocation::initialize(
+                invocation_id,
+                invocation_target.clone(),
+                Source::Ingress(PartitionProcessorRpcRequestId::new()),
+            ),
+        )))
         .await;
 
     assert_that!(

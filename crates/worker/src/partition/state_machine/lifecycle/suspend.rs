@@ -7,14 +7,16 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::collections::HashSet;
 
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use tracing::trace;
+
 use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
 use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::NotificationId;
-use std::collections::HashSet;
-use tracing::trace;
+
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnSuspendCommand {
     pub invocation_id: InvocationId,
@@ -102,8 +104,8 @@ mod tests {
         CommandType, Entry, EntryMetadata, EntryType, NotificationId, SleepCommand, SleepCompletion,
     };
     use restate_types::time::MillisSinceEpoch;
-    use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
+    use restate_wal_protocol::v2::{Record, records};
     use std::time::{Duration, SystemTime};
 
     #[restate_core::test]
@@ -138,7 +140,9 @@ mod tests {
             }))
         );
 
-        let actions = test_env.apply(Command::Timer(timer_key_value)).await;
+        let actions = test_env
+            .apply(records::Timer::new_test(timer_key_value))
+            .await;
         assert_that!(
             actions,
             contains(matchers::actions::invoke_for_id(invocation_id))
@@ -178,7 +182,7 @@ mod tests {
         let actions = test_env
             .apply_multiple([
                 invoker_entry_effect(invocation_id, sleep_command.clone()),
-                Command::Timer(timer_key_value.clone()),
+                records::Timer::new_test(timer_key_value.clone()),
             ])
             .await;
         assert_that!(

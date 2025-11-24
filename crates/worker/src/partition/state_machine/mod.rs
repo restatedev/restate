@@ -14,6 +14,8 @@ mod lifecycle;
 mod utils;
 
 pub use actions::{Action, ActionCollector};
+use restate_types::storage::StorageDecodeError;
+use restate_wal_protocol::v2::{Raw, RecordKind, records};
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -74,7 +76,7 @@ use restate_types::invocation::client::{
     PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{
-    AttachInvocationRequest, IngressInvocationResponseSink, InvocationEpoch,
+    self, AttachInvocationRequest, IngressInvocationResponseSink, InvocationEpoch,
     InvocationMutationResponseSink, InvocationQuery, InvocationResponse, InvocationTarget,
     InvocationTargetType, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
     ResponseResult, ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext,
@@ -105,9 +107,9 @@ use restate_types::state_mut::StateMutationVersion;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
-use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
+use restate_wal_protocol::v2;
 
 use self::utils::SpanExt;
 use crate::metric_definitions::{PARTITION_APPLY_COMMAND, USAGE_LEADER_JOURNAL_ENTRY_COUNT};
@@ -168,6 +170,8 @@ pub enum Error {
     EntryEncoding(#[from] journal_v2::encoding::DecodingError),
     #[error("failed to deserialize entry: {0}")]
     EntryDecoding(#[from] journal_v2::raw::RawEntryError),
+    #[error("failed to decode envelope(v2): {0}")]
+    EnvelopeDecoding(#[from] StorageDecodeError),
     #[error(
         "error when trying to apply invocation response with completion id {1}, the entry type {0} is not expected to be completed through InvocationResponse command"
     )]
@@ -176,6 +180,8 @@ pub enum Error {
         "error when trying to apply invocation response with completion id {0}, because no command was found for given completion id"
     )]
     MissingCommandForInvocationResponse(CompletionId),
+    #[error("received an unknown biforst record kind")]
+    UnknownEnvelopeKind,
 }
 
 #[macro_export]
@@ -259,18 +265,18 @@ impl StateMachine {
     // - Accept `LsnEnvelope` by reference.
     pub async fn apply<TransactionType: restate_storage_api::Transaction + Send>(
         &mut self,
-        command: Command,
+        envelope: v2::Envelope<Raw>,
         record_created_at: MillisSinceEpoch,
         record_lsn: Lsn,
         transaction: &mut TransactionType,
         action_collector: &mut ActionCollector,
         is_leader: bool,
     ) -> Result<(), Error> {
-        let span = utils::state_machine_apply_command_span(is_leader, &command);
+        let span = utils::state_machine_apply_command_span(is_leader, envelope.kind());
         async {
             let start = Instant::now();
             // Apply the command
-            let command_type = command.name();
+            let command_type = envelope.kind().to_string();
             let res = StateMachineApplyContext {
                 storage: transaction,
                 record_created_at,
@@ -285,7 +291,7 @@ impl StateMachine {
                 experimental_features: &self.experimental_features,
                 is_leader,
             }
-            .on_apply(command)
+            .on_apply(envelope)
             .await;
             histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
             res
@@ -424,7 +430,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         });
     }
 
-    async fn on_apply(&mut self, command: Command) -> Result<(), Error>
+    async fn on_apply(&mut self, envelope: v2::Envelope<Raw>) -> Result<(), Error>
     where
         S: IdempotencyTable
             + ReadPromiseTable
@@ -445,8 +451,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable,
     {
-        match command {
-            Command::UpdatePartitionDurability(_) => {
+        match envelope.kind() {
+            RecordKind::Unknown => Err(Error::UnknownEnvelopeKind),
+            RecordKind::UpdatePartitionDurability | RecordKind::AnnounceLeader => {
                 // no-op :-)
                 //
                 // This is a partition-level command that doesn't impact the state machine.
@@ -454,7 +461,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // on_apply() method.
                 Ok(())
             }
-            Command::VersionBarrier(barrier) => {
+            RecordKind::VersionBarrier => {
                 // We have versions in play:
                 // - Our binary's version (this process)
                 // - `min_restate_version` coming from the FSM
@@ -484,6 +491,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                 //   that's not blocking this partition if such replacement exists.
                 // - Peers will not pick this node as leader candidate when performing
                 //   adhoc failovers.
+                let barrier = envelope
+                    .into_typed::<records::VersionBarrier>()
+                    .into_inner()?;
                 if SemanticRestateVersion::current().is_equal_or_newer_than(&barrier.version) {
                     // Feels amazing to be running a new version of restate!
                     lifecycle::OnVersionBarrierCommand { barrier }
@@ -497,10 +507,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                     })
                 }
             }
-            Command::Invoke(service_invocation) => {
-                self.on_service_invocation(service_invocation).await
+            RecordKind::Invoke => {
+                let service_invocation = envelope.into_typed::<records::Invoke>().into_inner()?;
+                self.on_service_invocation(service_invocation.into()).await
             }
-            Command::InvocationResponse(InvocationResponse { target, result }) => {
+            RecordKind::InvocationResponse => {
+                let response = envelope
+                    .into_typed::<records::InvocationResponse>()
+                    .into_inner()?;
+
+                let InvocationResponse { target, result } = response.into();
                 let status = self.get_invocation_status(&target.caller_id).await?;
 
                 if should_use_journal_table_v2(&status) {
@@ -523,16 +539,36 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.handle_completion(target.caller_id, status, completion)
                     .await
             }
-            Command::ProxyThrough(service_invocation) => {
-                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(service_invocation))?;
+            RecordKind::ProxyThrough => {
+                let proxy_request = envelope
+                    .into_typed::<records::ProxyThrough>()
+                    .into_inner()?;
+                self.handle_outgoing_message(OutboxMessage::ServiceInvocation(
+                    proxy_request.invocation.into(),
+                ))?;
                 Ok(())
             }
-            Command::AttachInvocation(attach_invocation_request) => {
-                self.handle_attach_invocation_request(attach_invocation_request)
+            RecordKind::AttachInvocation => {
+                let attach_invocation_request = envelope
+                    .into_typed::<records::AttachInvocation>()
+                    .into_inner()?;
+                self.handle_attach_invocation_request(attach_invocation_request.into())
                     .await
             }
-            Command::InvokerEffect(effect) => self.try_invoker_effect(effect).await,
-            Command::TruncateOutbox(index) => {
+            RecordKind::InvokerEffect => {
+                self.try_invoker_effect(
+                    envelope
+                        .into_typed::<records::InvokerEffect>()
+                        .into_inner()?
+                        .into(),
+                )
+                .await
+            }
+            RecordKind::TruncateOutbox => {
+                let index = envelope
+                    .into_typed::<records::TruncateOutbox>()
+                    .into_inner()?
+                    .index;
                 self.do_truncate_outbox(RangeInclusive::new(
                     (*self.outbox_head_seq_number).unwrap_or(index),
                     index,
@@ -541,11 +577,23 @@ impl<S> StateMachineApplyContext<'_, S> {
                 *self.outbox_head_seq_number = Some(index + 1);
                 Ok(())
             }
-            Command::Timer(timer) => self.on_timer(timer).await,
-            Command::TerminateInvocation(invocation_termination) => {
-                self.on_terminate_invocation(invocation_termination).await
+            RecordKind::Timer => {
+                self.on_timer(envelope.into_typed::<records::Timer>().into_inner()?.into())
+                    .await
             }
-            Command::PurgeInvocation(purge_invocation_request) => {
+            RecordKind::TerminateInvocation => {
+                let invocation_termination = envelope
+                    .into_typed::<records::TerminateInvocation>()
+                    .into_inner()?;
+                self.on_terminate_invocation(invocation_termination.into())
+                    .await
+            }
+            RecordKind::PurgeInvocation => {
+                let purge_invocation_request: invocation::PurgeInvocationRequest = envelope
+                    .into_typed::<records::PurgeInvocation>()
+                    .into_inner()?
+                    .into();
+
                 lifecycle::OnPurgeCommand {
                     invocation_id: purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
@@ -554,7 +602,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 Ok(())
             }
-            Command::PurgeJournal(purge_invocation_request) => {
+            RecordKind::PurgeJournal => {
+                let purge_invocation_request: invocation::PurgeInvocationRequest = envelope
+                    .into_typed::<records::PurgeJournal>()
+                    .into_inner()?
+                    .into();
+
                 lifecycle::OnPurgeJournalCommand {
                     invocation_id: purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
@@ -563,7 +616,12 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 Ok(())
             }
-            Command::ResumeInvocation(resume_invocation_request) => {
+            RecordKind::ResumeInvocation => {
+                let resume_invocation_request: invocation::ResumeInvocationRequest = envelope
+                    .into_typed::<records::ResumeInvocation>()
+                    .into_inner()?
+                    .into();
+
                 lifecycle::OnManualResumeCommand {
                     invocation_id: resume_invocation_request.invocation_id,
                     update_pinned_deployment_id: resume_invocation_request
@@ -574,7 +632,13 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 Ok(())
             }
-            Command::RestartAsNewInvocation(restart_as_new_invocation_request) => {
+            RecordKind::RestartAsNewInvocation => {
+                let restart_as_new_invocation_request: invocation::RestartAsNewInvocationRequest =
+                    envelope
+                        .into_typed::<records::RestartAsNewInvocation>()
+                        .into_inner()?
+                        .into();
+
                 lifecycle::OnRestartAsNewInvocationCommand {
                     invocation_id: restart_as_new_invocation_request.invocation_id,
                     new_invocation_id: restart_as_new_invocation_request.new_invocation_id,
@@ -587,16 +651,31 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 Ok(())
             }
-            Command::PatchState(mutation) => self.handle_external_state_mutation(mutation).await,
-            Command::AnnounceLeader(_) => {
-                // no-op :-)
+            RecordKind::PatchState => {
+                self.handle_external_state_mutation(
+                    envelope
+                        .into_typed::<records::PatchState>()
+                        .into_inner()?
+                        .into(),
+                )
+                .await
+            }
+            RecordKind::ScheduleTimer => {
+                self.register_timer(
+                    envelope
+                        .into_typed::<records::ScheduleTimer>()
+                        .into_inner()?
+                        .into(),
+                    Default::default(),
+                )?;
                 Ok(())
             }
-            Command::ScheduleTimer(timer) => {
-                self.register_timer(timer, Default::default())?;
-                Ok(())
-            }
-            Command::NotifySignal(notify_signal_request) => {
+            RecordKind::NotifySignal => {
+                let notify_signal_request: invocation::NotifySignalRequest = envelope
+                    .into_typed::<records::NotifySignal>()
+                    .into_inner()?
+                    .into();
+
                 lifecycle::OnNotifySignalCommand {
                     invocation_id: notify_signal_request.invocation_id,
                     invocation_status: self
@@ -608,13 +687,21 @@ impl<S> StateMachineApplyContext<'_, S> {
                 .await?;
                 Ok(())
             }
-            Command::NotifyGetInvocationOutputResponse(get_invocation_output_response) => {
-                lifecycle::OnNotifyGetInvocationOutputResponse(get_invocation_output_response)
-                    .apply(self)
-                    .await?;
+            RecordKind::NotifyGetInvocationOutputResponse => {
+                let get_invocation_output_response = envelope
+                    .into_typed::<records::NotifyGetInvocationOutputResponse>()
+                    .into_inner()?;
+                lifecycle::OnNotifyGetInvocationOutputResponse(
+                    get_invocation_output_response.into(),
+                )
+                .apply(self)
+                .await?;
                 Ok(())
             }
-            Command::UpsertSchema(upsert) => {
+            RecordKind::UpsertSchema => {
+                let upsert = envelope
+                    .into_typed::<records::UpsertSchema>()
+                    .into_inner()?;
                 trace!(
                     "Upsert schema record to version '{}'",
                     upsert.schema.version()

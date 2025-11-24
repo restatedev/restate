@@ -7,9 +7,8 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::collections::VecDeque;
 
-use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::InvocationStatus;
@@ -20,7 +19,9 @@ use restate_types::journal_v2::command::{CallCommand, CallRequest, OneWayCallCom
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{CallInvocationIdCompletion, CompletionId, Entry};
 use restate_types::time::MillisSinceEpoch;
-use std::collections::VecDeque;
+
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub(super) type ApplyCallCommand<'e> = ApplyJournalCommandEffect<'e, CallCommand>;
 
@@ -164,7 +165,7 @@ mod tests {
         CommandType, Entry, EntryMetadata, EntryType, OneWayCallCommand,
     };
     use restate_types::time::MillisSinceEpoch;
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
     use rstest::rstest;
     use std::time::{Duration, SystemTime};
 
@@ -194,7 +195,7 @@ mod tests {
         let actions = test_env
             .apply_multiple([
                 invoker_entry_effect(invocation_id, call_command.clone()),
-                Command::InvocationResponse(InvocationResponse {
+                records::InvocationResponse::new_test(InvocationResponse {
                     target: JournalCompletionTarget::from_parts(
                         invocation_id,
                         result_completion_id,

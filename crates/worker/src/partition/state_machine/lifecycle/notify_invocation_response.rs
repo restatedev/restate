@@ -8,9 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::invocation_status_ext::InvocationStatusExt;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext, entries};
+use tracing::error;
+
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
@@ -30,7 +29,10 @@ use restate_types::journal_v2::{
     CompletionId, GetInvocationOutputCompletion, GetInvocationOutputResult, GetPromiseCompletion,
     GetPromiseResult, SleepCompletion,
 };
-use tracing::error;
+
+use crate::debug_if_leader;
+use crate::partition::state_machine::invocation_status_ext::InvocationStatusExt;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext, entries};
 
 pub struct OnNotifyInvocationResponse {
     pub invocation_id: InvocationId,
@@ -182,7 +184,7 @@ mod tests {
     use restate_types::journal_v2::{
         CallCommand, CallInvocationIdCompletion, CallRequest, Entry, EntryType,
     };
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
 
     #[restate_core::test]
     async fn reply_to_call_with_failure_and_metadata() {
@@ -208,7 +210,7 @@ mod tests {
         let actions = test_env
             .apply_multiple([
                 fixtures::invoker_entry_effect(invocation_id, call_command.clone()),
-                Command::InvocationResponse(InvocationResponse {
+                records::InvocationResponse::new_test(InvocationResponse {
                     target: JournalCompletionTarget::from_parts(
                         invocation_id,
                         result_completion_id,

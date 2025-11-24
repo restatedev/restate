@@ -8,15 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_events::raw::RawEvent;
+
+use crate::debug_if_leader;
+use crate::partition::state_machine::lifecycle::event::ApplyEventCommand;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPausedCommand {
     pub invocation_id: InvocationId,
@@ -78,7 +79,7 @@ mod tests {
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
 
     #[restate_core::test]
     async fn paused_with_pinned_deployment() {
@@ -100,7 +101,7 @@ mod tests {
 
         // Check we just pause
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(
+            .apply(records::InvokerEffect::new_test(Box::new(
                 restate_invoker_api::Effect {
                     invocation_id,
                     invocation_epoch: 0,
@@ -152,7 +153,7 @@ mod tests {
 
         // Check we just pause
         let _ = test_env
-            .apply(Command::InvokerEffect(Box::new(
+            .apply(records::InvokerEffect::new_test(Box::new(
                 restate_invoker_api::Effect {
                     invocation_id,
                     invocation_epoch: 0,

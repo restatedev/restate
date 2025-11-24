@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-
 use restate_types::journal_v2::{
     CallCommand, CallCompletion, CallRequest, SleepCommand, SleepCompletion, raw::TryFromEntry,
 };
+
+use super::*;
 
 #[restate_core::test]
 async fn fence_old_calls_and_completions() {
@@ -129,7 +129,7 @@ async fn fence_old_calls_and_completions() {
 
     // Completion with epoch 0 gets ignored
     let actions = test_env
-        .apply(Command::InvocationResponse(InvocationResponse {
+        .apply(records::InvocationResponse::new_test(InvocationResponse {
             target: JournalCompletionTarget::from_parts(invocation_id, 2, 0),
             result: ResponseResult::Success(Bytes::default()),
         }))
@@ -143,7 +143,7 @@ async fn fence_old_calls_and_completions() {
 
     // Completion with epoch 1 gets accepted
     let actions = test_env
-        .apply(Command::InvocationResponse(InvocationResponse {
+        .apply(records::InvocationResponse::new_test(InvocationResponse {
             target: JournalCompletionTarget::from_parts(invocation_id, 2, 1),
             result: ResponseResult::Success(Bytes::default()),
         }))
@@ -288,12 +288,9 @@ async fn fence_old_sleep_and_completions() {
 
     // Completion with epoch 0 gets ignored
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::complete_journal_entry(
-            wake_up_time,
-            invocation_id,
-            1,
-            0,
-        )))
+        .apply(records::Timer::new_test(
+            TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, 1, 0),
+        ))
         .await;
     assert_that!(
         actions,
@@ -309,12 +306,9 @@ async fn fence_old_sleep_and_completions() {
 
     // Completion with epoch 1 gets accepted
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::complete_journal_entry(
-            wake_up_time,
-            invocation_id,
-            1,
-            1,
-        )))
+        .apply(records::Timer::new_test(
+            TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, 1, 1),
+        ))
         .await;
     assert_that!(
         actions,

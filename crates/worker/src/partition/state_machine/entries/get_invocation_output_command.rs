@@ -8,13 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::invocation::{AttachInvocationRequest, ServiceInvocationResponseSink};
 use restate_types::journal_v2::GetInvocationOutputCommand;
+
+use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub(super) type ApplyGetInvocationOutputCommand<'e> =
     ApplyJournalCommandEffect<'e, GetInvocationOutputCommand>;
@@ -60,7 +61,7 @@ mod tests {
         AttachInvocationTarget, CommandType, Entry, EntryMetadata, EntryType,
         GetInvocationOutputCommand, GetInvocationOutputCompletion, GetInvocationOutputResult,
     };
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
     use rstest::rstest;
 
     #[rstest]
@@ -93,12 +94,12 @@ mod tests {
             completion_id,
         };
         let response_command = if complete_using_notify_get_invocation_output {
-            Command::NotifyGetInvocationOutputResponse(GetInvocationOutputResponse {
+            records::NotifyGetInvocationOutputResponse::new_test(GetInvocationOutputResponse {
                 target: JournalCompletionTarget::from_parts(invocation_id, completion_id, 0),
                 result: expected_get_invocation_result.clone(),
             })
         } else {
-            Command::InvocationResponse(InvocationResponse {
+            records::InvocationResponse::new_test(InvocationResponse {
                 target: JournalCompletionTarget::from_parts(invocation_id, completion_id, 0),
                 result: if complete_with_not_ready {
                     ResponseResult::Failure(NOT_READY_INVOCATION_ERROR)

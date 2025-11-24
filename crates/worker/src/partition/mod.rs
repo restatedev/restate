@@ -7,15 +7,6 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-
-mod cleaner;
-pub mod invoker_storage_reader;
-mod leadership;
-mod rpc;
-pub mod shuffle;
-mod state_machine;
-pub mod types;
-
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,7 +36,7 @@ use restate_time_util::DurationExt;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::config::Configuration;
 use restate_types::identifiers::LeaderEpoch;
-use restate_types::logs::{KeyFilter, Lsn, Record, SequenceNumber};
+use restate_types::logs::{KeyFilter, Keys, Lsn, MatchKeyQuery, Record, SequenceNumber};
 use restate_types::net::RpcRequest;
 use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
@@ -58,7 +49,8 @@ use restate_types::storage::StorageDecodeError;
 use restate_types::time::{MillisSinceEpoch, NanosSinceEpoch};
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 use restate_wal_protocol::control::AnnounceLeader;
-use restate_wal_protocol::{Command, Destination, Envelope, Header};
+use restate_wal_protocol::v2;
+use restate_wal_protocol::v2::{RecordKind, records};
 
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
@@ -67,6 +59,14 @@ use crate::metric_definitions::{
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
 use crate::partition::state_machine::{ActionCollector, StateMachine};
+
+mod cleaner;
+pub mod invoker_storage_reader;
+mod leadership;
+mod rpc;
+pub mod shuffle;
+mod state_machine;
+pub mod types;
 
 /// Target leader state of the partition processor.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -163,6 +163,7 @@ where
             partition_id_str,
             leadership_state,
             state_machine,
+            key_filter: KeyFilter::Within(partition_store.partition_key_range().clone()),
             partition_store,
             bifrost,
             target_leader_state_rx,
@@ -219,6 +220,7 @@ pub struct PartitionProcessor<InvokerSender> {
     replica_set_states: PartitionReplicaSetStates,
 
     partition_store: PartitionStore,
+    key_filter: KeyFilter,
     trim_queue: TrimQueue,
 }
 
@@ -269,8 +271,9 @@ pub enum ProcessorError {
 
 struct LsnEnvelope {
     pub lsn: Lsn,
+    pub keys: Keys,
     pub created_at: NanosSinceEpoch,
-    pub envelope: Arc<Envelope>,
+    pub envelope: Arc<v2::Envelope<v2::Raw>>,
 }
 
 impl<InvokerSender> PartitionProcessor<InvokerSender>
@@ -514,6 +517,7 @@ where
 
                         let record = LsnEnvelope {
                             lsn,
+                            keys: record.keys().clone(),
                             created_at: record.created_at(),
                             envelope: record.decode_arc()?,
                         };
@@ -686,37 +690,53 @@ where
         transaction: &mut PartitionStoreTransaction<'_>,
         action_collector: &mut ActionCollector,
     ) -> Result<Option<Box<AnnounceLeader>>, state_machine::Error> {
-        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.command.name(), record.envelope.header);
+        trace!(lsn = %record.lsn, "Processing bifrost record for '{}': {:?}", record.envelope.kind(), record.envelope.header());
 
-        if let Some(dedup_information) = self.is_targeted_to_me(&record.envelope.header) {
-            // deduplicate if deduplication information has been provided
-            if let Some(dedup_information) = dedup_information {
-                if Self::is_outdated_or_duplicate(dedup_information, transaction).await? {
-                    debug!(
-                        "Ignoring outdated or duplicate message: {:?}",
-                        record.envelope.header
-                    );
-                    return Ok(None);
-                }
-                transaction
-                    .put_dedup_seq_number(
-                        dedup_information.producer_id.clone(),
-                        &dedup_information.sequence_number,
-                    )
-                    .map_err(state_machine::Error::Storage)?;
-            }
+        if !self.is_targeted_to_me(&record.keys) {
+            self.status.num_skipped_records += 1;
+            trace!(
+                "Ignore message which is not targeted to me: {:?}",
+                record.envelope.header()
+            );
+        }
 
-            // todo: redesign to pass the arc (or reference) further down
-            let record_created_at = record.created_at;
-            let record_lsn = record.lsn;
-            let envelope = Arc::unwrap_or_clone(record.envelope);
-
-            if let Command::AnnounceLeader(announce_leader) = envelope.command {
-                // leadership change detected, let's finish our transaction here
-                return Ok(Some(announce_leader));
-            } else if let Command::UpdatePartitionDurability(partition_durability) =
-                envelope.command
+        // deduplicate if deduplication information has been provided
+        // todo(azmy): use record.envelope.dedup() directly instead of
+        // converting to dedup-information.
+        let dedup_information = record.envelope.dedup().clone().into();
+        if let Some(dedup_information) = dedup_information {
+            if Self::is_outdated_or_duplicate(&dedup_information, transaction)
+                .await
+                .map_err(state_machine::Error::from)?
             {
+                debug!(
+                    "Ignoring outdated or duplicate message: {:?}",
+                    record.envelope.header()
+                );
+                return Ok(None);
+            }
+            transaction
+                .put_dedup_seq_number(
+                    dedup_information.producer_id.clone(),
+                    &dedup_information.sequence_number,
+                )
+                .map_err(state_machine::Error::Storage)?;
+        }
+
+        // todo: redesign to pass the arc (or reference) further down
+        let record_created_at = record.created_at;
+        let record_lsn = record.lsn;
+        let envelope = Arc::unwrap_or_clone(record.envelope);
+
+        match envelope.kind() {
+            RecordKind::AnnounceLeader => {
+                let envelope = envelope.into_typed::<records::AnnounceLeader>();
+                let (_, payload) = envelope.split()?;
+                return Ok(Some(Box::new(payload)));
+            }
+            RecordKind::UpdatePartitionDurability => {
+                let envelope = envelope.into_typed::<records::UpdatePartitionDurability>();
+                let (_, partition_durability) = envelope.split()?;
                 if partition_durability.partition_id != self.partition_store.partition_id() {
                     self.status.num_skipped_records += 1;
                     trace!(
@@ -732,12 +752,15 @@ where
                     durable_point: partition_durability.durable_point,
                 };
                 if self.trim_queue.push(&partition_durability) {
-                    transaction.put_partition_durability(&partition_durability)?;
+                    transaction
+                        .put_partition_durability(&partition_durability)
+                        .map_err(state_machine::Error::from)?;
                 }
-            } else {
+            }
+            _ => {
                 self.state_machine
                     .apply(
-                        envelope.command,
+                        envelope,
                         record_created_at.into(),
                         record_lsn,
                         transaction,
@@ -746,31 +769,13 @@ where
                     )
                     .await?;
             }
-        } else {
-            self.status.num_skipped_records += 1;
-            trace!(
-                "Ignore message which is not targeted to me: {:?}",
-                record.envelope.header
-            );
         }
 
         Ok(None)
     }
 
-    fn is_targeted_to_me<'a>(&self, header: &'a Header) -> Option<&'a Option<DedupInformation>> {
-        match &header.dest {
-            Destination::Processor {
-                partition_key,
-                dedup,
-            } if self
-                .partition_store
-                .partition_key_range()
-                .contains(partition_key) =>
-            {
-                Some(dedup)
-            }
-            _ => None,
-        }
+    fn is_targeted_to_me(&self, keys: &Keys) -> bool {
+        keys.matches_key_query(&self.key_filter)
     }
 
     async fn is_outdated_or_duplicate(

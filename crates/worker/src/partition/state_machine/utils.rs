@@ -7,11 +7,11 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use tracing::{Level, Span, debug_span, event_enabled, trace_span};
 
 use restate_types::invocation::InvocationEpoch;
 use restate_types::{identifiers::InvocationId, invocation::InvocationTarget};
-use restate_wal_protocol::Command;
-use tracing::{Level, Span, debug_span, event_enabled, trace_span};
+use restate_wal_protocol::v2::RecordKind;
 
 pub(super) trait SpanExt {
     fn record_invocation_id(&self, id: &InvocationId);
@@ -38,11 +38,11 @@ impl SpanExt for tracing::Span {
     }
 }
 
-pub(super) fn state_machine_apply_command_span(is_leader: bool, cmd: &Command) -> Span {
+pub(super) fn state_machine_apply_command_span(is_leader: bool, cmd: RecordKind) -> Span {
     let span = if is_leader {
         debug_span!(
             "apply_command",
-            otel.name = format!("apply-command: {}", cmd.name()),
+            otel.name = format!("apply-command: {}", cmd),
             restate.invocation.id = tracing::field::Empty,
             restate.invocation.epoch = tracing::field::Empty,
             restate.invocation.target = tracing::field::Empty,
@@ -53,7 +53,7 @@ pub(super) fn state_machine_apply_command_span(is_leader: bool, cmd: &Command) -
     } else {
         trace_span!(
             "apply_command",
-            otel.name = format!("apply-command: {}", cmd.name()),
+            otel.name = format!("apply-command: {}", cmd),
             restate.invocation.id = tracing::field::Empty,
             restate.invocation.epoch = tracing::field::Empty,
             restate.invocation.target = tracing::field::Empty,

@@ -219,8 +219,8 @@ mod tests {
         SleepCommand, SleepCompletion,
     };
     use restate_types::time::MillisSinceEpoch;
-    use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
+    use restate_wal_protocol::v2::{Record, records};
     use rstest::rstest;
     use std::time::Duration;
 
@@ -237,7 +237,7 @@ mod tests {
         // Send signal notification
         let signal = Signal::new(SignalId::for_index(17), signal_result);
         let actions = test_env
-            .apply(Command::NotifySignal(NotifySignalRequest {
+            .apply(records::NotifySignal::new_test(NotifySignalRequest {
                 invocation_id,
                 signal: signal.clone(),
             }))
@@ -270,7 +270,7 @@ mod tests {
         // Send signal notification before pinned deployment
         let signal = Signal::new(SignalId::for_index(17), SignalResult::Void);
         let actions = test_env
-            .apply(Command::NotifySignal(NotifySignalRequest {
+            .apply(records::NotifySignal::new_test(NotifySignalRequest {
                 invocation_id,
                 signal: signal.clone(),
             }))
@@ -338,12 +338,14 @@ mod tests {
         // Send a completion notification for a command (e.g., Sleep) with completion_id = 1
         let completion_id = 1;
         let _ = test_env
-            .apply(Command::Timer(TimerKeyValue::complete_journal_entry(
-                wake_up_time,
-                invocation_id,
-                completion_id,
-                0,
-            )))
+            .apply(records::Timer::new_test(
+                TimerKeyValue::complete_journal_entry(
+                    wake_up_time,
+                    invocation_id,
+                    completion_id,
+                    0,
+                ),
+            ))
             .await;
 
         // The invocation should remain paused
@@ -386,11 +388,13 @@ mod tests {
 
         // Apply the cancel signal notification
         let actions = test_env
-            .apply(Command::TerminateInvocation(InvocationTermination {
-                invocation_id,
-                flavor: TerminationFlavor::Cancel,
-                response_sink: None,
-            }))
+            .apply(records::TerminateInvocation::new_test(
+                InvocationTermination {
+                    invocation_id,
+                    flavor: TerminationFlavor::Cancel,
+                    response_sink: None,
+                },
+            ))
             .await;
 
         // The invocation should be resumed (invoke action dispatched)

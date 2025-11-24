@@ -7,14 +7,15 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::time::{Duration, SystemTime};
 
-use super::*;
+use test_log::test;
 
 use restate_storage_api::inbox_table::ReadInboxTable;
 use restate_types::invocation::SubmitNotificationSink;
 use restate_types::time::MillisSinceEpoch;
-use std::time::{Duration, SystemTime};
-use test_log::test;
+
+use super::*;
 
 #[test(restate_core::test)]
 async fn send_with_delay() {
@@ -27,7 +28,7 @@ async fn send_with_delay() {
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -52,7 +53,7 @@ async fn send_with_delay() {
 
     // Now fire the timer
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::neo_invoke(
+        .apply(records::Timer::new_test(TimerKeyValue::neo_invoke(
             wake_up_time,
             invocation_id,
         )))
@@ -87,7 +88,7 @@ async fn send_with_delay_to_locked_virtual_object() {
 
     let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             response_sink: None,
@@ -121,7 +122,7 @@ async fn send_with_delay_to_locked_virtual_object() {
 
     // Now fire the timer
     let actions = test_env
-        .apply(Command::Timer(TimerKeyValue::neo_invoke(
+        .apply(records::Timer::new_test(TimerKeyValue::neo_invoke(
             wake_up_time,
             invocation_id,
         )))
@@ -172,7 +173,7 @@ async fn send_with_delay_and_idempotency_key() {
     ));
 
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key.clone()),
@@ -202,7 +203,7 @@ async fn send_with_delay_and_idempotency_key() {
     // Send another invocation which reattaches to the original one
     let request_id_2 = PartitionProcessorRpcRequestId::default();
     let actions = test_env
-        .apply(Command::Invoke(Box::new(ServiceInvocation {
+        .apply(records::Invoke::new_test(Box::new(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
             idempotency_key: Some(idempotency_key),

@@ -415,7 +415,7 @@ mod tests {
         Header, InvocationResponse, InvocationTarget, JournalCompletionTarget, ResponseResult,
     };
     use restate_types::journal_v2::{CallCommand, CallRequest};
-    use restate_wal_protocol::Command;
+    use restate_wal_protocol::v2::{Record, records};
 
     #[restate_core::test]
     async fn update_journal_and_commands_length() {
@@ -458,7 +458,7 @@ mod tests {
         );
 
         let _ = test_env
-            .apply(Command::InvocationResponse(InvocationResponse {
+            .apply(records::InvocationResponse::new_test(InvocationResponse {
                 target: JournalCompletionTarget {
                     caller_id: invocation_id,
                     caller_completion_id: result_completion_id,
