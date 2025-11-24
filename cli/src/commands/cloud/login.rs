@@ -26,11 +26,13 @@ use crate::{
     clients::cloud::{CloudClient, CloudClientInterface},
 };
 
+use super::IdentityProvider;
+
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_login")]
 pub struct Login {}
 
-pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
+pub async fn run_login(State(env): State<CliEnv>, _opts: &Login) -> Result<()> {
     let config_data = if env.config_file.is_file() {
         std::fs::read_to_string(env.config_file.as_path())?
     } else {
@@ -41,7 +43,8 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
         .parse::<DocumentMut>()
         .context("Failed to parse config file as TOML")?;
 
-    let access_token = auth_flow(&env, opts).await?;
+    let identity_provider = env.config.cloud.resolve_identity_provider().await?;
+    let access_token = auth_flow(&env, &identity_provider).await?;
 
     write_access_token(&mut doc, &access_token)?;
 
@@ -72,7 +75,17 @@ pub async fn run_login(State(env): State<CliEnv>, opts: &Login) -> Result<()> {
     Ok(())
 }
 
-async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
+async fn auth_flow(env: &CliEnv, identity_provider: &IdentityProvider) -> Result<String> {
+    match identity_provider {
+        IdentityProvider::Cognito {
+            client_id,
+            login_base_url,
+        } => cognito_auth_flow(env, client_id, login_base_url).await,
+        IdentityProvider::WorkOS { client_id } => workos_auth_flow(client_id).await,
+    }
+}
+
+async fn cognito_auth_flow(env: &CliEnv, client_id: &str, login_base_url: &Url) -> Result<String> {
     let client = reqwest::Client::builder()
         .user_agent(format!(
             "{}/{} {}-{}",
@@ -86,19 +99,18 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
         .build()
         .context("Failed to build oauth token client")?;
 
+    let redirect_ports = env.config.cloud.redirect_ports();
     let mut i = 0;
     let listener = loop {
-        if i >= env.config.cloud.redirect_ports.len() {
+        if i >= redirect_ports.len() {
             return Err(anyhow!(
                 "Failed to bind oauth callback server to localhost. Tried ports: [{:?}]",
-                env.config.cloud.redirect_ports
+                redirect_ports
             ));
         }
-        if let Ok(listener) = tokio::net::TcpListener::bind(SocketAddr::from((
-            [127, 0, 0, 1],
-            env.config.cloud.redirect_ports[i],
-        )))
-        .await
+        if let Ok(listener) =
+            tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], redirect_ports[i])))
+                .await
         {
             break listener;
         }
@@ -115,12 +127,12 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
 
     let state = uuid::Uuid::now_v7().simple().to_string();
 
-    let mut login_uri = env.config.cloud.login_base_url.join("/login")?;
+    let mut login_uri = login_base_url.join("/login")?;
     login_uri
         .query_pairs_mut()
         .clear()
         .append_pair("response_type", "code")
-        .append_pair("client_id", &env.config.cloud.client_id)
+        .append_pair("client_id", client_id)
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("state", &state)
         .append_pair("scope", "openid");
@@ -160,8 +172,8 @@ async fn auth_flow(env: &CliEnv, _opts: &Login) -> Result<String> {
         )
         .with_state(RedirectState {
             client,
-            login_base_url: env.config.cloud.login_base_url.clone(),
-            client_id: env.config.cloud.client_id.clone(),
+            login_base_url: login_base_url.clone(),
+            client_id: client_id.to_string(),
             redirect_uri,
             result_send,
             state,
@@ -275,4 +287,117 @@ fn write_access_token(doc: &mut DocumentMut, access_token: &str) -> Result<()> {
     cloud["access_token"] = value(access_token);
 
     Ok(())
+}
+
+async fn workos_auth_flow(client_id: &str) -> Result<String> {
+    let client = reqwest::Client::builder()
+        .user_agent(format!(
+            "{}/{} {}-{}",
+            env!("CARGO_PKG_NAME"),
+            build_info::RESTATE_CLI_VERSION,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        ))
+        .https_only(true)
+        .connect_timeout(CliContext::get().connect_timeout())
+        .build()
+        .context("Failed to build HTTP client")?;
+
+    let device_auth_response: DeviceAuthorizationResponse = client
+        .post("https://api.workos.com/user_management/authorize/device")
+        .form(&[("client_id", client_id)])
+        .send()
+        .await
+        .context("Failed to request device authorization")?
+        .error_for_status()
+        .context("Bad status code from device authorization endpoint")?
+        .json()
+        .await
+        .context("Failed to decode device authorization response")?;
+
+    c_println!(
+        "Please visit {} and enter code: {}",
+        device_auth_response.verification_uri,
+        device_auth_response.user_code
+    );
+
+    if let Err(_err) = open::that(device_auth_response.verification_uri_complete.clone()) {
+        c_println!("Failed to open browser automatically. Please open the above URL manually.")
+    }
+
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(indicatif::ProgressStyle::with_template("{spinner} {msg}").unwrap());
+    progress.enable_steady_tick(std::time::Duration::from_millis(120));
+    progress.set_message("Waiting for authentication...");
+
+    let mut interval = std::time::Duration::from_secs(device_auth_response.interval);
+    let expires_at =
+        std::time::Instant::now() + std::time::Duration::from_secs(device_auth_response.expires_in);
+
+    loop {
+        if std::time::Instant::now() > expires_at {
+            progress.finish_and_clear();
+            return Err(anyhow!("Device authorization expired. Please try again."));
+        }
+
+        tokio::time::sleep(interval).await;
+
+        let token_result: Result<WorkOSAuthenticateResponse, _> = client
+            .post("https://api.workos.com/user_management/authenticate")
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", &device_auth_response.device_code),
+                ("client_id", client_id),
+            ])
+            .send()
+            .await
+            .context("Failed to poll for authentication")?
+            .json()
+            .await;
+
+        match token_result {
+            Ok(response) if response.access_token.is_some() => {
+                progress.finish_and_clear();
+                return Ok(response.access_token.unwrap());
+            }
+            Ok(response) if response.error.as_deref() == Some("authorization_pending") => {
+                continue;
+            }
+            Ok(response) if response.error.as_deref() == Some("slow_down") => {
+                interval += std::time::Duration::from_secs(1);
+                continue;
+            }
+            Ok(response) if response.error.is_some() => {
+                progress.finish_and_clear();
+                return Err(anyhow!(
+                    "Authentication failed: {}",
+                    response.error.unwrap_or_else(|| "unknown error".into())
+                ));
+            }
+            Ok(_) => {
+                progress.finish_and_clear();
+                return Err(anyhow!("Unexpected response from authentication endpoint"));
+            }
+            Err(err) => {
+                progress.finish_and_clear();
+                return Err(err.into());
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct DeviceAuthorizationResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: String,
+    expires_in: u64,
+    interval: u64,
+}
+
+#[derive(Deserialize)]
+struct WorkOSAuthenticateResponse {
+    access_token: Option<String>,
+    error: Option<String>,
 }
