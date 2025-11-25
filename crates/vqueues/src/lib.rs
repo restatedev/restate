@@ -10,10 +10,12 @@
 
 mod cache;
 mod delay_queue;
+mod metric_definitions;
 pub mod scheduler;
 mod vqueue_config;
 
 pub use cache::{VQueuesMeta, VQueuesMetaMut};
+pub use metric_definitions::describe_metrics;
 pub use scheduler::SchedulerService;
 
 use restate_storage_api::StorageError;

@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use hashbrown::HashMap;
 use hashbrown::hash_map;
+use metrics::counter;
 use pin_project::pin_project;
 use tokio::time::Instant;
 use tracing::{info, trace};
@@ -33,6 +34,10 @@ use crate::EventDetails;
 use crate::VQueueEvent;
 use crate::VQueuesMeta;
 use crate::delay_queue::DelayQueue;
+use crate::metric_definitions::VQUEUE_ENQUEUE;
+use crate::metric_definitions::VQUEUE_INVOKER_CAPACITY_WAIT;
+use crate::metric_definitions::VQUEUE_RUN_CONFIRMED;
+use crate::metric_definitions::VQUEUE_RUN_REJECTED;
 use crate::scheduler::Assignments;
 use crate::scheduler::vqueue_state::Eligibility;
 
@@ -62,6 +67,8 @@ pub struct DRRScheduler<S: VQueueStore, Token> {
     datum: SchedulerClock,
     /// Time of the last memory reporting and memory compaction
     last_report: Instant,
+    capacity_wait_start: Option<Instant>,
+
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
 }
@@ -121,6 +128,7 @@ where
             datum,
             last_report: start,
             storage,
+            capacity_wait_start: None,
         }
     }
 
@@ -247,11 +255,25 @@ where
                         .poll_and_merge(cx, this.unconfirmed_capacity_permits)
                         .is_pending()
                     {
+                        // increment the wait time on invoker capacity
+                        if let Some(last_wait) = this.capacity_wait_start.replace(Instant::now()) {
+                            counter!(VQUEUE_INVOKER_CAPACITY_WAIT)
+                                .increment(last_wait.elapsed().as_millis() as u64);
+                        } else {
+                            self.capacity_wait_start = Some(Instant::now());
+                        }
                         // Waker will be notified when capacity is available.
                         // will abort the entire scheduler loop after recording the accumulated
                         // assignments.
                         break 'single_vqueue Outcome::Abort;
                     }
+
+                    // We are no longer waiting, let's record the time we were waiting
+                    if let Some(last_wait) = this.capacity_wait_start.take() {
+                        counter!(VQUEUE_INVOKER_CAPACITY_WAIT)
+                            .increment(last_wait.elapsed().as_millis() as u64);
+                    }
+
                     // we have concurrency token, let's pick an item
                     qstate.pop_unchecked(this.storage, &mut assignments)?;
                     qstate.deficit.consume_one();
@@ -287,7 +309,9 @@ where
             self.waker.clone_from(cx.waker());
             Poll::Pending
         } else {
-            Poll::Ready(Ok(Decision(decision)))
+            let decision = Decision(decision);
+            decision.report_metrics();
+            Poll::Ready(Ok(decision))
         }
     }
 
@@ -295,6 +319,7 @@ where
         if let Some(qstate) = self.q.get_mut(qid)
             && qstate.remove_from_unconfirmed_assignments(item_hash)
         {
+            counter!(VQUEUE_RUN_CONFIRMED).increment(1);
             debug_assert!(!self.unconfirmed_capacity_permits.is_empty());
             Some(self.unconfirmed_capacity_permits.split(1).expect(
                 "trying to confirm a vqueue item after consuming all allotted concurrency tokens!",
@@ -321,6 +346,7 @@ where
                 let config = vqueues.config_pool().find(&qid.parent);
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
+                counter!(VQUEUE_ENQUEUE).increment(1);
                 if !qstate.notify_enqueued(item) {
                     // no impact on eligibility, no need to spend more cycles.
                     return Ok(());
@@ -351,6 +377,7 @@ where
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
                 if qstate.remove_from_unconfirmed_assignments(item_hash) {
+                    counter!(VQUEUE_RUN_REJECTED).increment(1);
                     // drop the already acquired permit
                     let _ = self.unconfirmed_capacity_permits.split(1);
 
