@@ -226,8 +226,9 @@ jobs:
     needs: docker
     steps:
       - name: Set up Docker containerd snapshotter
-        uses: crazy-max/ghaction-setup-docker@v3
+        uses: docker/setup-docker-action@v4
         with:
+          version: "v28.5.2"
           set-host: true
           daemon-config: |
             {
