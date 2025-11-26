@@ -10,10 +10,10 @@
 
 use hashbrown::HashSet;
 use tokio::time::Instant;
-use tracing::trace;
+use tracing::{error, trace};
 
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueStatus};
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{VQueueCursor, VQueueEntry, VQueueStore, VisibleAt};
 use restate_types::clock::UniqueTimestamp;
 use restate_types::vqueue::VQueueId;
@@ -27,14 +27,13 @@ pub(super) const QUANTUM: i32 = 4;
 
 #[derive(derive_more::Debug)]
 enum Reader<S: VQueueStore> {
-    /// Reader was never opened and has already running items to go through first
-    #[debug("NewWithRunning")]
-    NewWithRunning,
-    /// Reader was never opened and does not need to scan running items
-    #[debug("NewSkipRunning")]
-    NewSkipRunning,
+    /// Reader was never opened and might need to scan running items
+    New { already_running: u32 },
     #[debug("Running")]
-    Running(S::RunningReader),
+    Running {
+        remaining: u32,
+        reader: S::RunningReader,
+    },
     #[debug("Inbox")]
     Inbox(S::InboxReader),
     // We can transition back to Reader::Inbox if new items have been added to the inbox
@@ -77,14 +76,10 @@ where
     S: VQueueStore,
     S::Item: std::fmt::Debug,
 {
-    pub fn new(qid: VQueueId, has_running_items: bool) -> Self {
+    pub fn new(qid: VQueueId, already_running: u32) -> Self {
         Self {
             qid,
-            reader: if has_running_items {
-                Reader::NewWithRunning
-            } else {
-                Reader::NewSkipRunning
-            },
+            reader: Reader::New { already_running },
             unconfirmed_assignments: HashSet::new(),
             deficit: Deficit::new(0),
             head: HeadStatus::Unknown,
@@ -100,6 +95,17 @@ where
             deficit: Deficit::new(current_round),
             head: HeadStatus::Empty,
             wake_up_after: None,
+        }
+    }
+
+    pub fn is_active(&self, meta: &VQueueMeta) -> bool {
+        match self.reader {
+            Reader::New { already_running } if already_running > 0 => true,
+            Reader::Running { remaining, .. } if remaining > 0 => true,
+            _ => {
+                !self.unconfirmed_assignments.is_empty()
+                    || (self.num_waiting(meta) > 0 && !meta.is_paused())
+            }
         }
     }
 
@@ -121,7 +127,7 @@ where
                 panic!("vqueue is empty");
             }
             HeadStatus::Known(ref item) => {
-                if matches!(self.reader, Reader::Running(_)) {
+                if matches!(self.reader, Reader::Running { .. }) {
                     // switch between these to change the behavior as needed
                     // Action::ResumeAlreadyRunning;
                     assignments.push(Action::Yield, item.clone());
@@ -142,7 +148,7 @@ where
 
     pub fn poll_head(&mut self, storage: &S, meta: &VQueueMeta) -> Result<(), StorageError> {
         // Keep advancing until the head is known
-        while matches!(self.head, HeadStatus::Unknown) && !meta.is_paused() {
+        while matches!(self.head, HeadStatus::Unknown) && self.is_active(meta) {
             self.advance(storage)?;
         }
 
@@ -152,39 +158,53 @@ where
     fn advance(&mut self, storage: &S) -> Result<(), StorageError> {
         loop {
             match self.reader {
-                Reader::NewWithRunning => {
-                    let mut it = storage.new_run_reader(&self.qid);
-                    it.seek_to_first();
-                    let item = it.peek()?;
+                Reader::New { already_running } if already_running > 0 => {
+                    let mut reader = storage.new_run_reader(&self.qid);
+                    reader.seek_to_first();
+                    let item = reader.peek()?;
                     if let Some(item) = item {
                         self.head = HeadStatus::Known(item);
-                        self.reader = Reader::Running(it);
+                        self.reader = Reader::Running {
+                            remaining: already_running,
+                            reader,
+                        };
                         break;
                     } else {
+                        error!(
+                            "vqueue {:?} has no running items but its metadata says that it has {already_running} running items",
+                            self.qid
+                        );
+                        debug_assert!(already_running > 0);
                         // move to inbox reading
                         self.head = HeadStatus::Unknown;
                         self.reader = Reader::Closed;
                     }
                 }
-                Reader::NewSkipRunning => {
+                Reader::New { .. } => {
                     // create new inbox reader
                     self.reader = Reader::Closed;
                 }
-                Reader::Running(ref mut it) => {
-                    it.advance();
-                    let item = it.peek()?;
+                Reader::Running {
+                    ref mut reader,
+                    ref mut remaining,
+                } => {
+                    reader.advance();
+                    *remaining = remaining.saturating_sub(1);
+                    let item = reader.peek()?;
                     if let Some(item) = item {
+                        debug_assert!(*remaining > 0);
                         self.head = HeadStatus::Known(item);
                         break;
                     } else {
+                        debug_assert_eq!(0, *remaining);
                         // move to inbox reading
                         self.head = HeadStatus::Unknown;
                         self.reader = Reader::Closed;
                     }
                 }
-                Reader::Inbox(ref mut it) => {
-                    it.advance();
-                    let item = it.peek()?;
+                Reader::Inbox(ref mut reader) => {
+                    reader.advance();
+                    let item = reader.peek()?;
                     if let Some(item) = item {
                         if self.unconfirmed_assignments.contains(&item.unique_hash()) {
                             trace!("skipping over an unconfirmed assignment (inbox)");
@@ -202,10 +222,10 @@ where
                 Reader::Closed => {
                     match self.head {
                         HeadStatus::Unknown => {
-                            let mut it = storage.new_inbox_reader(&self.qid);
-                            it.seek_to_first();
-                            let item = it.peek()?;
-                            self.reader = Reader::Inbox(it);
+                            let mut reader = storage.new_inbox_reader(&self.qid);
+                            reader.seek_to_first();
+                            let item = reader.peek()?;
+                            self.reader = Reader::Inbox(reader);
                             if let Some(item) = item {
                                 if self.unconfirmed_assignments.contains(&item.unique_hash()) {
                                     trace!(
@@ -222,10 +242,10 @@ where
                         }
                         HeadStatus::Known(ref item) => {
                             // seek to known head first, then advance.
-                            let mut it = storage.new_inbox_reader(&self.qid);
-                            it.seek_after(&self.qid, item);
-                            let item = it.peek()?;
-                            self.reader = Reader::Inbox(it);
+                            let mut reader = storage.new_inbox_reader(&self.qid);
+                            reader.seek_after(&self.qid, item);
+                            let item = reader.peek()?;
+                            self.reader = Reader::Inbox(reader);
                             if let Some(item) = item {
                                 if self.unconfirmed_assignments.contains(&item.unique_hash()) {
                                     continue;
@@ -259,22 +279,18 @@ where
         meta: &VQueueMeta,
         config: &VQueueConfig,
     ) -> Eligibility {
-        if meta.is_paused() {
+        if !self.is_active(meta) {
             return Eligibility::NotEligible;
         }
 
         let inbox_head = match self.head {
-            HeadStatus::Unknown
-                if matches!(meta.status(), VQueueStatus::Active)
-                    && self.num_waiting(meta) > 0
-                    && self.has_available_tokens(meta, config) =>
-            {
+            HeadStatus::Unknown if self.has_available_tokens(meta, config) => {
                 return Eligibility::Eligible;
             }
             HeadStatus::Unknown => {
                 return Eligibility::NotEligible;
             }
-            HeadStatus::Known(_) if matches!(self.reader, Reader::Running(_)) => {
+            HeadStatus::Known(_) if matches!(self.reader, Reader::Running { .. }) => {
                 // Running entries are always eligible to run
                 return Eligibility::Eligible;
             }
@@ -336,8 +352,7 @@ where
         match (&self.head, &self.reader) {
             // we are only unknown if we are new and didn't read the running list yet,
             // we might also be in a limbo state if advance() failed.
-            (_, Reader::NewWithRunning | Reader::NewSkipRunning | Reader::Running(_)) => { /* do nothing */
-            }
+            (_, Reader::New { .. } | Reader::Running { .. }) => { /* do nothing */ }
             (HeadStatus::Unknown, _) => { /* do nothing */ }
             (HeadStatus::Empty, _) => {
                 self.reader = Reader::Closed;
