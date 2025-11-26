@@ -30,6 +30,7 @@ use self::drr::DRRScheduler;
 
 mod clock;
 mod drr;
+// mod resources;
 mod vqueue_state;
 
 const INLINED_SIZE: usize = vqueue_state::QUANTUM as usize;
