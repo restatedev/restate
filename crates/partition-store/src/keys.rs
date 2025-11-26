@@ -57,6 +57,8 @@ pub enum KeyKind {
     VQueueMeta,
     // Resources' canonical key(s)
     VQueueEntryState,
+    // Items stored in vqueues (e.g. state mutations, invocations, etc.)
+    VQueueItems,
 }
 
 impl KeyKind {
@@ -108,6 +110,7 @@ impl KeyKind {
             KeyKind::VQueueMeta => b"qm",
             // Queue Entry State (canonical state of vqueue entries)
             KeyKind::VQueueEntryState => b"qe",
+            KeyKind::VQueueItems => b"qI",
         }
     }
 
@@ -142,6 +145,7 @@ impl KeyKind {
             b"qi" => Some(KeyKind::VQueueInbox),
             b"qm" => Some(KeyKind::VQueueMeta),
             b"qe" => Some(KeyKind::VQueueEntryState),
+            b"qI" => Some(KeyKind::VQueueItems),
             _ => None,
         }
     }

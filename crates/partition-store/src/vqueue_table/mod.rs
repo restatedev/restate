@@ -10,6 +10,7 @@
 
 mod entry;
 mod inbox;
+mod items;
 mod metadata;
 mod reader;
 mod running_reader;
@@ -29,12 +30,14 @@ use restate_storage_api::vqueue_table::{
     AsEntryState, AsEntryStateHeader, EntryCard, EntryId, EntryKind, EntryStateKind,
     ReadVQueueTable, ScanVQueueTable, Stage, VisibleAt, WriteVQueueTable,
 };
+use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
 use restate_types::vqueue::{EffectivePriority, VQueueId, VQueueInstance, VQueueParent};
 
 use self::entry::{EntryStateHeader, EntryStateKey, OwnedEntryState, OwnedHeader};
 use self::inbox::{ActiveKey, InboxKey};
 use crate::keys::{KeyCodec, KeyKind, TableKey};
+use crate::vqueue_table::items::ItemsKey;
 use crate::{PartitionDb, PartitionStoreTransaction, Result, StorageAccess};
 
 impl KeyCodec for VQueueParent {
@@ -356,6 +359,63 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         self.raw_put_cf(KeyKind::VQueueEntryState, key_buffer, value_buf);
     }
 
+    fn put_item<E>(
+        &mut self,
+        qid: &VQueueId,
+        created_at: UniqueTimestamp,
+        kind: EntryKind,
+        id: &EntryId,
+        item: E,
+    ) where
+        E: Message,
+    {
+        let key_buffer = self.cleared_key_buffer_mut(ItemsKey::serialized_length_fixed());
+
+        ItemsKey {
+            partition_key: qid.partition_key,
+            parent: qid.parent,
+            instance: qid.instance,
+            created_at,
+            kind,
+            id: *id,
+        }
+        .serialize_to(key_buffer);
+
+        let key = key_buffer.split();
+
+        let value_buffer = self.cleared_value_buffer_mut(item.encoded_len());
+
+        item.encode(value_buffer)
+            .expect("enough space to encode item");
+        let value = value_buffer.split();
+
+        self.raw_put_cf(KeyKind::VQueueItems, key, value);
+    }
+
+    fn delete_item(
+        &mut self,
+        qid: &VQueueId,
+        created_at: UniqueTimestamp,
+        kind: EntryKind,
+        id: &EntryId,
+    ) {
+        let key_buffer = self.cleared_key_buffer_mut(ItemsKey::serialized_length_fixed());
+
+        ItemsKey {
+            partition_key: qid.partition_key,
+            parent: qid.parent,
+            instance: qid.instance,
+            created_at,
+            kind,
+            id: *id,
+        }
+        .serialize_to(key_buffer);
+
+        let key = key_buffer.split();
+
+        self.raw_delete_cf(KeyKind::VQueueItems, key);
+    }
+
     // fn update_vqueue_entry_state(
     //     &mut self,
     //     at: UniqueTimestamp,
@@ -477,6 +537,37 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
         let state = E::decode_length_delimited(&mut slice)?;
 
         Ok(Some(OwnedEntryState { header, state }))
+    }
+
+    async fn get_item<E>(
+        &mut self,
+        qid: &VQueueId,
+        created_at: UniqueTimestamp,
+        kind: EntryKind,
+        id: &EntryId,
+    ) -> Result<Option<E>>
+    where
+        E: OwnedMessage,
+    {
+        let key_buffer = self.cleared_value_buffer_mut(ItemsKey::serialized_length_fixed());
+
+        ItemsKey {
+            partition_key: qid.partition_key,
+            parent: qid.parent,
+            instance: qid.instance,
+            created_at,
+            kind,
+            id: *id,
+        }
+        .serialize_to(key_buffer);
+
+        let key = key_buffer.split();
+
+        let Some(raw_value) = self.get(ItemsKey::TABLE, key)? else {
+            return Ok(None);
+        };
+
+        Ok(Some(E::decode(&mut raw_value.as_ref())?))
     }
 
     // async fn with_entry_state<'a, E, F, O>(
