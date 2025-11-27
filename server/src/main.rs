@@ -174,6 +174,11 @@ fn main() {
                 init_tracing_and_logging(&Configuration::pinned().common, "restate-server")
                     .expect("failed to configure logging and tracing");
 
+            if cli_args.metadata_migration_mode {
+                warn!("Metadata migration mode enabled.");
+                warn!("Only use this mode to move metadata from the current store to a new store with `restatectl metadata migrate`; invocation processing is disabled while it is active.");
+            }
+
             let mut address_book = AddressBook::new(data_dir);
 
             if std::io::stdout().is_terminal() && !cli_args.no_logo {
@@ -190,11 +195,6 @@ fn main() {
                 );
                 let _ = writeln!(&mut stdout, "{:^40}", "https://restate.dev/");
                 let _ = writeln!(&mut stdout);
-            }
-
-            if cli_args.metadata_migration_mode {
-                warn!("Metadata migration mode enabled.");
-                warn!("Only use this mode to move metadata from the current store to a new store with `restatectl metadata migrate`; invocation processing is disabled while it is active.");
             }
 
             // Attempts to bind on all configured ports as early as possible so we can detect
