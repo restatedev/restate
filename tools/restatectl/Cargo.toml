@@ -72,6 +72,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 test-log = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "prost", "zstd", "gzip"] }
 tracing = { workspace = true }

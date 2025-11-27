@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod get;
+mod migrate;
 mod patch;
 mod put;
 
@@ -31,6 +32,8 @@ pub enum Metadata {
     Patch(patch::PatchValueOpts),
     /// Replace a single key's value from the metadata store
     Put(put::PutValueOpts),
+    /// Migrate to a new metadata store
+    Migrate(migrate::MigrateOpts),
 }
 
 #[derive(Args, Clone, Debug)]
