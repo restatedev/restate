@@ -5222,24 +5222,43 @@ impl<S> StateMachineApplyContext<'_, S> {
                 (VQueueParent::default_unlimited(), VQueueInstance::Default)
             }
             InvocationTarget::VirtualObject {
-                handler_ty, key, ..
+                handler_ty,
+                key,
+                name,
+                ..
             } => {
                 let parent = match handler_ty {
                     VirtualObjectHandlerType::Exclusive => VQueueParent::default_singleton(),
                     VirtualObjectHandlerType::Shared => VQueueParent::default_unlimited(),
                 };
 
-                (parent, VQueueInstance::infer_from(key.as_bytes()))
+                // todo fix once we generate distinct parents for VOs and workflows
+                // Temporarily we have to include the virtual object name since VOs with the same
+                // key are mapped to the same partition key (see https://github.com/restatedev/restate/blob/786dc7dc6c240ef0a7abd6a48af7463f341bea2f/crates/types/src/identifiers.rs#L151-L150)
+                // and different VOs must not fall into the same vqueue.
+                (
+                    parent,
+                    VQueueInstance::infer_from(name.as_bytes(), key.as_bytes()),
+                )
             }
             InvocationTarget::Workflow {
-                handler_ty, key, ..
+                handler_ty,
+                key,
+                name,
+                ..
             } => {
                 let parent = match handler_ty {
                     WorkflowHandlerType::Workflow => VQueueParent::default_singleton(),
                     WorkflowHandlerType::Shared => VQueueParent::default_unlimited(),
                 };
 
-                (parent, VQueueInstance::infer_from(key.as_bytes()))
+                // we have to include the virtual object name since VOs with the same key are mapped
+                // to the same partition key (see https://github.com/restatedev/restate/blob/786dc7dc6c240ef0a7abd6a48af7463f341bea2f/crates/types/src/identifiers.rs#L151-L150)
+                // and different VOs must not fall into the same vqueue.
+                (
+                    parent,
+                    VQueueInstance::infer_from(name.as_bytes(), key.as_bytes()),
+                )
             }
         };
         let partition_key = invocation_id.partition_key();
@@ -5263,7 +5282,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         let qid = VQueueId::new(
             parent,
             service_id.partition_key(),
-            VQueueInstance::infer_from(service_id.key.as_bytes()),
+            VQueueInstance::infer_from(
+                service_id.service_name.as_bytes(),
+                service_id.key.as_bytes(),
+            ),
         );
 
         let mut vqueue = VQueues::new(
