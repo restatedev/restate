@@ -274,7 +274,7 @@ where
     }
 
     pub fn check_eligibility(
-        &mut self,
+        &self,
         now: UniqueTimestamp,
         meta: &VQueueMeta,
         config: &VQueueConfig,
