@@ -632,7 +632,7 @@ impl NodesErrors {
         self.node_status.push((node, simple_status));
     }
 
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.node_status.is_empty()
     }
 }

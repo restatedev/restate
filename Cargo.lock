@@ -8575,6 +8575,7 @@ dependencies = [
  "test-log",
  "thiserror 2.0.17",
  "tokio",
+ "toml 0.9.6",
  "tonic 0.14.2",
  "tracing",
  "vergen",
