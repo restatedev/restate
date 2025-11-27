@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::vqueue::EffectivePriority;
 
-use super::VisibleAt;
+use super::{Stage, VisibleAt};
 
 #[derive(Debug, Default, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
@@ -217,17 +217,24 @@ impl VQueueMeta {
                 self.add_to_waiting(priority);
             }
             Action::Complete {
-                was_waiting,
+                previous_stage,
                 priority,
             } => {
                 debug_assert!(self.length > 0);
                 self.length -= 1;
                 self.stats.last_completion_at = Some(now);
-                if was_waiting {
-                    self.remove_from_waiting(priority);
-                } else {
-                    self.stats.decrement_running();
+
+                match previous_stage {
+                    Stage::Unknown => {
+                        panic!("Something is wrong. We shouldn't be in the unknown stage.")
+                    }
+                    Stage::Inbox => self.remove_from_waiting(priority),
+                    Stage::Run => self.stats.decrement_running(),
+                    Stage::Park => {
+                        // nothing to do since we were neither waiting nor running
+                    }
                 }
+
                 if priority.token_held() {
                     self.release_token();
                 }
@@ -309,7 +316,7 @@ pub enum Action {
     Complete {
         // Must be the latest priority assigned to the entry (effective priority)
         priority: EffectivePriority,
-        was_waiting: bool,
+        previous_stage: Stage,
     },
 }
 
