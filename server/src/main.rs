@@ -78,6 +78,12 @@ struct RestateArguments {
 
     #[clap(flatten)]
     opts_overrides: CommonOptionCliOverride,
+
+    #[clap(long)]
+    /// Run in metadata migration mode. This limits the node roles so you
+    /// can run one-off metadata migrations without starting workers/ingress/log servers.
+    /// Required to run `restatectl metadata migrate`
+    metadata_migration_mode: bool,
 }
 
 const EXIT_CODE_FAILURE: i32 = 1;
@@ -111,6 +117,7 @@ fn main() {
         .load_env(true)
         .path(config_path.clone())
         .cli_override(cli_args.opts_overrides.clone())
+        .metadata_migration_mode(cli_args.metadata_migration_mode)
         .build()
         .unwrap();
 
@@ -193,6 +200,12 @@ fn main() {
             let tracing_guard =
                 init_tracing_and_logging(&Configuration::pinned().common, "restate-server")
                     .expect("failed to configure logging and tracing");
+
+            if cli_args.metadata_migration_mode {
+                warn!("Metadata migration mode enabled.");
+                warn!("Only use this mode to move metadata from the current store to a new store with `restatectl metadata migrate`; invocation processing is disabled while it is active.");
+            }
+
             // spawn checking latest release
             let _ = TaskCenter::spawn_unmanaged(
                 TaskKind::Background,

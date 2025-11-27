@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Bytes, BytesMut};
+use bytestring::ByteString;
 use datafusion::arrow::ipc::writer::StreamWriter;
 use datafusion::error::DataFusionError;
 use futures::StreamExt;
@@ -23,22 +24,27 @@ use restate_core::protobuf::cluster_ctrl_svc::{
     ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
     CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
     FindTailResponse, GetClusterConfigurationRequest, GetClusterConfigurationResponse,
-    ListLogsRequest, ListLogsResponse, QueryRequest, QueryResponse, SealAndExtendChainRequest,
-    SealAndExtendChainResponse, SealChainRequest, SealChainResponse, SealedSegment,
-    SetClusterConfigurationRequest, SetClusterConfigurationResponse, TailState, TrimLogRequest,
+    ListLogsRequest, ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse,
+    QueryRequest, QueryResponse, SealAndExtendChainRequest, SealAndExtendChainResponse,
+    SealChainRequest, SealChainResponse, SealedSegment, SetClusterConfigurationRequest,
+    SetClusterConfigurationResponse, TailState, TrimLogRequest,
     cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
 };
 use restate_core::{Metadata, MetadataWriter};
+use restate_metadata_store::WriteError;
 use restate_storage_query_datafusion::context::QueryContext;
-use restate_types::config::NetworkingOptions;
+use restate_types::config::{MetadataClientKind, MetadataClientOptions, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
-use restate_types::logs::metadata::SegmentIndex;
+use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::metadata::{GlobalMetadata, Precondition};
+use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, partition_processor_epoch_key};
 use restate_types::net::partition_processor_manager::Snapshot;
-use restate_types::nodes_config::NodesConfiguration;
+use restate_types::nodes_config::{NodesConfiguration, Role};
+use restate_types::partitions::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::cluster::ClusterConfiguration;
+use restate_types::schema::Schema;
 use restate_types::storage::{StorageCodec, StorageEncode};
 use restate_types::{PlainNodeId, Version, Versioned};
 
@@ -426,6 +432,102 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 })
                 .boxed(),
         ))
+    }
+
+    /// Migrate metadata from the current metadata store to a target store
+    /// - Checks that all nodes are running in metadata migration mode but making
+    ///   sure that all nodes running only with `admin` and/or `metadata-server` roles
+    /// - Copies all metadata keys from the current metadata store to the target store.
+    ///   target store client is created from the opaque configuration
+    async fn migrate_metadata(
+        &self,
+        request: tonic::Request<MigrateMetadataRequest>,
+    ) -> Result<Response<MigrateMetadataResponse>, Status> {
+        // check all alive nodes and make sure they all are running
+        // in migration mode.
+        let request = request.into_inner();
+        let target: MetadataClientOptions = serde_json::from_slice(&request.target_client_config)
+            .map_err(|err| {
+            Status::invalid_argument(format!(
+                "invalid target metadata store configuration: {err}"
+            ))
+        })?;
+
+        if matches!(target.kind, MetadataClientKind::Replicated { .. }) {
+            return Err(Status::unimplemented(
+                "Metadata migration to replicated metadata store is not supported yet",
+            ));
+        }
+
+        let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let partition_table = Metadata::with_current(|m| m.partition_table_ref());
+
+        for (_, node) in nodes_config.iter() {
+            if node
+                .roles
+                .iter()
+                .any(|r| !(r == Role::Admin || r == Role::MetadataServer))
+            {
+                return Err(Status::failed_precondition(format!(
+                    "Node {} is not running with --metadata-migration-mode; start all nodes with this flag before migrating metadata",
+                    node.current_generation
+                )));
+            }
+        }
+
+        let target_provider = restate_metadata_providers::create_client(target)
+            .await
+            .map_err(|err| {
+                Status::invalid_argument(format!(
+                    "Failed to create metadata provider client: {err}"
+                ))
+            })?;
+
+        let current_provider = self.metadata_writer.raw_metadata_store_client();
+
+        let partitions_epoch_keys = partition_table
+            .iter()
+            .map(|p| partition_processor_epoch_key(*p.0));
+
+        let known_keys = [
+            Schema::KEY,
+            Logs::KEY,
+            NodesConfiguration::KEY,
+            PartitionTable::KEY,
+        ]
+        .iter()
+        .map(|s| ByteString::from_static(s))
+        .chain(partitions_epoch_keys);
+
+        let precondition = if request.force_override {
+            Precondition::None
+        } else {
+            Precondition::DoesNotExist
+        };
+
+        for key in known_keys {
+            if let Some(value) = current_provider
+                .inner()
+                .get(key.clone())
+                .await
+                .map_err(|err| {
+                    Status::internal(format!("Failed to get metadata key '{key}': {err}"))
+                })?
+            {
+                target_provider
+                    .inner()
+                    .put(key.clone(), value, precondition)
+                    .await
+                    .map_err(|err| match err {
+                        WriteError::FailedPrecondition(_) => Status::failed_precondition(
+                               format!("Key '{key}' already exists in the target store; rerun with `force` to overwrite"),
+                        ),
+                        err => Status::internal(format!("Key '{key}' migration failed: {err}")),
+                    })?;
+            }
+        }
+
+        Ok(Response::new(MigrateMetadataResponse {}))
     }
 }
 
