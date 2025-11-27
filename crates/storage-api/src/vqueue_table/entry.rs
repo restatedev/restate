@@ -17,6 +17,7 @@ use restate_types::state_mut::ExternalStateMutation;
 use restate_types::vqueue::{
     EffectivePriority, NewEntryPriority, VQueueId, VQueueInstance, VQueueParent,
 };
+use std::fmt::{Debug, Formatter};
 
 use crate::StorageError;
 
@@ -37,7 +38,7 @@ pub enum EntryKind {
 
 // Using u128 would have added an extra unnecessary 8 bytes due to alignment
 // requirements (u128 is 0x10 aligned and it forces the struct to be 0x10 aligned)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntryId([u8; 16]);
 
 impl EntryId {
@@ -59,6 +60,15 @@ impl EntryId {
     #[inline]
     pub const fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
+    }
+}
+
+impl Debug for EntryId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // display inner field as u128 to make it a bit easier to read
+        f.debug_tuple("EntryId")
+            .field(&u128::from_be_bytes(self.0))
+            .finish()
     }
 }
 
