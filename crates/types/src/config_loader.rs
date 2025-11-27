@@ -20,6 +20,7 @@ use notify_debouncer_full::{
 use tracing::{debug, error, warn};
 
 use crate::config::{Configuration, InvalidConfigurationError};
+use crate::nodes_config::Role;
 
 #[derive(thiserror::Error, codederror::CodedError, Debug)]
 #[code(restate_errors::RT0002)]
@@ -50,6 +51,7 @@ pub struct ConfigLoader {
     disable_watch: bool,
     #[cfg(test)]
     disable_apply_cascading_values: bool,
+    metadata_migration_mode: bool,
 }
 
 impl ConfigLoader {
@@ -79,6 +81,17 @@ impl ConfigLoader {
         config.common.set_derived_values()?;
         config.admin.set_derived_values(&config.common);
         config.ingress.set_derived_values(&config.common);
+
+        if self.metadata_migration_mode {
+            // In metadata migration mode we keep only Admin and MetadataServer roles that were
+            // configured, dropping everything else.
+            config.common.roles = config
+                .common
+                .roles
+                .into_iter()
+                .filter(|role| role == &Role::Admin || role == &Role::MetadataServer)
+                .collect();
+        }
 
         #[cfg(test)]
         let config = if !self.disable_apply_cascading_values {

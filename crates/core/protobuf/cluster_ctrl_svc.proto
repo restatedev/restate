@@ -41,6 +41,8 @@ service ClusterCtrlSvc {
       returns (SetClusterConfigurationResponse);
 
   rpc Query(QueryRequest) returns (stream QueryResponse);
+
+  rpc MigrateMetadata(MigrateMetadataRequest) returns (MigrateMetadataResponse);
 }
 
 message SetClusterConfigurationResponse {}
@@ -183,3 +185,12 @@ message QueryResponse {
   // arrow encoded record batch
   bytes encoded = 1;
 }
+
+message MigrateMetadataRequest {
+  // force override target metadata store
+  bool force_override = 1;
+  // target MetadataClientOptions in json format
+  bytes target_client_config = 2;
+}
+
+message MigrateMetadataResponse {}
