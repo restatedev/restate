@@ -136,6 +136,7 @@ pub struct VQueueState<S: VQueueStore> {
     // vqueue.
     start_tb: Option<LocalTokenBucket<SchedulerClock>>,
     unconfirmed_assignments: HashSet<u64>,
+    #[debug(skip)]
     queue: Queue<S>,
     head_stats: Stats,
 }

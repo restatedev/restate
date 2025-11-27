@@ -48,6 +48,7 @@ pub enum ThrottleScope {
     VQueue,
 }
 
+#[derive(Debug)]
 pub struct Entry<Item> {
     pub item: Item,
     pub stats: WaitStats,
@@ -59,6 +60,7 @@ impl<Item> Entry<Item> {
     }
 }
 
+#[derive(Debug)]
 pub struct Assignments<Item> {
     latest_run_tb_zero_time: Option<f64>,
 
@@ -121,6 +123,7 @@ impl<Item> Assignments<Item> {
     }
 }
 
+#[derive(Debug)]
 pub struct AssignmentSegment<Item> {
     pub action: Action,
     pub items: SmallVec<[Entry<Item>; INLINED_SIZE]>,
@@ -149,7 +152,6 @@ pub enum Action {
 #[derive(derive_more::IntoIterator, derive_more::Debug)]
 pub struct Decision<Item> {
     #[into_iterator]
-    #[debug(skip)]
     q: HashMap<VQueueId, Assignments<Item>>,
     /// items running for the first time
     num_start: u16,
