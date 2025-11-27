@@ -14,6 +14,12 @@ serve-web-ui = ["restate-web-ui", "mime_guess"]
 storage-query = []
 metadata-api = []
 restate-web-ui = ["dep:restate-web-ui"]
+all-metadata-providers = [
+    "restate-metadata-providers/replicated",
+    "restate-metadata-providers/etcd",
+    "restate-metadata-providers/objstore",
+    "restate-metadata-providers/dynamodb",
+]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -23,6 +29,7 @@ restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-lo
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-metadata-store = { workspace = true }
+restate-metadata-providers = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
