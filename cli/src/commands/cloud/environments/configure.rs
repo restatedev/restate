@@ -22,7 +22,7 @@ use crate::{
     cli_env::CliEnv,
     clients::cloud::{
         CloudClient, CloudClientInterface,
-        generated::{
+        types::{
             DescribeEnvironmentResponse, ListAccountsResponseAccountsItem,
             ListEnvironmentsResponseEnvironmentsItem,
         },

@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use tower::Service;
 use tracing::{Instrument, error, info, info_span};
 
-use crate::clients::cloud::generated::DescribeEnvironmentResponse;
+use crate::clients::cloud::types::DescribeEnvironmentResponse;
 
 use super::renderer::TunnelRenderer;
 

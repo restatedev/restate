@@ -84,7 +84,6 @@ toml = "0.8.15"
 toml_edit = "0.22.12"
 tower = { workspace = true }
 tracing = { workspace = true }
-typify = "0.5.0"
 url = { workspace = true }
 uuid = { workspace = true }
 zip = "0.6"
