@@ -156,6 +156,7 @@ impl From<&VQueueId> for VQueueId {
     Hash,
     bilrost::Enumeration,
     strum::FromRepr,
+    derive_more::Display,
 )]
 #[repr(u8)]
 pub enum EffectivePriority {

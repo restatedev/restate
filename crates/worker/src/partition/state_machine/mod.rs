@@ -1165,16 +1165,17 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(Some(metadata))
     }
 
-    fn init_journal_and_vqueue_invoke(
+    async fn init_journal_and_vqueue_invoke(
         &mut self,
         qid: VQueueId,
-        item_hash: u64,
+        card: &EntryCard,
         invocation_id: InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         invocation_input: Option<InvocationInput>,
+        at: UniqueTimestamp,
     ) -> Result<(), Error>
     where
-        S: WriteJournalTable + WriteInvocationStatusTable,
+        S: WriteJournalTable + WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
     {
         // Usage metering for "actions" should include the Input journal entry
         // type, but it gets filtered out before reaching the state machine.
@@ -1199,11 +1200,13 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.vqueue_invoke(
             qid,
-            item_hash,
+            card,
             invocation_id,
             in_flight_invocation_metadata,
             invoke_input_journal,
+            at,
         )
+        .await
     }
 
     fn init_journal_and_invoke(
@@ -1293,18 +1296,31 @@ impl<S> StateMachineApplyContext<'_, S> {
         ))
     }
 
-    fn vqueue_invoke(
+    async fn vqueue_invoke(
         &mut self,
         qid: VQueueId,
-        item_hash: u64,
+        card: &EntryCard,
         invocation_id: InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
         invoke_input_journal: InvokeInputJournal,
+        at: UniqueTimestamp,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable,
+        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
     {
         debug_if_leader!(self.is_leader, "Invoke");
+
+        // Only move the vqueue item to running if we are sure that we can do the state transition.
+        // Otherwise, we risk that `VQueueMeta` goes out of sync (e.g. because we remove from
+        // waiting twice an item).
+        VQueues::new(
+            qid,
+            self.storage,
+            self.vqueues_cache,
+            self.is_leader.then_some(self.action_collector),
+        )
+        .attempt_to_run(at, card)
+        .await?;
 
         let status = InvocationStatus::Invoked(in_flight_invocation_metadata);
 
@@ -1316,7 +1332,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             let invocation_target = status.into_invocation_metadata().unwrap().invocation_target;
             self.action_collector.push(Action::VQInvoke {
                 qid,
-                item_hash,
+                item_hash: card.unique_hash(),
                 invocation_id,
                 invocation_target,
                 invoke_input_journal,
@@ -2802,15 +2818,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                         .await?;
                 }
                 EntryKind::Invocation => {
-                    VQueues::new(
-                        qid,
-                        self.storage,
-                        self.vqueues_cache,
-                        self.is_leader.then_some(self.action_collector),
-                    )
-                    .attempt_to_run(record_unique_ts, &card)
-                    .await?;
-
                     let invocation_id = InvocationId::from_parts(
                         qid.partition_key,
                         InvocationUuid::from_slice(card.id.as_bytes()).unwrap(),
@@ -2886,11 +2893,13 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 self.init_journal_and_vqueue_invoke(
                     qid,
-                    card.unique_hash(),
+                    card,
                     invocation_id,
                     metadata,
                     invocation_input,
-                )?;
+                    at,
+                )
+                .await?;
             }
             InvocationStatus::Invoked(metadata) if self.is_leader => {
                 // just send to invoker
@@ -2918,18 +2927,21 @@ impl<S> StateMachineApplyContext<'_, S> {
                 info!(
                     "Will not run invocation {invocation_id} because it has been marked as completed/deleted already!"
                 );
+                // Let's not do this because we might decrease a waiting item twice in the VQueueMeta
+
+                // todo remove
                 // we delete by id because we are not really sure if the invocation is still in
                 // Stage::Inbox or not.
-                VQueues::end_by_id(
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
-                    at,
-                    EntryKind::Invocation,
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
-                .await?;
+                //     VQueues::end_by_id(
+                //         self.storage,
+                //         self.vqueues_cache,
+                //         self.is_leader.then_some(self.action_collector),
+                //         at,
+                //         EntryKind::Invocation,
+                //         invocation_id.partition_key(),
+                //         &EntryId::from(invocation_id),
+                //     )
+                //     .await?;
             }
         }
 
