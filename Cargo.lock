@@ -7065,7 +7065,6 @@ dependencies = [
  "toml_edit 0.22.27",
  "tower 0.5.2",
  "tracing",
- "typify 0.5.0",
  "url",
  "uuid",
  "vergen",

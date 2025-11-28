@@ -10,7 +10,8 @@
 
 use super::client::Envelope;
 
-use super::{CloudClient, generated::*};
+use super::CloudClient;
+use types::*;
 
 pub trait CloudClientInterface {
     async fn list_accounts(&self) -> reqwest::Result<Envelope<ListAccountsResponse>>;
@@ -62,5 +63,51 @@ impl CloudClientInterface for CloudClient {
             },
         )
         .await
+    }
+}
+
+pub mod types {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DescribeEnvironmentRequest {
+        pub environment_id: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct DescribeEnvironmentResponse {
+        pub environment_id: String,
+        pub name: String,
+        pub ingress_base_url: String,
+        pub admin_base_url: String,
+        pub proxy_base_url: String,
+        pub tunnel_srv: String,
+        pub signing_public_key: String,
+    }
+
+    #[derive(Deserialize)]
+    pub struct ListAccountsResponse {
+        pub accounts: Vec<ListAccountsResponseAccountsItem>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ListAccountsResponseAccountsItem {
+        pub account_id: String,
+        pub name: String,
+    }
+
+    #[derive(Deserialize)]
+    pub struct ListEnvironmentsResponse {
+        pub environments: Vec<ListEnvironmentsResponseEnvironmentsItem>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ListEnvironmentsResponseEnvironmentsItem {
+        pub environment_id: String,
+        pub name: String,
     }
 }
