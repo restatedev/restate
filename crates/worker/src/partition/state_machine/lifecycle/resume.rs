@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_invoker_api::InvokeInputJournal;
-use restate_storage_api::invocation_status_table::InvocationStatus;
+use restate_storage_api::invocation_status_table::{InboxedInvocation, InvocationStatus};
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
@@ -45,6 +45,12 @@ where
         if Configuration::pinned().common.experimental_enable_vqueues {
             ctx.vqueue_move_invocation_to_inbox_stage(&self.invocation_id)
                 .await?;
+            // When moving an invocation back into the inbox stage, we have to update the
+            // InvocationStatus accordingly. Otherwise, we miss running changes on the VQueues
+            // inbox.
+            *self.invocation_status = InvocationStatus::Inboxed(
+                InboxedInvocation::from_in_flight_invocation_metadata(metadata.clone()),
+            );
         } else {
             ctx.action_collector.push(Action::Invoke {
                 invocation_id: self.invocation_id,
@@ -52,9 +58,9 @@ where
                 invocation_target,
                 invoke_input_journal: InvokeInputJournal::NoCachedJournal,
             });
-        }
 
-        *self.invocation_status = InvocationStatus::Invoked(metadata.clone());
+            *self.invocation_status = InvocationStatus::Invoked(metadata.clone());
+        }
 
         Ok(())
     }

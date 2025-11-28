@@ -271,6 +271,20 @@ impl InvocationStatus {
             })
             | InvocationStatus::Completed(CompletedInvocation {
                 journal_metadata, ..
+            })
+            // When using vqueues, we can be in Inboxed state after yield from running. In this
+            // case, there will be a journal created for this invocation.
+            | InvocationStatus::Inboxed(InboxedInvocation {
+                metadata:
+                    PreFlightInvocationMetadata {
+                        input:
+                            PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                                journal_metadata,
+                                ..
+                            }),
+                        ..
+                    },
+                ..
             }) => Some(journal_metadata),
             _ => None,
         }
@@ -539,6 +553,30 @@ impl PreFlightInvocationMetadata {
         }
     }
 
+    pub fn from_in_flight_invocation_metadata(
+        in_flight_invocation_metadata: InFlightInvocationMetadata,
+    ) -> Self {
+        Self {
+            response_sinks: in_flight_invocation_metadata.response_sinks,
+            timestamps: in_flight_invocation_metadata.timestamps,
+            invocation_target: in_flight_invocation_metadata.invocation_target,
+            source: in_flight_invocation_metadata.source,
+            execution_time: in_flight_invocation_metadata.execution_time,
+            completion_retention_duration: in_flight_invocation_metadata
+                .completion_retention_duration,
+            journal_retention_duration: in_flight_invocation_metadata.journal_retention_duration,
+            idempotency_key: in_flight_invocation_metadata.idempotency_key,
+            created_using_restate_version: in_flight_invocation_metadata
+                .created_using_restate_version,
+            random_seed: in_flight_invocation_metadata.random_seed,
+            // we must have created the journal when coming from an InFlightInvocationMetadata
+            input: PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                journal_metadata: in_flight_invocation_metadata.journal_metadata,
+                pinned_deployment: in_flight_invocation_metadata.pinned_deployment,
+            }),
+        }
+    }
+
     pub fn span_context(&self) -> &ServiceInvocationSpanContext {
         self.input.span_context()
     }
@@ -578,6 +616,20 @@ impl InboxedInvocation {
             inbox_sequence_number,
             timestamp,
         )
+    }
+
+    /// Important: This conversion should only be used by the new vqueue based scheduler
+    pub fn from_in_flight_invocation_metadata(
+        in_flight_invocation_metadata: InFlightInvocationMetadata,
+    ) -> Self {
+        Self {
+            // The new vqueue based scheduler no longer uses the old inboxes. Hence, we can put an
+            // arbitrary value here.
+            inbox_sequence_number: 1,
+            metadata: PreFlightInvocationMetadata::from_in_flight_invocation_metadata(
+                in_flight_invocation_metadata,
+            ),
+        }
     }
 }
 

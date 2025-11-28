@@ -1177,17 +1177,6 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: WriteJournalTable + WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
     {
-        // Usage metering for "actions" should include the Input journal entry
-        // type, but it gets filtered out before reaching the state machine.
-        // Therefore we count it here, as a special case.
-        if self.is_leader {
-            counter!(
-                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                "entry" => "Command/Input",
-            )
-            .increment(1);
-        }
-
         let invoke_input_journal = if let Some(invocation_input) = invocation_input {
             self.init_journal(
                 invocation_id,
@@ -1255,6 +1244,17 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: WriteJournalTable,
     {
+        // Usage metering for "actions" should include the Input journal entry
+        // type, but it gets filtered out before reaching the state machine.
+        // Therefore we count it here, as a special case.
+        if self.is_leader {
+            counter!(
+                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                "entry" => "Command/Input",
+            )
+            .increment(1);
+        }
+
         debug_if_leader!(self.is_leader, "Init journal with input entry");
 
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
@@ -2860,27 +2860,31 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_target.invocation_target_ty(),
                     InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
                 ) {
-                    let keyed_service_id = invocation_target.as_keyed_service_id().expect(
-                        "When the handler type is Exclusive, the invocation target must have a key",
-                    );
-                    match self
-                        .storage
-                        .get_virtual_object_status(&keyed_service_id)
-                        .await?
-                    {
-                        VirtualObjectStatus::Locked(iid) => {
-                            panic!(
-                                "invariant violated trying to run an invocation {invocation_id} on a VO while another invocation {iid} is holding the lock"
-                            );
-                        }
-                        VirtualObjectStatus::Unlocked => {
-                            // Lock the service
-                            self.storage
-                                .put_virtual_object_status(
-                                    &keyed_service_id,
-                                    &VirtualObjectStatus::Locked(invocation_id),
-                                )
-                                .map_err(Error::Storage)?;
+                    // We might have already locked the service before if we are resuming, for example.
+                    // Hence, only lock it if we are not holding a token yet.
+                    if !card.priority.token_held() {
+                        let keyed_service_id = invocation_target.as_keyed_service_id().expect(
+                            "When the handler type is Exclusive, the invocation target must have a key",
+                        );
+                        match self
+                            .storage
+                            .get_virtual_object_status(&keyed_service_id)
+                            .await?
+                        {
+                            VirtualObjectStatus::Locked(iid) => {
+                                panic!(
+                                    "invariant violated trying to run an invocation {invocation_id} on a VO while another invocation {iid} is holding the lock"
+                                );
+                            }
+                            VirtualObjectStatus::Unlocked => {
+                                // Lock the service
+                                self.storage
+                                    .put_virtual_object_status(
+                                        &keyed_service_id,
+                                        &VirtualObjectStatus::Locked(invocation_id),
+                                    )
+                                    .map_err(Error::Storage)?;
+                            }
                         }
                     }
                 }
@@ -4379,15 +4383,25 @@ impl<S> StateMachineApplyContext<'_, S> {
         let current_invocation_epoch = metadata.current_invocation_epoch;
 
         metadata.timestamps.update(self.record_created_at);
-        let invocation_target = metadata.invocation_target.clone();
-        self.storage
-            .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
-            .map_err(Error::Storage)?;
 
         if Configuration::pinned().common.experimental_enable_vqueues {
             self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
+            self.storage
+                .put_invocation_status(
+                    &invocation_id,
+                    &InvocationStatus::Inboxed(
+                        InboxedInvocation::from_in_flight_invocation_metadata(metadata),
+                    ),
+                )
+                .map_err(Error::Storage)?;
         } else {
+            let invocation_target = metadata.invocation_target.clone();
+
+            self.storage
+                .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
+                .map_err(Error::Storage)?;
+
             self.action_collector.push(Action::Invoke {
                 invocation_id,
                 invocation_epoch: current_invocation_epoch,
@@ -4416,7 +4430,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
+        S: WriteInvocationStatusTable
+            + WriteVQueueTable
+            + ReadVQueueTable
+            + WriteVirtualObjectStatusTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -5077,7 +5094,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         cause: ParkCause,
     ) -> Result<(), Error>
     where
-        S: WriteVQueueTable + ReadVQueueTable,
+        S: WriteVQueueTable + ReadVQueueTable + WriteVirtualObjectStatusTable,
     {
         let qid = Self::vqueue_id_from_invocation(invocation_id, invocation_target);
 
@@ -5138,6 +5155,21 @@ impl<S> StateMachineApplyContext<'_, S> {
                 should_release_concurrency_token,
             )
             .await?;
+
+        // If we release the concurrency token for exclusive VO handlers, then we also need to
+        // unlock it so that other invocations can make progress.
+        if should_release_concurrency_token
+            && invocation_target.invocation_target_ty()
+                == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        {
+            let keyed_service_id = invocation_target.as_keyed_service_id().expect(
+                "When the handler type is Exclusive, the invocation target must have a key",
+            );
+            // We consumed the inbox, nothing else to do here
+            self.storage
+                .put_virtual_object_status(&keyed_service_id, &VirtualObjectStatus::Unlocked)
+                .map_err(Error::Storage)?;
+        }
 
         Ok(())
     }
