@@ -31,7 +31,6 @@ where
         let Some(metadata) = self.invocation_status.get_invocation_metadata_mut() else {
             return Ok(());
         };
-        let current_invocation_epoch = metadata.current_invocation_epoch;
 
         debug_if_leader!(
             ctx.is_leader,
@@ -45,16 +44,24 @@ where
         if Configuration::pinned().common.experimental_enable_vqueues {
             ctx.vqueue_move_invocation_to_inbox_stage(&self.invocation_id)
                 .await?;
+
+            // todo enable once we properly support handling completions when being in status Inboxed
+            // // When moving an invocation back into the inbox stage, we have to update the
+            // // InvocationStatus accordingly. Otherwise, we miss running changes on the VQueues
+            // // inbox.
+            // *self.invocation_status = InvocationStatus::Inboxed(
+            //     InboxedInvocation::from_in_flight_invocation_metadata(metadata.clone()),
+            // );
+            *self.invocation_status = InvocationStatus::Invoked(metadata.clone());
         } else {
             ctx.action_collector.push(Action::Invoke {
                 invocation_id: self.invocation_id,
-                invocation_epoch: current_invocation_epoch,
                 invocation_target,
                 invoke_input_journal: InvokeInputJournal::NoCachedJournal,
             });
-        }
 
-        *self.invocation_status = InvocationStatus::Invoked(metadata.clone());
+            *self.invocation_status = InvocationStatus::Invoked(metadata.clone());
+        }
 
         Ok(())
     }

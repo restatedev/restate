@@ -52,7 +52,7 @@ use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{PartitionId, PartitionLeaderEpoch};
-use restate_types::invocation::{InvocationEpoch, InvocationTarget};
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal::{Completion, EntryIndex};
 use restate_types::journal_events::raw::RawEvent;
@@ -98,7 +98,6 @@ trait InvocationTaskRunner<SR> {
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         invocation_target: InvocationTarget,
         retry_count_since_last_stored_entry: u32,
         storage_reader: SR,
@@ -127,7 +126,6 @@ where
         opts: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         invocation_target: InvocationTarget,
         retry_count_since_last_stored_entry: u32,
         storage_reader: IR,
@@ -144,7 +142,6 @@ where
                     self.client.clone(),
                     partition,
                     invocation_id,
-                    invocation_epoch,
                     invocation_target,
                     opts.inactivity_timeout.into(),
                     opts.abort_timeout.into(),
@@ -395,7 +392,7 @@ struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
 
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
-    retry_timers: TimerQueue<(PartitionLeaderEpoch, InvocationId, InvocationEpoch)>,
+    retry_timers: TimerQueue<(PartitionLeaderEpoch, InvocationId)>,
     quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
     invocation_state_machine_manager:
@@ -453,14 +450,14 @@ where
                         self.handle_register_partition(partition, partition_key_range,
                                 storage_reader, sender);
                     },
-                    InputCommand::Abort { partition, invocation_id, invocation_epoch } => {
-                        self.handle_abort_invocation(partition, invocation_id,invocation_epoch);
+                    InputCommand::Abort { partition, invocation_id } => {
+                        self.handle_abort_invocation(partition, invocation_id);
                     }
-                    InputCommand::RetryNow { partition, invocation_id, invocation_epoch } => {
-                        self.handle_retry_now_invocation(options, partition, invocation_id,invocation_epoch);
+                    InputCommand::RetryNow { partition, invocation_id } => {
+                        self.handle_retry_now_invocation(options, partition, invocation_id);
                     }
-                    InputCommand::Pause { partition, invocation_id, invocation_epoch } => {
-                        self.handle_pause_invocation( partition, invocation_id,invocation_epoch).await;
+                    InputCommand::Pause { partition, invocation_id } => {
+                        self.handle_pause_invocation( partition, invocation_id).await;
                     }
                     InputCommand::AbortAllPartition { partition } => {
                         self.handle_abort_partition(partition);
@@ -468,22 +465,21 @@ where
                     InputCommand::Completion { partition, invocation_id, completion } => {
                         self.handle_completion(partition, invocation_id, completion);
                     },
-                    InputCommand::Notification { partition, invocation_id, invocation_epoch, notification } => {
-                        self.handle_notification(options, partition, invocation_id,invocation_epoch, notification);
+                    InputCommand::Notification { partition, invocation_id, notification } => {
+                        self.handle_notification(options, partition, invocation_id, notification);
                     },
-                    InputCommand::StoredCommandAck { partition, invocation_id, invocation_epoch, command_index } => {
-                        self.handle_stored_command_ack(options, partition, invocation_id,invocation_epoch, command_index);
+                    InputCommand::StoredCommandAck { partition, invocation_id, command_index } => {
+                        self.handle_stored_command_ack(options, partition, invocation_id, command_index);
                     }
                 }
             },
             Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() => {
-                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_epoch, invoke_input_command.invocation_target, invoke_input_command.journal);
+                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, invoke_input_command.journal);
             },
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
                 let InvocationTaskOutput {
                     invocation_id,
                     partition,
-                    invocation_epoch,
                     inner
                 } = invocation_task_msg;
                 match inner {
@@ -491,7 +487,6 @@ where
                         self.handle_pinned_deployment(
                             partition,
                             invocation_id,
-                            invocation_epoch,
                             deployment_metadata,
                             has_changed,
                         )
@@ -500,7 +495,6 @@ where
                         self.handle_server_header_received(
                             partition,
                             invocation_id,
-                            invocation_epoch,
                             x_restate_server_header
                         )
                     }
@@ -508,7 +502,6 @@ where
                         self.handle_new_entry(
                             partition,
                             invocation_id,
-                            invocation_epoch,
                             entry_index,
                             *entry,
                             requires_ack
@@ -518,37 +511,35 @@ where
                         self.handle_new_notification_proposal(
                             partition,
                             invocation_id,
-                            invocation_epoch,
                             notification
                         ).await
                     },
                     InvocationTaskOutputInner::Closed => {
-                        self.handle_invocation_task_closed(partition, invocation_id, invocation_epoch).await
+                        self.handle_invocation_task_closed(partition, invocation_id).await
                     },
                     InvocationTaskOutputInner::Failed(e) => {
-                        self.handle_invocation_task_failed(partition, invocation_id, invocation_epoch, e).await
+                        self.handle_invocation_task_failed(partition, invocation_id, e).await
                     },
                     InvocationTaskOutputInner::Suspended(indexes) => {
-                        self.handle_invocation_task_suspended(partition, invocation_id, invocation_epoch, indexes).await
+                        self.handle_invocation_task_suspended(partition, invocation_id, indexes).await
                     }
                     InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
                         self.handle_new_command(
                             partition,
                             invocation_id,
-                            invocation_epoch,
                             command_index,
                             command,
                             requires_ack
                         ).await
                     }
                     InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
-                        self.handle_invocation_task_suspended_v2(partition, invocation_id, invocation_epoch, notification_ids).await
+                        self.handle_invocation_task_suspended_v2(partition, invocation_id, notification_ids).await
                     }
                 };
             },
             timer = self.retry_timers.await_timer() => {
-                let (partition, fid, invocation_epoch) = timer.into_inner();
-                self.handle_retry_timer_fired(options, partition, fid, invocation_epoch);
+                let (partition, fid) = timer.into_inner();
+                self.handle_retry_timer_fired(options, partition, fid);
             },
             Some(invocation_task_result) = self.invocation_tasks.join_next() => {
                 if let Err(err) = invocation_task_result {
@@ -631,7 +622,6 @@ where
                     Some(command.qid),
                     command.permit,
                     command.invocation_target,
-                    0,
                     retry_iter,
                     on_max_attempts,
                 ),
@@ -651,7 +641,6 @@ where
             rpc.service = %invocation_target.service_name(),
             rpc.method = %invocation_target.handler_name(),
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invocation.target = %invocation_target,
             restate.invoker.partition_leader_epoch = ?partition,
         )
@@ -661,7 +650,6 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) {
@@ -691,7 +679,6 @@ where
                     None,
                     Permit::new_empty(),
                     invocation_target,
-                    invocation_epoch,
                     retry_iter,
                     on_max_attempts,
                 ),
@@ -708,7 +695,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -717,10 +703,9 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
     ) {
         trace!("Retry timeout fired");
-        self.handle_retry_event(options, partition, invocation_id, invocation_epoch, |sm| {
+        self.handle_retry_event(options, partition, invocation_id, |sm| {
             sm.notify_retry_timer_fired()
         });
     }
@@ -730,7 +715,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.command.index = command_index,
         )
@@ -740,11 +724,10 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         command_index: CommandIndex,
     ) {
         trace!("Received a new stored command entry acknowledgement");
-        self.handle_retry_event(options, partition, invocation_id, invocation_epoch, |sm| {
+        self.handle_retry_event(options, partition, invocation_id, |sm| {
             sm.notify_stored_ack(command_index)
         });
     }
@@ -754,7 +737,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.deployment.id = %pinned_deployment.deployment_id,
         )
@@ -763,14 +745,12 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         pinned_deployment: PinnedDeployment,
         has_changed: bool,
     ) {
         self.invocation_state_machine_manager.handle_for_invocation(
             partition,
             &invocation_id,
-            invocation_epoch,
             |_, ism| {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
@@ -801,7 +781,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -809,13 +788,11 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         x_restate_server_header: String,
     ) {
         self.invocation_state_machine_manager.handle_for_invocation(
             partition,
             &invocation_id,
-            invocation_epoch,
             |_, ism| {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
@@ -838,7 +815,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.index = entry_index,
             restate.journal.entry_type = ?entry.ty(),
@@ -848,14 +824,13 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
         requires_ack: bool,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
-            .resolve_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .resolve_invocation(partition, &invocation_id)
         {
             ism.notify_new_command(entry_index, requires_ack);
             trace!(
@@ -869,7 +844,6 @@ where
                 let _ = output_tx
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
                     }))
                     .await;
@@ -877,7 +851,6 @@ where
             let _ = output_tx
                 .send(Box::new(Effect {
                     invocation_id,
-                    invocation_epoch: ism.invocation_epoch,
                     kind: EffectKind::JournalEntry { entry_index, entry },
                 }))
                 .await;
@@ -892,7 +865,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.entry.ty = %notification.ty(),
             restate.journal.notification.id = ?notification.id(),
@@ -902,12 +874,11 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         notification: RawNotification,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
-            .resolve_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .resolve_invocation(partition, &invocation_id)
         {
             ism.notify_new_notification_proposal(notification.id());
             trace!(
@@ -921,7 +892,6 @@ where
                 let _ = output_tx
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
                     }))
                     .await;
@@ -929,7 +899,6 @@ where
             let _ = output_tx
                 .send(Box::new(Effect {
                     invocation_id,
-                    invocation_epoch: ism.invocation_epoch,
                     kind: EffectKind::journal_entry(notification, None),
                 }))
                 .await;
@@ -944,7 +913,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
             restate.journal.command.index = command_index,
             restate.journal.entry.ty = %command.ty(),
@@ -954,14 +922,13 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         command_index: CommandIndex,
         command: RawCommand,
         requires_ack: bool,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
-            .resolve_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .resolve_invocation(partition, &invocation_id)
         {
             ism.notify_new_command(command_index, requires_ack);
             trace!(
@@ -975,7 +942,6 @@ where
                 let _ = output_tx
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
                     }))
                     .await;
@@ -983,7 +949,6 @@ where
             let _ = output_tx
                 .send(Box::new(Effect {
                     invocation_id,
-                    invocation_epoch: ism.invocation_epoch,
                     kind: EffectKind::journal_entry(command, Some(command_index)),
                 }))
                 .await;
@@ -1010,7 +975,6 @@ where
         self.invocation_state_machine_manager.handle_for_invocation(
             partition,
             &invocation_id,
-            0,
             |_, ism| {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
@@ -1027,7 +991,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1036,10 +999,9 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         notification: RawNotification,
     ) {
-        self.handle_retry_event(options, partition, invocation_id, invocation_epoch, |ism| {
+        self.handle_retry_event(options, partition, invocation_id, |ism| {
             trace!(
                 restate.invocation.target = %ism.invocation_target,
                 restate.journal.ty = %notification.ty(),
@@ -1055,7 +1017,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1063,13 +1024,11 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
     ) {
         if let Some((sender, _, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation(partition, &invocation_id)
         {
-            debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_COMPLETED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
             trace!(
                 restate.invocation.target = %ism.invocation_target,
@@ -1082,7 +1041,6 @@ where
             let _ = sender
                 .send(Box::new(Effect {
                     invocation_id,
-                    invocation_epoch,
                     kind: EffectKind::End,
                 }))
                 .await;
@@ -1097,7 +1055,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1105,14 +1062,12 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         entry_indexes: HashSet<EntryIndex>,
     ) {
         if let Some((sender, _, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation(partition, &invocation_id)
         {
-            debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
             self.quota.unreserve_slot();
             self.status_store.on_end(&partition, &invocation_id);
@@ -1127,7 +1082,6 @@ where
                 let _ = sender
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::Paused {
                             paused_event: RawEvent::from(Event::Paused(PausedEvent {
                                 last_failure: None,
@@ -1144,7 +1098,6 @@ where
                 let _ = sender
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch,
                         kind: EffectKind::Suspended {
                             waiting_for_completed_entries: entry_indexes,
                         },
@@ -1162,7 +1115,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1170,14 +1122,12 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         waiting_for_notifications: HashSet<NotificationId>,
     ) {
         if let Some((sender, _, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation(partition, &invocation_id)
         {
-            debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0))
                 .increment(1);
             self.quota.unreserve_slot();
@@ -1193,7 +1143,6 @@ where
                 let _ = sender
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::Paused {
                             paused_event: RawEvent::from(Event::Paused(PausedEvent {
                                 last_failure: None,
@@ -1210,7 +1159,6 @@ where
                 let _ = sender
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::SuspendedV2 {
                             waiting_for_notifications,
                         },
@@ -1228,7 +1176,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1236,14 +1183,12 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         error: InvokerError,
     ) {
         if let Some((_, _, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation(partition, &invocation_id)
         {
-            debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             self.handle_error_event(partition, invocation_id, error, ism)
                 .await;
         } else {
@@ -1257,7 +1202,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1265,11 +1209,10 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
     ) {
         if let Some((_, _, mut ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation(partition, &invocation_id)
         {
             // We abort only if the requested abort invocation epoch is same.
             trace!(
@@ -1291,7 +1234,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1300,10 +1242,9 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
     ) {
         // Retry now is equivalent to immediately firing the retry timer.
-        self.handle_retry_timer_fired(options, partition, invocation_id, invocation_epoch);
+        self.handle_retry_timer_fired(options, partition, invocation_id);
     }
 
     #[instrument(
@@ -1311,7 +1252,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1319,18 +1259,16 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
     ) {
         if let Some((sender, _, mut ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation(partition, &invocation_id)
         {
             if ism.notify_pause() {
                 // If returns true, we need to pause now
                 let _ = sender
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::Paused {
                             paused_event: RawEvent::from(Event::Paused(PausedEvent {
                                 last_failure: ism.last_transient_error_event,
@@ -1474,7 +1412,6 @@ where
                         .expect("Partition should be registered")
                         .send(Box::new(Effect {
                             invocation_id,
-                            invocation_epoch: ism.invocation_epoch,
                             kind: EffectKind::JournalEvent {
                                 event: RawEvent::from(Event::TransientError(event)),
                             },
@@ -1488,14 +1425,13 @@ where
                     invocation_error_report,
                     Some(next_retry_at),
                 );
-                let epoch = ism.invocation_epoch;
                 self.invocation_state_machine_manager.register_invocation(
                     partition,
                     invocation_id,
                     ism,
                 );
                 self.retry_timers
-                    .sleep_until(next_retry_at, (partition, invocation_id, epoch));
+                    .sleep_until(next_retry_at, (partition, invocation_id));
             }
             OnTaskError::Pause => {
                 counter!(INVOKER_INVOCATION_TASKS,
@@ -1553,7 +1489,6 @@ where
                     .expect("Partition should be registered")
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::Paused {
                             paused_event: RawEvent::from(Event::Paused(paused_event)),
                         },
@@ -1582,7 +1517,6 @@ where
                     .expect("Partition should be registered")
                     .send(Box::new(Effect {
                         invocation_id,
-                        invocation_epoch: ism.invocation_epoch,
                         kind: EffectKind::Failed(error.into_invocation_error()),
                     }))
                     .await;
@@ -1605,7 +1539,6 @@ where
             options,
             partition,
             invocation_id,
-            ism.invocation_epoch,
             ism.invocation_target.clone(),
             ism.start_message_retry_count_since_last_stored_command,
             storage_reader,
@@ -1633,14 +1566,13 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         f: FN,
     ) where
         FN: FnOnce(&mut InvocationStateMachine),
     {
         if let Some((_, storage_reader, mut ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation(partition, &invocation_id)
         {
             f(&mut ism);
             if ism.is_ready_to_retry() {
@@ -1803,7 +1735,6 @@ mod tests {
             _options: &InvokerOptions,
             partition: PartitionLeaderEpoch,
             invocation_id: InvocationId,
-            _invocation_epoch: InvocationEpoch,
             invocation_target: InvocationTarget,
             _retry_count_since_last_stored_entry: u32,
             storage_reader: IR,
@@ -1838,7 +1769,6 @@ mod tests {
             _options: &InvokerOptions,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _invocation_epoch: InvocationEpoch,
             _invocation_target: InvocationTarget,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
@@ -1860,7 +1790,6 @@ mod tests {
             _options: &InvokerOptions,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _invocation_epoch: InvocationEpoch,
             _invocation_target: InvocationTarget,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
@@ -2003,7 +1932,6 @@ mod tests {
             .invoke(
                 partition_leader_epoch,
                 invocation_id,
-                0,
                 invocation_target,
                 InvokeInputJournal::NoCachedJournal,
             )
@@ -2056,7 +1984,6 @@ mod tests {
             .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_1,
-                invocation_epoch: 0,
                 invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
             }))
@@ -2067,7 +1994,6 @@ mod tests {
             .enqueue(Box::new(InvokeCommand {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_2,
-                invocation_epoch: 0,
                 invocation_target: InvocationTarget::mock_virtual_object(),
                 journal: InvokeInputJournal::NoCachedJournal,
             }))
@@ -2106,7 +2032,7 @@ mod tests {
 
         // Send the close signal
         service_inner
-            .handle_invocation_task_closed(MOCK_PARTITION, invocation_id_1, 0)
+            .handle_invocation_task_closed(MOCK_PARTITION, invocation_id_1)
             .await;
 
         // Slot should be available again
@@ -2157,7 +2083,6 @@ mod tests {
                 let _ = invoker_tx.send(InvocationTaskOutput {
                     partition,
                     invocation_id,
-                    invocation_epoch: 0,
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: 1,
                         entry: RawEntry::new(EnrichedEntryHeader::SetState {}, Bytes::default())
@@ -2181,7 +2106,6 @@ mod tests {
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
@@ -2195,7 +2119,7 @@ mod tests {
         assert_eq!(service_inner.quota.available_slots(), 1);
 
         // Abort the invocation
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id);
 
         // Check the quota
         assert_eq!(service_inner.quota.available_slots(), 2);
@@ -2205,202 +2129,12 @@ mod tests {
             .handle_invocation_task_failed(
                 MOCK_PARTITION,
                 invocation_id,
-                0,
                 InvokerError::EmptySuspensionMessage, /* any error is fine */
             )
             .await;
 
         // Check the quota, should not be changed
         assert_eq!(service_inner.quota.available_slots(), 2);
-    }
-
-    #[test(restate_core::test)]
-    async fn abort_doesnt_get_applied_with_old_epoch() {
-        let invocation_id = InvocationId::mock_random();
-
-        let (_, _status_tx, mut service_inner) =
-            ServiceInner::mock((), MockSchemas::default(), None);
-        let _ = service_inner.register_mock_partition(EmptyStorageReader);
-
-        // Invoke the service with epoch one
-        service_inner.handle_invoke(
-            &InvokerOptions::default(),
-            MOCK_PARTITION,
-            invocation_id,
-            1,
-            InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
-        );
-        assert_eq!(
-            service_inner
-                .invocation_state_machine_manager
-                .resolve_invocation(MOCK_PARTITION, &invocation_id)
-                .unwrap()
-                .1
-                .invocation_epoch,
-            1
-        );
-
-        // Now abort 0, this should have no effect
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 0);
-        assert_eq!(
-            service_inner
-                .invocation_state_machine_manager
-                .resolve_invocation(MOCK_PARTITION, &invocation_id)
-                .unwrap()
-                .1
-                .invocation_epoch,
-            1
-        );
-
-        // Also handle error on epoch 0 should have no effect
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                0,
-                InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
-            )
-            .await;
-        assert_eq!(
-            service_inner
-                .invocation_state_machine_manager
-                .resolve_invocation(MOCK_PARTITION, &invocation_id)
-                .unwrap()
-                .1
-                .invocation_epoch,
-            1
-        );
-
-        // Now abort 1, this should have effect
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 1);
-        assert!(
-            service_inner
-                .invocation_state_machine_manager
-                .resolve_invocation(MOCK_PARTITION, &invocation_id)
-                .is_none()
-        );
-    }
-
-    #[test(restate_core::test)]
-    async fn invoke_then_new_invoke_then_old_abort() {
-        let invocation_id = InvocationId::mock_random();
-        let started_tasks_count = Arc::new(AtomicUsize::new(0));
-
-        let (_, _status_tx, mut service_inner) =
-            ServiceInner::mock(started_tasks_count.clone(), MockSchemas::default(), None);
-        let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
-
-        // Invoke the service with epoch zero
-        service_inner.handle_invoke(
-            &InvokerOptions::default(),
-            MOCK_PARTITION,
-            invocation_id,
-            0,
-            InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
-        );
-        assert_eq!(
-            service_inner
-                .invocation_state_machine_manager
-                .resolve_invocation(MOCK_PARTITION, &invocation_id)
-                .unwrap()
-                .1
-                .invocation_epoch,
-            0
-        );
-        assert_eq!(started_tasks_count.load(Ordering::SeqCst), 1);
-
-        // Now invoke the service with epoch one, this replaces the old task
-        service_inner.handle_invoke(
-            &InvokerOptions::default(),
-            MOCK_PARTITION,
-            invocation_id,
-            1,
-            InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
-        );
-        assert_eq!(
-            service_inner
-                .invocation_state_machine_manager
-                .resolve_invocation(MOCK_PARTITION, &invocation_id)
-                .unwrap()
-                .1
-                .invocation_epoch,
-            1
-        );
-        assert_eq!(started_tasks_count.load(Ordering::SeqCst), 2);
-
-        // Also ignore stuff related to old invocations
-        service_inner
-            .handle_new_command(
-                MOCK_PARTITION,
-                invocation_id,
-                0,
-                1,
-                ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(
-                    OutputCommand {
-                        result: OutputResult::Success(Bytes::default()),
-                        name: Default::default(),
-                    },
-                )))
-                .try_as_command()
-                .unwrap(),
-                false,
-            )
-            .await;
-        assert!(
-            effects_rx.try_recv().is_err(),
-            "No effect should have been created so far"
-        );
-
-        // But commands with epoch 1 should be propagated
-        service_inner
-            .handle_new_command(
-                MOCK_PARTITION,
-                invocation_id,
-                1,
-                1,
-                ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(
-                    OutputCommand {
-                        result: OutputResult::Success(Bytes::default()),
-                        name: Default::default(),
-                    },
-                )))
-                .try_as_command()
-                .unwrap(),
-                false,
-            )
-            .await;
-        assert_that!(
-            *effects_rx.try_recv().unwrap(),
-            pat!(Effect {
-                invocation_id: eq(invocation_id),
-                invocation_epoch: eq(1),
-                kind: pat!(EffectKind::JournalEntryV2 { .. })
-            })
-        );
-
-        // Now abort 0, this should have no effect
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 0);
-        assert_eq!(
-            service_inner
-                .invocation_state_machine_manager
-                .resolve_invocation(MOCK_PARTITION, &invocation_id)
-                .unwrap()
-                .1
-                .invocation_epoch,
-            1
-        );
-
-        // Now abort 1, this should have effect
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 1);
-        assert!(
-            service_inner
-                .invocation_state_machine_manager
-                .resolve_invocation(MOCK_PARTITION, &invocation_id)
-                .is_none()
-        );
     }
 
     #[test(restate_core::test)]
@@ -2457,7 +2191,6 @@ mod tests {
             )),
             Permit::new_empty(),
             invocation_target.clone(),
-            0,
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),
             OnMaxAttempts::Kill,
         );
@@ -2476,7 +2209,7 @@ mod tests {
             .register_invocation(MOCK_PARTITION, invocation_id, ism);
 
         // Fire the retry timer
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
 
         // Create a notification
         let notification = RawNotification::new(
@@ -2490,7 +2223,6 @@ mod tests {
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            0,
             notification,
         );
 
@@ -2517,7 +2249,6 @@ mod tests {
             &InvokerOptions::default(),
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
@@ -2527,7 +2258,6 @@ mod tests {
             .handle_invocation_task_failed(
                 MOCK_PARTITION,
                 invocation_id,
-                0,
                 InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
             )
             .await;
@@ -2547,7 +2277,6 @@ mod tests {
             &InvokerOptions::default(),
             MOCK_PARTITION,
             invocation_id,
-            0,
         );
 
         // Now a new command proposal should clear the last failure (progress made)
@@ -2555,7 +2284,6 @@ mod tests {
             .handle_new_command(
                 MOCK_PARTITION,
                 invocation_id,
-                0,
                 1,
                 ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(
                     OutputCommand {
@@ -2608,7 +2336,6 @@ mod tests {
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
@@ -2617,7 +2344,6 @@ mod tests {
         service_inner.handle_pinned_deployment(
             MOCK_PARTITION,
             invocation_id,
-            0,
             PinnedDeployment::new(DeploymentId::new(), ServiceProtocolVersion::V4),
             false, // has_changed = false -> directly selects protocol without emitting effect
         );
@@ -2629,7 +2355,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_a)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, error_a)
             .await;
         assert_that!(
             *effects_rx
@@ -2637,7 +2363,6 @@ mod tests {
                 .expect("expected a proposed transient error event"),
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                invocation_epoch: eq(0),
                 kind: pat!(EffectKind::JournalEvent {
                     event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
                 })
@@ -2645,7 +2370,7 @@ mod tests {
         );
 
         // Fire the timer to let the invocation go back to in flight
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
 
         // Same transient error (A again) -> should NOT propose a new event
         let error_a_same = InvokerError::SdkV2(SdkInvocationErrorV2 {
@@ -2654,7 +2379,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_a_same)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, error_a_same)
             .await;
         assert!(
             effects_rx.try_recv().is_err(),
@@ -2662,7 +2387,7 @@ mod tests {
         );
 
         // Fire the timer to let the invocation go back to in flight
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
 
         // Different transient error (B: different message) -> should propose a new event
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2 {
@@ -2671,7 +2396,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom-2").into(),
         });
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_b)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, error_b)
             .await;
         assert_that!(
             *effects_rx
@@ -2679,7 +2404,6 @@ mod tests {
                 .expect("expected a newly proposed transient error event for different content"),
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                invocation_epoch: eq(0),
                 kind: pat!(EffectKind::JournalEvent {
                     event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
                 })
@@ -2702,7 +2426,6 @@ mod tests {
             &InvokerOptions::default(),
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
@@ -2712,7 +2435,6 @@ mod tests {
             .handle_invocation_task_failed(
                 MOCK_PARTITION,
                 invocation_id,
-                0,
                 InvokerError::AbortTimeoutFired(Duration::from_secs(10).into()),
             )
             .await;
@@ -2755,7 +2477,6 @@ mod tests {
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
@@ -2763,18 +2484,18 @@ mod tests {
         // First transient error -> schedules retry (because 1 attempt available)
         let error_a = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_a)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, error_a)
             .await;
         // There might be an extra transient error event proposed; drain if present
         let _ = effects_rx.try_recv();
 
         // Fire timer to go back in flight
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
 
         // Second transient error -> retries exhausted and Pause behavior -> expect Paused effect
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error_b)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, error_b)
             .await;
 
         let effect = effects_rx
@@ -2784,7 +2505,6 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                invocation_epoch: eq(0),
                 kind: pat!(EffectKind::Paused {
                     paused_event: predicate(|e: &RawEvent| e.ty() == EventType::Paused)
                 })
@@ -2852,40 +2572,39 @@ mod tests {
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
 
         // Pin deployment (switches policy to Kill and resets attempts)
         let dp = PinnedDeployment::new(DeploymentId::new(), ServiceProtocolVersion::V4);
-        service_inner.handle_pinned_deployment(MOCK_PARTITION, invocation_id, 0, dp.clone(), true);
+        service_inner.handle_pinned_deployment(MOCK_PARTITION, invocation_id, dp.clone(), true);
 
         // First transient failure after pin -> schedules retry
         let err1 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, err1)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, err1)
             .await;
         // Drain any proposed event
         effects_rx.try_recv().unwrap();
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
 
         // Second transient failure after pin -> schedules retry (attempts now exhausted)
         let err2 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, err2)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, err2)
             .await;
         effects_rx.try_recv().unwrap_err();
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
 
         // Send the same pinned deployment again -> must NOT reset the retry iterator
         let same_dp = PinnedDeployment::new(dp.deployment_id, ServiceProtocolVersion::V4);
-        service_inner.handle_pinned_deployment(MOCK_PARTITION, invocation_id, 0, same_dp, false);
+        service_inner.handle_pinned_deployment(MOCK_PARTITION, invocation_id, same_dp, false);
 
         // Next failure should hit OnMaxAttempts::Kill immediately (no more retries)
         let err3 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, err3)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, err3)
             .await;
 
         let effect = effects_rx
@@ -2895,7 +2614,6 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                invocation_epoch: eq(0),
                 kind: pat!(EffectKind::Failed(_))
             })
         );
@@ -2921,7 +2639,6 @@ mod tests {
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
@@ -2929,7 +2646,7 @@ mod tests {
         // Simulate a transient error to put invocation in WaitingRetry state
         let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, error)
             .await;
         // Drain any proposed event
         let _ = effects_rx.try_recv();
@@ -2943,7 +2660,7 @@ mod tests {
 
         // Call manual pause while waiting for retry
         service_inner
-            .handle_pause_invocation(MOCK_PARTITION, invocation_id, 0)
+            .handle_pause_invocation(MOCK_PARTITION, invocation_id)
             .await;
 
         // Should emit Paused effect immediately with no last_failure
@@ -2954,7 +2671,6 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                invocation_epoch: eq(0),
                 kind: pat!(EffectKind::Paused {
                     paused_event: predicate(|e: &RawEvent| e.ty() == EventType::Paused)
                 })
@@ -2982,14 +2698,13 @@ mod tests {
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
 
         // Call manual pause while in flight
         service_inner
-            .handle_pause_invocation(MOCK_PARTITION, invocation_id, 0)
+            .handle_pause_invocation(MOCK_PARTITION, invocation_id)
             .await;
 
         // State machine should still be registered with requested_pause = true
@@ -3004,7 +2719,6 @@ mod tests {
             .handle_invocation_task_suspended(
                 MOCK_PARTITION,
                 invocation_id,
-                0,
                 HashSet::new(), // No pending entries
             )
             .await;
@@ -3017,7 +2731,6 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                invocation_epoch: eq(0),
                 kind: pat!(EffectKind::Paused {
                     paused_event: predicate(|e: &RawEvent| e.ty() == EventType::Paused)
                 })
@@ -3045,14 +2758,13 @@ mod tests {
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
 
         // Call manual pause while in flight
         service_inner
-            .handle_pause_invocation(MOCK_PARTITION, invocation_id, 0)
+            .handle_pause_invocation(MOCK_PARTITION, invocation_id)
             .await;
 
         // State machine should still be registered with requested_pause = true
@@ -3065,7 +2777,7 @@ mod tests {
         // Simulate the invocation task failing with a transient error
         let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, error)
             .await;
 
         // Should emit Paused effect (not Kill or ScheduleRetry) with last_failure set
@@ -3076,7 +2788,6 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                invocation_epoch: eq(0),
                 kind: pat!(EffectKind::Paused {
                     paused_event: predicate(|e: &RawEvent| {
                         e.ty() == EventType::Paused &&
@@ -3108,7 +2819,6 @@ mod tests {
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            0,
             InvocationTarget::mock_virtual_object(),
             InvokeInputJournal::NoCachedJournal,
         );
@@ -3116,7 +2826,7 @@ mod tests {
         // Simulate a transient error to put invocation in WaitingRetry state
         let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, 0, error)
+            .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, error)
             .await;
         // Drain any proposed event
         let _ = effects_rx.try_recv();
@@ -3130,7 +2840,7 @@ mod tests {
 
         // Call manual pause while waiting for retry (after error was notified)
         service_inner
-            .handle_pause_invocation(MOCK_PARTITION, invocation_id, 0)
+            .handle_pause_invocation(MOCK_PARTITION, invocation_id)
             .await;
 
         // Should emit Paused effect immediately with last_failure populated from the error
@@ -3141,7 +2851,6 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                invocation_epoch: eq(0),
                 kind: pat!(EffectKind::Paused {
                     paused_event: predicate(|e: &RawEvent| {
                         e.ty() == EventType::Paused &&

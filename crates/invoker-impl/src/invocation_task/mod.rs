@@ -38,7 +38,7 @@ use restate_invoker_api::{EntryEnricher, InvokeInputJournal};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
-use restate_types::invocation::{InvocationEpoch, InvocationTarget};
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_v2;
@@ -86,7 +86,6 @@ const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server")
 pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
-    pub(super) invocation_epoch: InvocationEpoch,
     pub(super) inner: InvocationTaskOutputInner,
 }
 
@@ -142,7 +141,6 @@ pub(super) struct InvocationTask<IR, EE, DMR> {
     // Connection params
     partition: PartitionLeaderEpoch,
     invocation_id: InvocationId,
-    invocation_epoch: InvocationEpoch,
     invocation_target: InvocationTarget,
     inactivity_timeout: Duration,
     abort_timeout: Duration,
@@ -205,7 +203,6 @@ where
         client: ServiceClient,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         invocation_target: InvocationTarget,
         default_inactivity_timeout: Duration,
         default_abort_timeout: Duration,
@@ -224,7 +221,6 @@ where
             client,
             partition,
             invocation_id,
-            invocation_epoch,
             invocation_target,
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
@@ -296,13 +292,6 @@ where
                 future::Either::Right(stream::iter(journal_items)),
             ),
         };
-
-        if self.invocation_epoch != journal_metadata.invocation_epoch {
-            shortcircuit!(Err(InvokerError::StaleJournalRead {
-                actual: journal_metadata.invocation_epoch,
-                expected: self.invocation_epoch
-            }));
-        }
 
         // Resolve the deployment metadata
         let schemas = self.schemas.live_load();
@@ -428,7 +417,6 @@ impl<IR, EE, DMR> InvocationTask<IR, EE, DMR> {
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             invocation_id: self.invocation_id,
-            invocation_epoch: self.invocation_epoch,
             inner: invocation_task_output_inner,
         });
     }

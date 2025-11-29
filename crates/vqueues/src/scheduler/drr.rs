@@ -241,6 +241,7 @@ where
                     }
 
                     // Acquire a global concurrency token
+                    // todo consider not requiring concurrency tokens for state mutations
                     if this
                         .concurrency_limiter
                         .poll_and_merge(cx, this.unconfirmed_capacity_permits)
@@ -376,17 +377,22 @@ where
                 if qstate.remove_from_unconfirmed_assignments(item_hash) {
                     // drop the already acquired permit
                     let _ = self.unconfirmed_capacity_permits.split(1);
-                } else if qstate.notify_removed(item_hash) {
+                }
+
+                qstate.notify_removed(item_hash);
+
+                // if we aren't eligible check whether the removed item has made us eligible
+                // again (e.g. by releasing a concurrency token or by removing the head of the
+                // queue).
+                if !self.eligible.contains(&qid) {
                     match qstate.check_eligibility(now, meta, config) {
-                        Eligibility::Eligible if !self.eligible.contains(&qid) => {
+                        Eligibility::Eligible => {
                             // Make eligible immediately.
                             qstate.deficit.set_last_round(self.global_sched_round);
                             self.eligible.push_back(qid);
                             self.waker.wake_by_ref();
                         }
-                        Eligibility::EligibleAt(eligiblility_ts)
-                            if !self.eligible.contains(&qid) =>
-                        {
+                        Eligibility::EligibleAt(eligiblility_ts) => {
                             qstate.maybe_schedule_wakeup(
                                 eligiblility_ts,
                                 &mut self.delayed_eligibility,

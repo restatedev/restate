@@ -47,15 +47,14 @@ where
     ) -> Result<(), Self::Error> {
         // -- Figure out the invocation status
         match self.storage.get_invocation_status(&invocation_id).await {
-            Ok(InvocationStatus::Invoked(metadata)) => {
+            Ok(InvocationStatus::Invoked(_)) => {
                 if !matches!(update_deployment_id, PatchDeploymentId::KeepPinned) {
                     replier.send(ResumeInvocationRpcResponse::CannotPatchDeploymentId);
                     return Ok(());
                 }
 
                 // Let's poke the invoker to retry now, if possible
-                self.proposer
-                    .notify_invoker_to_retry_now(invocation_id, metadata.current_invocation_epoch);
+                self.proposer.notify_invoker_to_retry_now(invocation_id);
                 replier.send(ResumeInvocationRpcResponse::Ok);
             }
             Ok(InvocationStatus::Suspended {
@@ -196,7 +195,7 @@ mod tests {
         let mut proposer = MockActuator::new();
         proposer
             .expect_notify_invoker_to_retry_now()
-            .return_once_st(move |got_invocation_id, _| {
+            .return_once_st(move |got_invocation_id| {
                 assert_eq!(got_invocation_id, invocation_id);
             });
 

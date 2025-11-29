@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
 use restate_types::vqueue::VQueueId;
 
@@ -70,6 +71,26 @@ pub trait WriteVQueueTable {
     ) where
         E: EntryStateKind + bilrost::Message + bilrost::encoding::RawMessage,
         (): bilrost::encoding::EmptyState<(), E>;
+
+    /// Stores a vqueue item for later use.
+    fn put_item<E>(
+        &mut self,
+        qid: &VQueueId,
+        created_at: UniqueTimestamp,
+        kind: EntryKind,
+        id: &EntryId,
+        item: E,
+    ) where
+        E: bilrost::Message;
+
+    /// Deletes a vqueue item.
+    fn delete_item(
+        &mut self,
+        qid: &VQueueId,
+        created_at: UniqueTimestamp,
+        kind: EntryKind,
+        id: &EntryId,
+    );
 }
 
 pub trait ReadVQueueTable {
@@ -101,6 +122,17 @@ pub trait ReadVQueueTable {
             + Sized
             + 'static,
         (): bilrost::encoding::EmptyState<(), E>;
+
+    /// Gets a vqueue item identified by its qid, the entry id, its kind and the creation timestamp.
+    fn get_item<E>(
+        &mut self,
+        qid: &VQueueId,
+        created_at: UniqueTimestamp,
+        kind: EntryKind,
+        id: &EntryId,
+    ) -> impl Future<Output = Result<Option<E>>>
+    where
+        E: bilrost::OwnedMessage;
 
     // Commented for future reference
     // fn with_entry_state<'a, E, F, O>(

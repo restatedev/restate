@@ -73,10 +73,13 @@ message JournalEntryIndex { uint32 entry_index = 1; }
 
 // Target of a completion sent from another Partition Processor.
 message JournalCompletionTarget {
+  reserved 4;
+
   uint64 partition_key = 1;
   bytes invocation_uuid = 2;
   uint32 entry_index = 3;
-  uint32 caller_invocation_epoch = 4;
+  // removed in v1.6
+  // uint32 caller_invocation_epoch = 4;
 }
 
 message FailureMetadata {
@@ -130,6 +133,7 @@ message Source {
 // Next generation InvocationStatus message, which will replace InvocationStatus
 // in a future version.
 message InvocationStatusV2 {
+  reserved 27, 28;
 
   enum Status {
     // This used to be the KILLED invocation status experimental feature.
@@ -141,11 +145,6 @@ message InvocationStatusV2 {
     SUSPENDED = 4;
     COMPLETED = 5;
     PAUSED = 7;
-  }
-
-  message JournalTrimPoint {
-    uint32 completion_id = 1;
-    uint32 invocation_epoch = 2;
   }
 
   Status status = 1;
@@ -183,9 +182,10 @@ message InvocationStatusV2 {
   optional dev.restate.service.protocol.ServiceProtocolVersion
       service_protocol_version = 16;
   bool hotfix_apply_cancellation_after_deployment_is_pinned = 25;
-  uint32 current_invocation_epoch = 27;
-  // Used to reconstruct the completion_range_epoch_map
-  repeated JournalTrimPoint trim_points = 28;
+  // removed in v1.6
+  // uint32 current_invocation_epoch = 27;
+  // removed in v1.6
+  // repeated JournalTrimPoint trim_points = 28;
   // Random seed to feed RNG
   optional uint64 random_seed = 31;
 
@@ -200,9 +200,12 @@ message InvocationStatusV2 {
 
 // Slimmer version of InvocationStatusV2
 message InvocationV2Lite {
+  reserved 27;
+
   InvocationStatusV2.Status status = 1;
   InvocationTarget invocation_target = 2;
-  uint32 current_invocation_epoch = 27;
+  // removed in v1.6
+  // uint32 current_invocation_epoch = 27;
 }
 
 // A somewhat slimmer version of InvocationStatusV2 with nested messages left
@@ -321,9 +324,12 @@ message VirtualObjectStatus {
 message ServiceInvocationResponseSink {
 
   message PartitionProcessor {
+    reserved 3;
+
     bytes caller = 1;
     uint32 entry_index = 2;
-    uint32 caller_invocation_epoch = 3;
+    // removed in v1.6
+    // uint32 caller_invocation_epoch = 3;
   }
 
   message Ingress {
@@ -636,10 +642,13 @@ message OutboxMessage {
   message OutboxServiceInvocation { ServiceInvocation service_invocation = 1; }
 
   message OutboxServiceInvocationResponse {
+    reserved 4;
+
     InvocationId invocation_id = 1;
     uint32 entry_index = 2;
     ResponseResult response_result = 3;
-    uint32 caller_invocation_epoch = 4;
+    // removed in v1.6
+    // uint32 caller_invocation_epoch = 4;
   }
 
   message OutboxKill { InvocationId invocation_id = 1; }
@@ -692,9 +701,12 @@ message OutboxMessage {
 message Timer {
 
   message CompleteSleepEntry {
+    reserved 3;
+
     InvocationId invocation_id = 1;
     uint32 entry_index = 2;
-    uint32 caller_invocation_epoch = 3;
+    // removed in v1.6
+    // uint32 caller_invocation_epoch = 3;
   }
 
   message CleanInvocationStatus { InvocationId invocation_id = 1; }

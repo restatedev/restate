@@ -165,7 +165,6 @@ mod tests {
         let _ = test_env
             .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
-                invocation_epoch: 0,
                 kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
                     deployment_id: initial_deployment_id,
                     service_protocol_version: ServiceProtocolVersion::V5,

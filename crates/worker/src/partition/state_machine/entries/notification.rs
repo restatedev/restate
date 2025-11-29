@@ -166,13 +166,9 @@ where
                     .await?;
                 }
             }
-            InvocationStatus::Invoked(im) => {
+            InvocationStatus::Invoked(_) => {
                 // Just forward the notification if we're invoked
-                ctx.forward_notification(
-                    self.invocation_id,
-                    im.current_invocation_epoch,
-                    self.entry.clone(),
-                );
+                ctx.forward_notification(self.invocation_id, self.entry.clone());
             }
             InvocationStatus::Paused(_) => {
                 // If we're paused, resume only if the notification was a cancellation signal.
@@ -343,7 +339,6 @@ mod tests {
                 wake_up_time,
                 invocation_id,
                 completion_id,
-                0,
             )))
             .await;
 

@@ -109,7 +109,6 @@ fn read_invoked_full_invocation_id(
         Ok(Some(InvokedInvocationStatusLite {
             invocation_id,
             invocation_target: invocation_status.invocation_target,
-            current_invocation_epoch: invocation_status.current_invocation_epoch,
         }))
     } else {
         Ok(None)

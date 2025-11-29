@@ -37,8 +37,6 @@ impl OutboxMessageExt for OutboxMessage {
             target: JournalCompletionTarget {
                 caller_id: invocation_id,
                 caller_completion_id: entry_index,
-                // Old Journal doesn't have invocation_epoch
-                caller_invocation_epoch: 0,
             },
             result,
         })

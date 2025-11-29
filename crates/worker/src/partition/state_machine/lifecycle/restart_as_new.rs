@@ -577,7 +577,6 @@ mod tests {
                     wake_up_time,
                     original_invocation_id,
                     completion_id,
-                    0,
                 )),
                 fixtures::invoker_entry_effect(
                     original_invocation_id,

@@ -151,7 +151,6 @@ pub mod v1 {
         };
         use super::entry::EntryType;
         use super::invocation_status::{Completed, Inboxed, Invoked, Suspended};
-        use super::invocation_status_v2::JournalTrimPoint;
         use super::journal_entry::completion_result::{Empty, Failure, Success};
         use super::journal_entry::{CompletionResult, Kind, completion_result};
         use super::outbox_message::{
@@ -173,8 +172,8 @@ pub mod v1 {
             span_relation, submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
-            CompletionRangeEpochMap, JournalMetadata, PreFlightInvocationArgument,
-            PreFlightInvocationInput, PreFlightInvocationJournal,
+            JournalMetadata, PreFlightInvocationArgument, PreFlightInvocationInput,
+            PreFlightInvocationJournal,
         };
         use crate::protobuf_types::ConversionError;
 
@@ -286,7 +285,6 @@ pub mod v1 {
                         .to_vec()
                         .into(),
                     entry_index: value.caller_completion_id,
-                    caller_invocation_epoch: value.caller_invocation_epoch,
                 }
             }
         }
@@ -302,7 +300,6 @@ pub mod v1 {
                             try_bytes_into_invocation_uuid(value.invocation_uuid)?,
                         ),
                         value.entry_index,
-                        value.caller_invocation_epoch,
                     ),
                 )
             }
@@ -449,8 +446,6 @@ pub mod v1 {
                     commands,
                     deployment_id,
                     service_protocol_version,
-                    current_invocation_epoch,
-                    trim_points,
                     random_seed,
                     waiting_for_completions,
                     waiting_for_signal_indexes,
@@ -608,13 +603,6 @@ pub mod v1 {
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
-                                current_invocation_epoch,
-                                completion_range_epoch_map:
-                                    CompletionRangeEpochMap::from_trim_points(
-                                        trim_points.into_iter().map(|trim_point| {
-                                            (trim_point.completion_id, trim_point.invocation_epoch)
-                                        }),
-                                    ),
                                 random_seed,
                             },
                         ))
@@ -645,13 +633,6 @@ pub mod v1 {
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
-                                current_invocation_epoch,
-                                completion_range_epoch_map:
-                                    CompletionRangeEpochMap::from_trim_points(
-                                        trim_points.into_iter().map(|trim_point| {
-                                            (trim_point.completion_id, trim_point.invocation_epoch)
-                                        }),
-                                    ),
                                 random_seed,
                             },
                             waiting_for_notifications: waiting_for_completions
@@ -698,13 +679,6 @@ pub mod v1 {
                                     .try_into()?,
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
-                                current_invocation_epoch,
-                                completion_range_epoch_map:
-                                    CompletionRangeEpochMap::from_trim_points(
-                                        trim_points.into_iter().map(|trim_point| {
-                                            (trim_point.completion_id, trim_point.invocation_epoch)
-                                        }),
-                                    ),
                                 random_seed,
                             },
                         ))
@@ -806,8 +780,6 @@ pub mod v1 {
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                        current_invocation_epoch: 0,
-                        trim_points: vec![],
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
@@ -885,8 +857,6 @@ pub mod v1 {
                             deployment_id,
                             service_protocol_version,
                             hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                            current_invocation_epoch: 0,
-                            trim_points: vec![],
                             waiting_for_completions: vec![],
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
@@ -953,8 +923,6 @@ pub mod v1 {
                         deployment_id: None,
                         service_protocol_version: None,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                        current_invocation_epoch: 0,
-                        trim_points: vec![],
                         waiting_for_completions: vec![],
                         waiting_for_signal_indexes: vec![],
                         waiting_for_signal_names: vec![],
@@ -1032,8 +1000,6 @@ pub mod v1 {
                             deployment_id,
                             service_protocol_version,
                             hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                            current_invocation_epoch: 0,
-                            trim_points: vec![],
                             waiting_for_completions: vec![],
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
@@ -1055,8 +1021,6 @@ pub mod v1 {
                             journal_retention_duration,
                             idempotency_key,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
-                            current_invocation_epoch,
-                            completion_range_epoch_map,
                             random_seed,
                         },
                     ) => {
@@ -1111,14 +1075,6 @@ pub mod v1 {
                             waiting_for_signal_names: vec![],
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
-                            current_invocation_epoch,
-                            trim_points: completion_range_epoch_map
-                                .into_trim_points_iter()
-                                .map(|(completion_id, invocation_epoch)| JournalTrimPoint {
-                                    completion_id,
-                                    invocation_epoch,
-                                })
-                                .collect(),
                             random_seed,
                         }
                     }
@@ -1137,8 +1093,6 @@ pub mod v1 {
                                 journal_retention_duration,
                                 idempotency_key,
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
-                                current_invocation_epoch,
-                                completion_range_epoch_map,
                                 random_seed,
                             },
                         waiting_for_notifications,
@@ -1211,14 +1165,6 @@ pub mod v1 {
                             waiting_for_signal_names,
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
-                            current_invocation_epoch,
-                            trim_points: completion_range_epoch_map
-                                .into_trim_points_iter()
-                                .map(|(completion_id, invocation_epoch)| JournalTrimPoint {
-                                    completion_id,
-                                    invocation_epoch,
-                                })
-                                .collect(),
                             random_seed,
                         }
                     }
@@ -1236,8 +1182,6 @@ pub mod v1 {
                             journal_retention_duration,
                             idempotency_key,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
-                            current_invocation_epoch,
-                            completion_range_epoch_map,
                             random_seed,
                         },
                     ) => {
@@ -1292,14 +1236,6 @@ pub mod v1 {
                             waiting_for_signal_names: vec![],
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
-                            current_invocation_epoch,
-                            trim_points: completion_range_epoch_map
-                                .into_trim_points_iter()
-                                .map(|(completion_id, invocation_epoch)| JournalTrimPoint {
-                                    completion_id,
-                                    invocation_epoch,
-                                })
-                                .collect(),
                             random_seed,
                         }
                     }
@@ -1363,8 +1299,6 @@ pub mod v1 {
                             deployment_id,
                             service_protocol_version,
                             hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                            current_invocation_epoch: 0,
-                            trim_points: vec![],
                             waiting_for_completions: vec![],
                             waiting_for_signal_indexes: vec![],
                             waiting_for_signal_names: vec![],
@@ -1388,7 +1322,6 @@ pub mod v1 {
                 let InvocationV2Lite {
                     status,
                     invocation_target,
-                    current_invocation_epoch,
                 } = value;
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
@@ -1422,7 +1355,6 @@ pub mod v1 {
                 Ok(crate::invocation_status_table::InvocationLite {
                     status,
                     invocation_target,
-                    current_invocation_epoch,
                 })
             }
         }
@@ -1629,8 +1561,6 @@ pub mod v1 {
                     journal_retention_duration: Default::default(),
                     idempotency_key,
                     hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                    current_invocation_epoch: 0,
-                    completion_range_epoch_map: Default::default(),
                     random_seed: None,
                 })
             }
@@ -1747,8 +1677,6 @@ pub mod v1 {
                         journal_retention_duration: Default::default(),
                         idempotency_key,
                         hotfix_apply_cancellation_after_deployment_is_pinned: false,
-                        current_invocation_epoch: 0,
-                        completion_range_epoch_map: Default::default(),
                         random_seed: None,
                     },
                     waiting_for_completed_entries,
@@ -2807,7 +2735,6 @@ pub mod v1 {
                                 restate_types::invocation::JournalCompletionTarget {
                                     caller_id:  restate_types::identifiers::InvocationId::from_slice(&partition_processor.caller)?,
                                     caller_completion_id: partition_processor.entry_index,
-                                    caller_invocation_epoch: partition_processor.caller_invocation_epoch,
                                 }
                             ),
                         )
@@ -2837,12 +2764,11 @@ pub mod v1 {
                 let response_sink = match value {
                     Some(
                         restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor(restate_types::invocation::JournalCompletionTarget {
-                                                                                                         caller_id, caller_completion_id, caller_invocation_epoch
+                                                                                                         caller_id, caller_completion_id
                                                                                                      }),
                     ) => ResponseSink::PartitionProcessor(PartitionProcessor {
                         entry_index: caller_completion_id,
                         caller: caller_id.into(),
-                        caller_invocation_epoch
                     }),
                     Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress {  request_id }) => {
                         ResponseSink::Ingress(Ingress {
@@ -2867,12 +2793,11 @@ pub mod v1 {
                 let response_sink = match value {
                     Some(
                         restate_types::invocation::ServiceInvocationResponseSink::PartitionProcessor(restate_types::invocation::JournalCompletionTarget {
-                                                                                                         caller_id, caller_completion_id, caller_invocation_epoch
+                                                                                                         caller_id, caller_completion_id
                                                                                                      }),
                     ) => ResponseSink::PartitionProcessor(PartitionProcessor {
                         entry_index: *caller_completion_id,
                         caller: (*caller_id).into(),
-                        caller_invocation_epoch: *caller_invocation_epoch,
                     }),
                     Some(restate_types::invocation::ServiceInvocationResponseSink::Ingress {  request_id }) => {
                         ResponseSink::Ingress(Ingress {
@@ -3936,7 +3861,6 @@ pub mod v1 {
                     entry_index: target.caller_completion_id,
                     invocation_id: Some(InvocationId::from(target.caller_id)),
                     response_result: Some(ResponseResult::from(result)),
-                    caller_invocation_epoch: target.caller_invocation_epoch,
                 }
             }
         }
@@ -3950,7 +3874,6 @@ pub mod v1 {
                 value: outbox_message::OutboxServiceInvocationResponse,
             ) -> Result<Self, Self::Error> {
                 let outbox_message::OutboxServiceInvocationResponse {
-                    caller_invocation_epoch,
                     entry_index,
                     invocation_id,
                     response_result,
@@ -3962,7 +3885,6 @@ pub mod v1 {
                             invocation_id.ok_or(ConversionError::missing_field("invocation_id"))?,
                         )?,
                         caller_completion_id: entry_index,
-                        caller_invocation_epoch,
                     },
                     result: restate_types::invocation::ResponseResult::try_from(
                         response_result.ok_or(ConversionError::missing_field("response_result"))?,
@@ -4140,9 +4062,6 @@ pub mod v1 {
                                 response_result: Some(ResponseResult::from(
                                     invocation_response.result,
                                 )),
-                                caller_invocation_epoch: invocation_response
-                                    .target
-                                    .caller_invocation_epoch,
                             },
                         )
                     }
@@ -4255,7 +4174,6 @@ pub mod v1 {
                                         .ok_or(ConversionError::missing_field("invocation_id"))?,
                                 )?,
                                 cse.entry_index,
-                                cse.caller_invocation_epoch,
                             )
                         }
                         timer::Value::Invoke(si) => crate::timer_table::Timer::Invoke(Box::new(
@@ -4285,11 +4203,9 @@ pub mod v1 {
                         crate::timer_table::Timer::CompleteJournalEntry(
                             invocation_id,
                             entry_index,
-                            caller_invocation_epoch,
                         ) => timer::Value::CompleteSleepEntry(timer::CompleteSleepEntry {
                             invocation_id: Some(InvocationId::from(invocation_id)),
                             entry_index,
-                            caller_invocation_epoch,
                         }),
                         crate::timer_table::Timer::NeoInvoke(invocation_id) => {
                             timer::Value::ScheduledInvoke(InvocationId::from(invocation_id))

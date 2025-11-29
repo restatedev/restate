@@ -58,14 +58,12 @@ where
                     v.push(JournalCompletionTarget::from_parts(
                         self.invocation_id,
                         self.entry.completion_id,
-                        invocation_metadata.current_invocation_epoch,
                     ));
                     PromiseState::NotCompleted(v)
                 }
                 None => PromiseState::NotCompleted(vec![JournalCompletionTarget::from_parts(
                     self.invocation_id,
                     self.entry.completion_id,
-                    invocation_metadata.current_invocation_epoch,
                 )]),
             };
 

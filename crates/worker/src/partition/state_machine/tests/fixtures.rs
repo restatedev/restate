@@ -21,7 +21,7 @@ use restate_types::identifiers::{
     DeploymentId, InvocationId, PartitionProcessorRpcRequestId, ServiceId,
 };
 use restate_types::invocation::{
-    InvocationEpoch, InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext, Source,
+    InvocationTarget, ServiceInvocation, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
@@ -77,17 +77,15 @@ pub fn incomplete_invoke_entry(invocation_id: InvocationId) -> JournalEntry {
 }
 
 pub fn invoker_entry_effect(invocation_id: InvocationId, entry: impl Into<Entry>) -> Command {
-    invoker_entry_effect_for_epoch(invocation_id, 0, entry)
+    invoker_entry_effect_for_epoch(invocation_id, entry)
 }
 
 pub fn invoker_entry_effect_for_epoch(
     invocation_id: InvocationId,
-    invocation_epoch: InvocationEpoch,
     entry: impl Into<Entry>,
 ) -> Command {
     Command::InvokerEffect(Box::new(Effect {
         invocation_id,
-        invocation_epoch,
         kind: InvokerEffectKind::journal_entry(
             entry.into().encode::<ServiceProtocolV4Codec>(),
             None,
@@ -96,16 +94,12 @@ pub fn invoker_entry_effect_for_epoch(
 }
 
 pub fn invoker_end_effect(invocation_id: InvocationId) -> Command {
-    invoker_end_effect_for_epoch(invocation_id, 0)
+    invoker_end_effect_for_epoch(invocation_id)
 }
 
-pub fn invoker_end_effect_for_epoch(
-    invocation_id: InvocationId,
-    invocation_epoch: InvocationEpoch,
-) -> Command {
+pub fn invoker_end_effect_for_epoch(invocation_id: InvocationId) -> Command {
     Command::InvokerEffect(Box::new(Effect {
         invocation_id,
-        invocation_epoch,
         kind: InvokerEffectKind::End,
     }))
 }
@@ -116,7 +110,6 @@ pub fn pinned_deployment(
 ) -> Command {
     Command::InvokerEffect(Box::new(Effect {
         invocation_id,
-        invocation_epoch: 0,
         kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
             deployment_id: DeploymentId::default(),
             service_protocol_version,
@@ -130,7 +123,6 @@ pub fn invoker_suspended(
 ) -> Command {
     Command::InvokerEffect(Box::new(Effect {
         invocation_id,
-        invocation_epoch: 0,
         kind: InvokerEffectKind::SuspendedV2 {
             waiting_for_notifications: waiting_for_notifications.into(),
         },

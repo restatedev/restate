@@ -44,12 +44,10 @@ async fn test_promise_table() {
             JournalCompletionTarget::from_parts(
                 InvocationId::from_parts(10, InvocationUuid::from_u128(12345678900001)),
                 1,
-                0,
             ),
             JournalCompletionTarget::from_parts(
                 InvocationId::from_parts(11, InvocationUuid::from_u128(12345678900021)),
                 2,
-                1,
             ),
         ]),
     };

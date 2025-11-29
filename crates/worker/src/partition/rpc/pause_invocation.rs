@@ -33,10 +33,9 @@ where
     ) -> Result<(), Self::Error> {
         // -- Figure out the invocation status
         match self.storage.get_invocation_status(&invocation_id).await {
-            Ok(InvocationStatus::Invoked(metadata)) => {
+            Ok(InvocationStatus::Invoked(_)) => {
                 // Let's poke the invoker to retry now, if possible
-                self.proposer
-                    .notify_invoker_to_pause(invocation_id, metadata.current_invocation_epoch);
+                self.proposer.notify_invoker_to_pause(invocation_id);
                 replier.send(PauseInvocationRpcResponse::Accepted);
             }
             Ok(

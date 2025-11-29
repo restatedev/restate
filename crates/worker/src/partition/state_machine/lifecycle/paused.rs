@@ -15,6 +15,7 @@ use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
@@ -32,7 +33,8 @@ where
         + WriteInvocationStatusTable
         + WriteJournalEventsTable
         + WriteVQueueTable
-        + ReadVQueueTable,
+        + ReadVQueueTable
+        + WriteVirtualObjectStatusTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnPausedCommand {
@@ -119,7 +121,6 @@ mod tests {
             .apply(Command::InvokerEffect(Box::new(
                 restate_invoker_api::Effect {
                     invocation_id,
-                    invocation_epoch: 0,
                     kind: restate_invoker_api::EffectKind::Paused {
                         paused_event: paused_event.clone().into(),
                     },
@@ -171,7 +172,6 @@ mod tests {
             .apply(Command::InvokerEffect(Box::new(
                 restate_invoker_api::Effect {
                     invocation_id,
-                    invocation_epoch: 0,
                     kind: restate_invoker_api::EffectKind::Paused { paused_event },
                 },
             )))

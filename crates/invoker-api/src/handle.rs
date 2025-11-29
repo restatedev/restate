@@ -17,7 +17,7 @@ use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
 use restate_types::identifiers::PartitionKey;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
-use restate_types::invocation::{InvocationEpoch, InvocationTarget};
+use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
@@ -39,7 +39,6 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError>;
@@ -65,7 +64,6 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         entry: RawNotification,
     ) -> Result<(), NotRunningError>;
 
@@ -73,21 +71,18 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
     ) -> Result<(), NotRunningError>;
 
     fn pause_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
     ) -> Result<(), NotRunningError>;
 
     fn notify_stored_command_ack(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
         command_index: CommandIndex,
     ) -> Result<(), NotRunningError>;
 
@@ -101,7 +96,6 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition_leader_epoch: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
     ) -> Result<(), NotRunningError>;
 
     fn register_partition(

@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::invocation_status_ext::InvocationStatusExt;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext, entries};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::{
@@ -23,12 +21,10 @@ use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::InvocationEpoch;
 use restate_types::journal_v2::{CompletionId, SleepCompletion};
 
 pub struct OnNotifySleepCompletionCommand {
     pub invocation_id: InvocationId,
-    pub invocation_epoch: InvocationEpoch,
     pub status: InvocationStatus,
     pub completion_id: CompletionId,
 }
@@ -55,24 +51,9 @@ where
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnNotifySleepCompletionCommand {
             invocation_id,
-            invocation_epoch: this_completion_invocation_epoch,
             status,
             completion_id,
         } = self;
-        let invocation_status = ctx.get_invocation_status(&invocation_id).await?;
-
-        // Verify that we need to ingest this
-        if !invocation_status
-            .should_accept_completion(this_completion_invocation_epoch, completion_id)
-        {
-            debug_if_leader!(
-                ctx.is_leader,
-                "Ignoring InvocationResponse epoch {} completion id {}",
-                this_completion_invocation_epoch,
-                completion_id
-            );
-            return Ok(());
-        }
 
         entries::OnJournalEntryCommand::from_entry(
             invocation_id,

@@ -32,7 +32,6 @@ pub(super) struct InvocationStateMachine {
     #[allow(dead_code)]
     pub(super) _permit: Permit<InvokerToken>,
     pub(super) invocation_target: InvocationTarget,
-    pub(super) invocation_epoch: InvocationEpoch,
     pub(super) last_transient_error_event: Option<TransientErrorEvent>,
     invocation_state: AttemptState,
     retry_policy_state: RetryPolicyState,
@@ -184,7 +183,6 @@ impl InvocationStateMachine {
         qid: Option<VQueueId>,
         permit: Permit<InvokerToken>,
         invocation_target: InvocationTarget,
-        invocation_epoch: InvocationEpoch,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
     ) -> InvocationStateMachine {
@@ -192,7 +190,6 @@ impl InvocationStateMachine {
             qid,
             _permit: permit,
             invocation_target,
-            invocation_epoch,
             last_transient_error_event: None,
             invocation_state: AttemptState::New,
             retry_policy_state: RetryPolicyState {
@@ -587,7 +584,6 @@ mod tests {
             None,
             Permit::new_empty(),
             InvocationTarget::mock_virtual_object(),
-            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
         );
@@ -614,7 +610,6 @@ mod tests {
             None,
             Permit::new_empty(),
             InvocationTarget::mock_virtual_object(),
-            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
         );
@@ -675,7 +670,6 @@ mod tests {
             None,
             Permit::new_empty(),
             InvocationTarget::mock_virtual_object(),
-            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
         );
@@ -709,7 +703,6 @@ mod tests {
             None,
             Permit::new_empty(),
             InvocationTarget::mock_service(),
-            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
         );
@@ -744,7 +737,6 @@ mod tests {
             None,
             Permit::new_empty(),
             InvocationTarget::mock_service(),
-            0,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
         );

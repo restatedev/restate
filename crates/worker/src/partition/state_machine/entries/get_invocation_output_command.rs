@@ -31,10 +31,6 @@ where
             response_sink: ServiceInvocationResponseSink::partition_processor(
                 self.invocation_id,
                 self.entry.completion_id,
-                self.invocation_status
-                    .get_invocation_metadata()
-                    .expect("Should be present when handling new command")
-                    .current_invocation_epoch,
             ),
         }))?;
 
@@ -94,12 +90,12 @@ mod tests {
         };
         let response_command = if complete_using_notify_get_invocation_output {
             Command::NotifyGetInvocationOutputResponse(GetInvocationOutputResponse {
-                target: JournalCompletionTarget::from_parts(invocation_id, completion_id, 0),
+                target: JournalCompletionTarget::from_parts(invocation_id, completion_id),
                 result: expected_get_invocation_result.clone(),
             })
         } else {
             Command::InvocationResponse(InvocationResponse {
-                target: JournalCompletionTarget::from_parts(invocation_id, completion_id, 0),
+                target: JournalCompletionTarget::from_parts(invocation_id, completion_id),
                 result: if complete_with_not_ready {
                     ResponseResult::Failure(NOT_READY_INVOCATION_ERROR)
                 } else {
@@ -132,7 +128,6 @@ mod tests {
                                     ServiceInvocationResponseSink::partition_processor(
                                         invocation_id,
                                         completion_id,
-                                        0
                                     )
                                 )
                             }

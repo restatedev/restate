@@ -59,8 +59,7 @@ where
         self.partitions.get(&partition).map(|p| &p.output_tx)
     }
 
-    // todo: only used in tests of invocation_epoch.Should be removed along with invocation_epoch.
-    #[allow(dead_code)]
+    #[inline]
     pub(super) fn resolve_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
@@ -78,12 +77,9 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-        invocation_epoch: InvocationEpoch,
         f: impl FnOnce(&mpsc::Sender<Box<Effect>>, &mut InvocationStateMachine) -> R,
     ) -> Option<R> {
-        if let Some((tx, ism)) =
-            self.resolve_invocation_with_epoch(partition, invocation_id, invocation_epoch)
-        {
+        if let Some((tx, ism)) = self.resolve_invocation(partition, invocation_id) {
             Some(f(tx, ism))
         } else {
             // If no state machine
@@ -93,38 +89,15 @@ where
     }
 
     #[inline]
-    pub(super) fn resolve_invocation_with_epoch(
+    pub(super) fn remove_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-        invocation_epoch: InvocationEpoch,
-    ) -> Option<(&mpsc::Sender<Box<Effect>>, &mut InvocationStateMachine)> {
-        self.resolve_partition(partition).and_then(|p| {
-            p.invocation_state_machines
-                .get_mut(invocation_id)
-                .filter(|f| f.invocation_epoch == invocation_epoch)
-                .map(|ism| (&p.output_tx, ism))
-        })
-    }
-
-    #[inline]
-    pub(super) fn remove_invocation_with_epoch(
-        &mut self,
-        partition: PartitionLeaderEpoch,
-        invocation_id: &InvocationId,
-        invocation_epoch: InvocationEpoch,
     ) -> Option<(&mpsc::Sender<Box<Effect>>, &IR, InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
-            if let Some(ism) = p.invocation_state_machines.get(invocation_id)
-                && ism.invocation_epoch == invocation_epoch
-            {
-                return Some((
-                    &p.output_tx,
-                    &p.storage_reader,
-                    p.invocation_state_machines.remove(invocation_id).unwrap(),
-                ));
-            }
-            None
+            p.invocation_state_machines
+                .remove(invocation_id)
+                .map(|ism| (&p.output_tx, &p.storage_reader, ism))
         })
     }
 

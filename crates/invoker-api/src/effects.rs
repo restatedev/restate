@@ -11,7 +11,6 @@
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::InvocationEpoch;
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
@@ -28,11 +27,12 @@ use crate::EffectKind::JournalEntryV2;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Effect {
     pub invocation_id: InvocationId,
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "num_traits::Zero::is_zero")
-    )]
-    pub invocation_epoch: InvocationEpoch,
+    // removed in v1.6
+    // #[cfg_attr(
+    //     feature = "serde",
+    //     serde(default, skip_serializing_if = "num_traits::Zero::is_zero")
+    // )]
+    // pub invocation_epoch: InvocationEpoch,
     pub kind: EffectKind,
 }
 
