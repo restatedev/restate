@@ -294,10 +294,13 @@ jobs:
           envVars: |
             RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
             RESTATE_EXPERIMENTAL_ENABLE_VQUEUES=true
+          # We will never support the forward compatibility tests for v1.5 when using vqueues.
+          # The backward compatibility tests are temporarily disabled until we support migration from v1.5 -> v1.6
           exclusions: |
             exclusions:
               "versionCompat":
                 - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
+                - "dev.restate.sdktesting.tests.BackwardCompatibilityTest.*"
 
   jepsen:
     if: github.event.repository.fork == false && github.event.pull_request.head.repo.full_name == 'restatedev/restate' && github.ref == 'refs/heads/main'
