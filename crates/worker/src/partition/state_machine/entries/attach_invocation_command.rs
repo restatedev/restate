@@ -31,10 +31,6 @@ where
             response_sink: ServiceInvocationResponseSink::partition_processor(
                 self.invocation_id,
                 self.entry.completion_id,
-                self.invocation_status
-                    .get_invocation_metadata()
-                    .expect("Should be present when handling new command")
-                    .current_invocation_epoch,
             ),
         }))?;
 
@@ -88,7 +84,7 @@ mod tests {
             .apply_multiple([
                 invoker_entry_effect(invocation_id, attach_invocation_command.clone()),
                 Command::InvocationResponse(InvocationResponse {
-                    target: JournalCompletionTarget::from_parts(invocation_id, completion_id, 0),
+                    target: JournalCompletionTarget::from_parts(invocation_id, completion_id),
                     result: ResponseResult::Success(success_result.clone()),
                 }),
             ])
@@ -111,7 +107,6 @@ mod tests {
                                     ServiceInvocationResponseSink::partition_processor(
                                         invocation_id,
                                         completion_id,
-                                        0
                                     )
                                 )
                             }

@@ -465,7 +465,6 @@ mod tests {
                 target: JournalCompletionTarget {
                     caller_id: invocation_id,
                     caller_completion_id: result_completion_id,
-                    caller_invocation_epoch: 0,
                 },
                 result: ResponseResult::Success(success_result.clone()),
             }))

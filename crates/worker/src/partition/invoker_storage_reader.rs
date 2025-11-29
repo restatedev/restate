@@ -108,7 +108,6 @@ where
                     invoked_status.journal_metadata.length,
                     invoked_status.journal_metadata.span_context,
                     invoked_status.pinned_deployment,
-                    invoked_status.current_invocation_epoch,
                     invoked_status.timestamps.modification_time(),
                     random_seed,
                 );
@@ -121,7 +120,6 @@ where
                         invoked_status.journal_metadata.length,
                         invoked_status.journal_metadata.span_context,
                         invoked_status.pinned_deployment,
-                        invoked_status.current_invocation_epoch,
                         invoked_status.timestamps.modification_time(),
                         random_seed,
                     ),

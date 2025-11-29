@@ -111,7 +111,6 @@ where
                 ServiceInvocationResponseSink::partition_processor(
                     self.caller_invocation_id,
                     notification_idx,
-                    caller_invocation_metadata.current_invocation_epoch,
                 )
             }),
             span_context: span_context.clone(),
@@ -198,7 +197,6 @@ mod tests {
                     target: JournalCompletionTarget::from_parts(
                         invocation_id,
                         result_completion_id,
-                        0,
                     ),
                     result: ResponseResult::Success(success_result.clone()),
                 }),
@@ -227,7 +225,6 @@ mod tests {
                                     ServiceInvocationResponseSink::partition_processor(
                                         invocation_id,
                                         result_completion_id,
-                                        0
                                     )
                                 ))
                             }

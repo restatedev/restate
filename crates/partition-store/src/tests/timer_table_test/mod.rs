@@ -35,7 +35,7 @@ async fn populate_data<T: WriteTimerTable>(txn: &mut T) {
             },
             timestamp: 0,
         },
-        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 0, 0),
+        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 0),
     )
     .unwrap();
 
@@ -47,7 +47,7 @@ async fn populate_data<T: WriteTimerTable>(txn: &mut T) {
             },
             timestamp: 0,
         },
-        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 1, 0),
+        &Timer::CompleteJournalEntry(FIXTURE_INVOCATION, 1),
     )
     .unwrap();
 
@@ -74,11 +74,7 @@ async fn populate_data<T: WriteTimerTable>(txn: &mut T) {
             },
             timestamp: 0,
         },
-        &Timer::CompleteJournalEntry(
-            InvocationId::from_parts(1336, FIXTURE_INVOCATION_UUID),
-            0,
-            1,
-        ),
+        &Timer::CompleteJournalEntry(InvocationId::from_parts(1336, FIXTURE_INVOCATION_UUID), 0),
     )
     .unwrap();
 }

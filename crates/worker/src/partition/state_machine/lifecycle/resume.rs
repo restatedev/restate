@@ -31,7 +31,6 @@ where
         let Some(metadata) = self.invocation_status.get_invocation_metadata_mut() else {
             return Ok(());
         };
-        let current_invocation_epoch = metadata.current_invocation_epoch;
 
         debug_if_leader!(
             ctx.is_leader,
@@ -48,7 +47,6 @@ where
         } else {
             ctx.action_collector.push(Action::Invoke {
                 invocation_id: self.invocation_id,
-                invocation_epoch: current_invocation_epoch,
                 invocation_target,
                 invoke_input_journal: InvokeInputJournal::NoCachedJournal,
             });

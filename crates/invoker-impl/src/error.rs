@@ -15,7 +15,6 @@ use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_time_util::FriendlyDuration;
 use restate_types::errors::{InvocationError, InvocationErrorCode, codes};
 use restate_types::identifiers::DeploymentId;
-use restate_types::invocation::InvocationEpoch;
 use restate_types::journal::raw::RawEntryCodecError;
 use restate_types::journal::{EntryIndex, EntryType};
 use restate_types::journal_v2;
@@ -111,15 +110,6 @@ pub(crate) enum InvokerError {
     #[error("error when trying to read the service instance state: {0}")]
     #[code(restate_errors::RT0006)]
     StateReader(anyhow::Error),
-    #[error(
-        "error when reading the journal: actual epoch {actual} != expected epoch {expected}. This is expected to happen while a trim and restart is being processed."
-    )]
-    #[code(restate_errors::RT0006)]
-    StaleJournalRead {
-        actual: InvocationEpoch,
-        expected: InvocationEpoch,
-    },
-
     #[error(transparent)]
     #[code(restate_errors::RT0010)]
     Client(Box<ServiceClientError>),

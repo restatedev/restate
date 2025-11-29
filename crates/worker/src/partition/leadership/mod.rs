@@ -490,13 +490,11 @@ where
                 let InvokedInvocationStatusLite {
                     invocation_id,
                     invocation_target,
-                    current_invocation_epoch,
                 } = invoked_invocation?;
                 invoker_handle
                     .invoke(
                         partition_leader_epoch,
                         invocation_id,
-                        current_invocation_epoch,
                         invocation_target,
                         InvokeInputJournal::NoCachedJournal,
                     )

@@ -108,7 +108,6 @@ mod tests {
         let _ = test_env
             .apply(Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
-                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEvent {
                     event: RawEvent::from(Event::TransientError(transient_error_event.clone()))
                         .clone(),
