@@ -873,6 +873,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             NewEntryPriority::default(),
             vqueue_table::EntryKind::Invocation,
             vqueue_table::EntryId::from(invocation_id),
+            None::<()>,
         )
         .await?;
 
@@ -1164,28 +1165,18 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(Some(metadata))
     }
 
-    fn init_journal_and_vqueue_invoke(
+    async fn init_journal_and_vqueue_invoke(
         &mut self,
         qid: VQueueId,
-        item_hash: u64,
+        card: &EntryCard,
         invocation_id: InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         invocation_input: Option<InvocationInput>,
+        at: UniqueTimestamp,
     ) -> Result<(), Error>
     where
-        S: WriteJournalTable + WriteInvocationStatusTable,
+        S: WriteJournalTable + WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
     {
-        // Usage metering for "actions" should include the Input journal entry
-        // type, but it gets filtered out before reaching the state machine.
-        // Therefore we count it here, as a special case.
-        if self.is_leader {
-            counter!(
-                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                "entry" => "Command/Input",
-            )
-            .increment(1);
-        }
-
         let invoke_input_journal = if let Some(invocation_input) = invocation_input {
             self.init_journal(
                 invocation_id,
@@ -1198,11 +1189,13 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         self.vqueue_invoke(
             qid,
-            item_hash,
+            card,
             invocation_id,
             in_flight_invocation_metadata,
             invoke_input_journal,
+            at,
         )
+        .await
     }
 
     fn init_journal_and_invoke(
@@ -1251,6 +1244,17 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: WriteJournalTable,
     {
+        // Usage metering for "actions" should include the Input journal entry
+        // type, but it gets filtered out before reaching the state machine.
+        // Therefore we count it here, as a special case.
+        if self.is_leader {
+            counter!(
+                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                "entry" => "Command/Input",
+            )
+            .increment(1);
+        }
+
         debug_if_leader!(self.is_leader, "Init journal with input entry");
 
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
@@ -1292,18 +1296,31 @@ impl<S> StateMachineApplyContext<'_, S> {
         ))
     }
 
-    fn vqueue_invoke(
+    async fn vqueue_invoke(
         &mut self,
         qid: VQueueId,
-        item_hash: u64,
+        card: &EntryCard,
         invocation_id: InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
         invoke_input_journal: InvokeInputJournal,
+        at: UniqueTimestamp,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable,
+        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
     {
         debug_if_leader!(self.is_leader, "Invoke");
+
+        // Only move the vqueue item to running if we are sure that we can do the state transition.
+        // Otherwise, we risk that `VQueueMeta` goes out of sync (e.g. because we remove from
+        // waiting twice an item).
+        VQueues::new(
+            qid,
+            self.storage,
+            self.vqueues_cache,
+            self.is_leader.then_some(self.action_collector),
+        )
+        .attempt_to_run(at, card)
+        .await?;
 
         let status = InvocationStatus::Invoked(in_flight_invocation_metadata);
 
@@ -1315,7 +1332,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             let invocation_target = status.into_invocation_metadata().unwrap().invocation_target;
             self.action_collector.push(Action::VQInvoke {
                 qid,
-                item_hash,
+                item_hash: card.unique_hash(),
                 invocation_id,
                 invocation_target,
                 invoke_input_journal,
@@ -1384,19 +1401,25 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInboxTable
             + WriteFsmTable
             + ReadVirtualObjectStatusTable
-            + WriteVirtualObjectStatusTable,
+            + WriteVirtualObjectStatusTable
+            + WriteVQueueTable
+            + ReadVQueueTable,
     {
-        let service_status = self
-            .storage
-            .get_virtual_object_status(&mutation.service_id)
-            .await?;
+        if Configuration::pinned().common.experimental_enable_vqueues {
+            self.vqueue_enqueue_state_mutation(mutation).await?;
+        } else {
+            let service_status = self
+                .storage
+                .get_virtual_object_status(&mutation.service_id)
+                .await?;
 
-        match service_status {
-            VirtualObjectStatus::Locked(_) => {
-                self.enqueue_into_inbox(InboxEntry::StateMutation(mutation))
-                    .await?;
+            match service_status {
+                VirtualObjectStatus::Locked(_) => {
+                    self.enqueue_into_inbox(InboxEntry::StateMutation(mutation))
+                        .await?;
+                }
+                VirtualObjectStatus::Unlocked => Self::do_mutate_state(self, &mutation).await?,
             }
-            VirtualObjectStatus::Unlocked => Self::do_mutate_state(self, mutation).await?,
         }
 
         Ok(())
@@ -2772,7 +2795,9 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVirtualObjectStatusTable
             + WriteJournalTable
             + ReadVQueueTable
-            + WriteVQueueTable,
+            + WriteVQueueTable
+            + ReadStateTable
+            + WriteStateTable,
     {
         let qid = VQueueId::new(
             VQueueParent::from_raw(cards.parent),
@@ -2783,22 +2808,20 @@ impl<S> StateMachineApplyContext<'_, S> {
         let record_unique_ts = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
         for card in cards.decode_entry_cards() {
             let card = card?;
-            VQueues::new(
-                qid,
-                self.storage,
-                self.vqueues_cache,
-                self.is_leader.then_some(self.action_collector),
-            )
-            .attempt_to_run(record_unique_ts, &card)
-            .await?;
 
             match card.kind {
                 EntryKind::Unknown => {
                     panic!("Unknown card kind in inbox, cannot proceed");
                 }
                 EntryKind::StateMutation => {
-                    panic!("State mutations are not supported yet with vqueues");
-                    // self.mutate_state(state_mutation).await?;
+                    // Important: Don't go through VQueues::attempt_to_run as this will update the
+                    // VQueueMeta (acquiring a token) and the EntryCard's priority. To release the
+                    // token we would need the updated EntryCard. However, changing the EntryCard
+                    // as we update the internal storage and caches will conflict with requiring
+                    // the EntryCard to have a stable unique hash in order to confirm/remove from
+                    // unconfirmed assignments in the scheduler.
+                    self.vqueue_mutate_state(qid, &card, record_unique_ts)
+                        .await?;
                 }
                 EntryKind::Invocation => {
                     let invocation_id = InvocationId::from_parts(
@@ -2843,27 +2866,31 @@ impl<S> StateMachineApplyContext<'_, S> {
                     invocation_target.invocation_target_ty(),
                     InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
                 ) {
-                    let keyed_service_id = invocation_target.as_keyed_service_id().expect(
-                        "When the handler type is Exclusive, the invocation target must have a key",
-                    );
-                    match self
-                        .storage
-                        .get_virtual_object_status(&keyed_service_id)
-                        .await?
-                    {
-                        VirtualObjectStatus::Locked(iid) => {
-                            panic!(
-                                "invariant violated trying to run an invocation {invocation_id} on a VO while another invocation {iid} is holding the lock"
-                            );
-                        }
-                        VirtualObjectStatus::Unlocked => {
-                            // Lock the service
-                            self.storage
-                                .put_virtual_object_status(
-                                    &keyed_service_id,
-                                    &VirtualObjectStatus::Locked(invocation_id),
-                                )
-                                .map_err(Error::Storage)?;
+                    // We might have already locked the service before if we are resuming, for example.
+                    // Hence, only lock it if we are not holding a token yet.
+                    if !card.priority.token_held() {
+                        let keyed_service_id = invocation_target.as_keyed_service_id().expect(
+                            "When the handler type is Exclusive, the invocation target must have a key",
+                        );
+                        match self
+                            .storage
+                            .get_virtual_object_status(&keyed_service_id)
+                            .await?
+                        {
+                            VirtualObjectStatus::Locked(iid) => {
+                                panic!(
+                                    "invariant violated trying to run an invocation {invocation_id} on a VO while another invocation {iid} is holding the lock"
+                                );
+                            }
+                            VirtualObjectStatus::Unlocked => {
+                                // Lock the service
+                                self.storage
+                                    .put_virtual_object_status(
+                                        &keyed_service_id,
+                                        &VirtualObjectStatus::Locked(invocation_id),
+                                    )
+                                    .map_err(Error::Storage)?;
+                            }
                         }
                     }
                 }
@@ -2876,24 +2903,40 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 self.init_journal_and_vqueue_invoke(
                     qid,
-                    card.unique_hash(),
+                    card,
                     invocation_id,
                     metadata,
                     invocation_input,
-                )?;
+                    at,
+                )
+                .await?;
             }
-            InvocationStatus::Invoked(metadata) if self.is_leader => {
-                // just send to invoker
-                debug_if_leader!(self.is_leader, "Invoke");
-                self.action_collector.push(Action::VQInvoke {
+            InvocationStatus::Invoked(metadata) => {
+                // Temporary fix to transition the vqueue item back to the running stage. This is
+                // needed because we don't support yet going back from InvocationStatus::Invoked
+                // to InvocationStatus::Inboxed and then accepting journal completions.
+                // See https://github.com/restatedev/restate/blob/86d4d055ad8f3aa8b426c06486d52382a76bf9dd/crates/worker/src/partition/state_machine/lifecycle/resume.rs#L53
+                VQueues::new(
                     qid,
-                    item_hash: card.unique_hash(),
-                    invocation_id,
-                    invocation_target: metadata.invocation_target,
-                    invoke_input_journal: InvokeInputJournal::NoCachedJournal,
-                });
+                    self.storage,
+                    self.vqueues_cache,
+                    self.is_leader.then_some(self.action_collector),
+                )
+                .attempt_to_run(at, card)
+                .await?;
+
+                if self.is_leader {
+                    // just send to invoker
+                    debug_if_leader!(self.is_leader, "Invoke");
+                    self.action_collector.push(Action::VQInvoke {
+                        qid,
+                        item_hash: card.unique_hash(),
+                        invocation_id,
+                        invocation_target: metadata.invocation_target,
+                        invoke_input_journal: InvokeInputJournal::NoCachedJournal,
+                    });
+                }
             }
-            InvocationStatus::Invoked(_) => { /* do nothing when not leader */ }
             // Suspended invocations must first be put back on inbox. On wake-up, they
             // transition back into Invoked state. So seeing a suspended invocation
             // here means that some state transition is missing.
@@ -2908,18 +2951,21 @@ impl<S> StateMachineApplyContext<'_, S> {
                 info!(
                     "Will not run invocation {invocation_id} because it has been marked as completed/deleted already!"
                 );
+                // Let's not do this because we might decrease a waiting item twice in the VQueueMeta
+
+                // todo remove
                 // we delete by id because we are not really sure if the invocation is still in
                 // Stage::Inbox or not.
-                VQueues::end_by_id(
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
-                    at,
-                    EntryKind::Invocation,
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
-                .await?;
+                //     VQueues::end_by_id(
+                //         self.storage,
+                //         self.vqueues_cache,
+                //         self.is_leader.then_some(self.action_collector),
+                //         at,
+                //         EntryKind::Invocation,
+                //         invocation_id.partition_key(),
+                //         &EntryId::from(invocation_id),
+                //     )
+                //     .await?;
             }
         }
 
@@ -2998,7 +3044,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         return Ok(());
                     }
                     InboxEntry::StateMutation(state_mutation) => {
-                        self.mutate_state(state_mutation).await?;
+                        self.mutate_state(&state_mutation).await?;
                     }
                 }
             }
@@ -4357,15 +4403,25 @@ impl<S> StateMachineApplyContext<'_, S> {
         let current_invocation_epoch = metadata.current_invocation_epoch;
 
         metadata.timestamps.update(self.record_created_at);
-        let invocation_target = metadata.invocation_target.clone();
-        self.storage
-            .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
-            .map_err(Error::Storage)?;
 
         if Configuration::pinned().common.experimental_enable_vqueues {
             self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
+            self.storage
+                .put_invocation_status(
+                    &invocation_id,
+                    &InvocationStatus::Inboxed(
+                        InboxedInvocation::from_in_flight_invocation_metadata(metadata),
+                    ),
+                )
+                .map_err(Error::Storage)?;
         } else {
+            let invocation_target = metadata.invocation_target.clone();
+
+            self.storage
+                .put_invocation_status(&invocation_id, &InvocationStatus::Invoked(metadata))
+                .map_err(Error::Storage)?;
+
             self.action_collector.push(Action::Invoke {
                 invocation_id,
                 invocation_epoch: current_invocation_epoch,
@@ -4394,7 +4450,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         waiting_for_completed_entries: HashSet<EntryIndex>,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
+        S: WriteInvocationStatusTable
+            + WriteVQueueTable
+            + ReadVQueueTable
+            + WriteVirtualObjectStatusTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4956,7 +5015,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         });
     }
 
-    async fn do_mutate_state(&mut self, state_mutation: ExternalStateMutation) -> Result<(), Error>
+    async fn do_mutate_state(&mut self, state_mutation: &ExternalStateMutation) -> Result<(), Error>
     where
         S: ReadStateTable + WriteStateTable,
     {
@@ -5002,7 +5061,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .map_err(Error::Storage)
     }
 
-    async fn mutate_state(&mut self, state_mutation: ExternalStateMutation) -> StorageResult<()>
+    async fn mutate_state(&mut self, state_mutation: &ExternalStateMutation) -> StorageResult<()>
     where
         S: ReadStateTable + WriteStateTable,
     {
@@ -5016,7 +5075,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // are not contained in state
         let all_user_states: Vec<(Bytes, Bytes)> = self
             .storage
-            .get_all_user_states_for_service(&service_id)?
+            .get_all_user_states_for_service(service_id)?
             .try_collect()
             .await?;
 
@@ -5035,13 +5094,13 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         for (key, _) in &all_user_states {
             if !state.contains_key(key) {
-                self.storage.delete_user_state(&service_id, key)?;
+                self.storage.delete_user_state(service_id, key)?;
             }
         }
 
         // overwrite existing key value pairs
         for (key, value) in state {
-            self.storage.put_user_state(&service_id, key, value)?;
+            self.storage.put_user_state(service_id, key, value)?;
         }
 
         Ok(())
@@ -5055,7 +5114,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         cause: ParkCause,
     ) -> Result<(), Error>
     where
-        S: WriteVQueueTable + ReadVQueueTable,
+        S: WriteVQueueTable + ReadVQueueTable + WriteVirtualObjectStatusTable,
     {
         let qid = Self::vqueue_id_from_invocation(invocation_id, invocation_target);
 
@@ -5116,6 +5175,21 @@ impl<S> StateMachineApplyContext<'_, S> {
                 should_release_concurrency_token,
             )
             .await?;
+
+        // If we release the concurrency token for exclusive VO handlers, then we also need to
+        // unlock it so that other invocations can make progress.
+        if should_release_concurrency_token
+            && invocation_target.invocation_target_ty()
+                == InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        {
+            let keyed_service_id = invocation_target.as_keyed_service_id().expect(
+                "When the handler type is Exclusive, the invocation target must have a key",
+            );
+            // We consumed the inbox, nothing else to do here
+            self.storage
+                .put_virtual_object_status(&keyed_service_id, &VirtualObjectStatus::Unlocked)
+                .map_err(Error::Storage)?;
+        }
 
         Ok(())
     }
@@ -5191,29 +5265,128 @@ impl<S> StateMachineApplyContext<'_, S> {
                 (VQueueParent::default_unlimited(), VQueueInstance::Default)
             }
             InvocationTarget::VirtualObject {
-                handler_ty, key, ..
+                handler_ty,
+                key,
+                name,
+                ..
             } => {
                 let parent = match handler_ty {
                     VirtualObjectHandlerType::Exclusive => VQueueParent::default_singleton(),
                     VirtualObjectHandlerType::Shared => VQueueParent::default_unlimited(),
                 };
 
-                (parent, VQueueInstance::infer_from(key.as_bytes()))
+                // we have to include the virtual object name since VOs with the same key are mapped
+                // to the same partition key (see https://github.com/restatedev/restate/blob/786dc7dc6c240ef0a7abd6a48af7463f341bea2f/crates/types/src/identifiers.rs#L151-L150)
+                // and different VOs must not fall into the same vqueue.
+                (
+                    parent,
+                    VQueueInstance::infer_from(name.as_bytes(), key.as_bytes()),
+                )
             }
             InvocationTarget::Workflow {
-                handler_ty, key, ..
+                handler_ty,
+                key,
+                name,
+                ..
             } => {
                 let parent = match handler_ty {
                     WorkflowHandlerType::Workflow => VQueueParent::default_singleton(),
                     WorkflowHandlerType::Shared => VQueueParent::default_unlimited(),
                 };
 
-                (parent, VQueueInstance::infer_from(key.as_bytes()))
+                // we have to include the virtual object name since VOs with the same key are mapped
+                // to the same partition key (see https://github.com/restatedev/restate/blob/786dc7dc6c240ef0a7abd6a48af7463f341bea2f/crates/types/src/identifiers.rs#L151-L150)
+                // and different VOs must not fall into the same vqueue.
+                (
+                    parent,
+                    VQueueInstance::infer_from(name.as_bytes(), key.as_bytes()),
+                )
             }
         };
         let partition_key = invocation_id.partition_key();
 
         VQueueId::new(parent, partition_key, instance)
+    }
+
+    async fn vqueue_enqueue_state_mutation(
+        &mut self,
+        state_mutation: ExternalStateMutation,
+    ) -> Result<(), Error>
+    where
+        S: WriteVQueueTable + ReadVQueueTable + WriteFsmTable,
+    {
+        let now = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+        let visible_at = VisibleAt::Now;
+
+        let service_id = &state_mutation.service_id;
+        let parent = VQueueParent::default_singleton();
+
+        let qid = VQueueId::new(
+            parent,
+            service_id.partition_key(),
+            VQueueInstance::infer_from(
+                service_id.service_name.as_bytes(),
+                service_id.key.as_bytes(),
+            ),
+        );
+
+        let mut vqueue = VQueues::new(
+            qid,
+            self.storage,
+            self.vqueues_cache,
+            self.is_leader.then_some(self.action_collector),
+        );
+        let seq_number = *self.inbox_seq_number;
+        vqueue
+            .enqueue_new(
+                now,
+                visible_at,
+                NewEntryPriority::UserDefault,
+                EntryKind::StateMutation,
+                // todo revisit entry id generation for state mutations
+                EntryId::from(seq_number),
+                Some(state_mutation),
+            )
+            .await?;
+
+        *self.inbox_seq_number = seq_number + 1;
+        self.storage.put_inbox_seq_number(*self.inbox_seq_number)?;
+
+        Ok(())
+    }
+
+    /// Apply the state mutation identified by the given qid and entry card.
+    ///
+    /// Important: We assume the state mutation to be in [`Stage::Inbox`]. If it's not, then it
+    /// won't be properly deleted from the underlying storage.
+    async fn vqueue_mutate_state(
+        &mut self,
+        qid: VQueueId,
+        card: &EntryCard,
+        now: UniqueTimestamp,
+    ) -> Result<(), Error>
+    where
+        S: WriteVQueueTable + ReadVQueueTable + ReadStateTable + WriteStateTable,
+    {
+        if let Some(state_mutation) = self
+            .storage
+            .get_item(&qid, card.created_at, card.kind, &card.id)
+            .await?
+        {
+            self.mutate_state(&state_mutation).await?;
+
+            let mut vqueue = VQueues::new(
+                qid,
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+            );
+            // Right now we apply the state mutations directly from the inbox w/o going through the
+            // run stage. It's not ideal that this is an implicit contract of this method :-(
+            vqueue.end(now, Stage::Inbox, card).await?;
+        }
+
+        Ok(())
     }
 }
 
