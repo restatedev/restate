@@ -2905,18 +2905,32 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await?;
             }
-            InvocationStatus::Invoked(metadata) if self.is_leader => {
-                // just send to invoker
-                debug_if_leader!(self.is_leader, "Invoke");
-                self.action_collector.push(Action::VQInvoke {
+            InvocationStatus::Invoked(metadata) => {
+                // Temporary fix to transition the vqueue item back to the running stage. This is
+                // needed because we don't support yet going back from InvocationStatus::Invoked
+                // to InvocationStatus::Inboxed and then accepting journal completions.
+                // See https://github.com/restatedev/restate/blob/86d4d055ad8f3aa8b426c06486d52382a76bf9dd/crates/worker/src/partition/state_machine/lifecycle/resume.rs#L53
+                VQueues::new(
                     qid,
-                    item_hash: card.unique_hash(),
-                    invocation_id,
-                    invocation_target: metadata.invocation_target,
-                    invoke_input_journal: InvokeInputJournal::NoCachedJournal,
-                });
+                    self.storage,
+                    self.vqueues_cache,
+                    self.is_leader.then_some(self.action_collector),
+                )
+                .attempt_to_run(at, card)
+                .await?;
+
+                if self.is_leader {
+                    // just send to invoker
+                    debug_if_leader!(self.is_leader, "Invoke");
+                    self.action_collector.push(Action::VQInvoke {
+                        qid,
+                        item_hash: card.unique_hash(),
+                        invocation_id,
+                        invocation_target: metadata.invocation_target,
+                        invoke_input_journal: InvokeInputJournal::NoCachedJournal,
+                    });
+                }
             }
-            InvocationStatus::Invoked(_) => { /* do nothing when not leader */ }
             // Suspended invocations must first be put back on inbox. On wake-up, they
             // transition back into Invoked state. So seeing a suspended invocation
             // here means that some state transition is missing.
