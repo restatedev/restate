@@ -8262,6 +8262,7 @@ dependencies = [
  "derive_more",
  "futures",
  "hashbrown 0.16.0",
+ "metrics",
  "pin-project",
  "restate-futures-util",
  "restate-rocksdb",
