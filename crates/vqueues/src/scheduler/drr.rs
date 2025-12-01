@@ -13,10 +13,12 @@ use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::task::Poll;
 use std::task::Waker;
+use std::time::Duration;
 
 use hashbrown::HashMap;
 use hashbrown::hash_map;
 use pin_project::pin_project;
+use tokio::time::Instant;
 use tokio_util::time::DelayQueue;
 use tracing::{info, trace};
 
@@ -25,6 +27,7 @@ use restate_futures_util::concurrency::Permit;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueStore;
 use restate_types::clock::UniqueTimestamp;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::VQueueId;
 
 use crate::EventDetails;
@@ -34,6 +37,7 @@ use crate::scheduler::Assignments;
 use crate::scheduler::vqueue_state::Eligibility;
 
 use super::Decision;
+use super::clock::SchedulerClock;
 use super::vqueue_state::VQueueState;
 
 /// Capacity to maintain for N vqueues (N=100)
@@ -55,8 +59,9 @@ pub struct DRRScheduler<S: VQueueStore, Token> {
     remaining_in_round: usize,
     /// Waker to be notified when scheduler is potentially able to scheduler more work
     waker: Waker,
+    datum: SchedulerClock,
     /// Time of the last memory reporting and memory compaction
-    last_report: Option<UniqueTimestamp>,
+    last_report: Instant,
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
 }
@@ -94,6 +99,15 @@ where
             q.len(),
         );
 
+        let datum = SchedulerClock::new(
+            UniqueTimestamp::from_unix_millis(MillisSinceEpoch::now())
+                .expect("clock does not overflow"),
+        );
+        // Makes sure we use the same clock datum for the internal timer wheel and for our
+        // own eligibility checks.
+        let start = datum.origin_instant();
+        let delayed_eligibility = DelayQueue::with_capacity(MIN_VQUEUES_CAPACITY);
+
         Self {
             limit_qid_per_poll,
             concurrency_limiter,
@@ -101,10 +115,11 @@ where
             eligible,
             global_sched_round: 0,
             remaining_in_round: 0,
-            delayed_eligibility: DelayQueue::new(),
+            delayed_eligibility,
             unconfirmed_capacity_permits: Permit::new_empty(),
             waker: Waker::noop().clone(),
-            last_report: None,
+            datum,
+            last_report: start,
             storage,
         }
     }
@@ -122,7 +137,6 @@ where
 
     pub fn poll_schedule_next(
         mut self: Pin<&mut Self>,
-        now: UniqueTimestamp,
         cx: &mut std::task::Context<'_>,
         vqueues: VQueuesMeta<'_>,
     ) -> Poll<Result<Decision<S::Item>, StorageError>> {
@@ -131,14 +145,11 @@ where
             Abort,
         }
 
-        if self
-            .last_report
-            .is_none_or(|t| now.milliseconds_since(t) >= 10000)
-        {
+        if self.last_report.elapsed() >= Duration::from_secs(10) {
             vqueues.report();
             self.report();
             // also report vqueues states
-            self.last_report = Some(now);
+            self.last_report = Instant::now();
             // compact memory
             self.q.shrink_to(MIN_VQUEUES_CAPACITY);
             self.delayed_eligibility.compact();
@@ -151,20 +162,6 @@ where
             if self.remaining_in_round == 0 {
                 // Pop all eligible vqueues that were delayed since we are starting a new round
                 // Once we hit pending, the waker will be registered.
-                //
-                // There is currently an issue due to using two different clock sources. The timer
-                // wheel uses tokio's internal clock but our scheduler's design relies on explicit
-                // monotonic timestamps. This will cause the timer to expire slightly before or after
-                // the actual point at which the input (now) would satisfy the head item's
-                // eligibility requirements. As a result, we will see one of three scenarios:
-                //  1. Time aligns. We pop the timer and the head element will be immediately eligible.
-                //  2. We are woken up before `now` satifies the requirement, in this case will
-                //     schedule a new timer to catch up on the difference.
-                //  3. We are worken up after `now` by a few hundres of millis, in this case the
-                //     head will be eligible but we will be a little late.
-                //
-                //  This will be fixed in a later change after we reason about whether we need any
-                //  causal entanglement between the RSM's clock and the scheduler's internal clock.
                 let previous_round = self.global_sched_round;
                 while let Poll::Ready(Some(expired)) = self.delayed_eligibility.poll_expired(cx) {
                     let Some(qstate) = self.q.get_mut(expired.get_ref()) else {
@@ -188,6 +185,7 @@ where
                 }
             }
 
+            let now = self.datum.now_ts();
             while self.remaining_in_round > 0 {
                 // bail if we exhausted coop budget.
                 let coop = match tokio::task::coop::poll_proceed(cx) {
@@ -227,7 +225,10 @@ where
                         }
                         Eligibility::EligibleAt(wake_up_at) => {
                             *this.remaining_in_round -= 1;
-                            qstate.maybe_schedule_wakeup(wake_up_at, this.delayed_eligibility, now);
+                            qstate.maybe_schedule_wakeup(
+                                this.datum.ts_to_future_instant(wake_up_at),
+                                this.delayed_eligibility,
+                            );
                             this.eligible.pop_front();
                             break 'single_vqueue Outcome::ContinueRound;
                         }
@@ -306,7 +307,6 @@ where
     #[tracing::instrument(skip_all)]
     pub fn on_inbox_event(
         &mut self,
-        now: UniqueTimestamp,
         vqueues: VQueuesMeta<'_>,
         event: &VQueueEvent<S::Item>,
     ) -> Result<(), StorageError> {
@@ -326,7 +326,8 @@ where
                     return Ok(());
                 }
 
-                match qstate.check_eligibility(now, meta, config) {
+                let now_ts = self.datum.now_ts();
+                match qstate.check_eligibility(now_ts, meta, config) {
                     Eligibility::Eligible if !self.eligible.contains(&qid) => {
                         // Make eligible immediately.
                         qstate.deficit.set_last_round(self.global_sched_round);
@@ -335,9 +336,8 @@ where
                     }
                     Eligibility::EligibleAt(eligiblility_ts) if !self.eligible.contains(&qid) => {
                         qstate.maybe_schedule_wakeup(
-                            eligiblility_ts,
+                            self.datum.ts_to_future_instant(eligiblility_ts),
                             &mut self.delayed_eligibility,
-                            now,
                         );
                     }
                     _ => { /* do nothing */ }
@@ -354,7 +354,10 @@ where
                     // drop the already acquired permit
                     let _ = self.unconfirmed_capacity_permits.split(1);
 
-                    if qstate.check_eligibility(now, meta, config).is_eligible() {
+                    if qstate
+                        .check_eligibility(self.datum.now_ts(), meta, config)
+                        .is_eligible()
+                    {
                         if !self.eligible.contains(&qid) {
                             self.eligible.push_back(qid);
                             qstate.deficit.set_last_round(self.global_sched_round);
@@ -377,7 +380,7 @@ where
                     // drop the already acquired permit
                     let _ = self.unconfirmed_capacity_permits.split(1);
                 } else if qstate.notify_removed(item_hash) {
-                    match qstate.check_eligibility(now, meta, config) {
+                    match qstate.check_eligibility(self.datum.now_ts(), meta, config) {
                         Eligibility::Eligible if !self.eligible.contains(&qid) => {
                             // Make eligible immediately.
                             qstate.deficit.set_last_round(self.global_sched_round);
@@ -388,9 +391,8 @@ where
                             if !self.eligible.contains(&qid) =>
                         {
                             qstate.maybe_schedule_wakeup(
-                                eligiblility_ts,
+                                self.datum.ts_to_future_instant(eligiblility_ts),
                                 &mut self.delayed_eligibility,
-                                now,
                             );
                         }
                         _ => { /* do nothing */ }
