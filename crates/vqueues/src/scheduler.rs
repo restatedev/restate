@@ -23,12 +23,14 @@ use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueStore};
 use restate_types::vqueue::VQueueId;
 
 use crate::VQueueEvent;
+use crate::metric_definitions::publish_scheduler_decision_metrics;
 use crate::{VQueuesMeta, VQueuesMetaMut};
 
 use self::drr::DRRScheduler;
 
 mod clock;
 mod drr;
+// mod resources;
 mod vqueue_state;
 
 const INLINED_SIZE: usize = vqueue_state::QUANTUM as usize;
@@ -127,6 +129,25 @@ pub struct Decision<Item>(HashMap<VQueueId, Assignments<Item>>);
 impl<Item> Decision<Item> {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    pub fn report_metrics(&self) {
+        let mut num_run = 0;
+        let mut num_resume = 0;
+        let mut num_yield = 0;
+        for segment in self
+            .0
+            .values()
+            .flat_map(|assignments| &assignments.segments)
+        {
+            let count = segment.items.len();
+            match segment.action {
+                Action::ResumeAlreadyRunning => num_resume += count,
+                Action::MoveToRunning => num_run += count,
+                Action::Yield => num_yield += count,
+            }
+        }
+        publish_scheduler_decision_metrics(num_run, num_yield, num_resume);
     }
 }
 
