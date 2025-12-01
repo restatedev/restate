@@ -799,12 +799,12 @@ impl TaskCenterInner {
         }
     }
 
-    #[cfg(not(tokio_taskdump))]
+    #[cfg(not(feature = "taskdump"))]
     async fn dump_tasks(self: &Arc<Self>, _: impl std::io::Write) {
-        warn!("Cannot dump tokio tasks; tokio_taskdump was not set at compile time")
+        warn!("Cannot dump tokio tasks; taskdump feature was not enabled at compile time")
     }
 
-    #[cfg(tokio_taskdump)]
+    #[cfg(feature = "taskdump")]
     async fn dump_tasks(self: &Arc<Self>, mut writer: impl std::io::Write) {
         let managed_tasks: HashMap<_, _> = self
             .managed_tasks

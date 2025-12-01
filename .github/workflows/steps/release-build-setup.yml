@@ -35,4 +35,4 @@
 
 - name: Set up RUSTFLAGS (Linux)
   if: ${{ runner.os == 'Linux' }}
-  run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable --cfg tokio_taskdump" >> "$GITHUB_ENV"
+  run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable" >> "$GITHUB_ENV"

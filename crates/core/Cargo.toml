@@ -15,6 +15,7 @@ test-util = [
   "restate-types/test-util",
   "tokio/test-util"
 ]
+taskdump = ["tokio/taskdump"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -81,6 +82,3 @@ googletest = { workspace = true }
 test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_taskdump)'] }
