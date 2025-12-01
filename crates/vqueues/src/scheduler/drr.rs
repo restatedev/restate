@@ -86,12 +86,11 @@ where
         let mut total_waiting = 0;
 
         let q: HashMap<_, _> = vqueues
-            .iter_vqueues()
-            .filter(|(_, meta)| meta.num_running() > 0 || meta.total_waiting() > 0)
+            .iter_active_vqueues()
             .map(|(qid, meta)| {
                 total_running += meta.num_running();
                 total_waiting += meta.total_waiting();
-                let vqueue = VQueueState::new(*qid, meta.num_running() > 0);
+                let vqueue = VQueueState::new(*qid, meta.num_running());
                 (*qid, vqueue)
             })
             .collect();
@@ -226,6 +225,12 @@ where
                             *this.remaining_in_round -= 1;
                             qstate.on_not_eligible(this.delayed_eligibility);
                             this.eligible.pop_front();
+                            // check if the vqueue became inactive. This happens after
+                            // we drain the running set
+                            if !qstate.is_active(meta) {
+                                // remove it.
+                                this.q.remove(&qid);
+                            }
                             break 'single_vqueue Outcome::ContinueRound;
                         }
                         Eligibility::EligibleAt(wake_up_at) => {
@@ -257,6 +262,12 @@ where
                         // assignments.
                         break 'single_vqueue Outcome::Abort;
                     }
+
+                    // todo(asoli): We need to check if the decision requires a concurrency permit or not.
+                    // For instance, we currently still acquire a concurrency token on `yield`
+                    // which leaks invoker tokens. Additionally, in other scenarios, we might need
+                    // to acquire additional permits for other resources depending on the kind of
+                    // the item we are picking.
 
                     // we have concurrency token, let's pick an item
                     qstate.pop_unchecked(this.storage, &mut assignments)?;
@@ -390,29 +401,31 @@ where
                 if qstate.remove_from_unconfirmed_assignments(item_hash) {
                     // drop the already acquired permit
                     let _ = self.unconfirmed_capacity_permits.split(1);
-                } else if qstate.notify_removed(item_hash) {
-                    match qstate.check_eligibility(self.datum.now_ts(), meta, config) {
-                        Eligibility::Eligible if !self.eligible.contains(&qid) => {
-                            // Make eligible immediately.
-                            qstate.deficit.set_last_round(self.global_sched_round);
-                            self.eligible.push_back(qid);
-                            self.waker.wake_by_ref();
-                        }
-                        Eligibility::EligibleAt(eligiblility_ts)
-                            if !self.eligible.contains(&qid) =>
-                        {
-                            qstate.maybe_schedule_wakeup(
-                                self.datum.ts_to_future_instant(eligiblility_ts),
-                                &mut self.delayed_eligibility,
-                            );
-                        }
-                        _ => { /* do nothing */ }
-                    }
                 }
+                qstate.notify_removed(item_hash);
 
                 if qstate.is_empty(meta) {
                     // retire the vqueue state
                     self.q.remove(&qid);
+                    return Ok(());
+                }
+
+                // perhaps we became eligible because this entry's removal released a concurrency
+                // token that we needed.
+                match qstate.check_eligibility(self.datum.now_ts(), meta, config) {
+                    Eligibility::Eligible if !self.eligible.contains(&qid) => {
+                        // Make eligible immediately.
+                        qstate.deficit.set_last_round(self.global_sched_round);
+                        self.eligible.push_back(qid);
+                        self.waker.wake_by_ref();
+                    }
+                    Eligibility::EligibleAt(eligiblility_ts) if !self.eligible.contains(&qid) => {
+                        qstate.maybe_schedule_wakeup(
+                            self.datum.ts_to_future_instant(eligiblility_ts),
+                            &mut self.delayed_eligibility,
+                        );
+                    }
+                    _ => { /* do nothing */ }
                 }
             }
         }

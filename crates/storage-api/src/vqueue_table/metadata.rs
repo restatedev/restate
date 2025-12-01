@@ -15,16 +15,6 @@ use restate_types::vqueue::EffectivePriority;
 
 use super::VisibleAt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VQueueStatus {
-    /// Enabled (not-paused) and has items to process
-    Active,
-    /// Regardless whether it's paused or not, it's empty (nothing to process)
-    Empty,
-    /// Paused indicates it's non-empty but paused (should not process its items)
-    Paused,
-}
-
 #[derive(Debug, Default, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
     /// The time spend in the queue before the first attempt to run. Measured by EMA of time
@@ -99,14 +89,16 @@ impl VQueueMeta {
         self.num_waiting.iter().sum()
     }
 
-    pub fn status(&self) -> VQueueStatus {
-        if self.is_empty() {
-            VQueueStatus::Empty
-        } else if self.is_paused() {
-            VQueueStatus::Paused
-        } else {
-            VQueueStatus::Active
-        }
+    /// A vqueue is considered active when it's of interest to the scheduler.
+    ///
+    /// The scheduler cares about vqueues that have entries that are already running or that are waiting
+    /// to run. With some special rules to consider when the queue is paused. When the vqueue is
+    /// paused, the scheduler will only be interested in its "running" entries and not in its
+    /// waiting entries. Therefore, it will remain to be "active" as long as it has running
+    /// entries. Once running entries are moved to waiting or completed, the vqueue is be
+    /// considered dormant until it's unpaused.
+    pub fn is_active(&self) -> bool {
+        self.stats.num_running > 0 || (self.total_waiting() > 0 && !self.is_paused())
     }
 
     pub fn num_waiting(&self, priority: EffectivePriority) -> u32 {
