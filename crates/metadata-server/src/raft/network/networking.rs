@@ -166,7 +166,11 @@ where
             "metadata-store-network-connection-attempt",
             {
                 trace!(%target, "Try connecting to metadata store peer");
-                let channel = net_util::create_tonic_channel(address.clone(), networking_options);
+                let channel = net_util::create_tonic_channel(
+                    address.clone(),
+                    networking_options,
+                    net_util::DNSResolution::Gai,
+                );
 
                 async move {
                     let mut network_client = new_metadata_server_network_client(channel);

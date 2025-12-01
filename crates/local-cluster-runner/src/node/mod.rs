@@ -45,7 +45,7 @@ use tonic::Code;
 use tracing::{error, info, warn};
 use typed_builder::TypedBuilder;
 
-use restate_core::network::net_util::create_tonic_channel;
+use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::node_ctl_svc::{
     ProvisionClusterRequest as ProtoProvisionClusterRequest, new_node_ctl_client,
 };
@@ -817,6 +817,7 @@ impl StartedNode {
         let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
             self.fabric_advertised_address.clone(),
             &self.config().networking,
+            DNSResolution::Gai,
         ));
 
         let Ok(response) = metadata_server_client
@@ -841,6 +842,7 @@ impl StartedNode {
         let channel = create_tonic_channel(
             self.advertised_address().clone(),
             &Configuration::default().networking,
+            DNSResolution::Gai,
         );
 
         let request = ProtoProvisionClusterRequest {
@@ -901,6 +903,7 @@ impl StartedNode {
         let mut client = new_metadata_server_client(create_tonic_channel(
             self.advertised_address().clone(),
             &self.config().networking,
+            DNSResolution::Gai,
         ));
 
         client.add_node(()).await?;
@@ -912,6 +915,7 @@ impl StartedNode {
         let mut client = new_metadata_server_client(create_tonic_channel(
             self.advertised_address().clone(),
             &self.config().networking,
+            DNSResolution::Gai,
         ));
 
         client
@@ -928,6 +932,7 @@ impl StartedNode {
         let mut client = new_metadata_server_client(create_tonic_channel(
             self.advertised_address().clone(),
             &self.config().networking,
+            DNSResolution::Gai,
         ));
         let response = client.status(()).await?.into_inner();
         Ok(response)

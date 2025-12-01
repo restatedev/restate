@@ -19,7 +19,7 @@ use rand::prelude::IteratorRandom;
 use rand::rng;
 use tracing::{Span, debug, instrument, trace};
 
-use restate_core::network::net_util::create_tonic_channel;
+use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_providers::replicated::KnownLeader;
 use restate_time_util::DurationExt;
@@ -257,7 +257,11 @@ impl Standby {
                 .clone()
         };
 
-        let channel = create_tonic_channel(address, &Configuration::pinned().networking);
+        let channel = create_tonic_channel(
+            address,
+            &Configuration::pinned().networking,
+            DNSResolution::Gai,
+        );
 
         match new_metadata_server_network_client(channel)
             .join_cluster(network::grpc_svc::JoinClusterRequest {
