@@ -33,6 +33,7 @@ memory-loglet = ["restate-node/memory-loglet"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 metadata-api = ["restate-admin/metadata-api"]
 kafka-oidc = ["restate-node/kafka-oidc"]
+taskdump = ["restate-core/taskdump"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -96,6 +97,9 @@ url = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
+
+[target.'cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))'.dependencies]
+restate-core = { workspace = true, features = ["taskdump"] }
 
 [build-dependencies]
 vergen = { version = "8.0.0", default-features = false, features = [
