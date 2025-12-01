@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::prelude::SessionContext;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, warn};
@@ -26,20 +27,22 @@ use restate_types::net::remote_query_scanner::{
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::remote_query_scanner_server::ScannerMap;
-use crate::{decode_schema, encode_record_batch};
+use crate::{decode_expr, decode_schema, encode_record_batch};
 
 const SCANNER_EXPIRATION: Duration = Duration::from_secs(60);
 
-type NextReciprocal = Reciprocal<Oneshot<RemoteQueryScannerNextResult>>;
+pub(crate) struct NextRequest {
+    pub reciprocal: Reciprocal<Oneshot<RemoteQueryScannerNextResult>>,
+}
 
-pub(crate) type ScannerHandle = mpsc::UnboundedSender<NextReciprocal>;
+pub(crate) type ScannerHandle = mpsc::UnboundedSender<NextRequest>;
 
 // Tracks a single scanner's lifecycle running in [`RemoteQueryScannerServer`]
 pub(crate) struct ScannerTask {
     peer: GenerationalNodeId,
     scanner_id: ScannerId,
     stream: SendableRecordBatchStream,
-    rx: mpsc::UnboundedReceiver<NextReciprocal>,
+    rx: mpsc::UnboundedReceiver<NextRequest>,
     scanners: Weak<ScannerMap>,
 }
 
@@ -56,10 +59,20 @@ impl ScannerTask {
             .local_partition_scanner(&request.table)
             .context("not registered scanner for a table")?;
         let schema = decode_schema(&request.projection_schema_bytes).context("bad schema bytes")?;
+        let ctx = SessionContext::new().task_ctx();
+
+        let predicate = request
+            .predicate
+            .map(|predicate| decode_expr(&ctx, &schema, &predicate.serialized_physical_expression))
+            .transpose()?;
+
+        let schema = Arc::new(schema);
+
         let stream = scanner.scan_partition(
             request.partition_id,
             request.range.clone(),
-            Arc::new(schema),
+            schema.clone(),
+            predicate,
             usize::try_from(request.batch_size).expect("batch_size to fit in a usize"),
             request
                 .limit
@@ -96,7 +109,7 @@ impl ScannerTask {
         );
 
         loop {
-            let reciprocal = tokio::select! {
+            let request = tokio::select! {
                 _ = &mut watch_fut => {
                     // peer is dead, dispose the scanner
                     debug!("Removing scanner due to peer {} being dead", self.peer);
@@ -120,7 +133,7 @@ impl ScannerTask {
             // connection/request has been closed, don't bother with driving the stream.
             // The scanner will be dropped because we want to make sure that we don't get supurious
             // next messages from the client after.
-            if reciprocal.is_closed() {
+            if request.reciprocal.is_closed() {
                 return;
             }
 
@@ -129,29 +142,37 @@ impl ScannerTask {
                 Some(Err(e)) => {
                     warn!("Error while scanning {}: {e}", self.scanner_id);
 
-                    reciprocal.send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
-                        scanner_id: self.scanner_id,
-                        message: e.to_string(),
-                    }));
+                    request
+                        .reciprocal
+                        .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
+                            scanner_id: self.scanner_id,
+                            message: e.to_string(),
+                        }));
                     return;
                 }
                 None => {
-                    reciprocal.send(RemoteQueryScannerNextResult::NoMoreRecords(self.scanner_id));
+                    request
+                        .reciprocal
+                        .send(RemoteQueryScannerNextResult::NoMoreRecords(self.scanner_id));
                     return;
                 }
             };
             match encode_record_batch(&self.stream.schema(), record_batch) {
                 Ok(record_batch) => {
-                    reciprocal.send(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
-                        scanner_id: self.scanner_id,
-                        record_batch,
-                    }))
+                    request
+                        .reciprocal
+                        .send(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
+                            scanner_id: self.scanner_id,
+                            record_batch,
+                        }))
                 }
                 Err(e) => {
-                    reciprocal.send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
-                        scanner_id: self.scanner_id,
-                        message: e.to_string(),
-                    }));
+                    request
+                        .reciprocal
+                        .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
+                            scanner_id: self.scanner_id,
+                            message: e.to_string(),
+                        }));
                     break;
                 }
             }

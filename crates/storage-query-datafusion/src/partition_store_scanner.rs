@@ -16,6 +16,7 @@ use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -76,6 +77,7 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        _predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         mut limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
@@ -142,9 +144,17 @@ where
         partition_id: PartitionId,
         range: RangeInclusive<PartitionKey>,
         projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        self.scan_partition(partition_id, range, projection, batch_size, limit)
+        self.scan_partition(
+            partition_id,
+            range,
+            projection,
+            predicate,
+            batch_size,
+            limit,
+        )
     }
 }

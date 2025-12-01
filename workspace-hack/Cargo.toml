@@ -17,11 +17,11 @@ publish = false
 ### BEGIN HAKARI SECTION
 [dependencies]
 ahash = { version = "0.8", features = ["serde"] }
-arrow = { version = "56", features = ["chrono-tz", "prettyprint"] }
-arrow-array = { version = "56", default-features = false, features = ["chrono-tz"] }
-arrow-cast = { version = "56", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "56", features = ["lz4"] }
-arrow-schema = { version = "56", default-features = false, features = ["canonical_extension_types"] }
+arrow = { version = "57", features = ["chrono-tz", "prettyprint"] }
+arrow-array = { version = "57", default-features = false, features = ["chrono-tz"] }
+arrow-cast = { version = "57", default-features = false, features = ["prettyprint"] }
+arrow-ipc = { version = "57", features = ["lz4"] }
+arrow-schema = { version = "57", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
@@ -45,8 +45,6 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
-datafusion-common = { version = "50", default-features = false, features = ["object_store", "recursive_protection"] }
-datafusion-expr = { version = "50", default-features = false, features = ["recursive_protection"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
@@ -89,7 +87,6 @@ nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
-object_store = { version = "0.12", features = ["aws", "azure", "gcp"] }
 once_cell = { version = "1", features = ["critical-section"] }
 opentelemetry = { version = "0.31" }
 opentelemetry_sdk = { version = "0.31", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
@@ -107,7 +104,7 @@ rand_core = { version = "0.6", default-features = false, features = ["std"] }
 rdkafka = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored"] }
 rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", default-features = false, features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored"] }
 regex = { version = "1" }
-regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "unicode"] }
+regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 ring = { version = "0.17", features = ["std"] }
@@ -121,7 +118,6 @@ serde_core = { version = "1", default-features = false, features = ["alloc", "rc
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
-sqlparser = { version = "0.58", default-features = false, features = ["recursive-protection", "visitor"] }
 stable_deref_trait = { version = "1" }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
@@ -142,7 +138,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parki
 typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
-zerocopy = { version = "0.7", features = ["derive", "simd"] }
+zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 zstd = { version = "0.13" }
 zstd-safe = { version = "7", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
@@ -150,11 +146,11 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [build-dependencies]
 ahash = { version = "0.8", features = ["serde"] }
-arrow = { version = "56", features = ["chrono-tz", "prettyprint"] }
-arrow-array = { version = "56", default-features = false, features = ["chrono-tz"] }
-arrow-cast = { version = "56", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "56", features = ["lz4"] }
-arrow-schema = { version = "56", default-features = false, features = ["canonical_extension_types"] }
+arrow = { version = "57", features = ["chrono-tz", "prettyprint"] }
+arrow-array = { version = "57", default-features = false, features = ["chrono-tz"] }
+arrow-cast = { version = "57", default-features = false, features = ["prettyprint"] }
+arrow-ipc = { version = "57", features = ["lz4"] }
+arrow-schema = { version = "57", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
@@ -179,8 +175,6 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
-datafusion-common = { version = "50", default-features = false, features = ["object_store", "recursive_protection"] }
-datafusion-expr = { version = "50", default-features = false, features = ["recursive_protection"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
@@ -225,7 +219,6 @@ nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
-object_store = { version = "0.12", features = ["aws", "azure", "gcp"] }
 once_cell = { version = "1", features = ["critical-section"] }
 opentelemetry = { version = "0.31" }
 opentelemetry_sdk = { version = "0.31", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
@@ -244,7 +237,7 @@ rand_core = { version = "0.6", default-features = false, features = ["std"] }
 rdkafka = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored"] }
 rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", default-features = false, features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored"] }
 regex = { version = "1" }
-regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "unicode"] }
+regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
 ring = { version = "0.17", features = ["std"] }
@@ -258,7 +251,6 @@ serde_core = { version = "1", default-features = false, features = ["alloc", "rc
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
-sqlparser = { version = "0.58", default-features = false, features = ["recursive-protection", "visitor"] }
 stable_deref_trait = { version = "1" }
 syn = { version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
@@ -279,7 +271,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parki
 typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
-zerocopy = { version = "0.7", features = ["derive", "simd"] }
+zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 zstd = { version = "0.13" }
 zstd-safe = { version = "7", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }

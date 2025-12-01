@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tracing::debug;
 
@@ -25,10 +26,11 @@ use restate_types::NodeId;
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerClose, RemoteQueryScannerNext, RemoteQueryScannerNextResult,
-    RemoteQueryScannerOpen, RemoteQueryScannerOpened, ScannerBatch, ScannerFailure, ScannerId,
+    RemoteQueryScannerOpen, RemoteQueryScannerOpened, RemoteQueryScannerPredicate, ScannerBatch,
+    ScannerFailure, ScannerId,
 };
 
-use crate::{decode_record_batch, encode_schema};
+use crate::{decode_record_batch, encode_expr, encode_schema};
 
 #[derive(Debug, Clone)]
 pub struct RemoteScanner {
@@ -139,6 +141,7 @@ pub fn remote_scan_as_datafusion_stream(
     range: RangeInclusive<PartitionKey>,
     table_name: String,
     projection_schema: SchemaRef,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
     batch_size: usize,
     limit: Option<usize>,
 ) -> SendableRecordBatchStream {
@@ -147,6 +150,13 @@ pub fn remote_scan_as_datafusion_stream(
     let tx = builder.tx();
 
     let task = async move {
+        let initial_predicate = match &predicate {
+            Some(predicate) => Some(RemoteQueryScannerPredicate {
+                serialized_physical_expression: encode_expr(predicate)?,
+            }),
+            None => None,
+        };
+
         //
         // get a scanner id
         //
@@ -156,6 +166,7 @@ pub fn remote_scan_as_datafusion_stream(
             table: table_name,
             projection_schema_bytes: encode_schema(&projection_schema),
             limit: limit.map(|limit| u64::try_from(limit).expect("limit to fit in a u64")),
+            predicate: initial_predicate,
             batch_size: u64::try_from(batch_size).expect("batch_size to fit in a u64"),
         };
 
