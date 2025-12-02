@@ -13,17 +13,7 @@ use smallvec::SmallVec;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::vqueue::EffectivePriority;
 
-use super::VisibleAt;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VQueueStatus {
-    /// Enabled (not-paused) and has items to process
-    Active,
-    /// Regardless whether it's paused or not, it's empty (nothing to process)
-    Empty,
-    /// Paused indicates it's non-empty but paused (should not process its items)
-    Paused,
-}
+use super::{Stage, VisibleAt};
 
 #[derive(Debug, Default, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
@@ -99,14 +89,16 @@ impl VQueueMeta {
         self.num_waiting.iter().sum()
     }
 
-    pub fn status(&self) -> VQueueStatus {
-        if self.is_empty() {
-            VQueueStatus::Empty
-        } else if self.is_paused() {
-            VQueueStatus::Paused
-        } else {
-            VQueueStatus::Active
-        }
+    /// A vqueue is considered active when it's of interest to the scheduler.
+    ///
+    /// The scheduler cares about vqueues that have entries that are already running or that are waiting
+    /// to run. With some special rules to consider when the queue is paused. When the vqueue is
+    /// paused, the scheduler will only be interested in its "running" entries and not in its
+    /// waiting entries. Therefore, it will remain to be "active" as long as it has running
+    /// entries. Once running entries are moved to waiting or completed, the vqueue is be
+    /// considered dormant until it's unpaused.
+    pub fn is_active(&self) -> bool {
+        self.stats.num_running > 0 || (self.total_waiting() > 0 && !self.is_paused())
     }
 
     pub fn num_waiting(&self, priority: EffectivePriority) -> u32 {
@@ -225,17 +217,24 @@ impl VQueueMeta {
                 self.add_to_waiting(priority);
             }
             Action::Complete {
-                was_waiting,
+                previous_stage,
                 priority,
             } => {
                 debug_assert!(self.length > 0);
                 self.length -= 1;
                 self.stats.last_completion_at = Some(now);
-                if was_waiting {
-                    self.remove_from_waiting(priority);
-                } else {
-                    self.stats.decrement_running();
+
+                match previous_stage {
+                    Stage::Unknown => {
+                        panic!("Something is wrong. We shouldn't be in the unknown stage.")
+                    }
+                    Stage::Inbox => self.remove_from_waiting(priority),
+                    Stage::Run => self.stats.decrement_running(),
+                    Stage::Park => {
+                        // nothing to do since we were neither waiting nor running
+                    }
                 }
+
                 if priority.token_held() {
                     self.release_token();
                 }
@@ -317,7 +316,7 @@ pub enum Action {
     Complete {
         // Must be the latest priority assigned to the entry (effective priority)
         priority: EffectivePriority,
-        was_waiting: bool,
+        previous_stage: Stage,
     },
 }
 

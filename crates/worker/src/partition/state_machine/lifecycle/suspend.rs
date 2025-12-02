@@ -11,6 +11,7 @@
 use crate::partition::state_machine::{CommandHandler, Error, ParkCause, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{InvocationStatus, WriteInvocationStatusTable};
 use restate_storage_api::journal_table_v2::ReadJournalTable;
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::config::Configuration;
 use restate_types::identifiers::InvocationId;
@@ -27,7 +28,11 @@ pub struct OnSuspendCommand {
 impl<'ctx, 's: 'ctx, S> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S>>
     for OnSuspendCommand
 where
-    S: ReadJournalTable + WriteInvocationStatusTable + WriteVQueueTable + ReadVQueueTable,
+    S: ReadJournalTable
+        + WriteInvocationStatusTable
+        + WriteVQueueTable
+        + ReadVQueueTable
+        + WriteVirtualObjectStatusTable,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         debug_assert!(

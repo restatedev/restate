@@ -12,7 +12,7 @@ use hashbrown::{HashMap, hash_map};
 use tracing::debug;
 
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaUpdates, VQueueStatus};
+use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaUpdates};
 use restate_storage_api::vqueue_table::{ReadVQueueTable, ScanVQueueTable};
 use restate_types::vqueue::VQueueId;
 
@@ -41,10 +41,6 @@ impl<'a> VQueuesMeta<'a> {
         Self { inner: cache }
     }
 
-    pub fn num_active_vqueues(&self) -> usize {
-        self.inner.queues.len()
-    }
-
     pub(crate) fn config_pool(&'a self) -> &'a ConfigPool {
         &self.inner.config
     }
@@ -53,8 +49,11 @@ impl<'a> VQueuesMeta<'a> {
         self.inner.queues.get(qid)
     }
 
-    pub fn iter_vqueues(&'a self) -> impl ExactSizeIterator<Item = (&'a VQueueId, &'a VQueueMeta)> {
-        self.inner.queues.iter()
+    pub fn iter_active_vqueues(&'a self) -> impl Iterator<Item = (&'a VQueueId, &'a VQueueMeta)> {
+        self.inner
+            .queues
+            .iter()
+            .filter(|(_, meta)| meta.is_active())
     }
 
     pub fn report(&self) {
@@ -135,18 +134,18 @@ impl VQueuesMetaMut {
         }
     }
 
-    /// Returns the status of the vqueue before and after all the updates
+    /// Returns is_active of the vqueue before and after all the updates
     /// in the form of a tuple (before, after).
     pub(crate) async fn apply_updates<S: ReadVQueueTable>(
         &mut self,
         storage: &mut S,
         qid: &VQueueId,
         updates: &VQueueMetaUpdates,
-    ) -> Result<(VQueueStatus, VQueueStatus)> {
+    ) -> Result<(bool, bool)> {
         let vqueue = self.load(storage, qid).await?;
-        let before = vqueue.status();
+        let before = vqueue.is_active();
         vqueue.apply_updates(updates)?;
-        let after = vqueue.status();
+        let after = vqueue.is_active();
 
         // todo(asoli): Add compaction logic to remove empty vqueues that has been empty for a while
         // only if the cache hits a certain threshold.
