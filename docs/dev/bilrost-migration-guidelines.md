@@ -21,7 +21,7 @@ To work around this I had to create my own custom `U128` which internally stores
 
 ## Enums
 
-`bilrost` makes a clear distinction between a `numberic` enum (represented as an integer value) , and `fat` enums. This was the most annoying thing to work with due to the following
+`bilrost` makes a clear distinction between a `numeric` enum (represented as an integer value) , and `fat` enums. This was the most annoying thing to work with due to the following
 
 ### Numeric (slim) Enums
 
@@ -61,8 +61,8 @@ enum MySlimEnum {
 
 #[derive(bilrost::Message)]
 struct MyStruct {
-		// This works because although the enum has NO empty state (0)
-		// the field here is optional
+    // This works because although the enum has NO empty state (0)
+    // the field here is optional
     slim: Option<MySlimEnum>,
 }
 ```
@@ -96,7 +96,7 @@ enum MySlimEnum {
 
 #[derive(bilrost::Message)]
 struct MyStruct {
-		// This will not compile! (required field but no empty state)
+    // This will not compile! (required field but no empty state)
     slim: MySlimEnum,
 }
 ```
@@ -113,9 +113,9 @@ This works completely different from above. It’s mainly because fat enums tran
 // Derives Oneof
 #[derive(bilrost::Oneof)]
 enum MyFatEnum {
-		// the only place where the empty state can appear
-		// and it's the only variant that is not associated with
-		// a value
+    // the only place where the empty state can appear
+    // and it's the only variant that is not associated with
+    // a value
     Unknown,
     // It will be clear why I am starting from 2 here later in this document
     // and not from 1

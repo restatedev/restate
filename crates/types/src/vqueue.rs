@@ -86,12 +86,16 @@ impl VQueueInstance {
     }
 
     #[inline]
-    pub fn infer_from(key: impl AsRef<[u8]>) -> Self {
+    pub fn infer_from(name: impl AsRef<[u8]>, key: impl AsRef<[u8]>) -> Self {
         // todo consider using the same hasher we use for partition key (xxh3)
         // Important to never change the seed!
         let mut hasher = rustc_hash::FxHasher::with_seed(67);
 
+        name.as_ref().hash(&mut hasher);
+        // separator
+        b'/'.hash(&mut hasher);
         key.as_ref().hash(&mut hasher);
+
         let hash = hasher.finish();
         // XOR upper and lower bits for better collision resistance. xxh3 might give better
         // collision tolerance when generating an u32 hash, but we assume that the partition key spreads
