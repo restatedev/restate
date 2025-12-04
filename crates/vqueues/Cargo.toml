@@ -20,6 +20,7 @@ bilrost = { workspace = true, features = ["smallvec"] }
 derive_more = { workspace = true }
 futures = { workspace = true }
 hashbrown = { version = "0.16"  }
+metrics = { workspace = true }
 pin-project = { workspace = true }
 rocksdb = { workspace = true }
 smallvec = { workspace = true }
