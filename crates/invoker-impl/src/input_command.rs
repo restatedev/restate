@@ -10,7 +10,6 @@
 
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
-use restate_invoker_api::capacity::InvokerToken;
 use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, StatusHandle};
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::{InvocationEpoch, InvocationTarget};
@@ -36,7 +35,7 @@ pub(crate) struct InvokeCommand {
 pub(crate) struct VQueueInvokeCommand {
     pub(super) qid: VQueueId,
     #[debug(skip)]
-    pub(super) permit: Permit<InvokerToken>,
+    pub(super) permit: Permit<()>,
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_target: InvocationTarget,
@@ -134,7 +133,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         qid: VQueueId,
-        permit: Permit<InvokerToken>,
+        permit: Permit<()>,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,
