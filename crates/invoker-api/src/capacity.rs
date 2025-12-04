@@ -16,12 +16,9 @@ use restate_types::config::ThrottlingOptions;
 pub type TokenBucket<C = gardal::TokioClock> =
     gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
 
-/// Marker type used to identify invoker's capacity tokens
-pub struct InvokerToken;
-
 #[derive(Clone)]
 pub struct InvokerCapacity {
-    pub concurrency: Concurrency<InvokerToken>,
+    pub concurrency: Concurrency<()>,
     pub invocation_token_bucket: Option<TokenBucket>,
     pub action_token_bucket: Option<TokenBucket>,
 }

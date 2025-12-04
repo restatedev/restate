@@ -30,10 +30,12 @@ use self::drr::DRRScheduler;
 
 mod clock;
 mod drr;
-// mod resources;
+mod eligible;
 mod vqueue_state;
 
-const INLINED_SIZE: usize = vqueue_state::QUANTUM as usize;
+const INLINED_SIZE: usize = 4;
+
+slotmap::new_key_type! { struct VQueueHandle; }
 
 #[derive(Debug)]
 pub struct Assignments<Item> {
@@ -53,7 +55,7 @@ impl<Item> Default for Assignments<Item> {
 }
 
 impl<Item> Assignments<Item> {
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = (Action, &[Item])> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (Action, &[(Item, Permit<()>)])> {
         self.segments
             .iter()
             .map(|segment| (segment.action, segment.items.as_slice()))
@@ -61,28 +63,25 @@ impl<Item> Assignments<Item> {
 
     pub fn into_iter_per_action(
         self,
-    ) -> impl ExactSizeIterator<Item = (Action, impl ExactSizeIterator<Item = Item>)> {
+    ) -> impl ExactSizeIterator<Item = (Action, impl ExactSizeIterator<Item = (Item, Permit<()>)>)>
+    {
         self.segments
             .into_iter()
             .map(|segment| (segment.action, segment.items.into_iter()))
     }
 
-    pub fn push(&mut self, action: Action, item: Item) {
+    pub fn push(&mut self, action: Action, item: Item, permit: Permit<()>) {
         // manipulate the last segment if the action is the same.
         if let Some(last_segment) = self.segments.last_mut()
             && last_segment.action == action
         {
-            last_segment.items.push(item);
+            last_segment.items.push((item, permit));
         } else {
             self.segments.push(AssignmentSegment {
                 action,
-                items: smallvec::smallvec![item],
+                items: smallvec::smallvec![(item, permit)],
             });
         }
-    }
-
-    pub fn merge(&mut self, other: Self) {
-        self.segments.extend(other.segments);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -93,14 +92,14 @@ impl<Item> Assignments<Item> {
 #[derive(Debug)]
 pub struct AssignmentSegment<Item> {
     pub action: Action,
-    pub items: SmallVec<[Item; INLINED_SIZE]>,
+    pub items: SmallVec<[(Item, Permit<()>); INLINED_SIZE]>,
 }
 
 impl<Item> AssignmentSegment<Item> {
-    pub fn new(action: Action, item: Item) -> Self {
+    pub fn new(action: Action, item: Item, permit: Permit<()>) -> Self {
         Self {
             action,
-            items: smallvec::smallvec![item],
+            items: smallvec::smallvec![(item, permit)],
         }
     }
 
@@ -124,43 +123,79 @@ pub enum Action {
 }
 
 #[derive(derive_more::IntoIterator, Debug)]
-pub struct Decision<Item>(HashMap<VQueueId, Assignments<Item>>);
+pub struct Decision<Item> {
+    #[into_iterator]
+    q: HashMap<VQueueId, Assignments<Item>>,
+    num_run: u16,
+    num_resume: u16,
+    num_yield: u16,
+}
 
 impl<Item> Decision<Item> {
+    pub fn new() -> Self {
+        Self {
+            q: HashMap::new(),
+            num_run: 0,
+            num_resume: 0,
+            num_yield: 0,
+        }
+    }
+
+    pub fn push(&mut self, qid: &VQueueId, action: Action, item: Item, permit: Permit<()>) {
+        let assignments = self.q.entry_ref(qid).or_insert(Assignments::default());
+        assignments.push(action, item, permit);
+        match action {
+            Action::ResumeAlreadyRunning => self.num_resume += 1,
+            Action::Yield => self.num_yield += 1,
+            Action::MoveToRunning => self.num_run += 1,
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.q.is_empty()
+    }
+
+    /// The number of vqueues in this decision
+    pub fn num_queues(&self) -> usize {
+        self.q.len()
+    }
+
+    /// Total number of items in all queues
+    pub fn total_items(&self) -> usize {
+        self.num_run as usize + self.num_resume as usize + self.num_yield as usize
+    }
+
+    pub fn num_run_items(&self) -> u16 {
+        self.num_run
+    }
+
+    pub fn num_yield_items(&self) -> u16 {
+        self.num_yield
+    }
+
+    pub fn num_resume_items(&self) -> u16 {
+        self.num_resume
     }
 
     pub fn report_metrics(&self) {
-        let mut num_run = 0;
-        let mut num_resume = 0;
-        let mut num_yield = 0;
-        for segment in self
-            .0
-            .values()
-            .flat_map(|assignments| &assignments.segments)
-        {
-            let count = segment.items.len();
-            match segment.action {
-                Action::ResumeAlreadyRunning => num_resume += count,
-                Action::MoveToRunning => num_run += count,
-                Action::Yield => num_yield += count,
-            }
-        }
-        publish_scheduler_decision_metrics(num_run, num_yield, num_resume);
+        publish_scheduler_decision_metrics(
+            self.num_run as u64,
+            self.num_yield as u64,
+            self.num_resume as u64,
+        );
     }
 }
 
-enum State<S: VQueueStore, Token> {
-    Active(Pin<Box<DRRScheduler<S, Token>>>),
+enum State<S: VQueueStore> {
+    Active(Pin<Box<DRRScheduler<S>>>),
     Disabled,
 }
 
-pub struct SchedulerService<S: VQueueStore, Token> {
-    state: State<S, Token>,
+pub struct SchedulerService<S: VQueueStore> {
+    state: State<S>,
 }
 
-impl<S, Token> SchedulerService<S, Token>
+impl<S> SchedulerService<S>
 where
     S: VQueueStore,
     S::Item: std::fmt::Debug,
@@ -170,12 +205,12 @@ where
         S: ScanVQueueTable,
     {
         Self {
-            state: State::<S, Token>::Disabled,
+            state: State::<S>::Disabled,
         }
     }
 
     pub async fn create(
-        concurrency: Concurrency<Token>,
+        concurrency: Concurrency<()>,
         storage: S,
         vqueues_cache: &mut VQueuesMetaMut,
     ) -> Result<Self, StorageError>
@@ -196,6 +231,7 @@ where
             // Note that propose_many will error out if the number of commands is greater than the
             // channel's max capacity.
             NonZeroU16::new(25).unwrap(),
+            NonZeroU16::new(1000).unwrap(),
             concurrency,
             storage,
             vqueues_cache.view(),
@@ -231,15 +267,6 @@ where
             State::Disabled => Poll::Pending,
             State::Active(ref mut drr_scheduler) => {
                 drr_scheduler.as_mut().poll_schedule_next(cx, vqueues)
-            }
-        }
-    }
-
-    pub fn confirm_assignment(&mut self, qid: &VQueueId, item_hash: u64) -> Option<Permit<Token>> {
-        match self.state {
-            State::Disabled => None,
-            State::Active(ref mut drr_scheduler) => {
-                drr_scheduler.as_mut().confirm_assignment(qid, item_hash)
             }
         }
     }

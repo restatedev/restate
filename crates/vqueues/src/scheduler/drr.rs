@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::VecDeque;
 use std::num::NonZeroU16;
 use std::pin::Pin;
 use std::task::Poll;
@@ -16,19 +15,15 @@ use std::task::Waker;
 use std::time::Duration;
 
 use hashbrown::HashMap;
-use hashbrown::hash_map;
 use metrics::counter;
 use pin_project::pin_project;
+use slotmap::SlotMap;
 use tokio::time::Instant;
-use tokio_util::time::DelayQueue;
 use tracing::{info, trace};
 
 use restate_futures_util::concurrency::Concurrency;
-use restate_futures_util::concurrency::Permit;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueStore;
-use restate_types::clock::UniqueTimestamp;
-use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::VQueueId;
 
 use crate::EventDetails;
@@ -37,105 +32,88 @@ use crate::VQueuesMeta;
 use crate::metric_definitions::VQUEUE_ENQUEUE;
 use crate::metric_definitions::VQUEUE_RUN_CONFIRMED;
 use crate::metric_definitions::VQUEUE_RUN_REJECTED;
-use crate::scheduler::Assignments;
-use crate::scheduler::vqueue_state::Eligibility;
+use crate::scheduler::eligible::EligibilityTracker;
+use crate::scheduler::vqueue_state::Pop;
 
 use super::Decision;
-use super::clock::SchedulerClock;
+use super::VQueueHandle;
 use super::vqueue_state::VQueueState;
 
-/// Capacity to maintain for N vqueues (N=100)
-const MIN_VQUEUES_CAPACITY: usize = 100;
-
 #[pin_project]
-pub struct DRRScheduler<S: VQueueStore, Token> {
-    /// Limits the number of queues picked per scheduler's poll
-    limit_qid_per_poll: NonZeroU16,
-    concurrency_limiter: Concurrency<Token>,
-    eligible: VecDeque<VQueueId>,
-    /// Mapping of vqueue_id -> vqueue_state for possibly eligible vqueues
-    q: HashMap<VQueueId, VQueueState<S>>,
-    unconfirmed_capacity_permits: Permit<Token>,
-    delayed_eligibility: DelayQueue<VQueueId>,
-    // Wraps to zero after 16::MAX.
-    global_sched_round: u16,
-    /// How many vqueues we need to still need to go visit before we start a new round
-    remaining_in_round: usize,
+pub struct DRRScheduler<S: VQueueStore> {
+    concurrency_limiter: Concurrency<()>,
+    // sorted by queue_id
+    eligible: EligibilityTracker,
+    /// Mapping of vqueue_id -> handle for active vqueues
+    id_lookup: HashMap<VQueueId, VQueueHandle>,
+    q: SlotMap<VQueueHandle, VQueueState<S>>,
     /// Waker to be notified when scheduler is potentially able to scheduler more work
     waker: Waker,
-    datum: SchedulerClock,
     /// Time of the last memory reporting and memory compaction
     last_report: Instant,
+
+    /// Limits the number of queues picked per scheduler's poll
+    limit_qid_per_poll: NonZeroU16,
+    /// Limits the number of items included in a single decision across all queues
+    max_items_per_decision: NonZeroU16,
 
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
 }
 
-impl<S, Token> DRRScheduler<S, Token>
+impl<S> DRRScheduler<S>
 where
     S: VQueueStore,
     S::Item: std::fmt::Debug,
 {
     pub fn new(
         limit_qid_per_poll: NonZeroU16,
-        concurrency_limiter: Concurrency<Token>,
+        max_items_per_decision: NonZeroU16,
+        concurrency_limiter: Concurrency<()>,
         storage: S,
         vqueues: VQueuesMeta<'_>,
     ) -> Self {
         let mut total_running = 0;
         let mut total_waiting = 0;
 
-        let q: HashMap<_, _> = vqueues
-            .iter_active_vqueues()
-            .map(|(qid, meta)| {
-                total_running += meta.num_running();
-                total_waiting += meta.total_waiting();
-                let vqueue = VQueueState::new(*qid, meta.num_running());
-                (*qid, vqueue)
-            })
-            .collect();
+        let num_active = vqueues.num_active();
+        let mut q = SlotMap::with_capacity_and_key(num_active);
+        let mut id_lookup = HashMap::with_capacity(num_active);
+        let mut eligible: EligibilityTracker = EligibilityTracker::with_capacity(num_active);
 
-        // We init all active vqueues as eligible first
-        let eligible = q.keys().copied().collect();
+        for (qid, meta) in vqueues.iter_active_vqueues() {
+            total_running += meta.num_running();
+            total_waiting += meta.total_waiting();
+            let handle =
+                q.insert_with_key(|handle| VQueueState::new(*qid, handle, meta.num_running()));
+            id_lookup.insert(*qid, handle);
+            // We init all active vqueues as eligible first
+            eligible.insert_eligible(handle);
+        }
 
         info!(
             "Scheduler started. num_vqueues={}, total_running_items={total_running}, total_waiting_items={total_waiting}",
             q.len(),
         );
 
-        let datum = SchedulerClock::new(
-            UniqueTimestamp::from_unix_millis(MillisSinceEpoch::now())
-                .expect("clock does not overflow"),
-        );
-        // Makes sure we use the same clock datum for the internal timer wheel and for our
-        // own eligibility checks.
-        let start = datum.origin_instant();
-        let delayed_eligibility = DelayQueue::with_capacity(MIN_VQUEUES_CAPACITY);
-
         Self {
-            limit_qid_per_poll,
             concurrency_limiter,
+            id_lookup,
             q,
             eligible,
-            global_sched_round: 0,
-            remaining_in_round: 0,
-            delayed_eligibility,
-            unconfirmed_capacity_permits: Permit::new_empty(),
             waker: Waker::noop().clone(),
-            datum,
-            last_report: start,
+            last_report: Instant::now(),
             storage,
+            limit_qid_per_poll,
+            max_items_per_decision,
         }
     }
 
     fn report(&mut self) {
         trace!(
-            "DRR scheduler report: eligible={}, queue_states_len={}, queue_states_mem={}bytes, unconfirmed_capacity_permits={:?}, global_sched_round={}",
+            "DRR scheduler report: eligible={}, queue_states_len={}",
             self.eligible.len(),
             self.q.len(),
-            self.q.allocation_size(),
-            self.unconfirmed_capacity_permits,
-            self.global_sched_round,
         );
     }
 
@@ -144,183 +122,96 @@ where
         cx: &mut std::task::Context<'_>,
         vqueues: VQueuesMeta<'_>,
     ) -> Poll<Result<Decision<S::Item>, StorageError>> {
-        enum Outcome {
-            ContinueRound,
-            Abort,
-        }
+        let mut decision = Decision::new();
+        let mut items_collected = 0;
+        let mut first_blocked = None;
 
-        if self.last_report.elapsed() >= Duration::from_secs(10) {
-            vqueues.report();
-            self.report();
-            // also report vqueues states
-            self.last_report = Instant::now();
-            // compact memory
-            self.q.shrink_to(MIN_VQUEUES_CAPACITY);
-            self.delayed_eligibility.compact();
-        }
-
-        let configs = vqueues.config_pool();
-        let mut decision: HashMap<VQueueId, Assignments<S::Item>> = HashMap::new();
-
-        'scheduler: loop {
-            if self.remaining_in_round == 0 {
-                // Pop all eligible vqueues that were delayed since we are starting a new round
-                // Once we hit pending, the waker will be registered.
-                let previous_round = self.global_sched_round;
-                while let Poll::Ready(Some(expired)) = self.delayed_eligibility.poll_expired(cx) {
-                    let Some(qstate) = self.q.get_mut(expired.get_ref()) else {
-                        // the vqueue is gone/empty, ignore.
-                        continue;
-                    };
-                    qstate.drop_scheduled_wake_up();
-                    qstate.deficit.set_last_round(previous_round);
-                    let vqueue_id = expired.into_inner();
-                    if !self.eligible.contains(&vqueue_id) {
-                        self.eligible.push_back(vqueue_id);
-                    }
-                }
-
-                if !self.eligible.is_empty() {
-                    // bump global scheduling round, reset remaining.
-                    self.remaining_in_round = self.eligible.len();
-                    self.global_sched_round = self.global_sched_round.wrapping_add(1);
-                } else {
-                    break 'scheduler;
-                }
+        loop {
+            self.eligible.poll_delayed(cx);
+            // bail if we exhausted coop budget.
+            let coop = match tokio::task::coop::poll_proceed(cx) {
+                Poll::Ready(coop) => coop,
+                Poll::Pending => break,
+            };
+            // stop when we have enough queues picked
+            if decision.num_queues() >= self.limit_qid_per_poll.get() as usize
+                || items_collected >= self.max_items_per_decision.get() as usize
+            {
+                trace!(
+                    "Reached limits of a single DRR decision. num_items={} qids_in_decision={}",
+                    decision.total_items(),
+                    decision.num_queues()
+                );
+                break;
             }
 
-            let now = self.datum.now_ts();
-            while self.remaining_in_round > 0 {
-                // bail if we exhausted coop budget.
-                let coop = match tokio::task::coop::poll_proceed(cx) {
-                    Poll::Ready(coop) => coop,
-                    Poll::Pending => break 'scheduler,
-                };
-                // stop when we have enough queues picked
-                if decision.len() >= self.limit_qid_per_poll.get() as usize {
-                    break 'scheduler;
-                }
+            let this = self.as_mut().project();
 
-                let this = self.as_mut().project();
-                let qid = this.eligible.front().copied().unwrap();
-                let Some(qstate) = this.q.get_mut(&qid) else {
-                    // the vqueue has been removed probably it's empty therefore, it's
-                    // safe to assume that it's not eligible.
-                    *this.remaining_in_round -= 1;
-                    this.eligible.pop_front();
+            let Some(handle) = this.eligible.next_eligible(this.storage, this.q, vqueues)? else {
+                trace!(
+                    "No more eligible vqueues, {:?}, states_len={}, states_capacity={}",
+                    this.eligible,
+                    this.q.len(),
+                    this.q.capacity()
+                );
+                break;
+            };
+
+            if first_blocked.is_some_and(|first| first == handle) {
+                // do not check the same vqueue twice for capacity in the same poll.
+                break;
+            }
+
+            let qstate = this.q.get_mut(handle).unwrap();
+            // get concurrency token, but only if it's still eligible.
+            match qstate.pop_unchecked(cx, this.storage, this.concurrency_limiter)? {
+                Pop::DeficitExhausted => {
+                    this.eligible.rotate_one();
                     continue;
-                };
-
-                let meta = vqueues.get_vqueue(&qid).unwrap();
-                let config = configs.find(&qid.parent);
-
-                qstate.deficit.adjust(*this.global_sched_round);
-                let mut assignments = Assignments::default();
-                let outcome = 'single_vqueue: loop {
-                    // get concurrency token, but only if it's still eligible.
-                    qstate.poll_head(this.storage, meta)?;
-                    match qstate.check_eligibility(now, meta, config) {
-                        Eligibility::NotEligible => {
-                            // not eligible,
-                            *this.remaining_in_round -= 1;
-                            qstate.on_not_eligible(this.delayed_eligibility);
-                            this.eligible.pop_front();
-                            // check if the vqueue became inactive. This happens after
-                            // we drain the running set
-                            if !qstate.is_active(meta) {
-                                // remove it.
-                                this.q.remove(&qid);
-                            }
-                            break 'single_vqueue Outcome::ContinueRound;
-                        }
-                        Eligibility::EligibleAt(wake_up_at) => {
-                            *this.remaining_in_round -= 1;
-                            qstate.maybe_schedule_wakeup(
-                                this.datum.ts_to_future_instant(wake_up_at),
-                                this.delayed_eligibility,
-                            );
-                            this.eligible.pop_front();
-                            break 'single_vqueue Outcome::ContinueRound;
-                        }
-                        Eligibility::Eligible if !qstate.deficit.can_spend() => {
-                            // we'll get credit on the next round
-                            *this.remaining_in_round -= 1;
-                            this.eligible.rotate_left(1);
-                            break 'single_vqueue Outcome::ContinueRound;
-                        }
-                        Eligibility::Eligible => { /* fallthrough */ }
-                    }
-
-                    // Acquire a global concurrency token
-                    if this
-                        .concurrency_limiter
-                        .poll_and_merge(cx, this.unconfirmed_capacity_permits)
-                        .is_pending()
-                    {
-                        // Waker will be notified when capacity is available.
-                        // will abort the entire scheduler loop after recording the accumulated
-                        // assignments.
-                        break 'single_vqueue Outcome::Abort;
-                    }
-
-                    // todo(asoli): We need to check if the decision requires a concurrency permit or not.
-                    // For instance, we currently still acquire a concurrency token on `yield`
-                    // which leaks invoker tokens. Additionally, in other scenarios, we might need
-                    // to acquire additional permits for other resources depending on the kind of
-                    // the item we are picking.
-
-                    // we have concurrency token, let's pick an item
-                    qstate.pop_unchecked(this.storage, &mut assignments)?;
-                    qstate.deficit.consume_one();
-                };
-
-                if !assignments.is_empty() {
-                    coop.made_progress();
-                    // merge into the overall decision
-                    match decision.entry(qid) {
-                        hash_map::Entry::Occupied(mut entry) => {
-                            entry.get_mut().merge(assignments);
-                        }
-                        hash_map::Entry::Vacant(entry) => {
-                            entry.insert(assignments);
-                        }
-                    }
                 }
-
-                // Depending on whether we stopped because we cannot acquire concurrency
-                // permit or because we exhausted the inbox/budget, we decide to bail out
-                // of the scheduler loop or not.
-                match outcome {
-                    // keep driving the scheduler loop
-                    Outcome::ContinueRound => {}
-                    Outcome::Abort => {
-                        break 'scheduler;
+                Pop::Item {
+                    action,
+                    item,
+                    permit,
+                } => {
+                    coop.made_progress();
+                    items_collected += 1;
+                    decision.push(&qstate.qid, action, item, permit);
+                    // We need to set the state so we check eligibility and setup
+                    // necessary schedules when we poll the queue again.
+                    this.eligible.front_needs_poll();
+                }
+                Pop::Throttle { delay_ms } => {
+                    this.eligible.front_throttled(delay_ms);
+                    trace!("{handle:?} is being throttled for {delay_ms}ms");
+                    continue;
+                }
+                Pop::BlockedOnCapacity => {
+                    if first_blocked.is_none() {
+                        first_blocked = Some(handle);
                     }
+                    this.eligible.front_blocked();
+                    // stay in ready ring
+                    this.eligible.rotate_one();
+                    continue;
                 }
             }
         }
 
         if decision.is_empty() {
+            if self.last_report.elapsed() >= Duration::from_secs(10) {
+                vqueues.report();
+                self.report();
+                // also report vqueues states
+                self.last_report = Instant::now();
+                self.eligible.compact_memory();
+            }
+
             self.waker.clone_from(cx.waker());
             Poll::Pending
         } else {
-            let decision = Decision(decision);
             decision.report_metrics();
             Poll::Ready(Ok(decision))
-        }
-    }
-
-    pub fn confirm_assignment(&mut self, qid: &VQueueId, item_hash: u64) -> Option<Permit<Token>> {
-        if let Some(qstate) = self.q.get_mut(qid)
-            && qstate.remove_from_unconfirmed_assignments(item_hash)
-        {
-            counter!(VQUEUE_RUN_CONFIRMED).increment(1);
-            debug_assert!(!self.unconfirmed_capacity_permits.is_empty());
-            Some(self.unconfirmed_capacity_permits.split(1).expect(
-                "trying to confirm a vqueue item after consuming all allotted concurrency tokens!",
-            ))
-        } else {
-            None
         }
     }
 
@@ -333,39 +224,52 @@ where
         let qid = event.qid;
         match event.details {
             EventDetails::Enqueued(ref item) => {
-                let qstate = self
-                    .q
-                    .entry_ref(&qid)
-                    .or_insert_with(|| VQueueState::new_empty(qid, self.global_sched_round));
+                let qstate = match self.id_lookup.get(&qid) {
+                    Some(handle) => match self.q.get_mut(*handle) {
+                        Some(qstate) => qstate,
+                        None => {
+                            let handle = self
+                                .q
+                                .insert_with_key(|handle| VQueueState::new_empty(qid, handle));
+                            self.id_lookup.insert(qid, handle);
+                            self.q.get_mut(handle).unwrap()
+                        }
+                    },
+                    None => {
+                        let handle = self
+                            .q
+                            .insert_with_key(|handle| VQueueState::new_empty(qid, handle));
+                        self.id_lookup.insert(qid, handle);
+                        self.q.get_mut(handle).unwrap()
+                    }
+                };
 
                 let config = vqueues.config_pool().find(&qid.parent);
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
                 counter!(VQUEUE_ENQUEUE).increment(1);
-                if !qstate.notify_enqueued(item) {
-                    // no impact on eligibility, no need to spend more cycles.
-                    return Ok(());
+                if qstate.notify_enqueued(item)
+                    && self.eligible.refresh_membership(qstate, meta, config)
+                {
+                    self.wake_up();
                 }
-
-                let now_ts = self.datum.now_ts();
-                match qstate.check_eligibility(now_ts, meta, config) {
-                    Eligibility::Eligible if !self.eligible.contains(&qid) => {
-                        // Make eligible immediately.
-                        qstate.deficit.set_last_round(self.global_sched_round);
-                        self.eligible.push_back(qid);
-                        self.wake_up();
-                    }
-                    Eligibility::EligibleAt(eligiblility_ts) if !self.eligible.contains(&qid) => {
-                        qstate.maybe_schedule_wakeup(
-                            self.datum.ts_to_future_instant(eligiblility_ts),
-                            &mut self.delayed_eligibility,
-                        );
-                    }
-                    _ => { /* do nothing */ }
+            }
+            EventDetails::RunAttemptConfirmed { item_hash } => {
+                let Some(handle) = self.id_lookup.get(&qid) else {
+                    return Ok(());
+                };
+                let Some(qstate) = self.q.get_mut(*handle) else {
+                    return Ok(());
+                };
+                if qstate.remove_from_unconfirmed_assignments(item_hash) {
+                    counter!(VQUEUE_RUN_CONFIRMED).increment(1);
                 }
             }
             EventDetails::RunAttemptRejected { item_hash } => {
-                let Some(qstate) = self.q.get_mut(&qid) else {
+                let Some(handle) = self.id_lookup.get(&qid) else {
+                    return Ok(());
+                };
+                let Some(qstate) = self.q.get_mut(*handle) else {
                     return Ok(());
                 };
                 let config = vqueues.config_pool().find(&qid.parent);
@@ -373,59 +277,35 @@ where
 
                 if qstate.remove_from_unconfirmed_assignments(item_hash) {
                     counter!(VQUEUE_RUN_REJECTED).increment(1);
-                    // drop the already acquired permit
-                    let _ = self.unconfirmed_capacity_permits.split(1);
 
-                    if qstate
-                        .check_eligibility(self.datum.now_ts(), meta, config)
-                        .is_eligible()
-                    {
-                        if !self.eligible.contains(&qid) {
-                            self.eligible.push_back(qid);
-                            qstate.deficit.set_last_round(self.global_sched_round);
-                            self.wake_up();
-                        }
-                    } else if qstate.is_empty(meta) {
+                    if qstate.is_empty(meta) {
                         // retire the vqueue state
-                        self.q.remove(&qid);
+                        self.q.remove(*handle);
+                        self.id_lookup.remove(&qid);
+                    } else if self.eligible.refresh_membership(qstate, meta, config) {
+                        self.wake_up();
                     }
                 }
             }
             EventDetails::Removed { item_hash } => {
-                let Some(qstate) = self.q.get_mut(&qid) else {
+                let Some(handle) = self.id_lookup.get(&qid) else {
+                    return Ok(());
+                };
+                let Some(qstate) = self.q.get_mut(*handle) else {
                     return Ok(());
                 };
                 let config = vqueues.config_pool().find(&qid.parent);
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
-                if qstate.remove_from_unconfirmed_assignments(item_hash) {
-                    // drop the already acquired permit
-                    let _ = self.unconfirmed_capacity_permits.split(1);
-                }
+                let _ = qstate.remove_from_unconfirmed_assignments(item_hash);
                 qstate.notify_removed(item_hash);
 
                 if qstate.is_empty(meta) {
                     // retire the vqueue state
-                    self.q.remove(&qid);
-                    return Ok(());
-                }
-
-                // perhaps we became eligible because this entry's removal released a concurrency
-                // token that we needed.
-                match qstate.check_eligibility(self.datum.now_ts(), meta, config) {
-                    Eligibility::Eligible if !self.eligible.contains(&qid) => {
-                        // Make eligible immediately.
-                        qstate.deficit.set_last_round(self.global_sched_round);
-                        self.eligible.push_back(qid);
-                        self.waker.wake_by_ref();
-                    }
-                    Eligibility::EligibleAt(eligiblility_ts) if !self.eligible.contains(&qid) => {
-                        qstate.maybe_schedule_wakeup(
-                            self.datum.ts_to_future_instant(eligiblility_ts),
-                            &mut self.delayed_eligibility,
-                        );
-                    }
-                    _ => { /* do nothing */ }
+                    self.q.remove(*handle);
+                    self.id_lookup.remove(&qid);
+                } else if self.eligible.refresh_membership(qstate, meta, config) {
+                    self.wake_up();
                 }
             }
         }
