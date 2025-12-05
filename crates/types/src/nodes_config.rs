@@ -293,9 +293,26 @@ impl NodesConfiguration {
 
     #[track_caller]
     pub fn cluster_fingerprint(&self) -> ClusterFingerprint {
-        self.cluster_fingerprint.expect(
-            "The nodes configuration has not been properly initialized and is still invalid.",
-        )
+        let Some(fingerprint) = self.cluster_fingerprint else {
+            if self.is_valid() {
+                panic!(
+                    "No cluster fingerprint found in the nodes configuration {}. This indicates \
+                    that you are resuming from a nodes configuration that has been written by \
+                    Restate < v1.5. Please upgrade first to Restate v1.5 to store the cluster \
+                    fingerprint before upgrading to this version. Note that Restate does not \
+                    support skipping minor versions when upgrading.",
+                    self.version()
+                )
+            } else {
+                panic!(
+                    "Accessing the cluster fingerprint while the nodes configuration is invalid is \
+                    not supported and indicates a programming bug. Please contact the Restate \
+                    developers."
+                );
+            }
+        };
+
+        fingerprint
     }
 
     pub fn cluster_name(&self) -> &str {
