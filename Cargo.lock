@@ -6932,6 +6932,7 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-errors",
+ "restate-ingestion-client",
  "restate-metadata-providers",
  "restate-metadata-store",
  "restate-service-client",
@@ -7329,6 +7330,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-ingestion-client"
+version = "1.6.0-dev"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "dashmap",
+ "futures",
+ "googletest",
+ "pin-project-lite",
+ "restate-core",
+ "restate-types",
+ "restate-workspace-hack",
+ "test-log",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "restate-ingress-http"
 version = "1.6.0-dev"
 dependencies = [
@@ -7385,13 +7407,14 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "derive_more",
+ "futures",
  "metrics",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
  "rdkafka",
- "restate-bifrost",
  "restate-core",
+ "restate-ingestion-client",
  "restate-serde-util",
  "restate-storage-api",
  "restate-timer-queue",
@@ -7404,6 +7427,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-opentelemetry",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -7743,6 +7767,7 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-futures-util",
+ "restate-ingestion-client",
  "restate-ingress-http",
  "restate-log-server",
  "restate-metadata-providers",
@@ -7756,6 +7781,7 @@ dependencies = [
  "restate-storage-query-datafusion",
  "restate-tracing-instrumentation",
  "restate-types",
+ "restate-wal-protocol",
  "restate-worker",
  "restate-workspace-hack",
  "rust-rocksdb",
@@ -8400,6 +8426,7 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-errors",
+ "restate-ingestion-client",
  "restate-ingress-http",
  "restate-ingress-kafka",
  "restate-invoker-api",
@@ -8576,6 +8603,7 @@ dependencies = [
  "typenum",
  "ulid",
  "uuid",
+ "xxhash-rust",
  "zerocopy 0.8.31",
  "zeroize",
  "zstd 0.13.2",
@@ -11384,8 +11412,8 @@ dependencies = [
  "anyhow",
  "reqwest",
  "restate-admin",
- "restate-bifrost",
  "restate-core",
+ "restate-ingestion-client",
  "restate-metadata-server",
  "restate-service-client",
  "restate-service-protocol",

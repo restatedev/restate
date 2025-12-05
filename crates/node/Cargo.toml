@@ -31,6 +31,7 @@ restate-admin = { workspace = true, features = ["storage-query"]}
 restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
 restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
+restate-ingestion-client = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-log-server = { workspace = true }
 restate-metadata-providers = { workspace = true }
@@ -44,6 +45,7 @@ restate-service-protocol = { workspace = true, features = ["discovery"] }
 restate-storage-query-datafusion = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["prometheus"] }
 restate-types = { workspace = true, features = ["clap"] }
+restate-wal-protocol = { workspace = true }
 restate-worker = { workspace = true }
 
 ahash = { workspace = true }

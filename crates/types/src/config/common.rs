@@ -441,6 +441,12 @@ pub struct CommonOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub experimental_enable_vqueues: bool,
+
+    /// # Ingestion Options
+    ///
+    /// Settings for the ingestion client, which is shared across components
+    /// such as Kafka ingress and the admin API.
+    pub ingestion_options: IngestionOptions,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -649,6 +655,7 @@ impl Default for CommonOptions {
             disable_telemetry: false,
             gossip: GossipOptions::default(),
             experimental_enable_vqueues: false,
+            ingestion_options: Default::default(),
         }
     }
 }
@@ -1003,6 +1010,58 @@ impl Default for TracingOptions {
             tracing_json_path: None,
             tracing_filter: "info".to_owned(),
             tracing_headers: SerdeableHeaderHashMap::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(
+        title = "Ingestion Options",
+        description = "Options for ingestion client"
+    )
+)]
+pub struct IngestionOptions {
+    /// # Inflight Memory Budget
+    ///
+    /// Max size of inflight requests in bytes
+    ///
+    /// Defaults to 1MB
+    pub inflight_memory_budget: NonZeroByteCount,
+
+    /// # Connection retry policy
+    ///
+    /// Retry policy for the ingestion client. This must
+    /// allow infinite retries. If finite, the client will
+    /// fallback to retry every 2 seconds.
+    pub connection_retry_policy: RetryPolicy,
+
+    /// # Request Batch Size
+    ///
+    /// The maximum ingestion request size.
+    ///
+    /// Defaults to 50KB
+    pub request_batch_size: NonZeroByteCount,
+}
+
+impl Default for IngestionOptions {
+    fn default() -> Self {
+        Self {
+            inflight_memory_budget: NonZeroByteCount::new(
+                NonZeroUsize::new(1024 * 1204).expect("non zero"),
+            ), //1 MB
+            connection_retry_policy: RetryPolicy::exponential(
+                Duration::from_millis(10),
+                2.0,
+                None,
+                Some(Duration::from_secs(1)),
+            ),
+            request_batch_size: NonZeroByteCount::new(
+                NonZeroUsize::new(50 * 1204).expect("non zero"),
+            ),
         }
     }
 }

@@ -10,15 +10,18 @@
 
 use std::future::pending;
 use std::io::Write;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{env, io};
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
+use restate_core::partitions::PartitionRouting;
+use restate_ingestion_client::IngestionClient;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use schemars::r#gen::SchemaSettings;
 
 use restate_admin::service::AdminService;
-use restate_bifrost::Bifrost;
 use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
 use restate_core::{TaskCenterFutureExt, TaskKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
@@ -214,14 +217,21 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 
     // We start the Meta service, then download the openapi schema generated
     let node_env = TestCoreEnv::create_with_single_node(1, 1).await;
-    let bifrost = Bifrost::init_in_memory(node_env.metadata_writer.clone()).await;
+
+    let ingress_client = IngestionClient::new(
+        node_env.networking,
+        node_env.metadata.updateable_partition_table(),
+        PartitionRouting::new(PartitionReplicaSetStates::default(), TaskCenter::current()),
+        NonZeroUsize::new(1000).unwrap(),
+        None,
+    );
 
     let socket_dir = tempfile::tempdir()?;
     let socket_path = socket_dir.path().join("admin.sock");
     let admin_service = AdminService::new(
         Listeners::new_unix_listener(socket_path.clone())?,
         node_env.metadata_writer.clone(),
-        bifrost,
+        ingress_client,
         Mock,
         ServiceDiscovery::new(
             RetryPolicy::default(),

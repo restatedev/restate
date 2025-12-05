@@ -46,9 +46,10 @@ use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::identifiers::{LeaderEpoch, PartitionLeaderEpoch};
+use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::message::MessageIndex;
+use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
@@ -56,13 +57,13 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
-use restate_types::storage::StorageEncodeError;
+use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_vqueues::{SchedulerService, VQueuesMeta, VQueuesMetaMut};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
 use restate_wal_protocol::timer::TimerKeyValue;
 
-use crate::partition::cleaner::Cleaner;
+use crate::partition::cleaner::{self, Cleaner};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
@@ -86,7 +87,9 @@ pub(crate) enum Error {
     #[error("failed writing to bifrost: {0}")]
     Bifrost(#[from] restate_bifrost::Error),
     #[error("failed serializing payload: {0}")]
-    Codec(#[from] StorageEncodeError),
+    Encode(#[from] StorageEncodeError),
+    #[error("failed deserializing payload: {0}")]
+    Decode(#[from] StorageDecodeError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
     #[error("error when self proposing")]
@@ -128,7 +131,7 @@ pub(crate) enum ActionEffect {
     Invoker(Box<restate_invoker_api::Effect>),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
-    ScheduleCleanupTimer(InvocationId, Duration),
+    Cleaner(cleaner::CleanerEffect),
     PartitionMaintenance(PartitionDurability),
     UpsertSchema(Schema),
     AwaitingRpcSelfProposeDone,
@@ -417,15 +420,13 @@ where
                 TaskCenter::spawn_unmanaged(TaskKind::Shuffle, "shuffle", shuffle.run())?;
 
             let cleaner = Cleaner::new(
-                *leader_epoch,
                 partition_store.clone(),
-                self.bifrost.clone(),
+                self.partition.partition_id,
                 self.partition.key_range.clone(),
                 config.worker.cleanup_interval(),
             );
 
-            let cleaner_task_id =
-                TaskCenter::spawn_child(TaskKind::Cleaner, "cleaner", cleaner.run())?;
+            let cleaner_handle = cleaner.start()?;
 
             let trimmer_task_id = LogTrimmer::spawn(
                 self.bifrost.clone(),
@@ -454,7 +455,7 @@ where
                 *leader_epoch,
                 self.partition.key_range.clone(),
                 shuffle_task_handle,
-                cleaner_task_id,
+                cleaner_handle,
                 trimmer_task_id,
                 shuffle_hint_tx,
                 timer_service,
@@ -644,6 +645,26 @@ impl<I> LeadershipState<I> {
                         reciprocal,
                         success_response,
                     )
+                    .await;
+            }
+        }
+    }
+
+    /// propose to this partition
+    pub async fn propose_many_with_callback<F>(
+        &mut self,
+        records: impl ExactSizeIterator<Item = IngestRecord>,
+        callback: F,
+    ) where
+        F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
+    {
+        match &mut self.state {
+            State::Follower | State::Candidate { .. } => callback(Err(
+                PartitionProcessorRpcError::NotLeader(self.partition.partition_id),
+            )),
+            State::Leader(leader_state) => {
+                leader_state
+                    .propose_many_with_callback(records, callback)
                     .await;
             }
         }
