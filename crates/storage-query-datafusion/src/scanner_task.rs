@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::PhysicalExpr;
 use datafusion::prelude::SessionContext;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as TokioStreamExt;
@@ -44,6 +45,7 @@ pub(crate) struct ScannerTask {
     stream: SendableRecordBatchStream,
     rx: mpsc::UnboundedReceiver<NextRequest>,
     scanners: Weak<ScannerMap>,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
 }
 
 impl ScannerTask {
@@ -72,7 +74,7 @@ impl ScannerTask {
             request.partition_id,
             request.range.clone(),
             schema.clone(),
-            predicate,
+            predicate.clone(),
             usize::try_from(request.batch_size).expect("batch_size to fit in a usize"),
             request
                 .limit
@@ -86,6 +88,7 @@ impl ScannerTask {
             stream,
             rx,
             scanners: Arc::downgrade(scanners),
+            predicate,
         };
 
         scanners.insert(scanner_id, tx);
@@ -130,34 +133,59 @@ impl ScannerTask {
                 }
             };
 
-            // connection/request has been closed, don't bother with driving the stream.
-            // The scanner will be dropped because we want to make sure that we don't get supurious
-            // next messages from the client after.
-            if request.reciprocal.is_closed() {
-                return;
-            }
-
-            let record_batch = match self.stream.next().await {
-                Some(Ok(record_batch)) => record_batch,
-                Some(Err(e)) => {
-                    warn!("Error while scanning {}: {e}", self.scanner_id);
-
-                    request
-                        .reciprocal
-                        .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
-                            scanner_id: self.scanner_id,
-                            message: e.to_string(),
-                        }));
+            let record_batch = loop {
+                // connection/request has been closed, don't bother with driving the stream.
+                // The scanner will be dropped because we want to make sure that we don't get supurious
+                // next messages from the client after.
+                if request.reciprocal.is_closed() {
                     return;
                 }
-                None => {
-                    request
-                        .reciprocal
-                        .send(RemoteQueryScannerNextResult::NoMoreRecords(self.scanner_id));
-                    return;
+
+                let record_batch = match self.stream.next().await {
+                    Some(Ok(record_batch)) => record_batch,
+                    Some(Err(e)) => break Err(e),
+                    None => {
+                        request
+                            .reciprocal
+                            .send(RemoteQueryScannerNextResult::NoMoreRecords(self.scanner_id));
+                        return;
+                    }
+                };
+
+                let Some(predicate) = &self.predicate else {
+                    break Ok(record_batch);
+                };
+
+                let filtered_batch = predicate
+                    .evaluate(&record_batch)
+                    .and_then(|v| v.into_array(record_batch.num_rows()))
+                    .and_then(|array| {
+                        match datafusion::common::cast::as_boolean_array(&array) {
+                            // Apply filter array to record batch
+                            Ok(filter_array) => {
+                                Ok(datafusion::arrow::compute::filter_record_batch(
+                                    &record_batch,
+                                    filter_array,
+                                )?)
+                            }
+                            Err(_) => {
+                                datafusion::common::internal_err!(
+                                    "Cannot create filter_array from non-boolean predicates"
+                                )
+                            }
+                        }
+                    });
+
+                match filtered_batch {
+                    Ok(filtered_batch) if filtered_batch.num_rows() == 0 => continue,
+                    Ok(filtered_batch) => break Ok(filtered_batch),
+                    Err(err) => break Err(err),
                 }
             };
-            match encode_record_batch(&self.stream.schema(), record_batch) {
+
+            match record_batch
+                .and_then(|record_batch| encode_record_batch(&self.stream.schema(), record_batch))
+            {
                 Ok(record_batch) => {
                     request
                         .reciprocal
@@ -167,6 +195,8 @@ impl ScannerTask {
                         }))
                 }
                 Err(e) => {
+                    warn!("Error while scanning {}: {e}", self.scanner_id);
+
                     request
                         .reciprocal
                         .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
