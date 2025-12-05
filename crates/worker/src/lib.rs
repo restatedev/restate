@@ -110,6 +110,7 @@ impl Worker {
         metadata_writer: MetadataWriter,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
+        restate_vqueues::describe_metrics();
         health_status.update(WorkerStatus::StartingUp);
 
         let partition_routing =
