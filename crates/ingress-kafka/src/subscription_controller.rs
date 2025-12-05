@@ -8,25 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::consumer_task::MessageSender;
-use super::*;
 use std::collections::HashSet;
+use std::time::Duration;
 
-use crate::dispatcher::KafkaIngressDispatcher;
-use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 use anyhow::Context;
-use rdkafka::error::KafkaError;
-use restate_bifrost::Bifrost;
+use restate_wal_protocol::Envelope;
+use tokio::sync::mpsc;
+use tracing::warn;
+
 use restate_core::cancellation_watcher;
+use restate_core::network::TransportConnect;
+use restate_ingestion_client::IngestionClient;
 use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::live::{Live, LiveLoad};
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
 use restate_types::schema::subscriptions::{Source, Subscription};
-use std::time::Duration;
-use tokio::sync::mpsc;
-use tracing::warn;
+
+use super::*;
+use crate::builder::EnvelopeBuilder;
+use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
 
 #[derive(Debug)]
 pub enum Command {
@@ -35,29 +37,26 @@ pub enum Command {
     UpdateSubscriptions(Vec<Subscription>),
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Kafka(#[from] KafkaError),
-}
-
 // For simplicity of the current implementation, this currently lives in this module
 // In future versions, we should either pull this out in a separate process, or generify it and move it to the worker, or an ad-hoc module
-pub struct Service {
-    dispatcher: KafkaIngressDispatcher,
+pub struct Service<T> {
+    ingestion: IngestionClient<T, Envelope>,
     schema: Live<Schema>,
 
     commands_tx: SubscriptionCommandSender,
     commands_rx: SubscriptionCommandReceiver,
 }
 
-impl Service {
-    pub fn new(bifrost: Bifrost, schema: Live<Schema>) -> Service {
+impl<T> Service<T>
+where
+    T: TransportConnect,
+{
+    pub fn new(ingestion: IngestionClient<T, Envelope>, schema: Live<Schema>) -> Self {
         metric_definitions::describe_metrics();
         let (commands_tx, commands_rx) = mpsc::channel(10);
 
         Service {
-            dispatcher: KafkaIngressDispatcher::new(bifrost),
+            ingestion,
             schema,
             commands_tx,
             commands_rx,
@@ -117,7 +116,7 @@ impl Service {
         &mut self,
         options: &IngressOptions,
         subscription: Subscription,
-        task_orchestrator: &mut TaskOrchestrator,
+        task_orchestrator: &mut TaskOrchestrator<T>,
     ) -> anyhow::Result<()> {
         let mut client_config = rdkafka::ClientConfig::new();
         // enabling probing for the ca certificates if the user does not specify anything else
@@ -149,7 +148,8 @@ impl Service {
         let consumer_task = consumer_task::ConsumerTask::new(
             client_config,
             vec![topic.to_string()],
-            MessageSender::new(subscription, self.dispatcher.clone(), self.schema.clone()),
+            self.ingestion.clone(),
+            EnvelopeBuilder::new(subscription, self.schema.clone()),
         );
 
         task_orchestrator.start(subscription_id, consumer_task);
@@ -160,7 +160,7 @@ impl Service {
     fn handle_stop_subscription(
         &mut self,
         subscription_id: SubscriptionId,
-        task_orchestrator: &mut TaskOrchestrator,
+        task_orchestrator: &mut TaskOrchestrator<T>,
     ) {
         task_orchestrator.stop(subscription_id);
     }
@@ -169,7 +169,7 @@ impl Service {
         &mut self,
         options: &IngressOptions,
         subscriptions: Vec<Subscription>,
-        task_orchestrator: &mut TaskOrchestrator,
+        task_orchestrator: &mut TaskOrchestrator<T>,
     ) -> anyhow::Result<()> {
         let mut running_subscriptions: HashSet<_> =
             task_orchestrator.running_subscriptions().cloned().collect();
@@ -191,6 +191,7 @@ impl Service {
 
 mod task_orchestrator {
     use crate::consumer_task;
+    use restate_core::network::TransportConnect;
     use restate_core::{TaskCenterFutureExt, TaskKind};
     use restate_timer_queue::TimerQueue;
     use restate_types::identifiers::SubscriptionId;
@@ -202,9 +203,9 @@ mod task_orchestrator {
     use tokio::task::{JoinError, JoinSet};
     use tracing::{debug, warn};
 
-    struct TaskState {
+    struct TaskState<T> {
         // We use this to restart the consumer task in case of a failure
-        consumer_task_clone: consumer_task::ConsumerTask,
+        consumer_task_clone: consumer_task::ConsumerTask<T>,
         task_state_inner: TaskStateInner,
         retry_iter: RetryIter<'static>,
     }
@@ -217,15 +218,18 @@ mod task_orchestrator {
         WaitingRetryTimer,
     }
 
-    pub(super) struct TaskOrchestrator {
+    pub(super) struct TaskOrchestrator<T> {
         retry_policy: RetryPolicy,
         running_tasks_to_subscriptions: HashMap<task::Id, SubscriptionId>,
-        subscription_id_to_task_state: HashMap<SubscriptionId, TaskState>,
-        tasks: JoinSet<Result<(), consumer_task::Error>>,
+        subscription_id_to_task_state: HashMap<SubscriptionId, TaskState<T>>,
+        tasks: JoinSet<Result<(), crate::Error>>,
         timer_queue: TimerQueue<SubscriptionId>,
     }
 
-    impl TaskOrchestrator {
+    impl<T> TaskOrchestrator<T>
+    where
+        T: TransportConnect,
+    {
         pub(super) fn new(retry_policy: RetryPolicy) -> Self {
             Self {
                 retry_policy,
@@ -253,7 +257,7 @@ mod task_orchestrator {
 
         fn handle_task_closed(
             &mut self,
-            result: Result<(task::Id, Result<(), consumer_task::Error>), JoinError>,
+            result: Result<(task::Id, Result<(), crate::Error>), JoinError>,
         ) {
             let task_id = match result {
                 Ok((id, _)) => id,
@@ -341,7 +345,7 @@ mod task_orchestrator {
         pub(super) fn start(
             &mut self,
             subscription_id: SubscriptionId,
-            consumer_task_clone: consumer_task::ConsumerTask,
+            consumer_task_clone: consumer_task::ConsumerTask<T>,
         ) {
             // Shutdown old task, if any
             if let Some(task_state) = self.subscription_id_to_task_state.remove(&subscription_id) {
