@@ -8331,6 +8331,7 @@ dependencies = [
  "restate-types",
  "restate-workspace-hack",
  "rust-rocksdb",
+ "slotmap",
  "smallvec",
  "strum 0.27.1",
  "thiserror 2.0.17",
@@ -8400,6 +8401,7 @@ dependencies = [
  "restate-bifrost",
  "restate-core",
  "restate-errors",
+ "restate-futures-util",
  "restate-ingress-http",
  "restate-ingress-kafka",
  "restate-invoker-api",
@@ -9417,6 +9419,15 @@ dependencies = [
  "term",
  "thread_local",
  "time",
+]
+
+[[package]]
+name = "slotmap"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbff4acf519f630b3a3ddcfaea6c06b42174d9a44bc70c620e9ed1649d58b82a"
+dependencies = [
+ "version_check",
 ]
 
 [[package]]

@@ -5292,16 +5292,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 vqueue.attempt_to_run(now, card).await?
             };
 
-            // Temporary solution to consume the unconfirmed assignment held by the scheduler until
-            // this is done through `VQueues::attempt_to_run` or we manage the permits somewhere
-            // else.
-            if self.is_leader {
-                self.action_collector.push(Action::VQConsumePermit {
-                    qid,
-                    item_hash: card.unique_hash(),
-                });
-            }
-
             self.mutate_state(&state_mutation).await?;
 
             VQueues::new(

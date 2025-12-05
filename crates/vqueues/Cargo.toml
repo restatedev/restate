@@ -23,6 +23,7 @@ hashbrown = { version = "0.16"  }
 metrics = { workspace = true }
 pin-project = { workspace = true }
 rocksdb = { workspace = true }
+slotmap = { version = "1" }
 smallvec = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }

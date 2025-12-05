@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, SystemTime};
 
+use bytes::BytesMut;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
@@ -27,7 +28,7 @@ use tracing::{debug, trace};
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
-use restate_invoker_api::capacity::InvokerToken;
+use restate_futures_util::concurrency::Permit;
 use restate_partition_store::{PartitionDb, PartitionStore};
 use restate_storage_api::vqueue_table::EntryCard;
 use restate_types::identifiers::{
@@ -75,8 +76,9 @@ pub struct LeaderState {
     // returns a [`Error:TaskFailed`] error.
     shuffle_task_handle: Option<TaskHandle<anyhow::Result<()>>>,
     pub timer_service: Pin<Box<TimerService>>,
-    scheduler: SchedulerService<PartitionDb, InvokerToken>,
+    scheduler: SchedulerService<PartitionDb>,
     self_proposer: SelfProposer,
+    unconfirmed_scheduler_assignments: HashMap<u64, Permit<()>>,
 
     awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
     awaiting_rpc_self_propose: FuturesUnordered<SelfAppendFuture>,
@@ -101,7 +103,7 @@ impl LeaderState {
         trimmer_task_id: TaskId,
         shuffle_hint_tx: HintSender,
         timer_service: TimerService,
-        scheduler: SchedulerService<PartitionDb, InvokerToken>,
+        scheduler: SchedulerService<PartitionDb>,
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
         shuffle_rx: tokio::sync::mpsc::Receiver<shuffle::OutboxTruncation>,
@@ -120,6 +122,7 @@ impl LeaderState {
             }),
             timer_service: Box::pin(timer_service),
             scheduler,
+            unconfirmed_scheduler_assignments: Default::default(),
             self_proposer,
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
@@ -287,34 +290,52 @@ impl LeaderState {
         for effect in action_effects {
             match effect {
                 ActionEffect::Scheduler(decisions) => {
-                    let commands: Vec<_> = decisions?.into_iter().flat_map(|(qid, decision)| {
-                        decision.into_iter_per_action().map(move |(action, items)| {
-                            let cards = Cards::new(&qid, items);
+                    let decisions = decisions?;
+                    let mut commands = Vec::with_capacity(decisions.num_queues() * 2);
+                    let mut buf = BytesMut::with_capacity(
+                        EntryCard::serialized_length() * decisions.total_items(),
+                    );
+                    for (qid, decision) in decisions.into_iter() {
+                        for (action, items) in decision.into_iter_per_action() {
+                            let mut cards = Cards::with_capacity(&qid, items.len());
+                            for (item, permit) in items.into_iter() {
+                                if !permit.is_empty() {
+                                    self.unconfirmed_scheduler_assignments
+                                        .insert(item.unique_hash(), permit);
+                                }
+                                item.encode(&mut buf);
+                                cards.push(buf.split().freeze());
+                            }
                             match action {
                                 scheduler::Action::MoveToRunning => {
-                                    (qid.partition_key, Command::VQWaitingToRunning(cards))
+                                    commands.push((
+                                        qid.partition_key,
+                                        Command::VQWaitingToRunning(cards),
+                                    ));
                                 }
                                 scheduler::Action::Yield => {
-                                    (qid.partition_key, Command::VQYieldRunning(cards))
+                                    commands
+                                        .push((qid.partition_key, Command::VQYieldRunning(cards)));
                                 }
                                 scheduler::Action::ResumeAlreadyRunning => {
-                                        todo!(
-                                            "Unsupported: We don't support directly resuming at the moment"
-                                        )
-                                        // invoker_tx
-                                        //     .run(
-                                        //         self.partition_id,
-                                        //         self.leader_epoch,
-                                        //         inv_id,
-                                        //         // todo: fix/remove
-                                        //         SharedString::from_borrowed(""),
-                                        //         SharedString::from_borrowed(""),
-                                        //     )
-                                        //     .map_err(Error::Invoker)?;
-                                    }
+                                    todo!(
+                                        "Unsupported: We don't support directly resuming at the moment"
+                                    )
+                                    // invoker_tx
+                                    //     .run(
+                                    //         self.partition_id,
+                                    //         self.leader_epoch,
+                                    //         inv_id,
+                                    //         // todo: fix/remove
+                                    //         SharedString::from_borrowed(""),
+                                    //         SharedString::from_borrowed(""),
+                                    //     )
+                                    //     .map_err(Error::Invoker)?;
                                 }
-                            })
-                    }).collect();
+                            }
+                        }
+                    }
+
                     self.self_proposer
                         .propose_many(commands.into_iter())
                         .await?;
@@ -655,8 +676,10 @@ impl LeaderState {
                 invocation_target,
                 invoke_input_journal,
             } => {
-                let permit = self.scheduler.confirm_assignment(&qid, item_hash);
-                let permit = permit.expect("invoke invocations assigned by scheduler");
+                let permit = self
+                    .unconfirmed_scheduler_assignments
+                    .remove(&item_hash)
+                    .expect("invoke invocations assigned by scheduler");
                 invoker_tx
                     .vqueue_invoke(
                         partition_leader_epoch,
@@ -667,12 +690,6 @@ impl LeaderState {
                         invoke_input_journal,
                     )
                     .map_err(Error::Invoker)?
-            }
-            Action::VQConsumePermit { qid, item_hash } => {
-                let _ = self
-                    .scheduler
-                    .confirm_assignment(&qid, item_hash)
-                    .expect("scheduler should have a pending assignment");
             }
         }
 

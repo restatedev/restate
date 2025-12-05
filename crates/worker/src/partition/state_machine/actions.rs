@@ -43,12 +43,6 @@ pub enum Action {
         invocation_target: InvocationTarget,
         invoke_input_journal: InvokeInputJournal,
     },
-    /// Tells the scheduler to confirm the assignment for the given item hash and drops the
-    /// returned permit immediately to free up any held budget tokens.
-    VQConsumePermit {
-        qid: VQueueId,
-        item_hash: u64,
-    },
     Invoke {
         invocation_id: InvocationId,
         invocation_epoch: InvocationEpoch,

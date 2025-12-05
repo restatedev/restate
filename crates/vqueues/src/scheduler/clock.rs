@@ -29,6 +29,7 @@ impl SchedulerClock {
         }
     }
 
+    #[allow(dead_code)]
     pub fn origin_instant(&self) -> tokio::time::Instant {
         self.tokio_origin
     }

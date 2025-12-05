@@ -24,7 +24,6 @@ use restate_types::journal_v2::raw::RawNotification;
 
 use super::Effect;
 use super::JournalMetadata;
-use crate::capacity::InvokerToken;
 use crate::invocation_reader::JournalEntry;
 
 #[derive(Debug, Eq, PartialEq, Default)]
@@ -48,7 +47,7 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         qid: VQueueId,
-        permit: Permit<InvokerToken>,
+        permit: Permit<()>,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
         journal: InvokeInputJournal,

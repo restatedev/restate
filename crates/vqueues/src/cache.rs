@@ -56,6 +56,14 @@ impl<'a> VQueuesMeta<'a> {
             .filter(|(_, meta)| meta.is_active())
     }
 
+    pub fn num_active(&self) -> usize {
+        self.inner
+            .queues
+            .values()
+            .filter(|meta| meta.is_active())
+            .count()
+    }
+
     pub fn report(&self) {
         self.inner.report();
     }

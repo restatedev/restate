@@ -45,8 +45,8 @@ pub fn describe_metrics() {
     );
 }
 
-pub fn publish_scheduler_decision_metrics(num_run: usize, num_yield: usize, num_resume: usize) {
-    counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_RUN).increment(num_run as u64);
-    counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_RESUME).increment(num_resume as u64);
-    counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_YIELD).increment(num_yield as u64);
+pub fn publish_scheduler_decision_metrics(num_run: u64, num_yield: u64, num_resume: u64) {
+    counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_RUN).increment(num_run);
+    counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_RESUME).increment(num_resume);
+    counter!(VQUEUE_SCHEDULER_DECISION, "action" => ACTION_YIELD).increment(num_yield);
 }

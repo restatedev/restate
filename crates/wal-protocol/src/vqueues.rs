@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::EntryCard;
@@ -29,25 +29,17 @@ pub struct Cards {
 }
 
 impl Cards {
-    pub fn new(
-        qid: &VQueueId,
-        cards: impl IntoIterator<Item = EntryCard> + ExactSizeIterator,
-    ) -> Self {
-        let mut buf = BytesMut::with_capacity(EntryCard::serialized_length() * cards.len());
-        let entry_cards = cards
-            .into_iter()
-            .map(|card| {
-                card.encode(&mut buf);
-                buf.split().freeze()
-            })
-            .collect();
-
+    pub fn with_capacity(qid: &VQueueId, capacity: usize) -> Self {
         Self {
             partition_key: qid.partition_key,
             parent: qid.parent.as_u32(),
             instance: qid.instance.as_u32(),
-            entry_cards,
+            entry_cards: Vec::with_capacity(capacity),
         }
+    }
+
+    pub fn push(&mut self, encoded_card: Bytes) {
+        self.entry_cards.push(encoded_card);
     }
 
     pub fn decode_entry_cards(&self) -> impl Iterator<Item = Result<EntryCard, StorageError>> + '_ {
