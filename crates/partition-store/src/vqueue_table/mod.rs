@@ -295,7 +295,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         self.raw_delete_cf(KeyKind::VQueueInbox, key_buffer)
     }
 
-    fn mark_queue_as_active(&mut self, qid: &restate_types::vqueue::VQueueId) {
+    fn mark_vqueue_as_active(&mut self, qid: &restate_types::vqueue::VQueueId) {
         let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
         ActiveKey {
             partition_key: qid.partition_key,
@@ -306,7 +306,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         self.raw_put_cf(KeyKind::VQueueActive, key_buffer, []);
     }
 
-    fn mark_queue_as_empty(&mut self, qid: &restate_types::vqueue::VQueueId) {
+    fn mark_vqueue_as_dormant(&mut self, qid: &restate_types::vqueue::VQueueId) {
         let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
         ActiveKey {
             partition_key: qid.partition_key,
