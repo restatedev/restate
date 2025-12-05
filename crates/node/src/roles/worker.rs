@@ -19,11 +19,13 @@ use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_ingestion_client::IngestionClient;
 use restate_partition_store::PartitionStoreManager;
 use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
+use restate_wal_protocol::Envelope;
 use restate_worker::Worker;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -36,18 +38,23 @@ pub enum WorkerRoleBuildError {
     ),
 }
 
-pub struct WorkerRole {
-    worker: Worker,
+pub struct WorkerRole<T> {
+    worker: Worker<T>,
 }
 
-impl WorkerRole {
-    pub async fn create<T: TransportConnect>(
+impl<T> WorkerRole<T>
+where
+    T: TransportConnect,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
         health_status: HealthStatus<WorkerStatus>,
         replica_set_states: PartitionReplicaSetStates,
         router_builder: &mut MessageRouterBuilder,
         partition_store_manager: Arc<PartitionStoreManager>,
         networking: Networking<T>,
         bifrost: Bifrost,
+        ingestion_client: IngestionClient<T, Envelope>,
         metadata_writer: MetadataWriter,
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::create(
@@ -56,6 +63,7 @@ impl WorkerRole {
             partition_store_manager,
             networking,
             bifrost,
+            ingestion_client,
             router_builder,
             metadata_writer,
         )

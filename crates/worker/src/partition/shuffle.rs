@@ -9,21 +9,21 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
-use std::sync::Arc;
 
 use async_channel::{TryRecvError, TrySendError};
+use futures::StreamExt;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-use restate_bifrost::Bifrost;
 use restate_core::cancellation_watcher;
+use restate_core::network::TransportConnect;
+use restate_ingestion_client::IngestionClient;
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::message::MessageIndex;
 use restate_wal_protocol::{Destination, Envelope, Header, Source};
 
-use crate::partition::shuffle::state_machine::StateMachine;
 use crate::partition::types::OutboxMessageExt;
 
 #[derive(Debug)]
@@ -161,12 +161,12 @@ impl ShuffleMetadata {
     }
 }
 
-pub(super) struct Shuffle<OR> {
+pub(super) struct Shuffle<T, OR> {
     metadata: ShuffleMetadata,
 
     outbox_reader: OR,
 
-    bifrost: Bifrost,
+    ingestion_client: IngestionClient<T, Envelope>,
 
     // used to tell partition processor about outbox truncations
     truncation_tx: mpsc::Sender<OutboxTruncation>,
@@ -177,8 +177,9 @@ pub(super) struct Shuffle<OR> {
     hint_tx: async_channel::Sender<NewOutboxMessage>,
 }
 
-impl<OR> Shuffle<OR>
+impl<T, OR> Shuffle<T, OR>
 where
+    T: TransportConnect,
     OR: OutboxReader + Send + Sync + 'static,
 {
     pub(super) fn new(
@@ -186,7 +187,7 @@ where
         outbox_reader: OR,
         truncation_tx: mpsc::Sender<OutboxTruncation>,
         channel_size: usize,
-        bifrost: Bifrost,
+        ingestion_client: IngestionClient<T, Envelope>,
     ) -> Self {
         let (hint_tx, hint_rx) = async_channel::bounded(channel_size);
 
@@ -196,7 +197,7 @@ where
             truncation_tx,
             hint_rx,
             hint_tx,
-            bifrost,
+            ingestion_client,
         }
     }
 
@@ -207,33 +208,23 @@ where
     pub(super) async fn run(self) -> anyhow::Result<()> {
         let Self {
             metadata,
-            mut hint_rx,
+            hint_rx,
             outbox_reader,
             truncation_tx,
-            bifrost,
+            ingestion_client,
             ..
         } = self;
 
         debug!(restate.partition.id = %metadata.partition_id, "Running shuffle");
 
-        let state_machine = StateMachine::new(
-            metadata,
-            outbox_reader,
-            move |msg| {
-                let bifrost = bifrost.clone();
-                async move {
-                    restate_bifrost::append_to_bifrost(&bifrost, Arc::new(msg)).await?;
-                    Ok(())
-                }
-            },
-            &mut hint_rx,
-        );
+        let stream =
+            shuffle_stream::ShuffleStream::new(metadata, ingestion_client, outbox_reader, hint_rx);
 
-        tokio::pin!(state_machine);
+        let mut stream = std::pin::pin!(stream);
 
         loop {
             tokio::select! {
-                shuffled_message_index = state_machine.as_mut().shuffle_next_message() => {
+                Some(shuffled_message_index) = stream.next() => {
                     let shuffled_message_index = shuffled_message_index?;
 
                     // this is just a hint which we can drop
@@ -251,19 +242,24 @@ where
     }
 }
 
-mod state_machine {
-    use pin_project::pin_project;
-    use std::cmp::Ordering;
-    use std::future::Future;
-    use std::pin::Pin;
-    use tokio_util::sync::ReusableBoxFuture;
-    use tracing::trace;
+mod shuffle_stream {
+    use std::{
+        cmp::Ordering,
+        collections::VecDeque,
+        pin::Pin,
+        task::{Context, Poll},
+    };
 
+    use futures::{FutureExt, Stream, StreamExt, ready};
+    use pin_project::pin_project;
+    use tokio_util::sync::ReusableBoxFuture;
+
+    use restate_core::network::TransportConnect;
+    use restate_ingestion_client::{IngestFuture, IngestionClient, RecordCommit};
     use restate_storage_api::outbox_table::OutboxMessage;
-    use restate_types::message::MessageIndex;
+    use restate_types::{identifiers::WithPartitionKey, message::MessageIndex};
     use restate_wal_protocol::Envelope;
 
-    use crate::partition::shuffle;
     use crate::partition::shuffle::{
         NewOutboxMessage, OutboxReaderError, ShuffleMetadata, wrap_outbox_message_in_envelope,
     };
@@ -276,148 +272,174 @@ mod state_machine {
         ),
     >;
 
-    #[pin_project(project = StateProj)]
-    enum State<SendFuture> {
-        Idle,
-        ReadingOutbox,
-        Sending(#[pin] SendFuture),
-    }
-
-    #[pin_project]
-    pub(super) struct StateMachine<'a, OutboxReader, SendOp, SendFuture> {
-        metadata: ShuffleMetadata,
-        current_sequence_number: MessageIndex,
-        outbox_reader: Option<OutboxReader>,
-        read_future: ReadFuture<OutboxReader>,
-        send_operation: SendOp,
-        hint_rx: &'a mut async_channel::Receiver<NewOutboxMessage>,
-        #[pin]
-        state: State<SendFuture>,
-    }
-
-    async fn get_next_message<OutboxReader: shuffle::OutboxReader>(
+    async fn get_next_message<OutboxReader: super::OutboxReader>(
         mut outbox_reader: OutboxReader,
-        sequence_number: MessageIndex,
+        next_sequence_number: MessageIndex,
     ) -> (
         Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>,
         OutboxReader,
     ) {
-        let result = outbox_reader.get_next_message(sequence_number).await;
+        let result = outbox_reader.get_next_message(next_sequence_number).await;
         (result, outbox_reader)
     }
 
-    impl<'a, OutboxReader, SendOp, SendFuture> StateMachine<'a, OutboxReader, SendOp, SendFuture>
-    where
-        SendFuture: Future<Output = Result<(), anyhow::Error>>,
-        SendOp: Fn(Envelope) -> SendFuture,
-        OutboxReader: shuffle::OutboxReader + Send + Sync + 'static,
-    {
-        pub(super) fn new(
-            metadata: ShuffleMetadata,
-            outbox_reader: OutboxReader,
-            send_operation: SendOp,
-            hint_rx: &'a mut async_channel::Receiver<NewOutboxMessage>,
-        ) -> Self {
-            let current_sequence_number = 0;
-            // find the first message from where to start shuffling; everyday I'm shuffling
-            // afterwards we assume that the message sequence numbers are consecutive w/o gaps!
-            trace!("Starting shuffle. Finding first outbox message.");
-            let reading_future = get_next_message(outbox_reader, current_sequence_number);
+    #[pin_project(project = StateProj)]
+    enum State {
+        Idle,
+        ReadingOutbox,
+        Ingesting { ingest: IngestFuture, sn: u64 },
+    }
 
+    #[pin_project]
+    pub struct ShuffleStream<T, R> {
+        metadata: ShuffleMetadata,
+        ingestion: IngestionClient<T, Envelope>,
+        #[pin]
+        hint_rx: async_channel::Receiver<NewOutboxMessage>,
+        reader: Option<R>,
+        read_fut: ReadFuture<R>,
+        inflight: VecDeque<RecordCommit<MessageIndex>>,
+        next_sequence_number: MessageIndex,
+        #[pin]
+        state: State,
+    }
+
+    impl<T, R> ShuffleStream<T, R>
+    where
+        T: TransportConnect,
+        R: super::OutboxReader + Send + Sync + 'static,
+    {
+        pub fn new(
+            metadata: ShuffleMetadata,
+            ingestion: IngestionClient<T, Envelope>,
+            reader: R,
+            hint_rx: async_channel::Receiver<NewOutboxMessage>,
+        ) -> Self {
             Self {
                 metadata,
-                current_sequence_number,
-                outbox_reader: None,
-                read_future: ReusableBoxFuture::new(reading_future),
-                send_operation,
+                ingestion,
                 hint_rx,
+                reader: None,
+                read_fut: ReusableBoxFuture::new(get_next_message(reader, 0)),
+                inflight: VecDeque::new(),
+                next_sequence_number: 0,
                 state: State::ReadingOutbox,
             }
         }
 
-        pub(super) async fn shuffle_next_message(
-            self: Pin<&mut Self>,
-        ) -> Result<MessageIndex, anyhow::Error> {
+        fn inner_poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<anyhow::Error> {
             let mut this = self.project();
+
             loop {
                 match this.state.as_mut().project() {
                     StateProj::Idle => {
                         loop {
                             let NewOutboxMessage {
-                                seq_number,
+                                seq_number: sn,
                                 message,
-                            } = this
-                                .hint_rx
-                                .recv()
-                                .await
+                            } = ready!(this.hint_rx.poll_next_unpin(cx))
                                 .expect("shuffle is owning the hint sender");
 
-                            match seq_number.cmp(this.current_sequence_number) {
+                            match sn.cmp(this.next_sequence_number) {
                                 Ordering::Equal => {
-                                    let envelope = wrap_outbox_message_in_envelope(
-                                        message.clone(),
-                                        seq_number,
-                                        this.metadata,
-                                    );
-                                    let send_future = (this.send_operation)(envelope);
-                                    this.state.set(State::Sending(send_future));
+                                    let envelope =
+                                        wrap_outbox_message_in_envelope(message, sn, this.metadata);
+                                    this.state.set(State::Ingesting {
+                                        ingest: this
+                                            .ingestion
+                                            .ingest(envelope.partition_key(), envelope),
+                                        sn,
+                                    });
                                     break;
                                 }
                                 Ordering::Greater => {
-                                    // we might have missed some hints, so try again reading the next available outbox message (scan)
-                                    this.read_future.set(get_next_message(
-                                        this.outbox_reader
-                                            .take()
-                                            .expect("outbox reader should be available"),
-                                        *this.current_sequence_number,
+                                    // Missed hints; we need to do an outbox scan
+                                    this.read_fut.set(get_next_message(
+                                        this.reader.take().unwrap(),
+                                        *this.next_sequence_number,
                                     ));
                                     this.state.set(State::ReadingOutbox);
                                     break;
                                 }
                                 Ordering::Less => {
-                                    // this is a hint for a message that we have already sent, so we can ignore it
+                                    // Already processed ... skip
                                 }
                             }
                         }
                     }
-                    StateProj::ReadingOutbox => {
-                        let (reading_result, outbox_reader) = this.read_future.get_pin().await;
-                        *this.outbox_reader = Some(outbox_reader);
+                    StateProj::Ingesting { ingest, sn } => {
+                        let sn = *sn;
+                        let result = ready!(ingest.poll_unpin(cx));
+                        let commit_token = match result {
+                            Ok(commit_token) => commit_token,
+                            Err(err) => return Poll::Ready(err.into()),
+                        };
+                        this.inflight.push_back(commit_token.map(|_| sn));
 
-                        if let Some((seq_number, message)) = reading_result? {
-                            assert!(
-                                seq_number >= *this.current_sequence_number,
-                                "message sequence numbers must not decrease"
-                            );
-
-                            *this.current_sequence_number = seq_number;
-
-                            let envelope =
-                                wrap_outbox_message_in_envelope(message, seq_number, this.metadata);
-                            let send_future = (this.send_operation)(envelope);
-
-                            this.state.set(State::Sending(send_future));
-                        } else {
-                            this.state.set(State::Idle);
-                        }
-                    }
-                    StateProj::Sending(send_future) => {
-                        send_future.await?;
-
-                        let successfully_shuffled_sequence_number = *this.current_sequence_number;
-                        *this.current_sequence_number += 1;
-
-                        this.read_future.set(get_next_message(
-                            this.outbox_reader
-                                .take()
-                                .expect("outbox reader should be available"),
-                            *this.current_sequence_number,
+                        // read next message
+                        *this.next_sequence_number = sn + 1;
+                        this.read_fut.set(get_next_message(
+                            this.reader.take().unwrap(),
+                            *this.next_sequence_number,
                         ));
                         this.state.set(State::ReadingOutbox);
+                    }
+                    StateProj::ReadingOutbox => {
+                        let (result, reader) = ready!(this.read_fut.poll_unpin(cx));
+                        *this.reader = Some(reader);
 
-                        return Ok(successfully_shuffled_sequence_number);
+                        match result {
+                            Ok(None) => {
+                                this.state.set(State::Idle);
+                            }
+                            Ok(Some((sn, message))) => {
+                                let envelope =
+                                    wrap_outbox_message_in_envelope(message, sn, this.metadata);
+                                this.state.set(State::Ingesting {
+                                    ingest: this
+                                        .ingestion
+                                        .ingest(envelope.partition_key(), envelope),
+                                    sn,
+                                });
+                            }
+                            Err(err) => return Poll::Ready(err.into()),
+                        }
                     }
                 }
+            }
+        }
+    }
+
+    impl<T, R> Stream for ShuffleStream<T, R>
+    where
+        T: TransportConnect,
+        R: super::OutboxReader + Send + Sync + 'static,
+    {
+        type Item = Result<MessageIndex, anyhow::Error>;
+
+        fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            if let Poll::Ready(err) = self.as_mut().inner_poll_next(cx) {
+                return Poll::Ready(Some(Err(err)));
+            }
+
+            let this = self.project();
+            let mut latest_committed_sn = None;
+            loop {
+                let Some(head) = this.inflight.front_mut() else {
+                    break;
+                };
+
+                match head.poll_unpin(cx) {
+                    Poll::Pending => break,
+                    Poll::Ready(Ok(sn)) => latest_committed_sn = Some(sn),
+                    Poll::Ready(Err(err)) => return Poll::Ready(Some(Err(err.into()))),
+                }
+                this.inflight.pop_front();
+            }
+
+            match latest_committed_sn {
+                Some(sn) => Poll::Ready(Some(Ok(sn))),
+                None => Poll::Pending,
             }
         }
     }
@@ -426,24 +448,32 @@ mod state_machine {
 #[cfg(test)]
 mod tests {
     use std::iter;
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use anyhow::anyhow;
+    use anyhow::{Context, anyhow};
     use assert2::let_assert;
-    use futures::{Stream, StreamExt};
+    use futures::StreamExt;
+    use restate_core::partitions::PartitionRouting;
+    use restate_ingestion_client::IngestionClient;
+    use restate_types::net::RpcRequest;
+    use restate_types::net::ingest::{ReceivedIngestRequest, ResponseStatus};
+    use restate_types::net::partition_processor::PartitionLeaderService;
+    use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
+    use restate_types::storage::StorageCodec;
     use test_log::test;
     use tokio::sync::mpsc;
 
-    use restate_bifrost::{Bifrost, LogEntry};
-    use restate_core::network::FailingConnector;
+    use restate_core::network::{
+        BackPressureMode, FailingConnector, ServiceMessage, ServiceStream,
+    };
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
     use restate_storage_api::StorageError;
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::Version;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
     use restate_types::invocation::ServiceInvocation;
-    use restate_types::logs::{KeyFilter, LogId, Lsn, SequenceNumber};
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::PartitionTable;
     use restate_wal_protocol::{Command, Envelope};
@@ -556,22 +586,27 @@ mod tests {
     }
 
     async fn collect_invoke_commands_until(
-        stream: impl Stream<Item = restate_bifrost::Result<LogEntry>>,
+        stream: &mut ServiceStream<PartitionLeaderService>,
         last_invocation_id: InvocationId,
     ) -> anyhow::Result<Vec<ServiceInvocation>> {
         let mut messages = Vec::new();
         let mut stream = std::pin::pin!(stream);
 
-        while let Some(record) = stream.next().await {
-            let record = record?;
+        'out: while let Some(ServiceMessage::Rpc(incoming)) = stream.next().await {
+            assert_eq!(incoming.msg_type(), ReceivedIngestRequest::TYPE);
+            let incoming = incoming.into_typed::<ReceivedIngestRequest>();
+            let (r, body) = incoming.split();
+            r.send(ResponseStatus::Ack.into());
+            for mut record in body.records {
+                let envelope = StorageCodec::decode::<Envelope, _>(&mut record.record)
+                    .context("Failed to decode envelope")?;
 
-            if let Some(envelope) = record.try_decode::<Envelope>().transpose()? {
                 let_assert!(Command::Invoke(service_invocation) = envelope.command);
                 let invocation_id = service_invocation.invocation_id;
                 messages.push(*service_invocation);
 
                 if last_invocation_id == invocation_id {
-                    break;
+                    break 'out;
                 }
             }
         }
@@ -608,31 +643,55 @@ mod tests {
     struct ShuffleEnv<OR> {
         #[allow(dead_code)]
         env: TestCoreEnv<FailingConnector>,
-        bifrost: Bifrost,
-        shuffle: Shuffle<OR>,
+        stream: ServiceStream<PartitionLeaderService>,
+        ingress: IngestionClient<FailingConnector, Envelope>,
+        shuffle: Shuffle<FailingConnector, OR>,
     }
 
     async fn create_shuffle_env<OR: OutboxReader + Send + Sync + 'static>(
         outbox_reader: OR,
     ) -> ShuffleEnv<OR> {
         // set numbers of partitions to 1 to easily find all sent messages by the shuffle
-        let env = TestCoreEnvBuilder::with_incoming_only_connector()
-            .set_partition_table(PartitionTable::with_equally_sized_partitions(
-                Version::MIN,
-                1,
-            ))
-            .build()
-            .await;
+        let mut builder = TestCoreEnvBuilder::with_incoming_only_connector().set_partition_table(
+            PartitionTable::with_equally_sized_partitions(Version::MIN, 1),
+        );
+
         let metadata = ShuffleMetadata::new(PartitionId::from(0), LeaderEpoch::from(0));
+
+        let partition_replica_set_states = PartitionReplicaSetStates::default();
+
+        partition_replica_set_states.note_observed_leader(
+            0.into(),
+            LeadershipState {
+                current_leader: builder.my_node_id,
+                current_leader_epoch: LeaderEpoch::INITIAL,
+            },
+        );
+
+        let svc = builder
+            .router_builder
+            .register_service::<PartitionLeaderService>(10, BackPressureMode::PushBack);
+
+        let env = builder.build().await;
+
+        let stream = svc.start();
+
+        let ingress = IngestionClient::new(
+            env.networking.clone(),
+            env.metadata.updateable_partition_table(),
+            PartitionRouting::new(partition_replica_set_states, TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            None,
+        );
 
         let (truncation_tx, _truncation_rx) = mpsc::channel(1);
 
-        let bifrost = Bifrost::init_in_memory(env.metadata_writer.clone()).await;
-        let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, bifrost.clone());
+        let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, ingress.clone());
 
         ShuffleEnv {
             env,
-            bifrost,
+            stream,
+            ingress,
             shuffle,
         }
     }
@@ -652,18 +711,12 @@ mod tests {
             .expect("service invocation should be present");
 
         let outbox_reader = MockOutboxReader::new(42, expected_messages.clone());
-        let shuffle_env = create_shuffle_env(outbox_reader).await;
+        let mut shuffle_env = create_shuffle_env(outbox_reader).await;
 
-        let partition_id = shuffle_env.shuffle.metadata.partition_id;
         TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
-        let reader = shuffle_env.bifrost.create_reader(
-            LogId::from(partition_id),
-            KeyFilter::Any,
-            Lsn::OLDEST,
-            Lsn::MAX,
-        )?;
 
-        let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+        let messages =
+            collect_invoke_commands_until(&mut shuffle_env.stream, last_invocation_id).await?;
 
         assert_received_invoke_commands(messages, expected_messages);
 
@@ -689,18 +742,12 @@ mod tests {
             .expect("service invocation should be present");
 
         let outbox_reader = MockOutboxReader::new(42, expected_messages.clone());
-        let shuffle_env = create_shuffle_env(outbox_reader).await;
+        let mut shuffle_env = create_shuffle_env(outbox_reader).await;
 
-        let partition_id = shuffle_env.shuffle.metadata.partition_id;
         TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
-        let reader = shuffle_env.bifrost.create_reader(
-            LogId::from(partition_id),
-            KeyFilter::Any,
-            Lsn::OLDEST,
-            Lsn::MAX,
-        )?;
 
-        let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+        let messages =
+            collect_invoke_commands_until(&mut shuffle_env.stream, last_invocation_id).await?;
 
         assert_received_invoke_commands(messages, expected_messages);
 
@@ -722,16 +769,8 @@ mod tests {
             .expect("service invocation should be present");
 
         let mut outbox_reader = Arc::new(FailingOutboxReader::new(expected_messages.clone(), 10));
-        let shuffle_env = create_shuffle_env(Arc::clone(&outbox_reader)).await;
+        let mut shuffle_env = create_shuffle_env(Arc::clone(&outbox_reader)).await;
         let total_restarts = Arc::new(AtomicUsize::new(0));
-
-        let partition_id = shuffle_env.shuffle.metadata.partition_id;
-        let reader = shuffle_env.bifrost.create_reader(
-            LogId::from(partition_id),
-            KeyFilter::Any,
-            Lsn::INVALID,
-            Lsn::MAX,
-        )?;
 
         let shuffle_task = TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", {
             let total_restarts = Arc::clone(&total_restarts);
@@ -765,7 +804,7 @@ mod tests {
                         Arc::clone(&outbox_reader),
                         truncation_tx.clone(),
                         1,
-                        shuffle_env.bifrost.clone(),
+                        shuffle_env.ingress.clone(),
                     );
                 }
 
@@ -775,7 +814,8 @@ mod tests {
             }
         })?;
 
-        let messages = collect_invoke_commands_until(reader, last_invocation_id).await?;
+        let messages =
+            collect_invoke_commands_until(&mut shuffle_env.stream, last_invocation_id).await?;
 
         assert_received_invoke_commands(messages, expected_messages);
 
