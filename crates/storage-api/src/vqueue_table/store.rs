@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU16;
+
 use restate_types::vqueue::{EffectivePriority, VQueueId};
 
 use super::{EntryCard, EntryKind, VisibleAt};
@@ -29,6 +31,9 @@ pub trait VQueueEntry: PartialOrd + PartialEq + Eq + Clone {
     fn visible_at(&self) -> VisibleAt;
     fn kind(&self) -> EntryKind;
     fn is_token_held(&self) -> bool;
+    // Weight is as a proxy for _costing_ dequeueing an item. Lower weight means
+    // lower cost and higher chances to be dequeued.
+    fn weight(&self) -> NonZeroU16;
 }
 
 /// Iterator over vqueue entries
@@ -60,6 +65,26 @@ impl VQueueEntry for EntryCard {
 
     fn kind(&self) -> EntryKind {
         self.kind
+    }
+
+    fn weight(&self) -> NonZeroU16 {
+        let weight: u16 = match self.kind {
+            EntryKind::Unknown | EntryKind::StateMutation => 1,
+            // The reasoning here is to give queues that need to resume invocations more
+            // priority than queues that need to start new ones.
+            // Those weights are provisional and can be changed any time, do not make any
+            // hard assumptions about them.
+            EntryKind::Invocation => match self.priority {
+                EffectivePriority::TokenHeld
+                | EffectivePriority::Started
+                | EffectivePriority::System => 1,
+                EffectivePriority::UserHigh => 2,
+                EffectivePriority::UserDefault => 2,
+            },
+        };
+
+        // Safety: All values are positive numbers as shown in the match above.
+        unsafe { NonZeroU16::new_unchecked(weight) }
     }
 
     #[inline(always)]
