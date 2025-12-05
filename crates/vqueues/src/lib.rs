@@ -9,14 +9,16 @@
 // by the Apache License, Version 2.0.
 
 mod cache;
+mod metric_definitions;
 pub mod scheduler;
 mod vqueue_config;
 
 pub use cache::{VQueuesMeta, VQueuesMetaMut};
+pub use metric_definitions::describe_metrics;
 pub use scheduler::SchedulerService;
 
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::metadata::{VQueueMetaUpdates, VQueueStatus};
+use restate_storage_api::vqueue_table::metadata::VQueueMetaUpdates;
 use restate_storage_api::vqueue_table::{
     AsEntryStateHeader, EntryCard, EntryId, EntryKind, ReadVQueueTable, Stage, VisibleAt,
     WriteVQueueTable, metadata,
@@ -107,14 +109,18 @@ where
         Ok(true)
     }
 
-    pub async fn enqueue_new(
+    pub async fn enqueue_new<E>(
         &mut self,
         created_at: UniqueTimestamp,
         visible_at: VisibleAt,
         priority: NewEntryPriority,
         kind: EntryKind,
         id: impl Into<EntryId>,
-    ) -> Result<(), StorageError> {
+        item: Option<E>,
+    ) -> Result<(), StorageError>
+    where
+        E: bilrost::Message,
+    {
         let visible_at = match visible_at {
             VisibleAt::Now => VisibleAt::At(created_at),
             VisibleAt::At(ts) => VisibleAt::At(ts),
@@ -131,7 +137,7 @@ where
         );
 
         // Update cache
-        let (status_before, status_after) = self
+        let (was_active_before, is_active_now) = self
             .cache
             .apply_updates(self.storage, &self.qid, &updates)
             .await?;
@@ -146,15 +152,20 @@ where
         self.storage
             .put_vqueue_entry_state(&self.qid, &card, Stage::Inbox, ());
 
-        // do not keep putting the same queue if it's already known to be active
-        if status_before == VQueueStatus::Empty
-            && matches!(status_after, VQueueStatus::Active | VQueueStatus::Paused)
-        {
-            // Components we need. PKEY, QID. We have all.
-            self.storage.mark_queue_as_active(&self.qid);
+        // store the vqueue item for later usage
+        if let Some(item) = item {
+            self.storage
+                .put_item(&self.qid, card.created_at, card.kind, &card.id, item);
         }
 
-        if let Some(collector) = self.action_collector.as_deref_mut() {
+        if was_active_before != is_active_now {
+            assert!(is_active_now);
+            self.storage.mark_vqueue_as_active(&self.qid);
+        }
+
+        if let Some(collector) = self.action_collector.as_deref_mut()
+            && is_active_now
+        {
             // Let the scheduler know about the new entry to keep its head-of-line cache of the vqueue
             // as fresh as possible.
             let inbox_event = VQueueEvent::new(self.qid, EventDetails::Enqueued(card));
@@ -164,11 +175,13 @@ where
         Ok(())
     }
 
+    /// Moves a vqueue item from [`Stage::Inbox`] to [`Stage::Run`] and returns the modified
+    /// [`EntryCard`] to identify the updated vqueue item.
     pub async fn attempt_to_run(
         &mut self,
         at: UniqueTimestamp,
         card: &EntryCard,
-    ) -> Result<(), StorageError> {
+    ) -> Result<EntryCard, StorageError> {
         // Remove from inbox and move to ready
         self.storage
             .delete_inbox_entry(&self.qid, Stage::Inbox, card);
@@ -182,10 +195,16 @@ where
             },
         );
 
-        self.cache
+        let (was_active_before, is_active_now) = self
+            .cache
             .apply_updates(self.storage, &self.qid, &updates)
             .await?;
         self.storage.update_vqueue(&self.qid, &updates);
+
+        if was_active_before != is_active_now {
+            assert!(is_active_now);
+            self.storage.mark_vqueue_as_active(&self.qid);
+        }
 
         let mut modified_card = card.clone();
         modified_card.priority = EffectivePriority::TokenHeld;
@@ -197,7 +216,7 @@ where
         self.storage
             .put_vqueue_entry_state(&self.qid, &modified_card, Stage::Run, ());
 
-        Ok(())
+        Ok(modified_card)
     }
 
     /// Wake up moves the inbox entry from (parked) back into the inbox stage.
@@ -218,12 +237,18 @@ where
         );
 
         // Update cache
-        self.cache
+        let (was_active_before, is_active_now) = self
+            .cache
             .apply_updates(self.storage, &self.qid, &updates)
             .await?;
 
         // Update vqueue meta in storage
         self.storage.update_vqueue(&self.qid, &updates);
+
+        if was_active_before != is_active_now {
+            assert!(is_active_now);
+            self.storage.mark_vqueue_as_active(&self.qid);
+        }
 
         let mut modified_card = card.clone();
         if card.priority.has_started() {
@@ -272,12 +297,18 @@ where
         );
 
         // Update cache
-        self.cache
+        let (was_active_before, is_active_now) = self
+            .cache
             .apply_updates(self.storage, &self.qid, &updates)
             .await?;
 
         // Update vqueue meta in storage
         self.storage.update_vqueue(&self.qid, &updates);
+
+        if was_active_before != is_active_now {
+            assert!(!is_active_now);
+            self.storage.mark_vqueue_as_dormant(&self.qid);
+        }
 
         let mut modified_card = card.clone();
         if should_release_concurrency_token && card.priority.token_held() {
@@ -325,10 +356,16 @@ where
         );
 
         // Update cache
-        self.cache
+        let (was_active_before, is_active_now) = self
+            .cache
             .apply_updates(self.storage, &self.qid, &updates)
             .await?;
         self.storage.update_vqueue(&self.qid, &updates);
+
+        if was_active_before != is_active_now {
+            assert!(!is_active_now);
+            self.storage.mark_vqueue_as_dormant(&self.qid);
+        }
 
         // We add the entry back into the waiting inbox
         self.storage.put_inbox_entry(&self.qid, Stage::Inbox, card);
@@ -359,6 +396,9 @@ where
         self.storage
             .delete_inbox_entry(&self.qid, previous_stage, card);
 
+        self.storage
+            .delete_item(&self.qid, card.created_at, card.kind, &card.id);
+
         let mut updates = VQueueMetaUpdates::default();
         updates.push(
             at,
@@ -369,15 +409,15 @@ where
         );
 
         // Update cache
-        let (status_before, status_after) = self
+        let (was_active_before, is_active_now) = self
             .cache
             .apply_updates(self.storage, &self.qid, &updates)
             .await?;
         self.storage.update_vqueue(&self.qid, &updates);
 
-        if status_before != VQueueStatus::Empty && status_after == VQueueStatus::Empty {
-            // Components we need. PKEY, QID. We have all.
-            self.storage.mark_queue_as_empty(&self.qid);
+        if was_active_before != is_active_now {
+            assert!(!is_active_now);
+            self.storage.mark_vqueue_as_dormant(&self.qid);
         }
 
         if let Some(collector) = self.action_collector.as_deref_mut() {

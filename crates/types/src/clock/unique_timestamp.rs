@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt::{Debug, Formatter};
 use std::num::NonZeroU64;
 use std::time::SystemTime;
 
@@ -50,7 +51,7 @@ pub enum Error {
 /// The timestamp is represented as a 64-bit unsigned integer. The upper 42 bits
 /// represent the physical time in milliseconds since [`RESTATE_EPOCH`], and the
 /// lower 22 bits represent the logical clock count.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct UniqueTimestamp(NonZeroU64);
 
@@ -129,6 +130,17 @@ impl UniqueTimestamp {
     /// or return 0 if the other timestamp is ahead.
     pub fn milliseconds_since(&self, other: Self) -> u64 {
         self.physical_raw().saturating_sub(other.physical_raw())
+    }
+}
+
+impl Debug for UniqueTimestamp {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        // Output unique timestamp as a pair of physical and logical timestamps. Convert the physical
+        // timestamp from the RESTATE_EPOCH to the UNIX_EPOCH.
+        f.debug_struct("UniqueTimestamp")
+            .field("physical", &self.to_unix_millis().as_u64())
+            .field("logical", &self.logical_raw())
+            .finish()
     }
 }
 
