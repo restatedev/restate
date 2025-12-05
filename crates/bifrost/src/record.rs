@@ -12,6 +12,7 @@ use core::str;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use bytes::Bytes;
 use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn, Record};
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::storage::{PolyBytes, StorageDecode, StorageDecodeError, StorageEncode};
@@ -200,29 +201,19 @@ pub struct Gap<S> {
     pub to: S,
 }
 
+#[derive(Clone)]
 pub struct InputRecord<T> {
     created_at: NanosSinceEpoch,
     keys: Keys,
-    body: Arc<dyn StorageEncode>,
+    body: PolyBytes,
     _phantom: PhantomData<T>,
-}
-
-impl<T> Clone for InputRecord<T> {
-    fn clone(&self) -> Self {
-        Self {
-            created_at: self.created_at,
-            keys: self.keys.clone(),
-            body: Arc::clone(&self.body),
-            _phantom: self._phantom,
-        }
-    }
 }
 
 // This is a zero-cost transformation. The type is erased at runtime, but the underlying
 // layout is identical.
 impl<T: StorageEncode> InputRecord<T> {
     pub fn into_record(self) -> Record {
-        Record::from_parts(self.created_at, self.keys, PolyBytes::Typed(self.body))
+        Record::from_parts(self.created_at, self.keys, self.body)
     }
 }
 
@@ -231,7 +222,24 @@ impl<T: StorageEncode> InputRecord<T> {
         Self {
             created_at,
             keys,
-            body,
+            body: PolyBytes::Typed(body),
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Builds an [`InputRecord<T>`] directly from raw bytes without validating the payload.
+    ///
+    /// # Safety
+    /// Caller must guarantee the bytes are a correctly storage-encoded `T`.
+    pub unsafe fn from_bytes_unchecked(
+        created_at: NanosSinceEpoch,
+        keys: Keys,
+        body: Bytes,
+    ) -> Self {
+        Self {
+            created_at,
+            keys,
+            body: PolyBytes::Bytes(body),
             _phantom: PhantomData,
         }
     }
@@ -246,7 +254,7 @@ impl<T: StorageEncode + HasRecordKeys> From<Arc<T>> for InputRecord<T> {
         InputRecord {
             created_at: NanosSinceEpoch::now(),
             keys: val.record_keys(),
-            body: val,
+            body: PolyBytes::Typed(val),
             _phantom: PhantomData,
         }
     }
@@ -257,7 +265,7 @@ impl From<String> for InputRecord<String> {
         InputRecord {
             created_at: NanosSinceEpoch::now(),
             keys: Keys::None,
-            body: Arc::new(val),
+            body: PolyBytes::Typed(Arc::new(val)),
             _phantom: PhantomData,
         }
     }
@@ -268,7 +276,7 @@ impl From<&str> for InputRecord<String> {
         InputRecord {
             created_at: NanosSinceEpoch::now(),
             keys: Keys::None,
-            body: Arc::new(String::from(val)),
+            body: PolyBytes::Typed(Arc::new(String::from(val))),
             _phantom: PhantomData,
         }
     }
@@ -279,7 +287,7 @@ impl<T: StorageEncode> From<BodyWithKeys<T>> for InputRecord<T> {
         InputRecord {
             created_at: NanosSinceEpoch::now(),
             keys: val.record_keys(),
-            body: Arc::new(val.into_inner()),
+            body: PolyBytes::Typed(Arc::new(val.into_inner())),
             _phantom: PhantomData,
         }
     }
