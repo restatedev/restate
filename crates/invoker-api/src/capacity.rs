@@ -13,8 +13,7 @@ use std::num::NonZeroUsize;
 use restate_futures_util::concurrency::Concurrency;
 use restate_types::config::ThrottlingOptions;
 
-pub type TokenBucket<C = gardal::TokioClock> =
-    gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
+pub type TokenBucket<C = gardal::TokioClock> = gardal::SharedTokenBucket<C>;
 
 #[derive(Clone)]
 pub struct InvokerCapacity {
@@ -40,18 +39,10 @@ impl InvokerCapacity {
         Self {
             concurrency: Concurrency::new(concurrency),
             invocation_token_bucket: invocation_throttling.map(|opts| {
-                let limit = gardal::Limit::from(opts.clone());
-                let capacity = limit.burst();
-                let bucket = TokenBucket::from_parts(limit, gardal::TokioClock::default());
-                bucket.add_tokens(capacity.get());
-                bucket
+                TokenBucket::new(gardal::Limit::from(opts.clone()), gardal::TokioClock)
             }),
             action_token_bucket: action_throttling.map(|opts| {
-                let limit = gardal::Limit::from(opts.clone());
-                let capacity = limit.burst();
-                let bucket = TokenBucket::from_parts(limit, gardal::TokioClock::default());
-                bucket.add_tokens(capacity.get());
-                bucket
+                TokenBucket::new(gardal::Limit::from(opts.clone()), gardal::TokioClock)
             }),
         }
     }
