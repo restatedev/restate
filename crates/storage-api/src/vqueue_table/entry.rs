@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Buf, BufMut};
+
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::InvocationId;
 use restate_types::logs::Lsn;
@@ -92,6 +93,8 @@ pub struct EntryCard {
     pub kind: EntryKind,
     pub id: EntryId,
 }
+
+static_assertions::const_assert_eq!(EntryCard::serialized_length(), 34);
 
 impl EntryCard {
     pub const fn serialized_length() -> usize {
@@ -197,4 +200,53 @@ impl EntryStateKind for () {
 
 impl EntryStateKind for ExternalStateMutation {
     const KIND: EntryKind = EntryKind::StateMutation;
+}
+
+mod bilrost_encoding {
+    use bilrost::DecodeErrorKind;
+    use bilrost::encoding::{ForOverwrite, Proxiable};
+    use restate_types::clock::UniqueTimestamp;
+    use restate_types::vqueue::EffectivePriority;
+
+    use crate::vqueue_table::VisibleAt;
+
+    use super::{EntryCard, EntryId, EntryKind};
+
+    struct EntryCardTag;
+
+    impl Proxiable<EntryCardTag> for EntryCard {
+        type Proxy = [u8; EntryCard::serialized_length()];
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            let mut buf = [0u8; Self::serialized_length()];
+            self.encode(&mut buf.as_mut());
+            buf
+        }
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), DecodeErrorKind> {
+            *self = Self::decode(&mut proxy.as_ref()).map_err(|_| DecodeErrorKind::InvalidValue)?;
+            Ok(())
+        }
+    }
+
+    impl ForOverwrite<(), EntryCard> for () {
+        fn for_overwrite() -> EntryCard {
+            EntryCard {
+                priority: EffectivePriority::default(),
+                visible_at: VisibleAt::Now,
+                created_at: UniqueTimestamp::MIN,
+                kind: EntryKind::Unknown,
+                id: EntryId([0u8; 16]),
+            }
+        }
+    }
+
+    bilrost::empty_state_via_for_overwrite!(EntryCard);
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (::bilrost::encoding::PlainBytes)
+        to encode proxied type (EntryCard)
+        using proxy tag (EntryCardTag)
+        with general encodings
+    );
 }

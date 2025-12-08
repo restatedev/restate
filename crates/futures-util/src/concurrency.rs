@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::future::poll_fn;
-use std::marker::PhantomData;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
@@ -26,17 +25,12 @@ enum Inner {
 /// Shareable concurrency semaphore.
 ///
 /// Allows permits to be acquired, merged, and split. It has no overhead when unlimited.
-pub struct Concurrency<T>(Inner, PhantomData<T>);
+#[derive(Clone)]
+pub struct Concurrency(Inner);
 
-impl<T> Clone for Concurrency<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone(), PhantomData)
-    }
-}
-
-impl<T> Concurrency<T> {
+impl Concurrency {
     pub const fn new_unlimited() -> Self {
-        Self(Inner::Unlimited, PhantomData)
+        Self(Inner::Unlimited)
     }
 
     /// Creates a new concurrency semaphore with the given limit.
@@ -45,13 +39,10 @@ impl<T> Concurrency<T> {
     /// Each returned permit can be split into unlimited number of permits again.
     pub fn new(limit: Option<NonZeroUsize>) -> Self {
         match limit {
-            None => Self(Inner::Unlimited, PhantomData),
-            Some(limit) => Self(
-                Inner::Limited {
-                    semaphore: PollSemaphore::new(Arc::new(Semaphore::new(limit.get()))),
-                },
-                PhantomData,
-            ),
+            None => Self(Inner::Unlimited),
+            Some(limit) => Self(Inner::Limited {
+                semaphore: PollSemaphore::new(Arc::new(Semaphore::new(limit.get()))),
+            }),
         }
     }
 
@@ -67,7 +58,7 @@ impl<T> Concurrency<T> {
     ///
     /// Note that on multiple calls to poll_acquire, only the Waker from the Context passed
     /// to the most recent call is scheduled to receive a wakeup.
-    pub fn poll_acquire(&mut self, cx: &mut Context<'_>) -> Poll<Permit<T>> {
+    pub fn poll_acquire(&mut self, cx: &mut Context<'_>) -> Poll<Permit> {
         match &mut self.0 {
             Inner::Unlimited => Poll::Ready(Permit::new_unlimited()),
             Inner::Limited { semaphore, .. } => semaphore.poll_acquire(cx).map(|owned_permit| {
@@ -77,7 +68,6 @@ impl<T> Concurrency<T> {
                     // We don't _ever_ close() this semaphore
                     inner: Permits::Limited(NonZeroU32::new(1).unwrap()),
                     semaphore: Arc::downgrade(owned_permit.semaphore()),
-                    phantom: PhantomData,
                 };
                 owned_permit.forget();
                 permit
@@ -86,17 +76,17 @@ impl<T> Concurrency<T> {
     }
 
     /// Acquire a permit from the concurrency semaphore.
-    pub async fn acquire(&mut self) -> Permit<T> {
+    pub async fn acquire(&mut self) -> Permit {
         poll_fn(|cx| self.poll_acquire(cx)).await
     }
 
     /// Acquire a permit and merge it into the given `existing` permit.
-    pub async fn acquire_and_merge(&mut self, existing: &mut Permit<T>) {
+    pub async fn acquire_and_merge(&mut self, existing: &mut Permit) {
         poll_fn(|cx| self.poll_and_merge(cx, existing)).await
     }
 
     /// Returns `true` if a permit was acquired and merged into the given `existing` permit.
-    pub fn poll_and_merge(&mut self, cx: &mut Context<'_>, existing: &mut Permit<T>) -> Poll<()> {
+    pub fn poll_and_merge(&mut self, cx: &mut Context<'_>, existing: &mut Permit) -> Poll<()> {
         match self.0 {
             Inner::Unlimited => {
                 existing.merge(Permit::new_unlimited());
@@ -113,7 +103,6 @@ impl<T> Concurrency<T> {
                     // We don't _ever_ close() this semaphore
                     inner: Permits::Limited(NonZeroU32::new(1).unwrap()),
                     semaphore,
-                    phantom: PhantomData,
                 });
             }),
         }
@@ -138,13 +127,12 @@ enum Permits {
 
 #[must_use]
 #[clippy::has_significant_drop]
-pub struct Permit<T> {
+pub struct Permit {
     inner: Permits,
     semaphore: Weak<Semaphore>,
-    phantom: PhantomData<T>,
 }
 
-impl<T> std::fmt::Debug for Permit<T> {
+impl std::fmt::Debug for Permit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.inner {
             Permits::Unlimited => write!(f, "Permit::Unlimited"),
@@ -154,7 +142,7 @@ impl<T> std::fmt::Debug for Permit<T> {
     }
 }
 
-impl<T> Drop for Permit<T> {
+impl Drop for Permit {
     fn drop(&mut self) {
         if let Permits::Limited(permits) = self.inner
             && let Some(semaphore) = self.semaphore.upgrade()
@@ -164,13 +152,12 @@ impl<T> Drop for Permit<T> {
     }
 }
 
-impl<T> Permit<T> {
+impl Permit {
     /// An empty permit that can be used to merge other permits into.
     pub const fn new_empty() -> Self {
         Self {
             inner: Permits::Empty,
             semaphore: Weak::new(),
-            phantom: PhantomData,
         }
     }
 
@@ -181,7 +168,6 @@ impl<T> Permit<T> {
         Self {
             inner: Permits::Unlimited,
             semaphore: Weak::new(),
-            phantom: PhantomData,
         }
     }
 
@@ -231,7 +217,6 @@ impl<T> Permit<T> {
                 Some(Self {
                     inner: Permits::Limited(limit),
                     semaphore: std::mem::take(&mut self.semaphore),
-                    phantom: PhantomData,
                 })
             }
             Permits::Limited(limit) if n < limit.get() as usize => {
@@ -239,7 +224,6 @@ impl<T> Permit<T> {
                 Some(Self {
                     inner: Permits::Limited(NonZeroU32::new(n as u32).unwrap()),
                     semaphore: self.semaphore.clone(),
-                    phantom: PhantomData,
                 })
             }
             // compiler didn't figure out that we are already doing exhaustive matching
@@ -252,13 +236,11 @@ impl<T> Permit<T> {
 mod tests {
     use super::*;
 
-    struct Sample;
-
     #[test]
     fn unlimited_concurrency() {
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
 
-        let mut concurrency = Concurrency::<Sample>::new_unlimited();
+        let mut concurrency = Concurrency::new_unlimited();
         let Poll::Ready(mut permit) = concurrency.poll_acquire(&mut cx) else {
             panic!("should be able to acquire immediately");
         };
@@ -271,7 +253,7 @@ mod tests {
     fn limited_concurrency() {
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
 
-        let mut concurrency = Concurrency::<Sample>::new(Some(NonZeroUsize::new(2).unwrap()));
+        let mut concurrency = Concurrency::new(Some(NonZeroUsize::new(2).unwrap()));
         assert_eq!(concurrency.available_permits(), 2);
         let Poll::Ready(permit1) = concurrency.poll_acquire(&mut cx) else {
             panic!("should be able to acquire immediately");
@@ -308,7 +290,7 @@ mod tests {
     // test permit splits and merges
     #[tokio::test]
     async fn permit_splits_and_merges() {
-        let mut concurrency = Concurrency::<Sample>::new(Some(NonZeroUsize::new(2).unwrap()));
+        let mut concurrency = Concurrency::new(Some(NonZeroUsize::new(2).unwrap()));
         let mut permit = concurrency.acquire().await;
         assert!(!permit.is_empty());
         assert_eq!(concurrency.available_permits(), 1);
