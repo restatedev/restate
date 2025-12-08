@@ -378,6 +378,7 @@ where
             let scheduler_service = if config.common.experimental_enable_vqueues {
                 SchedulerService::create(
                     self.invoker_capacity.concurrency.clone(),
+                    self.invoker_capacity.invocation_token_bucket.clone(),
                     partition_store.partition_db().clone(),
                     vqueues_cache,
                 )
