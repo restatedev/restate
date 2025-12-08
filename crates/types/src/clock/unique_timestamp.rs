@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZeroU64;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::time::MillisSinceEpoch;
 
@@ -61,7 +61,7 @@ static_assertions::const_assert_eq!(
 );
 
 impl UniqueTimestamp {
-    const MIN: UniqueTimestamp =
+    pub const MIN: UniqueTimestamp =
         UniqueTimestamp(NonZeroU64::new(RESTATE_EPOCH.as_u64() + 1).unwrap());
 
     pub fn try_from_raw(raw: u64) -> Result<Option<Self>, Error> {
@@ -112,6 +112,7 @@ impl UniqueTimestamp {
         Self::from_parts(self.physical_raw() + millis, self.logical_raw())
     }
 
+    /// Physical time is the raw number of milliseconds since restate's epoch.
     #[inline(always)]
     fn physical_raw(&self) -> u64 {
         // extract the physical time
@@ -129,6 +130,12 @@ impl UniqueTimestamp {
     /// or return 0 if the other timestamp is ahead.
     pub fn milliseconds_since(&self, other: Self) -> u64 {
         self.physical_raw().saturating_sub(other.physical_raw())
+    }
+
+    /// Returns the number of fractional seconds since RESTATE_EPOCH.
+    pub fn as_secs_f64(&self) -> f64 {
+        // NOTE: physical clock is in millis.
+        Duration::from_millis(self.physical_raw()).as_secs_f64()
     }
 }
 
