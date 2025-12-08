@@ -24,7 +24,6 @@ pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHan
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
     use super::*;
-    use crate::capacity::InvokerToken;
     use crate::invocation_reader::{
         EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
     };
@@ -119,7 +118,7 @@ pub mod test_util {
             &mut self,
             _partition: PartitionLeaderEpoch,
             _qid: VQueueId,
-            _permit: Permit<InvokerToken>,
+            _permit: Permit,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
             _journal: InvokeInputJournal,

@@ -79,6 +79,21 @@ impl PartialOrd<UniqueTimestamp> for VisibleAt {
     }
 }
 
+/// Some stats that are collected from the scheduler. Emitted along the item
+/// at decision time.
+#[derive(Debug, Clone, Default, bilrost::Message)]
+pub struct WaitStats {
+    /// Total milliseconds the item spent waiting on global invoker capacity
+    #[bilrost(1)]
+    pub blocked_on_global_capacity_ms: u32,
+    /// Total milliseconds the item was throttled on vqueue's "start" token bucket
+    #[bilrost(2)]
+    pub vqueue_start_throttling_ms: u32,
+    /// Total milliseconds the item was throttled on global "run" token bucket
+    #[bilrost(3)]
+    pub global_throttling_ms: u32,
+}
+
 mod bilrost_encoding {
     use super::*;
 

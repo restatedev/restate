@@ -15,7 +15,6 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use restate_futures_util::concurrency::Permit;
-use restate_invoker_api::capacity::InvokerToken;
 use restate_types::journal::Completion;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::retries;
@@ -30,7 +29,7 @@ pub(super) struct InvocationStateMachine {
     #[allow(dead_code)]
     pub(super) qid: Option<VQueueId>,
     #[allow(dead_code)]
-    pub(super) _permit: Permit<InvokerToken>,
+    pub(super) _permit: Permit,
     pub(super) invocation_target: InvocationTarget,
     pub(super) invocation_epoch: InvocationEpoch,
     pub(super) last_transient_error_event: Option<TransientErrorEvent>,
@@ -182,7 +181,7 @@ struct RetryPolicyState {
 impl InvocationStateMachine {
     pub(super) fn create(
         qid: Option<VQueueId>,
-        permit: Permit<InvokerToken>,
+        permit: Permit,
         invocation_target: InvocationTarget,
         invocation_epoch: InvocationEpoch,
         retry_iter: retries::RetryIter<'static>,
