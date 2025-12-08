@@ -19,10 +19,12 @@ anyhow = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
 derive_more = { workspace = true }
 futures = { workspace = true }
+gardal = { workspace = true }
 hashbrown = { version = "0.16"  }
 metrics = { workspace = true }
 pin-project = { workspace = true }
 rocksdb = { workspace = true }
+slotmap = { version = "1" }
 smallvec = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
