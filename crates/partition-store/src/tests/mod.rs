@@ -42,6 +42,7 @@ mod snapshots_test;
 mod state_table_test;
 mod timer_table_test;
 mod virtual_object_status_table_test;
+mod vqueue_table_test;
 
 async fn storage_test_environment() -> PartitionStore {
     storage_test_environment_with_manager().await.1
@@ -81,6 +82,7 @@ async fn test_read_write() {
     state_table_test::run_tests(store.clone()).await;
     virtual_object_status_table_test::run_tests(store.clone()).await;
     timer_table_test::run_tests(store.clone()).await;
+    vqueue_table_test::run_tests(store.clone()).await;
 
     snapshots_test::run_tests(manager.clone(), store.clone()).await;
     RocksDbManager::get().shutdown().await;
