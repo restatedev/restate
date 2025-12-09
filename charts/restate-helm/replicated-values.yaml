@@ -6,7 +6,7 @@ env:
   - name: RESTATE_CLUSTER_NAME
     value: helm-replicated
   - name: RESTATE_METADATA_CLIENT__ADDRESSES
-    value: '["http://restate:5122"]'
+    value: '["http://restate-cluster:5122"]'
   - name: RESTATE_AUTO_PROVISION
     # provision with `kubectl exec -n restate -it restate-0 -- restatectl provision --replication 2 --yes`
     value: "false"
