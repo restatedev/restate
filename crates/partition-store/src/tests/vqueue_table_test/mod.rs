@@ -463,7 +463,7 @@ async fn deleted_items_not_visible_after_reseek(rocksdb: &mut PartitionStore) {
     // Delete the middle entry while the reader is still open
     {
         let mut txn = rocksdb.transaction();
-        txn.delete_inbox_entry(&qid, Stage::Inbox, &entry2);
+        assert!(txn.pop_inbox_entry(&qid, Stage::Inbox, &entry2).unwrap());
         txn.commit().await.expect("commit should succeed");
     }
 
@@ -518,8 +518,8 @@ async fn deleted_items_not_visible_after_seek_after(rocksdb: &mut PartitionStore
     // Delete entries 2 and 3 while reader is open
     {
         let mut txn = rocksdb.transaction();
-        txn.delete_inbox_entry(&qid, Stage::Inbox, &entry2);
-        txn.delete_inbox_entry(&qid, Stage::Inbox, &entry3);
+        assert!(txn.pop_inbox_entry(&qid, Stage::Inbox, &entry2).unwrap());
+        assert!(txn.pop_inbox_entry(&qid, Stage::Inbox, &entry3).unwrap());
         txn.commit().await.expect("commit should succeed");
     }
 
@@ -567,7 +567,7 @@ async fn concurrent_enqueue_and_delete(rocksdb: &mut PartitionStore) {
     let entry_new_high = entry_card_with_priority(5, EffectivePriority::Started);
     {
         let mut txn = rocksdb.transaction();
-        txn.delete_inbox_entry(&qid, Stage::Inbox, &entry_mid);
+        assert!(txn.pop_inbox_entry(&qid, Stage::Inbox, &entry_mid).unwrap());
         txn.put_inbox_entry(&qid, Stage::Inbox, &entry_new_high);
         txn.commit().await.expect("commit should succeed");
     }
