@@ -107,16 +107,19 @@ where
         })
     }
 
+    /// Removes invocation with invocation_id and invocation_epoch.
+    /// When `invocation_epoch` is `None`, removes any epoch for that invocation.
     #[inline]
     pub(super) fn remove_invocation_with_epoch(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-        invocation_epoch: InvocationEpoch,
+        invocation_epoch: Option<InvocationEpoch>,
     ) -> Option<(&mpsc::Sender<Box<Effect>>, &IR, InvocationStateMachine)> {
         self.resolve_partition(partition).and_then(|p| {
             if let Some(ism) = p.invocation_state_machines.get(invocation_id)
-                && ism.invocation_epoch == invocation_epoch
+                && invocation_epoch
+                    .is_none_or(|invocation_epoch| invocation_epoch == ism.invocation_epoch)
             {
                 return Some((
                     &p.output_tx,

@@ -167,7 +167,7 @@ pub mod test_util {
             &mut self,
             _partition_leader_epoch: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _invocation_epoch: InvocationEpoch,
+            _invocation_epoch: Option<InvocationEpoch>,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

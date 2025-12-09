@@ -1067,7 +1067,7 @@ where
     ) {
         if let Some((sender, _, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation_with_epoch(partition, &invocation_id, Some(invocation_epoch))
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_COMPLETED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
@@ -1110,7 +1110,7 @@ where
     ) {
         if let Some((sender, _, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation_with_epoch(partition, &invocation_id, Some(invocation_epoch))
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0)).increment(1);
@@ -1175,7 +1175,7 @@ where
     ) {
         if let Some((sender, _, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation_with_epoch(partition, &invocation_id, Some(invocation_epoch))
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             counter!(INVOKER_INVOCATION_TASKS, "status" => TASK_OP_SUSPENDED, "partition_id" => ID_LOOKUP.get(partition.0))
@@ -1241,7 +1241,7 @@ where
     ) {
         if let Some((_, _, ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation_with_epoch(partition, &invocation_id, Some(invocation_epoch))
         {
             debug_assert_eq!(invocation_epoch, ism.invocation_epoch);
             self.handle_error_event(partition, invocation_id, error, ism)
@@ -1257,7 +1257,7 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.invocation.epoch = %invocation_epoch,
+            restate.invocation.epoch = ?invocation_epoch,
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
@@ -1265,7 +1265,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
+        invocation_epoch: Option<InvocationEpoch>,
     ) {
         if let Some((_, _, mut ism)) = self
             .invocation_state_machine_manager
@@ -1323,7 +1323,7 @@ where
     ) {
         if let Some((sender, _, mut ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation_with_epoch(partition, &invocation_id, Some(invocation_epoch))
         {
             if ism.notify_pause() {
                 // If returns true, we need to pause now
@@ -1640,7 +1640,7 @@ where
     {
         if let Some((_, storage_reader, mut ism)) = self
             .invocation_state_machine_manager
-            .remove_invocation_with_epoch(partition, &invocation_id, invocation_epoch)
+            .remove_invocation_with_epoch(partition, &invocation_id, Some(invocation_epoch))
         {
             f(&mut ism);
             if ism.is_ready_to_retry() {
@@ -2195,7 +2195,7 @@ mod tests {
         assert_eq!(service_inner.quota.available_slots(), 1);
 
         // Abort the invocation
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, Some(0));
 
         // Check the quota
         assert_eq!(service_inner.quota.available_slots(), 2);
@@ -2242,7 +2242,7 @@ mod tests {
         );
 
         // Now abort 0, this should have no effect
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, Some(0));
         assert_eq!(
             service_inner
                 .invocation_state_machine_manager
@@ -2273,7 +2273,7 @@ mod tests {
         );
 
         // Now abort 1, this should have effect
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 1);
+        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, Some(1));
         assert!(
             service_inner
                 .invocation_state_machine_manager
@@ -2382,7 +2382,7 @@ mod tests {
         );
 
         // Now abort 0, this should have no effect
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 0);
+        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, Some(0));
         assert_eq!(
             service_inner
                 .invocation_state_machine_manager
@@ -2394,7 +2394,7 @@ mod tests {
         );
 
         // Now abort 1, this should have effect
-        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, 1);
+        service_inner.handle_abort_invocation(MOCK_PARTITION, invocation_id, Some(1));
         assert!(
             service_inner
                 .invocation_state_machine_manager

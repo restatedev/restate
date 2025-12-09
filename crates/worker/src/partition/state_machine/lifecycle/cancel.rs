@@ -25,9 +25,7 @@ use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::CancelInvocationResponse;
-use restate_types::invocation::{
-    InvocationEpoch, InvocationMutationResponseSink, TerminationFlavor,
-};
+use restate_types::invocation::{InvocationMutationResponseSink, TerminationFlavor};
 use restate_types::journal_v2::CANCEL_SIGNAL;
 use tracing::{debug, trace};
 
@@ -107,7 +105,7 @@ where
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                ctx.send_abort_invocation_to_invoker(self.invocation_id, InvocationEpoch::MAX);
+                ctx.do_send_abort_invocation_to_invoker(self.invocation_id, None);
                 ctx.reply_to_cancel(self.response_sink, CancelInvocationResponse::NotFound);
             }
         };

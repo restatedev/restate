@@ -417,23 +417,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         });
     }
 
-    fn send_abort_invocation_to_invoker(
-        &mut self,
-        invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
-    ) {
-        debug_if_leader!(
-            self.is_leader,
-            restate.invocation.id = %invocation_id,
-            "Send abort command to invoker"
-        );
-
-        self.action_collector.push(Action::AbortInvocation {
-            invocation_id,
-            invocation_epoch,
-        });
-    }
-
     async fn on_apply(&mut self, command: Command) -> Result<(), Error>
     where
         S: IdempotencyTable
@@ -1511,7 +1494,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+                self.do_send_abort_invocation_to_invoker(invocation_id, None);
                 self.reply_to_kill(response_sink, KillInvocationResponse::NotFound);
             }
         };
@@ -1670,7 +1653,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 // This can happen because the invoke/resume and the abort invoker messages end up in different queues,
                 // and the abort message can overtake the invoke/resume.
                 // Consequently the invoker might have not received the abort and the user tried to send it again.
-                self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+                self.do_send_abort_invocation_to_invoker(invocation_id, None);
                 self.reply_to_cancel(response_sink, CancelInvocationResponse::NotFound);
             }
         };
@@ -1931,7 +1914,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
-        self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+        self.do_send_abort_invocation_to_invoker(invocation_id, None);
         Ok(())
     }
 
@@ -1967,7 +1950,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
         )
         .await?;
-        self.do_send_abort_invocation_to_invoker(invocation_id, InvocationEpoch::MAX);
+        self.do_send_abort_invocation_to_invoker(invocation_id, None);
         Ok(())
     }
 
@@ -2362,7 +2345,10 @@ impl<S> StateMachineApplyContext<'_, S> {
             trace!(
                 "Received invoker effect for invocation not in invoked status. Ignoring the effect."
             );
-            self.do_send_abort_invocation_to_invoker(effect.invocation_id, effect.invocation_epoch);
+            self.do_send_abort_invocation_to_invoker(
+                effect.invocation_id,
+                Some(effect.invocation_epoch),
+            );
             return Ok(());
         }
 
@@ -2375,7 +2361,10 @@ impl<S> StateMachineApplyContext<'_, S> {
                 "Received invoker effect for invocation with different epoch. Current epoch {} != Invoker effect epoch {}. Ignoring the effect.",
                 current_invocation_epoch, effect.invocation_epoch
             );
-            self.do_send_abort_invocation_to_invoker(effect.invocation_id, effect.invocation_epoch);
+            self.do_send_abort_invocation_to_invoker(
+                effect.invocation_id,
+                Some(effect.invocation_epoch),
+            );
             return Ok(());
         }
 
@@ -4953,10 +4942,12 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
+    /// Send an Abort action to the invoker for the given `invocation_id` and `invocation_epoch`.
+    /// When `invocation_epoch` is `None`, abort any epoch for that invocation.
     fn do_send_abort_invocation_to_invoker(
         &mut self,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
+        invocation_epoch: Option<InvocationEpoch>,
     ) {
         debug_if_leader!(self.is_leader, restate.invocation.id = %invocation_id, "Send abort command to invoker");
 

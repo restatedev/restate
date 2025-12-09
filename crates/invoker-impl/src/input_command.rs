@@ -72,7 +72,7 @@ pub(crate) enum InputCommand<SR> {
     Abort {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
+        invocation_epoch: Option<InvocationEpoch>,
     },
 
     /// Retry now specific invocation id
@@ -213,7 +213,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
+        invocation_epoch: Option<InvocationEpoch>,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Abort {

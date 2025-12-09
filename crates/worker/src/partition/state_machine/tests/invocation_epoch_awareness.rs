@@ -53,7 +53,7 @@ async fn fence_old_calls_and_completions() {
         actions,
         contains(pat!(Action::AbortInvocation {
             invocation_id: eq(invocation_id),
-            invocation_epoch: eq(0),
+            invocation_epoch: eq(Some(0)),
         }))
     );
     assert_that!(
@@ -118,7 +118,7 @@ async fn fence_old_calls_and_completions() {
         actions,
         contains(pat!(Action::AbortInvocation {
             invocation_id: eq(invocation_id),
-            invocation_epoch: eq(0),
+            invocation_epoch: eq(Some(0)),
         }))
     );
     assert_that!(
@@ -208,7 +208,7 @@ async fn fence_old_sleep_and_completions() {
         actions,
         contains(pat!(Action::AbortInvocation {
             invocation_id: eq(invocation_id),
-            invocation_epoch: eq(0),
+            invocation_epoch: eq(Some(0)),
         }))
     );
     assert_that!(
@@ -268,7 +268,7 @@ async fn fence_old_sleep_and_completions() {
         all![
             contains(pat!(Action::AbortInvocation {
                 invocation_id: eq(invocation_id),
-                invocation_epoch: eq(0),
+                invocation_epoch: eq(Some(0)),
             })),
             not(contains(pat!(Action::RegisterTimer {
                 timer_value: eq(TimerKeyValue::complete_journal_entry(

@@ -96,12 +96,15 @@ pub trait InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
     ) -> Result<(), NotRunningError>;
 
+    /// Aborts an invocation for the given `invocation_id` and `invocation_epoch`.
+    /// When `invocation_epoch` is `None`, abort any epoch for that invocation.
+    ///
     /// *Note*: When aborting an invocation, and restarting it, the `invocation_epoch` MUST be bumped.
     fn abort_invocation(
         &mut self,
         partition_leader_epoch: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        invocation_epoch: InvocationEpoch,
+        invocation_epoch: Option<InvocationEpoch>,
     ) -> Result<(), NotRunningError>;
 
     fn register_partition(
