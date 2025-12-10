@@ -55,10 +55,35 @@ pub enum Pop<Item> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::IsVariant)]
-pub(super) enum Eligibility {
+pub enum Eligibility {
     Eligible,
     EligibleAt(UniqueTimestamp),
     NotEligible,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailedEligibility {
+    EligibleRunning,
+    EligibleInbox,
+    ScheduledAt(UniqueTimestamp),
+    Paused,
+    Empty,
+    WaitingConcurrencyTokens,
+}
+
+impl DetailedEligibility {
+    #[inline(always)]
+    pub fn compact(self) -> Eligibility {
+        match self {
+            DetailedEligibility::EligibleRunning | DetailedEligibility::EligibleInbox => {
+                Eligibility::Eligible
+            }
+            DetailedEligibility::ScheduledAt(ts) => Eligibility::EligibleAt(ts),
+            DetailedEligibility::Paused
+            | DetailedEligibility::Empty
+            | DetailedEligibility::WaitingConcurrencyTokens => Eligibility::NotEligible,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -88,6 +113,23 @@ impl Stats {
         self.reset();
 
         stats
+    }
+
+    pub fn snapshot(&self) -> WaitStats {
+        let blocked_on_global_capacity_micros =
+            if let Some(last) = self.last_blocked_on_global_capacity {
+                let delay = last.elapsed();
+                self.blocked_on_global_capacity_micros
+                    .saturating_add(delay.as_micros().try_into().unwrap_or(u32::MAX))
+            } else {
+                self.blocked_on_global_capacity_micros
+            };
+
+        WaitStats {
+            blocked_on_global_capacity_ms: blocked_on_global_capacity_micros / 1000,
+            vqueue_start_throttling_ms: self.local_start_throttling_micros / 1000,
+            global_throttling_ms: self.global_throttling_micros / 1000,
+        }
     }
 }
 
@@ -140,11 +182,7 @@ pub struct VQueueState<S: VQueueStore> {
     head_stats: Stats,
 }
 
-impl<S> VQueueState<S>
-where
-    S: VQueueStore,
-    S::Item: std::fmt::Debug,
-{
+impl<S: VQueueStore> VQueueState<S> {
     pub fn new(
         qid: VQueueId,
         handle: VQueueHandle,
@@ -322,7 +360,7 @@ where
         now: UniqueTimestamp,
         meta: &VQueueMeta,
         config: &VQueueConfig,
-    ) -> Result<Eligibility, StorageError> {
+    ) -> Result<DetailedEligibility, StorageError> {
         self.queue
             .advance_if_needed(storage, &self.unconfirmed_assignments, &self.qid)?;
 
@@ -334,35 +372,38 @@ where
         now: UniqueTimestamp,
         meta: &VQueueMeta,
         config: &VQueueConfig,
-    ) -> Eligibility {
+    ) -> DetailedEligibility {
+        if meta.is_paused() {
+            return DetailedEligibility::Paused;
+        }
+
         let inbox_head = match self.queue.head() {
-            Some(QueueItem::Running(_)) => return Eligibility::Eligible,
+            Some(QueueItem::Running(_)) => return DetailedEligibility::EligibleRunning,
             Some(QueueItem::Inbox(item)) => item,
-            Some(QueueItem::None) => return Eligibility::NotEligible,
-            // needs polling, so we lean on the side of saying we are eligible to force the queue
-            // to being polled.
-            None => return Eligibility::Eligible,
+            Some(QueueItem::None) => return DetailedEligibility::Empty,
+            None => {
+                if meta.total_waiting() > 0 {
+                    // needs polling, so we lean on the side of saying we are eligible to force the queue
+                    // to being polled.
+                    return DetailedEligibility::EligibleInbox;
+                } else {
+                    return DetailedEligibility::Empty;
+                }
+            }
         };
 
         // Only applies to inboxed items.
         if let VisibleAt::At(ts) = inbox_head.visible_at()
             && ts > now
         {
-            return Eligibility::EligibleAt(ts);
+            return DetailedEligibility::ScheduledAt(ts);
         }
 
         if inbox_head.is_token_held() || self.has_available_tokens(meta, config) {
-            Eligibility::Eligible
+            DetailedEligibility::EligibleInbox
         } else {
-            Eligibility::NotEligible
+            DetailedEligibility::WaitingConcurrencyTokens
         }
-    }
-
-    pub fn has_available_tokens(&self, meta: &VQueueMeta, config: &VQueueConfig) -> bool {
-        let tokens_used = meta.tokens_used() + self.unconfirmed_assignments.len() as u32;
-        config
-            .concurrency()
-            .is_none_or(|limit| tokens_used < limit.get())
     }
 
     pub fn notify_removed(&mut self, item_hash: u64) {
@@ -384,5 +425,21 @@ where
         } else {
             false
         }
+    }
+
+    pub fn get_head_wait_stats(&self) -> WaitStats {
+        self.head_stats.snapshot()
+    }
+
+    /// How many items left in the running stage
+    pub fn get_remaining_in_running_stage(&self) -> u32 {
+        self.queue.remaining_in_running_stage()
+    }
+
+    fn has_available_tokens(&self, meta: &VQueueMeta, config: &VQueueConfig) -> bool {
+        let tokens_used = meta.tokens_used() + self.unconfirmed_assignments.len() as u32;
+        config
+            .concurrency()
+            .is_none_or(|limit| tokens_used < limit.get())
     }
 }
