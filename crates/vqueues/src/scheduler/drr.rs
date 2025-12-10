@@ -19,8 +19,7 @@ use metrics::counter;
 use pin_project::pin_project;
 use slotmap::SlotMap;
 use tokio::time::Instant;
-use tracing::warn;
-use tracing::{info, trace};
+use tracing::{error, info, trace, warn};
 
 use restate_futures_util::concurrency::Concurrency;
 use restate_storage_api::StorageError;
@@ -38,7 +37,9 @@ use crate::scheduler::vqueue_state::Pop;
 
 use super::Decision;
 use super::GlobalTokenBucket;
+use super::SchedulingStatus;
 use super::VQueueHandle;
+use super::VQueueSchedulerStatus;
 use super::vqueue_state::VQueueState;
 
 #[pin_project]
@@ -64,11 +65,7 @@ pub struct DRRScheduler<S: VQueueStore> {
     storage: S,
 }
 
-impl<S> DRRScheduler<S>
-where
-    S: VQueueStore,
-    S::Item: std::fmt::Debug,
-{
+impl<S: VQueueStore> DRRScheduler<S> {
     pub fn new(
         limit_qid_per_poll: NonZeroU16,
         max_items_per_decision: NonZeroU16,
@@ -319,6 +316,46 @@ where
             }
         }
         Ok(())
+    }
+
+    pub fn check_vqueue_status(
+        &mut self,
+        qid: &VQueueId,
+        cache: VQueuesMeta<'_>,
+    ) -> VQueueSchedulerStatus {
+        match self.id_lookup.get(qid).copied() {
+            None => VQueueSchedulerStatus {
+                status: SchedulingStatus::Dormant,
+                ..Default::default()
+            },
+            Some(handle) => {
+                let Some(qstate) = self.q.get_mut(handle) else {
+                    return VQueueSchedulerStatus {
+                        status: SchedulingStatus::Dormant,
+                        ..Default::default()
+                    };
+                };
+                let Some(meta) = cache.get_vqueue(&qstate.qid) else {
+                    return VQueueSchedulerStatus::default();
+                };
+                let config = cache.config_pool().find(&qstate.qid.parent);
+
+                match self
+                    .eligible
+                    .check_status(&self.storage, qstate, meta, config)
+                {
+                    // Note that could be ready, but we
+                    Ok(status) => VQueueSchedulerStatus {
+                        status,
+                        wait_stats: qstate.get_head_wait_stats(),
+                    },
+                    Err(err) => {
+                        error!("Error while checking vqueue {:?} status: {err}", qstate.qid);
+                        VQueueSchedulerStatus::default()
+                    }
+                }
+            }
+        }
     }
 
     fn wake_up(&mut self) {

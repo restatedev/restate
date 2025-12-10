@@ -20,6 +20,7 @@ use smallvec::SmallVec;
 use restate_futures_util::concurrency::{Concurrency, Permit};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueEntry, VQueueStore, WaitStats};
+use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::VQueueId;
 
 use crate::VQueueEvent;
@@ -41,6 +42,48 @@ slotmap::new_key_type! { struct VQueueHandle; }
 // Token bucket used for throttling over all vqueues
 type GlobalTokenBucket<C = gardal::TokioClock> =
     gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
+
+/// A public view of the scheduler's status of a single vqueue
+#[derive(Debug, Clone, Default)]
+pub struct VQueueSchedulerStatus {
+    /// Some statistics about the vqueue's head current experience with the scheduler
+    pub wait_stats: WaitStats,
+    /// The latest status of the vqueue
+    pub status: SchedulingStatus,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SchedulingStatus {
+    /// Scheduler doesn't know about this vqueue, it can be assumed that
+    /// the vqueue is empty or dormant.
+    #[default]
+    Dormant,
+    /// The vqueue head is ready to be scheduled and it's in the inbox stage
+    Ready,
+    /// The vqueue head is ready to be scheduled and it's in the running stage
+    ReadyRunning {
+        /// The number of items left in the running stage
+        remaining: u32,
+    },
+    /// The vqueue is throttled
+    Throttled {
+        until: MillisSinceEpoch,
+        scope: ThrottleScope,
+    },
+    /// The vqueue is scheduled to be woken up at the given time because the head
+    /// item is scheduled to run at that time.
+    Scheduled { at: MillisSinceEpoch },
+    /// The vqueue is paused
+    Paused,
+    /// The vqueue is blocked on capacity
+    BlockedOnCapacity,
+    /// The vqueue is empty
+    Empty,
+    /// The vqueue is waiting for concurrency tokens, concurrency tokens are released
+    /// when currently running items are completed or (in some cases) when running items
+    /// are parked.
+    WaitingConcurrencyTokens,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThrottleScope {
@@ -201,6 +244,30 @@ impl<Item: VQueueEntry> Decision<Item> {
         self.q.len()
     }
 
+    pub fn iter_qids(&self) -> impl Iterator<Item = &VQueueId> {
+        self.q.keys()
+    }
+
+    #[cfg(test)]
+    pub fn num_start(&self) -> usize {
+        self.num_start as usize
+    }
+
+    #[cfg(test)]
+    pub fn num_run(&self) -> usize {
+        self.num_run as usize
+    }
+
+    #[cfg(test)]
+    pub fn num_resume(&self) -> usize {
+        self.num_resume as usize
+    }
+
+    #[cfg(test)]
+    pub fn num_yield(&self) -> usize {
+        self.num_yield as usize
+    }
+
     /// Total number of items in all queues
     pub fn total_items(&self) -> usize {
         self.num_start as usize
@@ -228,11 +295,7 @@ pub struct SchedulerService<S: VQueueStore> {
     state: State<S>,
 }
 
-impl<S> SchedulerService<S>
-where
-    S: VQueueStore,
-    S::Item: std::fmt::Debug,
-{
+impl<S: VQueueStore> SchedulerService<S> {
     pub fn new_disabled() -> Self
     where
         S: ScanVQueueTable,
@@ -303,6 +366,19 @@ where
             State::Disabled => Poll::Pending,
             State::Active(ref mut drr_scheduler) => {
                 drr_scheduler.as_mut().poll_schedule_next(cx, vqueues)
+            }
+        }
+    }
+
+    pub fn check_vqueue_status(
+        &mut self,
+        qid: &VQueueId,
+        vqueues: VQueuesMeta<'_>,
+    ) -> VQueueSchedulerStatus {
+        match self.state {
+            State::Disabled => VQueueSchedulerStatus::default(),
+            State::Active(ref mut drr_scheduler) => {
+                drr_scheduler.as_mut().check_vqueue_status(qid, vqueues)
             }
         }
     }
