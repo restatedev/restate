@@ -489,8 +489,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 let record_unique_ts =
                     UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
-                for entry in &cmd.assignment.entries {
-                    inbox.yield_running(record_unique_ts, &entry.card).await?;
+                for entry in cmd.assignment.entries {
+                    inbox.yield_running(record_unique_ts, entry.card).await?;
                 }
                 Ok(())
             }
@@ -2807,19 +2807,29 @@ impl<S> StateMachineApplyContext<'_, S> {
                     .await?;
                 }
                 EntryKind::Invocation => {
-                    VQueues::new(
+                    let invocation_id = InvocationId::from_parts(
+                        qid.partition_key,
+                        InvocationUuid::from_slice(card.id.as_bytes()).unwrap(),
+                    );
+
+                    if VQueues::new(
                         qid,
                         self.storage,
                         self.vqueues_cache,
                         self.is_leader.then_some(self.action_collector),
                     )
                     .attempt_to_run(record_unique_ts, &card, updated_run_token_bucket_zero_time)
-                    .await?;
+                    .await?
+                    .is_none()
+                    {
+                        // Ignore invocations that were removed from the vqueue already from the
+                        // vqueue already.
+                        debug!(
+                            "Invocation {invocation_id} was removed from vqueue already, not starting"
+                        );
+                        continue;
+                    }
 
-                    let invocation_id = InvocationId::from_parts(
-                        qid.partition_key,
-                        InvocationUuid::from_slice(card.id.as_bytes()).unwrap(),
-                    );
                     self.run_invocation(qid, &card, invocation_id, record_unique_ts, stats)
                         .await?;
                 }
@@ -5185,7 +5195,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             Stage::Run => {
                 vqueue
-                    .yield_running(now, &entry_state_header.current_entry_card())
+                    .yield_running(now, entry_state_header.current_entry_card())
                     .await?;
             }
             Stage::Inbox => {
@@ -5287,20 +5297,30 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         if let Some(state_mutation) = self
             .storage
-            .get_item(&qid, card.created_at, card.kind, &card.id)
+            .get_item::<ExternalStateMutation>(&qid, card.created_at, card.kind, &card.id)
             .await?
         {
-            let modified_card = {
-                let mut vqueue = VQueues::new(
-                    qid,
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
+            let Some(modified_card) = VQueues::new(
+                qid,
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+            )
+            .attempt_to_run(now, card, updated_run_token_bucket_zero_time)
+            .await?
+            else {
+                // Entry was not found, this can happen if this state mutation was
+                // cancelled/removed before the scheduler could run it.
+                // However, since state mutations do not support cancellation, we print a warning to
+                // make it clear that we are ignoring this mutation
+                warn!(
+                    vqueue_id = ?qid,
+                    service_id = %state_mutation.service_id,
+                    entry_id = ?card.id,
+                    "State mutation entry in vqueue was removed before it got a chance to run. \
+                    This mutation will be ignored"
                 );
-
-                vqueue
-                    .attempt_to_run(now, card, updated_run_token_bucket_zero_time)
-                    .await?
+                return Ok(());
             };
 
             self.mutate_state(&state_mutation).await?;

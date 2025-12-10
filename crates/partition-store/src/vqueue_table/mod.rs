@@ -278,7 +278,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         self.raw_put_cf(KeyKind::VQueueInbox, key_buffer, [])
     }
 
-    fn delete_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard) {
+    fn pop_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard) -> Result<bool> {
         let key_buffer = InboxKey {
             partition_key: qid.partition_key,
             parent: qid.parent,
@@ -292,7 +292,12 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         }
         .to_bytes();
 
-        self.raw_delete_cf(KeyKind::VQueueInbox, key_buffer)
+        if self.get(InboxKey::TABLE, key_buffer)?.is_some() {
+            self.raw_delete_cf(KeyKind::VQueueInbox, key_buffer);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     fn mark_vqueue_as_active(&mut self, qid: &restate_types::vqueue::VQueueId) {
@@ -357,6 +362,17 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         };
 
         self.raw_put_cf(KeyKind::VQueueEntryState, key_buffer, value_buf);
+    }
+
+    fn delete_vqueue_entry_state(&mut self, qid: &VQueueId, kind: EntryKind, id: &EntryId) {
+        let key_buffer = EntryStateKey {
+            partition_key: qid.partition_key,
+            kind,
+            id: *id,
+        }
+        .to_bytes();
+
+        self.raw_delete_cf(KeyKind::VQueueEntryState, key_buffer);
     }
 
     fn put_item<E>(

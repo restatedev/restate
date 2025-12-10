@@ -13,23 +13,25 @@ use smallvec::SmallVec;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::vqueue::EffectivePriority;
 
-use super::VisibleAt;
+use super::{Stage, VisibleAt};
 
 #[derive(Debug, Default, Clone, bilrost::Message)]
 pub struct VQueueStatistics {
     /// The time spend in the queue before the first attempt to run. Measured by EMA of time
     /// from initial scheduled run time to first "dequeue/start".
-    #[bilrost(1)]
+    #[bilrost(tag(1))]
     pub(crate) avg_queue_duration_ms: u32,
     /// Timestamp of the last successful enqueue.
-    #[bilrost(2)]
+    #[bilrost(tag(2))]
     pub(crate) last_enqueued_at: Option<UniqueTimestamp>,
-    #[bilrost(3)]
+    /// The timestamp of the last start of a new entry.
+    #[bilrost(tag(3))]
     pub(crate) last_start_at: Option<UniqueTimestamp>,
-    #[bilrost(4)]
+    #[bilrost(tag(4))]
     pub(crate) last_completion_at: Option<UniqueTimestamp>,
-    #[bilrost(5)]
-    pub(crate) num_running: u32,
+    /// The timestamp of the last run attempt of a previously started entry.
+    #[bilrost(tag(5))]
+    pub(crate) last_resume_at: Option<UniqueTimestamp>,
 }
 
 impl VQueueStatistics {
@@ -42,37 +44,31 @@ impl VQueueStatistics {
         };
         self.avg_queue_duration_ms = u32::try_from(new_avg).unwrap_or(u32::MAX);
     }
-
-    fn increment_running(&mut self) {
-        self.num_running += 1;
-    }
-
-    fn decrement_running(&mut self) {
-        self.num_running -= 1;
-    }
 }
 
 #[derive(Debug, Default, Clone, bilrost::Message)]
 pub struct VQueueMeta {
     /// if true, the vqueue is paused, we don't pop entries from it until it's resumed.
-    #[bilrost(1)]
+    #[bilrost(tag(1))]
     is_paused: bool,
-    #[bilrost(2)]
-    pub(crate) stats: VQueueStatistics,
     /// Total number of entries (ready + paused + running + suspended + scheduled), but it doesn't
     /// include completed or failed entries. This is the length that is used to reject new invocations
     /// being added to the vqueue. The capacity configuration will limit this value.
-    #[bilrost(3)]
+    #[bilrost(tag(2))]
     pub(crate) length: u32,
     /// Number of concurrency tokens being used
-    #[bilrost(4)]
+    #[bilrost(tag(3))]
     pub(crate) num_tokens_used: u32,
     /// The number of entries waiting to be dequeued. The vector index implies the priority
-    #[bilrost(5)]
-    pub(crate) num_waiting: smallvec::SmallVec<[u32; EffectivePriority::NUM_PRIORITIES]>,
+    #[bilrost(tag(4), encoding(packed))]
+    pub(crate) num_waiting: [u32; EffectivePriority::NUM_PRIORITIES],
+    #[bilrost(tag(5))]
+    pub(crate) num_running: u32,
     /// The zero time point of the "starts" token bucket
-    #[bilrost(6)]
+    #[bilrost(tag(6))]
     pub(crate) start_tb_zero_time: f64,
+    #[bilrost(tag(7))]
+    pub(crate) stats: VQueueStatistics,
 }
 
 impl VQueueMeta {
@@ -92,6 +88,14 @@ impl VQueueMeta {
         self.num_waiting.iter().sum()
     }
 
+    fn increment_running(&mut self) {
+        self.num_running += 1;
+    }
+
+    fn decrement_running(&mut self) {
+        self.num_running -= 1;
+    }
+
     /// A vqueue is considered active when it's of interest to the scheduler.
     ///
     /// The scheduler cares about vqueues that have entries that are already running or that are waiting
@@ -101,18 +105,15 @@ impl VQueueMeta {
     /// entries. Once running entries are moved to waiting or completed, the vqueue is be
     /// considered dormant until it's unpaused.
     pub fn is_active(&self) -> bool {
-        self.stats.num_running > 0 || (self.total_waiting() > 0 && !self.is_paused())
+        self.num_running > 0 || (self.total_waiting() > 0 && !self.is_paused())
     }
 
     pub fn num_waiting(&self, priority: EffectivePriority) -> u32 {
-        self.num_waiting
-            .get(priority as usize)
-            .copied()
-            .unwrap_or_default()
+        self.num_waiting[priority as usize]
     }
 
     pub fn num_running(&self) -> u32 {
-        self.stats.num_running
+        self.num_running
     }
 
     pub fn stats(&self) -> &VQueueStatistics {
@@ -137,18 +138,11 @@ impl VQueueMeta {
     }
 
     fn add_to_waiting(&mut self, priority: EffectivePriority) {
-        let priority = priority as usize;
-        if self.num_waiting.len() <= priority {
-            self.num_waiting.resize(priority + 1, 0);
-        }
-        self.num_waiting[priority] += 1;
+        self.num_waiting[priority as usize] += 1;
     }
 
     fn remove_from_waiting(&mut self, priority: EffectivePriority) {
-        let priority = priority as usize;
-        assert!(self.num_waiting.len() > priority);
-        assert!(self.num_waiting[priority] > 0);
-        self.num_waiting[priority] -= 1;
+        self.num_waiting[priority as usize] -= 1;
     }
 
     fn acquire_token(&mut self) {
@@ -187,8 +181,13 @@ impl VQueueMeta {
                 priority,
                 updated_start_tb_zero_time: updated_run_token_bucket_zero_time,
             } => {
-                self.stats.last_start_at = Some(now);
-                self.stats.increment_running();
+                if priority.is_new() {
+                    self.stats.last_start_at = Some(now);
+                } else {
+                    self.stats.last_resume_at = Some(now);
+                }
+
+                self.increment_running();
                 self.remove_from_waiting(priority);
 
                 if priority.is_new()
@@ -212,14 +211,24 @@ impl VQueueMeta {
             Action::Park {
                 should_release_concurrency_token,
                 priority,
-                was_running,
+                previous_stage,
             } => {
                 debug_assert!(self.length > 0);
-                if was_running {
-                    self.stats.decrement_running();
-                } else {
-                    self.remove_from_waiting(priority);
+                match previous_stage {
+                    Stage::Unknown => {
+                        anyhow::bail!("Unknown stage for vqueue entry park action: {update:?}");
+                    }
+                    Stage::Inbox => {
+                        self.remove_from_waiting(priority);
+                    }
+                    Stage::Run => {
+                        self.decrement_running();
+                    }
+                    Stage::Park => {
+                        // do nothing.
+                    }
                 }
+
                 if should_release_concurrency_token && priority.token_held() {
                     // Release the token immediately on park if this entry doesn't require
                     // holding while parked.
@@ -230,23 +239,33 @@ impl VQueueMeta {
                 debug_assert!(self.length > 0);
                 self.add_to_waiting(priority);
             }
-            Action::YieldRunning { priority } => {
+            Action::YieldRunning => {
                 debug_assert!(self.length > 0);
-                self.stats.decrement_running();
-                self.add_to_waiting(priority);
+                self.decrement_running();
+                self.add_to_waiting(EffectivePriority::TokenHeld);
             }
             Action::Complete {
-                was_waiting,
+                previous_stage,
                 priority,
             } => {
                 debug_assert!(self.length > 0);
                 self.length -= 1;
                 self.stats.last_completion_at = Some(now);
-                if was_waiting {
-                    self.remove_from_waiting(priority);
-                } else {
-                    self.stats.decrement_running();
+                match previous_stage {
+                    Stage::Unknown => {
+                        anyhow::bail!("Unknown stage for vqueue entry complete action: {update:?}")
+                    }
+                    Stage::Inbox => {
+                        self.remove_from_waiting(priority);
+                    }
+                    Stage::Run => {
+                        self.decrement_running();
+                    }
+                    Stage::Park => {
+                        // do nothing.
+                    }
                 }
+
                 if priority.token_held() {
                     self.release_token();
                 }
@@ -316,26 +335,26 @@ pub enum Action {
     Park {
         priority: EffectivePriority,
         should_release_concurrency_token: bool,
-        was_running: bool,
+        previous_stage: Stage,
     },
     // Wake up after pause or suspend.
     #[bilrost(tag(5), message)]
     WakeUp { priority: EffectivePriority },
     // Item moved from running back to waiting
     #[bilrost(tag(6), message)]
-    YieldRunning { priority: EffectivePriority },
+    YieldRunning,
     // Execution has ended (failed, succeeded, killed, etc.)
     #[bilrost(tag(7), message)]
     Complete {
         // Must be the latest priority assigned to the entry (effective priority)
         priority: EffectivePriority,
-        was_waiting: bool,
+        previous_stage: Stage,
     },
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct Update {
-    #[bilrost(1)]
+    #[bilrost(tag(1))]
     pub(super) ts: UniqueTimestamp,
     #[bilrost(oneof(2, 3, 4, 5, 6, 7))]
     pub(super) action: Action,
