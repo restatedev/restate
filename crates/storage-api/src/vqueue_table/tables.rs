@@ -52,8 +52,9 @@ pub trait WriteVQueueTable {
     /// Places an entry onto an inbox stage
     fn put_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard);
 
-    /// Deletes an entry from an inbox stage
-    fn delete_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard);
+    /// Deletes entry from inbox if it was found and the returned boolean indicates whether it was
+    /// successful or not.
+    fn pop_inbox_entry(&mut self, qid: &VQueueId, stage: Stage, card: &EntryCard) -> Result<bool>;
 
     /// Adds a vqueue to the list of active vqueues
     ///
@@ -88,6 +89,8 @@ pub trait WriteVQueueTable {
     ) where
         E: EntryStateKind + bilrost::Message + bilrost::encoding::RawMessage,
         (): bilrost::encoding::EmptyState<(), E>;
+
+    fn delete_vqueue_entry_state(&mut self, qid: &VQueueId, kind: EntryKind, id: &EntryId);
 
     /// Stores a vqueue item for later use.
     fn put_item<E>(
