@@ -85,6 +85,8 @@ where
     /// The entry has completed execution and it needs to be removed from the vqueue.
     ///
     /// Does nothing if the entry was not found in the previous stage.
+    ///
+    /// Returns true if the entry was found and was ended correctly, false otherwise.
     pub async fn end_by_id(
         storage: &'a mut S,
         cache: &'a mut VQueuesMetaMut,
@@ -106,9 +108,7 @@ where
         let mut inbox = Self::new(entry_state.vqueue_id(), storage, cache, action_collector);
         inbox
             .end(at, entry_state.stage(), &entry_state.current_entry_card())
-            .await?;
-
-        Ok(true)
+            .await
     }
 
     pub async fn enqueue_new<E>(
@@ -178,16 +178,23 @@ where
     }
 
     /// Moves a vqueue item from [`Stage::Inbox`] to [`Stage::Run`] and returns the modified
-    /// [`EntryCard`] to identify the updated vqueue item.
+    /// [`Option<EntryCard>`] to identify the updated vqueue item.
+    ///
+    /// The returned [`Option<EntryCard>`] is `None` if the vqueue item was not found in the inbox.
     pub async fn attempt_to_run(
         &mut self,
         at: UniqueTimestamp,
         card: &EntryCard,
         updated_run_token_bucket_zero_time: Option<f64>,
-    ) -> Result<EntryCard, StorageError> {
+    ) -> Result<Option<EntryCard>, StorageError> {
         // Remove from inbox and move to ready
-        self.storage
-            .delete_inbox_entry(&self.qid, Stage::Inbox, card);
+        if !self
+            .storage
+            .pop_inbox_entry(&self.qid, Stage::Inbox, card)?
+        {
+            // We don't do work if the inbox entry was not found
+            return Ok(None);
+        }
 
         let mut updates = VQueueMetaUpdates::default();
         updates.push(
@@ -232,17 +239,20 @@ where
             collector.push(A::from(inbox_event));
         }
 
-        Ok(modified_card)
+        Ok(Some(modified_card))
     }
 
     /// Wake up moves the inbox entry from (parked) back into the inbox stage.
+    ///
+    /// Returns true if the entry was found in the parked inbox and resumed correctly, false otherwise.
     pub async fn wake_up(
         &mut self,
         at: UniqueTimestamp,
         card: &EntryCard,
-    ) -> Result<(), StorageError> {
-        self.storage
-            .delete_inbox_entry(&self.qid, Stage::Park, card);
+    ) -> Result<bool, StorageError> {
+        if !self.storage.pop_inbox_entry(&self.qid, Stage::Park, card)? {
+            return Ok(false);
+        }
 
         let mut updates = VQueueMetaUpdates::default();
         updates.push(
@@ -285,21 +295,27 @@ where
             collector.push(A::from(inbox_event));
         }
 
-        Ok(())
+        Ok(true)
     }
 
     /// Park an entry
     ///
     /// If `should_release_concurrency_token` is true, the parked entry will release its token
+    ///
+    /// Returns `true` if the entry was found in inbox and parked correctly, `false` otherwise.
     pub async fn park(
         &mut self,
         at: UniqueTimestamp,
         card: &EntryCard,
         previous_stage: Stage,
         should_release_concurrency_token: bool,
-    ) -> Result<(), StorageError> {
-        self.storage
-            .delete_inbox_entry(&self.qid, previous_stage, card);
+    ) -> Result<bool, StorageError> {
+        if !self
+            .storage
+            .pop_inbox_entry(&self.qid, previous_stage, card)?
+        {
+            return Ok(false);
+        }
 
         let mut updates = VQueueMetaUpdates::default();
 
@@ -308,7 +324,7 @@ where
             metadata::Action::Park {
                 should_release_concurrency_token,
                 priority: card.priority,
-                was_running: matches!(previous_stage, Stage::Run),
+                previous_stage,
             },
         );
 
@@ -337,7 +353,9 @@ where
         self.storage
             .put_vqueue_entry_state(&self.qid, &modified_card, Stage::Park, ());
 
-        if let Some(collector) = self.action_collector.as_deref_mut() {
+        if matches!(previous_stage, Stage::Inbox)
+            && let Some(collector) = self.action_collector.as_deref_mut()
+        {
             // Let the scheduler know about the new entry to keep its head-of-line cache of the vqueue
             // as fresh as possible.
             let inbox_event = VQueueEvent::new(
@@ -349,27 +367,26 @@ where
             collector.push(A::from(inbox_event));
         }
 
-        Ok(())
+        Ok(true)
     }
 
     /// Movement of a running entry back to the waiting inbox happens on failover of pp.
+    ///
+    /// Returns `true` if the entry was found in running inbox and yielded correctly, `false` otherwise.
     pub async fn yield_running(
         &mut self,
         at: UniqueTimestamp,
-        card: &EntryCard,
-    ) -> Result<(), StorageError> {
+        card: EntryCard,
+    ) -> Result<bool, StorageError> {
         // Remove from running and move to waiting
-        self.storage.delete_inbox_entry(&self.qid, Stage::Run, card);
+        if !self.storage.pop_inbox_entry(&self.qid, Stage::Run, &card)? {
+            return Ok(false);
+        }
 
         // Not sure about that. we need to treat it similar to enqueue though, but it was already
         // running, probably needs its own metadata update action.
         let mut updates = VQueueMetaUpdates::default();
-        updates.push(
-            at,
-            metadata::Action::YieldRunning {
-                priority: card.priority,
-            },
-        );
+        updates.push(at, metadata::Action::YieldRunning);
 
         // Update cache
         let (was_active_before, is_active_now) = self
@@ -384,33 +401,39 @@ where
         }
 
         // We add the entry back into the waiting inbox
-        self.storage.put_inbox_entry(&self.qid, Stage::Inbox, card);
+        self.storage.put_inbox_entry(&self.qid, Stage::Inbox, &card);
 
         self.storage
-            .put_vqueue_entry_state(&self.qid, card, Stage::Inbox, ());
+            .put_vqueue_entry_state(&self.qid, &card, Stage::Inbox, ());
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             // Let the scheduler know about the new entry to keep its head-of-line cache of the vqueue
             // as fresh as possible.
-            let inbox_event = VQueueEvent::new(self.qid, EventDetails::Enqueued(card.clone()));
+            let inbox_event = VQueueEvent::new(self.qid, EventDetails::Enqueued(card));
             collector.push(A::from(inbox_event));
         }
 
-        Ok(())
+        Ok(true)
     }
 
     /// The entry has completed execution and it needs to be removed from the vqueue.
     ///
     /// Does nothing if the entry was not found in the previous stage.
+    ///
+    /// Returns `true` if the entry was found in `previous_stage` inbox and was ended correctly, `false` otherwise.
     pub async fn end(
         &mut self,
         at: UniqueTimestamp,
         previous_stage: Stage,
         card: &EntryCard,
-    ) -> Result<(), StorageError> {
+    ) -> Result<bool, StorageError> {
         // Remove from the current stage
-        self.storage
-            .delete_inbox_entry(&self.qid, previous_stage, card);
+        if !self
+            .storage
+            .pop_inbox_entry(&self.qid, previous_stage, card)?
+        {
+            return Ok(false);
+        }
 
         self.storage
             .delete_item(&self.qid, card.created_at, card.kind, &card.id);
@@ -420,9 +443,14 @@ where
             at,
             metadata::Action::Complete {
                 priority: card.priority,
-                was_waiting: matches!(previous_stage, Stage::Inbox),
+                previous_stage,
             },
         );
+
+        // todo(asoli): We need to discuss whether entry_state should outlive the item's
+        // lifecycle in the queue or not. For now, we'll remove it.
+        self.storage
+            .delete_vqueue_entry_state(&self.qid, card.kind, &card.id);
 
         // Update cache
         let (was_active_before, is_active_now) = self
@@ -436,7 +464,9 @@ where
             self.storage.mark_vqueue_as_dormant(&self.qid);
         }
 
-        if let Some(collector) = self.action_collector.as_deref_mut() {
+        if matches!(previous_stage, Stage::Inbox)
+            && let Some(collector) = self.action_collector.as_deref_mut()
+        {
             let inbox_event = VQueueEvent::new(
                 self.qid,
                 EventDetails::Removed {
@@ -446,6 +476,6 @@ where
             collector.push(A::from(inbox_event));
         }
 
-        Ok(())
+        Ok(true)
     }
 }

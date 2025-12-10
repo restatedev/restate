@@ -489,8 +489,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 let record_unique_ts =
                     UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
-                for entry in &cmd.assignment.entries {
-                    inbox.yield_running(record_unique_ts, &entry.card).await?;
+                for entry in cmd.assignment.entries {
+                    inbox.yield_running(record_unique_ts, entry.card).await?;
                 }
                 Ok(())
             }
@@ -2793,35 +2793,46 @@ impl<S> StateMachineApplyContext<'_, S> {
         for entry in command.assignment.entries {
             let vqueues::Entry { card, stats } = entry;
 
+            let Some(modified_card) = VQueues::new(
+                qid,
+                self.storage,
+                self.vqueues_cache,
+                self.is_leader.then_some(self.action_collector),
+            )
+            .attempt_to_run(record_unique_ts, &card, updated_run_token_bucket_zero_time)
+            .await?
+            else {
+                // Ignore invocations/mutations that were removed from the vqueue already from the
+                // vqueue already.
+                debug!(
+                    vqueue_id = ?qid,
+                    "Not running vqueue entry {card:?} since it was removed from vqueue already!"
+                );
+                continue;
+            };
+
             match card.kind {
                 EntryKind::Unknown => {
                     panic!("Unknown card kind in inbox, cannot proceed");
                 }
                 EntryKind::StateMutation => {
-                    self.vqueue_mutate_state(
-                        qid,
-                        &card,
-                        record_unique_ts,
-                        updated_run_token_bucket_zero_time,
-                    )
-                    .await?;
+                    self.vqueue_mutate_state(qid, &modified_card, record_unique_ts)
+                        .await?;
                 }
                 EntryKind::Invocation => {
-                    VQueues::new(
-                        qid,
-                        self.storage,
-                        self.vqueues_cache,
-                        self.is_leader.then_some(self.action_collector),
-                    )
-                    .attempt_to_run(record_unique_ts, &card, updated_run_token_bucket_zero_time)
-                    .await?;
-
                     let invocation_id = InvocationId::from_parts(
                         qid.partition_key,
                         InvocationUuid::from_slice(card.id.as_bytes()).unwrap(),
                     );
-                    self.run_invocation(qid, &card, invocation_id, record_unique_ts, stats)
-                        .await?;
+
+                    self.run_invocation(
+                        qid,
+                        &modified_card,
+                        invocation_id,
+                        record_unique_ts,
+                        stats,
+                    )
+                    .await?;
                 }
             }
         }
@@ -5185,7 +5196,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
             Stage::Run => {
                 vqueue
-                    .yield_running(now, &entry_state_header.current_entry_card())
+                    .yield_running(now, entry_state_header.current_entry_card())
                     .await?;
             }
             Stage::Inbox => {
@@ -5280,29 +5291,15 @@ impl<S> StateMachineApplyContext<'_, S> {
         qid: VQueueId,
         card: &EntryCard,
         now: UniqueTimestamp,
-        updated_run_token_bucket_zero_time: Option<f64>,
     ) -> Result<(), Error>
     where
         S: WriteVQueueTable + ReadVQueueTable + ReadStateTable + WriteStateTable,
     {
         if let Some(state_mutation) = self
             .storage
-            .get_item(&qid, card.created_at, card.kind, &card.id)
+            .get_item::<ExternalStateMutation>(&qid, card.created_at, card.kind, &card.id)
             .await?
         {
-            let modified_card = {
-                let mut vqueue = VQueues::new(
-                    qid,
-                    self.storage,
-                    self.vqueues_cache,
-                    self.is_leader.then_some(self.action_collector),
-                );
-
-                vqueue
-                    .attempt_to_run(now, card, updated_run_token_bucket_zero_time)
-                    .await?
-            };
-
             self.mutate_state(&state_mutation).await?;
 
             VQueues::new(
@@ -5311,7 +5308,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 self.vqueues_cache,
                 self.is_leader.then_some(self.action_collector),
             )
-            .end(now, Stage::Run, &modified_card)
+            .end(now, Stage::Run, card)
             .await?;
         }
 
