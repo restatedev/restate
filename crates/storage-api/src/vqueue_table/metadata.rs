@@ -70,6 +70,9 @@ pub struct VQueueMeta {
     /// The number of entries waiting to be dequeued. The vector index implies the priority
     #[bilrost(5)]
     pub(crate) num_waiting: smallvec::SmallVec<[u32; EffectivePriority::NUM_PRIORITIES]>,
+    /// The zero time point of the "starts" token bucket
+    #[bilrost(6)]
+    pub(crate) start_tb_zero_time: f64,
 }
 
 impl VQueueMeta {
@@ -118,6 +121,15 @@ impl VQueueMeta {
 
     pub fn last_enqueued_ts(&self) -> Option<UniqueTimestamp> {
         self.stats.last_enqueued_at
+    }
+
+    pub fn last_start_ts(&self) -> Option<UniqueTimestamp> {
+        self.stats.last_start_at
+    }
+
+    /// Used to rehydrate the run/start token bucket on schedulers
+    pub fn start_tb_zero_time(&self) -> f64 {
+        self.start_tb_zero_time
     }
 
     pub fn is_paused(&self) -> bool {
@@ -173,12 +185,10 @@ impl VQueueMeta {
             Action::StartAttempt {
                 visible_at,
                 priority,
+                updated_start_tb_zero_time: updated_run_token_bucket_zero_time,
             } => {
                 self.stats.last_start_at = Some(now);
                 self.stats.increment_running();
-                if !priority.token_held() {
-                    self.acquire_token();
-                }
                 self.remove_from_waiting(priority);
 
                 if priority.is_new()
@@ -188,6 +198,15 @@ impl VQueueMeta {
                     // queuing from the moment it became visible, not the creation ts.
                     let latency_ms = now.milliseconds_since(visible_since);
                     self.stats.update_avg_queue_duration(latency_ms);
+                }
+
+                // Update the run token bucket's zero time if it was supplied
+                if let Some(updated_run_token_bucket_zero_time) = updated_run_token_bucket_zero_time
+                {
+                    self.start_tb_zero_time = updated_run_token_bucket_zero_time;
+                }
+                if !priority.token_held() {
+                    self.acquire_token();
                 }
             }
             Action::Park {
@@ -286,11 +305,12 @@ pub enum Action {
     /// Entry is being enqueued for the first time
     #[bilrost(tag(2), message)]
     EnqueueNew { priority: EffectivePriority },
-    #[bilrost(tag(3), message)]
     /// An entry from inbox stage is being moved to Run
+    #[bilrost(tag(3), message)]
     StartAttempt {
         visible_at: VisibleAt,
         priority: EffectivePriority,
+        updated_start_tb_zero_time: Option<f64>,
     },
     #[bilrost(tag(4), message)]
     Park {

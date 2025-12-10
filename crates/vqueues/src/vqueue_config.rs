@@ -12,9 +12,9 @@
 
 use std::num::NonZeroU32;
 
+use gardal::Limit;
 use hashbrown::HashMap;
 
-use restate_types::rate::Rate;
 use restate_types::vqueue::VQueueParent;
 
 static UNLIMITED: VQueueConfig = const { VQueueConfig::new() };
@@ -23,7 +23,7 @@ static SINGLETON: VQueueConfig = const {
         is_paused: false,
         concurrency: Some(NonZeroU32::new(1).unwrap()),
         capacity: None,
-        rate_limit: None,
+        start_rate_limit: None,
     }
 };
 
@@ -64,9 +64,9 @@ impl ConfigPool {
     }
 
     #[inline]
-    pub fn rate_limit(&self, parent: &VQueueParent) -> Option<Rate> {
+    pub fn start_rate_limit(&self, parent: &VQueueParent) -> Option<&Limit> {
         let parent = self.vqueues.get(parent)?;
-        parent.rate_limit()
+        parent.start_rate_limit()
     }
 
     #[inline]
@@ -83,7 +83,7 @@ pub struct VQueueConfig {
     is_paused: bool,
     concurrency: Option<NonZeroU32>,
     capacity: Option<NonZeroU32>,
-    rate_limit: Option<Rate>,
+    start_rate_limit: Option<Limit>,
 }
 
 impl VQueueConfig {
@@ -91,7 +91,7 @@ impl VQueueConfig {
         Self {
             concurrency: None,
             capacity: None,
-            rate_limit: None,
+            start_rate_limit: None,
             is_paused: false,
         }
     }
@@ -107,8 +107,8 @@ impl VQueueConfig {
     }
 
     #[inline]
-    pub const fn rate_limit(&self) -> Option<Rate> {
-        self.rate_limit
+    pub const fn start_rate_limit(&self) -> Option<&Limit> {
+        self.start_rate_limit.as_ref()
     }
 
     #[inline]

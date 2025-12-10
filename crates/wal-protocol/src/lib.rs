@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bytes::Bytes;
+
 use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{
@@ -194,8 +196,10 @@ pub enum Command {
     // ----------------------------------
     /// A command to attempt a run an entry in the vqueue (invocation, or otherwise)
     /// *Since v1.6.0
-    VQWaitingToRunning(vqueues::Cards),
-    VQYieldRunning(vqueues::Cards),
+    /// payload is vqueues::VQWaitingToRunning (bilrost encoded)
+    VQWaitingToRunning(Bytes),
+    /// payload is vqueues::VQYieldRunning (bilrost encoded)
+    VQYieldRunning(Bytes),
 }
 
 impl Command {
