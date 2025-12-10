@@ -59,7 +59,7 @@ use restate_storage_api::service_status_table::{
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::timer_table::{Timer, WriteTimerTable};
-use restate_storage_api::vqueue_table::{self, EntryId, EntryKind, Stage};
+use restate_storage_api::vqueue_table::{self, EntryId, EntryKind, Stage, WaitStats};
 use restate_storage_api::vqueue_table::{
     AsEntryStateHeader, EntryCard, ReadVQueueTable, VisibleAt, WriteVQueueTable,
 };
@@ -114,9 +114,9 @@ use restate_types::vqueue::{NewEntryPriority, VQueueId, VQueueInstance, VQueuePa
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
 use restate_vqueues::{VQueues, VQueuesMetaMut};
-use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyDisplay;
 use restate_wal_protocol::timer::TimerKeyValue;
+use restate_wal_protocol::{Command, vqueues};
 
 use self::utils::SpanExt;
 use crate::metric_definitions::{PARTITION_APPLY_COMMAND, USAGE_LEADER_JOURNAL_ENTRY_COUNT};
@@ -458,25 +458,27 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteJournalEventsTable,
     {
         match command {
-            Command::VQWaitingToRunning(cards) => {
+            Command::VQWaitingToRunning(encoded_cmd) => {
                 // move the entry from inbox and notify the scheduler that it has started
                 // also, ship to invoker.
-                self.attempt_to_run(&cards).await?;
+                let command = vqueues::VQWaitingToRunning::decode(encoded_cmd)?;
+                self.attempt_to_run(command).await?;
                 Ok(())
             }
             // perhaps consolidate with the one above.
-            Command::VQYieldRunning(cmd) => {
+            Command::VQYieldRunning(encoded_cmd) => {
                 // move the entry from inbox and notify the scheduler that it has started
                 // also, ship to invoker.
+                let cmd = vqueues::VQYieldRunning::decode(encoded_cmd)?;
                 tracing::info!(
                     "Entry in qid_parent={}, instance={} should be placed back to the waiting queue",
-                    cmd.parent,
-                    cmd.instance
+                    cmd.assignment.parent,
+                    cmd.assignment.instance
                 );
                 let qid = VQueueId::new(
-                    VQueueParent::from_raw(cmd.parent),
-                    cmd.partition_key,
-                    VQueueInstance::from_raw(cmd.instance),
+                    VQueueParent::from_raw(cmd.assignment.parent),
+                    cmd.assignment.partition_key,
+                    VQueueInstance::from_raw(cmd.assignment.instance),
                 );
                 let mut inbox = VQueues::new(
                     qid,
@@ -487,9 +489,8 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                 let record_unique_ts =
                     UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
-                for card in cmd.decode_entry_cards() {
-                    let card = card?;
-                    inbox.yield_running(record_unique_ts, &card).await?;
+                for entry in &cmd.assignment.entries {
+                    inbox.yield_running(record_unique_ts, &entry.card).await?;
                 }
                 Ok(())
             }
@@ -2766,10 +2767,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     }
 
     // [vqueues only]
-    async fn attempt_to_run(
-        &mut self,
-        cards: &restate_wal_protocol::vqueues::Cards,
-    ) -> Result<(), Error>
+    async fn attempt_to_run(&mut self, command: vqueues::VQWaitingToRunning) -> Result<(), Error>
     where
         S: WriteInboxTable
             + WriteVirtualObjectStatusTable
@@ -2784,22 +2782,29 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteStateTable,
     {
         let qid = VQueueId::new(
-            VQueueParent::from_raw(cards.parent),
-            cards.partition_key,
-            VQueueInstance::from_raw(cards.instance),
+            VQueueParent::from_raw(command.assignment.parent),
+            command.assignment.partition_key,
+            VQueueInstance::from_raw(command.assignment.instance),
         );
 
         let record_unique_ts = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
-        for card in cards.decode_entry_cards() {
-            let card = card?;
+        let updated_run_token_bucket_zero_time =
+            command.meta_updates.updated_token_bucket_zero_time;
+        for entry in command.assignment.entries {
+            let vqueues::Entry { card, stats } = entry;
 
             match card.kind {
                 EntryKind::Unknown => {
                     panic!("Unknown card kind in inbox, cannot proceed");
                 }
                 EntryKind::StateMutation => {
-                    self.vqueue_mutate_state(qid, &card, record_unique_ts)
-                        .await?;
+                    self.vqueue_mutate_state(
+                        qid,
+                        &card,
+                        record_unique_ts,
+                        updated_run_token_bucket_zero_time,
+                    )
+                    .await?;
                 }
                 EntryKind::Invocation => {
                     VQueues::new(
@@ -2808,14 +2813,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                         self.vqueues_cache,
                         self.is_leader.then_some(self.action_collector),
                     )
-                    .attempt_to_run(record_unique_ts, &card)
+                    .attempt_to_run(record_unique_ts, &card, updated_run_token_bucket_zero_time)
                     .await?;
 
                     let invocation_id = InvocationId::from_parts(
                         qid.partition_key,
                         InvocationUuid::from_slice(card.id.as_bytes()).unwrap(),
                     );
-                    self.run_invocation(qid, &card, invocation_id, record_unique_ts)
+                    self.run_invocation(qid, &card, invocation_id, record_unique_ts, stats)
                         .await?;
                 }
             }
@@ -2831,6 +2836,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         card: &EntryCard,
         invocation_id: InvocationId,
         at: UniqueTimestamp,
+        wait_stats: WaitStats,
     ) -> Result<(), Error>
     where
         S: WriteInboxTable
@@ -2884,6 +2890,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         self.record_created_at,
                     );
 
+                info!("Starting invocation {invocation_id}, scheduler stats: {wait_stats:?}");
                 self.init_journal_and_vqueue_invoke(
                     qid,
                     card.unique_hash(),
@@ -2895,6 +2902,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             InvocationStatus::Invoked(metadata) if self.is_leader => {
                 // just send to invoker
                 debug_if_leader!(self.is_leader, "Invoke");
+                info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
                 self.action_collector.push(Action::VQInvoke {
                     qid,
                     item_hash: card.unique_hash(),
@@ -5272,6 +5280,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         qid: VQueueId,
         card: &EntryCard,
         now: UniqueTimestamp,
+        updated_run_token_bucket_zero_time: Option<f64>,
     ) -> Result<(), Error>
     where
         S: WriteVQueueTable + ReadVQueueTable + ReadStateTable + WriteStateTable,
@@ -5289,18 +5298,10 @@ impl<S> StateMachineApplyContext<'_, S> {
                     self.is_leader.then_some(self.action_collector),
                 );
 
-                vqueue.attempt_to_run(now, card).await?
+                vqueue
+                    .attempt_to_run(now, card, updated_run_token_bucket_zero_time)
+                    .await?
             };
-
-            // Temporary solution to consume the unconfirmed assignment held by the scheduler until
-            // this is done through `VQueues::attempt_to_run` or we manage the permits somewhere
-            // else.
-            if self.is_leader {
-                self.action_collector.push(Action::VQConsumePermit {
-                    qid,
-                    item_hash: card.unique_hash(),
-                });
-            }
 
             self.mutate_state(&state_mutation).await?;
 

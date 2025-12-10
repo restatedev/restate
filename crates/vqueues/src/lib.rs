@@ -31,6 +31,8 @@ use restate_types::vqueue::{EffectivePriority, NewEntryPriority, VQueueId};
 pub enum EventDetails<Item> {
     /// Entry is being enqueued for the first time
     Enqueued(Item),
+    /// Scheduler assignment has been confirmed
+    RunAttemptConfirmed { item_hash: u64 },
     /// We cannot accept the run attempt request, notify the scheduler
     RunAttemptRejected { item_hash: u64 },
     /// Entry has been removed from the waiting inbox
@@ -181,6 +183,7 @@ where
         &mut self,
         at: UniqueTimestamp,
         card: &EntryCard,
+        updated_run_token_bucket_zero_time: Option<f64>,
     ) -> Result<EntryCard, StorageError> {
         // Remove from inbox and move to ready
         self.storage
@@ -192,6 +195,7 @@ where
             metadata::Action::StartAttempt {
                 visible_at: card.visible_at,
                 priority: card.priority,
+                updated_start_tb_zero_time: updated_run_token_bucket_zero_time,
             },
         );
 
@@ -215,6 +219,18 @@ where
         // update the entry state
         self.storage
             .put_vqueue_entry_state(&self.qid, &modified_card, Stage::Run, ());
+
+        if let Some(collector) = self.action_collector.as_deref_mut()
+            && is_active_now
+        {
+            let inbox_event = VQueueEvent::new(
+                self.qid,
+                EventDetails::RunAttemptConfirmed {
+                    item_hash: card.unique_hash(),
+                },
+            );
+            collector.push(A::from(inbox_event));
+        }
 
         Ok(modified_card)
     }

@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use hashbrown::{HashMap, hash_map};
-use tracing::debug;
+use tracing::{debug, trace};
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaUpdates};
@@ -54,6 +54,14 @@ impl<'a> VQueuesMeta<'a> {
             .queues
             .iter()
             .filter(|(_, meta)| meta.is_active())
+    }
+
+    pub fn num_active(&self) -> usize {
+        self.inner
+            .queues
+            .values()
+            .filter(|meta| meta.is_active())
+            .count()
     }
 
     pub fn report(&self) {
@@ -171,5 +179,8 @@ impl VQueuesMetaMut {
             self.queues.len(),
             self.queues.allocation_size(),
         );
+        for (qid, meta) in self.queues.iter() {
+            trace!("[{qid:?}]: {meta:?}");
+        }
     }
 }

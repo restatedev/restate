@@ -25,6 +25,7 @@ restate-workspace-hack = { workspace = true }
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
+restate-futures-util = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-ingress-kafka = { workspace = true }
 restate-invoker-api = { workspace = true }
