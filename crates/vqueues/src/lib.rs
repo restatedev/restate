@@ -119,7 +119,7 @@ where
         kind: EntryKind,
         id: impl Into<EntryId>,
         item: Option<E>,
-    ) -> Result<(), StorageError>
+    ) -> Result<EntryCard, StorageError>
     where
         E: bilrost::Message,
     {
@@ -170,11 +170,11 @@ where
         {
             // Let the scheduler know about the new entry to keep its head-of-line cache of the vqueue
             // as fresh as possible.
-            let inbox_event = VQueueEvent::new(self.qid, EventDetails::Enqueued(card));
+            let inbox_event = VQueueEvent::new(self.qid, EventDetails::Enqueued(card.clone()));
             collector.push(A::from(inbox_event));
         }
 
-        Ok(())
+        Ok(card)
     }
 
     /// Moves a vqueue item from [`Stage::Inbox`] to [`Stage::Run`] and returns the modified
