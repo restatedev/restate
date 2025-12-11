@@ -174,6 +174,34 @@ impl RetryPolicy {
         }
     }
 
+    /// Retry the provided closure respecting this retry policy.
+    /// Calls inspect with the error on each failed try, except
+    /// for the last retry.
+    pub async fn retry_with_inspect<T, E, F, Fut, I>(
+        self,
+        mut operation: F,
+        inspect: I,
+    ) -> Result<T, E>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+        I: Fn(E),
+    {
+        let mut retry_iter = self.into_iter();
+        loop {
+            match (operation().await, retry_iter.next()) {
+                (Ok(res), _) => return Ok(res),
+                (Err(e), None) => {
+                    return Err(e);
+                }
+                (Err(e), Some(timer)) => {
+                    inspect(e);
+                    tokio::time::sleep(timer).await;
+                }
+            }
+        }
+    }
+
     /// Retry the provided closure respecting this retry policy and the retry condition.
     pub async fn retry_if<T, E, Fn, Fut, C>(
         self,
