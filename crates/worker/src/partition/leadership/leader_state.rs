@@ -8,14 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
-use std::future;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
-use std::time::{Duration, SystemTime};
 
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
@@ -31,24 +29,24 @@ use restate_futures_util::concurrency::Permit;
 use restate_partition_store::{PartitionDb, PartitionStore};
 use restate_storage_api::vqueue_table::EntryCard;
 use restate_types::identifiers::{
-    InvocationId, LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
-    WithPartitionKey,
+    LeaderEpoch, PartitionId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
+use restate_types::invocation::PurgeInvocationRequest;
 use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::logs::Keys;
+use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
-use restate_types::time::MillisSinceEpoch;
 use restate_types::{SemanticRestateVersion, Version, Versioned};
 use restate_vqueues::VQueueEvent;
 use restate_vqueues::{SchedulerService, VQueuesMeta, scheduler};
 use restate_wal_protocol::control::UpsertSchema;
-use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::vqueues::Assignment;
 use restate_wal_protocol::{Command, vqueues};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
+use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{ActionEffect, Error, InvokerStream, TimerService};
@@ -85,8 +83,7 @@ pub struct LeaderState {
     invoker_stream: InvokerStream,
     shuffle_stream: ReceiverStream<shuffle::OutboxTruncation>,
     schema_stream: WatchStream<Version>,
-    pub pending_cleanup_timers_to_schedule: VecDeque<(InvocationId, Duration)>,
-    cleaner_task_id: TaskId,
+    cleaner_handle: CleanerHandle,
     trimmer_task_id: TaskId,
     durability_tracker: DurabilityTracker,
 }
@@ -98,7 +95,7 @@ impl LeaderState {
         leader_epoch: LeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         shuffle_task_handle: TaskHandle<anyhow::Result<()>>,
-        cleaner_task_id: TaskId,
+        cleaner_handle: CleanerHandle,
         trimmer_task_id: TaskId,
         shuffle_hint_tx: HintSender,
         timer_service: TimerService,
@@ -113,7 +110,7 @@ impl LeaderState {
             leader_epoch,
             partition_key_range,
             shuffle_task_handle: Some(shuffle_task_handle),
-            cleaner_task_id,
+            cleaner_handle,
             trimmer_task_id,
             shuffle_hint_tx,
             schema_stream: Metadata::with_current(|m| {
@@ -127,7 +124,6 @@ impl LeaderState {
             awaiting_rpc_self_propose: Default::default(),
             invoker_stream: invoker_rx,
             shuffle_stream: ReceiverStream::new(shuffle_rx),
-            pending_cleanup_timers_to_schedule: Default::default(),
             durability_tracker,
         }
     }
@@ -175,22 +171,11 @@ impl LeaderState {
 
         let invoker_stream = (&mut self.invoker_stream).map(ActionEffect::Invoker);
         let shuffle_stream = (&mut self.shuffle_stream).map(ActionEffect::Shuffle);
+        let cleaner_stream = self.cleaner_handle.effects().map(ActionEffect::Cleaner);
+
         let dur_tracker_stream =
             (&mut self.durability_tracker).map(ActionEffect::PartitionMaintenance);
 
-        let action_effects_stream = stream::unfold(
-            &mut self.pending_cleanup_timers_to_schedule,
-            |pending_cleanup_timers_to_schedule| {
-                let result = pending_cleanup_timers_to_schedule.pop_front();
-                future::ready(result.map(|(invocation_id, duration)| {
-                    (
-                        ActionEffect::ScheduleCleanupTimer(invocation_id, duration),
-                        pending_cleanup_timers_to_schedule,
-                    )
-                }))
-            },
-        )
-        .fuse();
         let awaiting_rpc_self_propose_stream =
             (&mut self.awaiting_rpc_self_propose).map(|_| ActionEffect::AwaitingRpcSelfProposeDone);
 
@@ -199,7 +184,7 @@ impl LeaderState {
             invoker_stream,
             shuffle_stream,
             timer_stream,
-            action_effects_stream,
+            cleaner_stream,
             awaiting_rpc_self_propose_stream,
             dur_tracker_stream,
             schema_stream
@@ -248,7 +233,7 @@ impl LeaderState {
         // re-use of the self proposer
         self.self_proposer.mark_as_non_leader().await;
 
-        let cleaner_handle = OptionFuture::from(TaskCenter::cancel_task(self.cleaner_task_id));
+        let cleaner_handle = OptionFuture::from(self.cleaner_handle.stop());
 
         // We don't really care about waiting for the trimmer to finish cancelling
         TaskCenter::cancel_task(self.trimmer_task_id);
@@ -383,15 +368,26 @@ impl LeaderState {
                         .propose(timer.invocation_id().partition_key(), Command::Timer(timer))
                         .await?;
                 }
-                ActionEffect::ScheduleCleanupTimer(invocation_id, duration) => {
-                    self.self_proposer
-                        .propose(
-                            invocation_id.partition_key(),
-                            Command::ScheduleTimer(TimerKeyValue::clean_invocation_status(
-                                MillisSinceEpoch::from(SystemTime::now() + duration),
+                ActionEffect::Cleaner(effect) => {
+                    let (invocation_id, cmd) = match effect {
+                        CleanerEffect::PurgeJournal(invocation_id) => (
+                            invocation_id,
+                            Command::PurgeJournal(PurgeInvocationRequest {
                                 invocation_id,
-                            )),
-                        )
+                                response_sink: None,
+                            }),
+                        ),
+                        CleanerEffect::PurgeInvocation(invocation_id) => (
+                            invocation_id,
+                            Command::PurgeInvocation(PurgeInvocationRequest {
+                                invocation_id,
+                                response_sink: None,
+                            }),
+                        ),
+                    };
+
+                    self.self_proposer
+                        .propose(invocation_id.partition_key(), cmd)
                         .await?;
                 }
                 ActionEffect::UpsertSchema(schema) => {
@@ -466,11 +462,32 @@ impl LeaderState {
             Ok(commit_token) => {
                 self.awaiting_rpc_self_propose.push(SelfAppendFuture::new(
                     commit_token,
-                    success_response,
-                    reciprocal,
+                    |result: Result<(), PartitionProcessorRpcError>| {
+                        reciprocal.send(result.map(|_| success_response));
+                    },
                 ));
             }
             Err(e) => reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
+        }
+    }
+
+    pub async fn propose_many_with_callback<F>(
+        &mut self,
+        records: impl ExactSizeIterator<Item = IngestRecord>,
+        callback: F,
+    ) where
+        F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
+    {
+        match self
+            .self_proposer
+            .propose_many_with_notification(records)
+            .await
+        {
+            Ok(commit_token) => {
+                self.awaiting_rpc_self_propose
+                    .push(SelfAppendFuture::new(commit_token, callback));
+            }
+            Err(e) => callback(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
         }
     }
 
@@ -584,13 +601,6 @@ impl LeaderState {
                     )));
                 }
             }
-            Action::ScheduleInvocationStatusCleanup {
-                invocation_id,
-                retention,
-            } => {
-                self.pending_cleanup_timers_to_schedule
-                    .push_back((invocation_id, retention));
-            }
             Action::ForwardNotification {
                 invocation_id,
                 notification,
@@ -702,42 +712,72 @@ impl LeaderState {
     }
 }
 
+trait CallbackInner: Send + Sync + 'static {
+    fn call(self: Box<Self>, result: Result<(), PartitionProcessorRpcError>);
+}
+
+impl<F> CallbackInner for F
+where
+    F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
+{
+    fn call(self: Box<Self>, result: Result<(), PartitionProcessorRpcError>) {
+        self(result)
+    }
+}
+
+struct Callback {
+    inner: Box<dyn CallbackInner>,
+}
+
+impl Callback {
+    fn call(self, result: Result<(), PartitionProcessorRpcError>) {
+        self.inner.call(result);
+    }
+}
+
+impl<I> From<I> for Callback
+where
+    I: CallbackInner,
+{
+    fn from(value: I) -> Self {
+        Self {
+            inner: Box::new(value),
+        }
+    }
+}
+
 struct SelfAppendFuture {
     commit_token: CommitToken,
-    response: Option<(PartitionProcessorRpcResponse, RpcReciprocal)>,
+    callback: Option<Callback>,
 }
 
 impl SelfAppendFuture {
-    fn new(
-        commit_token: CommitToken,
-        success_response: PartitionProcessorRpcResponse,
-        response_reciprocal: RpcReciprocal,
-    ) -> Self {
+    fn new(commit_token: CommitToken, callback: impl Into<Callback>) -> Self {
         Self {
             commit_token,
-            response: Some((success_response, response_reciprocal)),
+            callback: Some(callback.into()),
         }
     }
 
     fn fail_with_internal(&mut self) {
-        if let Some((_, reciprocal)) = self.response.take() {
-            reciprocal.send(Err(PartitionProcessorRpcError::Internal(
+        if let Some(callback) = self.callback.take() {
+            callback.call(Err(PartitionProcessorRpcError::Internal(
                 "error when proposing to bifrost".to_string(),
             )));
         }
     }
 
     fn fail_with_lost_leadership(&mut self, this_partition_id: PartitionId) {
-        if let Some((_, reciprocal)) = self.response.take() {
-            reciprocal.send(Err(PartitionProcessorRpcError::LostLeadership(
+        if let Some(callback) = self.callback.take() {
+            callback.call(Err(PartitionProcessorRpcError::LostLeadership(
                 this_partition_id,
             )));
         }
     }
 
     fn succeed_with_appended(&mut self) {
-        if let Some((success_response, reciprocal)) = self.response.take() {
-            reciprocal.send(Ok(success_response));
+        if let Some(callback) = self.callback.take() {
+            callback.call(Ok(()))
         }
     }
 }

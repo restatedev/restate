@@ -8,7 +8,9 @@ license.workspace = true
 publish = false
 
 [features]
-default = []
+# todo(azmy): remove "legacy-ingestion" from default features 
+# in v1.7.0
+default = ["legacy-ingestion"]
 options_schema = [
   "dep:schemars",
   "restate-ingress-http/options_schema",
@@ -18,6 +20,8 @@ options_schema = [
   "restate-timer/options_schema",
 ]
 kafka-oidc = ["restate-ingress-kafka/oidc"]
+# legacy-ingestion introduced in v1.6.0
+legacy-ingestion = []
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -28,6 +32,7 @@ restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-ingress-kafka = { workspace = true }
+restate-ingestion-client = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
 restate-metadata-server = { workspace = true }

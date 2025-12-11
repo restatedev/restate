@@ -25,9 +25,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::network::{Oneshot, Reciprocal};
+use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
+use restate_ingestion_client::IngestionClient;
 use restate_invoker_api::InvokeInputJournal;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::PartitionStore;
@@ -46,9 +47,10 @@ use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::identifiers::{LeaderEpoch, PartitionLeaderEpoch};
+use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::message::MessageIndex;
+use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
@@ -56,13 +58,13 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
-use restate_types::storage::StorageEncodeError;
+use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_vqueues::{SchedulerService, VQueuesMeta, VQueuesMetaMut};
-use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
 use restate_wal_protocol::timer::TimerKeyValue;
+use restate_wal_protocol::{Command, Envelope};
 
-use crate::partition::cleaner::Cleaner;
+use crate::partition::cleaner::{self, Cleaner};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
@@ -86,7 +88,9 @@ pub(crate) enum Error {
     #[error("failed writing to bifrost: {0}")]
     Bifrost(#[from] restate_bifrost::Error),
     #[error("failed serializing payload: {0}")]
-    Codec(#[from] StorageEncodeError),
+    Encode(#[from] StorageEncodeError),
+    #[error("failed deserializing payload: {0}")]
+    Decode(#[from] StorageDecodeError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
     #[error("error when self proposing")]
@@ -128,7 +132,7 @@ pub(crate) enum ActionEffect {
     Invoker(Box<restate_invoker_api::Effect>),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
-    ScheduleCleanupTimer(InvocationId, Duration),
+    Cleaner(cleaner::CleanerEffect),
     PartitionMaintenance(PartitionDurability),
     UpsertSchema(Schema),
     AwaitingRpcSelfProposeDone,
@@ -153,26 +157,29 @@ impl State {
     }
 }
 
-pub(crate) struct LeadershipState<I> {
+pub(crate) struct LeadershipState<T, I> {
     state: State,
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
     partition: Arc<Partition>,
     invoker_tx: I,
+    ingestion_client: IngestionClient<T, Envelope>,
     invoker_capacity: InvokerCapacity,
     bifrost: Bifrost,
     trim_queue: TrimQueue,
 }
 
-impl<I> LeadershipState<I>
+impl<T, I> LeadershipState<T, I>
 where
     I: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
+    T: TransportConnect,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         partition: Arc<Partition>,
         invoker_tx: I,
         invoker_capacity: InvokerCapacity,
+        ingestion_client: IngestionClient<T, Envelope>,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
         trim_queue: TrimQueue,
@@ -181,6 +188,7 @@ where
             state: State::Follower,
             partition,
             invoker_tx,
+            ingestion_client,
             invoker_capacity,
             bifrost,
             last_seen_leader_epoch,
@@ -409,7 +417,8 @@ where
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 config.worker.internal_queue_length(),
-                self.bifrost.clone(),
+                &self.bifrost,
+                self.ingestion_client.clone(),
             );
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
@@ -418,15 +427,13 @@ where
                 TaskCenter::spawn_unmanaged(TaskKind::Shuffle, "shuffle", shuffle.run())?;
 
             let cleaner = Cleaner::new(
-                *leader_epoch,
                 partition_store.clone(),
-                self.bifrost.clone(),
+                self.partition.partition_id,
                 self.partition.key_range.clone(),
                 config.worker.cleanup_interval(),
             );
 
-            let cleaner_task_id =
-                TaskCenter::spawn_child(TaskKind::Cleaner, "cleaner", cleaner.run())?;
+            let cleaner_handle = cleaner.start()?;
 
             let trimmer_task_id = LogTrimmer::spawn(
                 self.bifrost.clone(),
@@ -455,7 +462,7 @@ where
                 *leader_epoch,
                 self.partition.key_range.clone(),
                 shuffle_task_handle,
-                cleaner_task_id,
+                cleaner_handle,
                 trimmer_task_id,
                 shuffle_hint_tx,
                 timer_service,
@@ -596,7 +603,7 @@ where
     }
 }
 
-impl<I> LeadershipState<I> {
+impl<T, I> LeadershipState<T, I> {
     pub async fn handle_rpc_proposal_command(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
@@ -643,6 +650,26 @@ impl<I> LeadershipState<I> {
                         reciprocal,
                         success_response,
                     )
+                    .await;
+            }
+        }
+    }
+
+    /// propose to this partition
+    pub async fn propose_many_with_callback<F>(
+        &mut self,
+        records: impl ExactSizeIterator<Item = IngestRecord>,
+        callback: F,
+    ) where
+        F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
+    {
+        match &mut self.state {
+            State::Follower | State::Candidate { .. } => callback(Err(
+                PartitionProcessorRpcError::NotLeader(self.partition.partition_id),
+            )),
+            State::Leader(leader_state) => {
+                leader_state
+                    .propose_many_with_callback(records, callback)
                     .await;
             }
         }
@@ -696,7 +723,9 @@ mod tests {
     use crate::partition::leadership::{LeadershipState, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
+    use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
+    use restate_ingestion_client::IngestionClient;
     use restate_invoker_api::capacity::InvokerCapacity;
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::PartitionStoreManager;
@@ -710,6 +739,7 @@ mod tests {
     use restate_vqueues::VQueuesMetaMut;
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
+    use std::num::NonZeroUsize;
     use std::ops::RangeInclusive;
     use std::sync::Arc;
     use test_log::test;
@@ -730,11 +760,20 @@ mod tests {
 
         let partition_store_manager = PartitionStoreManager::create().await?;
 
+        let ingress = IngestionClient::new(
+            env.networking.clone(),
+            env.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            None,
+        );
+
         let invoker_tx = MockInvokerHandle::default();
         let mut state = LeadershipState::new(
             Arc::new(PARTITION),
             invoker_tx,
             InvokerCapacity::new_unlimited(),
+            ingress,
             bifrost.clone(),
             None,
             TrimQueue::default(),

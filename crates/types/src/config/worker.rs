@@ -20,6 +20,7 @@ use restate_serde_util::NonZeroByteCount;
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{CommonOptions, ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use crate::config::IngestionOptions;
 use crate::identifiers::PartitionId;
 use crate::rate::Rate;
 use crate::retries::RetryPolicy;
@@ -96,6 +97,12 @@ pub struct WorkerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(default, skip_serializing_if = "FriendlyDuration::is_zero")]
     trim_delay_interval: FriendlyDuration,
+
+    /// # Worker Ingestion Options
+    ///
+    /// Settings for the shared ingestion client used by all workers to
+    /// manage record ingestion across partitions.
+    pub ingestion_options: IngestionOptions,
 }
 
 impl WorkerOptions {
@@ -132,6 +139,7 @@ impl Default for WorkerOptions {
             snapshots: SnapshotsOptions::default(),
             trim_delay_interval: FriendlyDuration::ZERO,
             durability_mode: None,
+            ingestion_options: Default::default(),
         }
     }
 }

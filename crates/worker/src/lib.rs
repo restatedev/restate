@@ -22,6 +22,9 @@ mod subscription_integration;
 use std::sync::Arc;
 
 use codederror::CodedError;
+use restate_core::network::Swimlane;
+use restate_ingestion_client::SessionOptions;
+use restate_wal_protocol::Envelope;
 use tracing::info;
 
 use restate_bifrost::Bifrost;
@@ -34,6 +37,7 @@ use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_ingestion_client::IngestionClient;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_partition_store::snapshots::SnapshotRepository;
@@ -91,21 +95,26 @@ pub enum BuildError {
     SnapshotRepository(#[from] anyhow::Error),
 }
 
-pub struct Worker {
+pub struct Worker<T> {
     storage_query_context: QueryContext,
     datafusion_remote_scanner: RemoteQueryScannerServer,
-    ingress_kafka: IngressKafkaService,
+    ingress_kafka: IngressKafkaService<T>,
     subscription_controller_handle: SubscriptionControllerHandle,
-    partition_processor_manager: PartitionProcessorManager,
+    partition_processor_manager: PartitionProcessorManager<T>,
 }
 
-impl Worker {
-    pub async fn create<T: TransportConnect>(
+impl<T> Worker<T>
+where
+    T: TransportConnect,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
         health_status: HealthStatus<WorkerStatus>,
         replica_set_states: PartitionReplicaSetStates,
         partition_store_manager: Arc<PartitionStoreManager>,
         networking: Networking<T>,
         bifrost: Bifrost,
+        ingestion_client: IngestionClient<T, Envelope>,
         router_builder: &mut MessageRouterBuilder,
         metadata_writer: MetadataWriter,
     ) -> Result<Self, BuildError> {
@@ -122,7 +131,9 @@ impl Worker {
         let schema = metadata.updateable_schema();
 
         // ingress_kafka
-        let ingress_kafka = IngressKafkaService::new(bifrost.clone(), schema.clone());
+        let ingress_kafka =
+            IngressKafkaService::new(bifrost.clone(), ingestion_client.clone(), schema.clone());
+
         let subscription_controller_handle =
             SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
 
@@ -135,6 +146,32 @@ impl Worker {
                 "Periodic snapshot interval set without a specified snapshot destination"
             )));
         }
+
+        // A dedicated ingestion client for PPM that uses
+        // BifrostData swimlane
+        let ppm_ingestion_client = IngestionClient::new(
+            networking.clone(),
+            Metadata::with_current(|m| m.updateable_partition_table()),
+            partition_routing.clone(),
+            config
+                .worker
+                .ingestion_options
+                .inflight_memory_budget
+                .as_non_zero_usize(),
+            Some(SessionOptions {
+                batch_size: config
+                    .worker
+                    .ingestion_options
+                    .request_batch_size
+                    .as_usize(),
+                connection_retry_policy: config
+                    .worker
+                    .ingestion_options
+                    .connection_retry_policy
+                    .clone(),
+                swimlane: Swimlane::BifrostData,
+            }),
+        );
 
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
@@ -150,6 +187,7 @@ impl Worker {
             )
             .await
             .map_err(BuildError::SnapshotRepository)?,
+            ppm_ingestion_client,
         );
 
         let remote_scanner_manager = RemoteScannerManager::new(
