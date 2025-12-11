@@ -142,10 +142,6 @@ pub enum PartitionProcessorRpcError {
     //Busy,
     #[error("internal error: {0}")]
     Internal(String),
-    #[error("partition processor starting")]
-    Starting,
-    #[error("partition processor stopping")]
-    Stopping,
 }
 
 impl PartitionProcessorRpcError {
@@ -153,9 +149,7 @@ impl PartitionProcessorRpcError {
         match self {
             PartitionProcessorRpcError::NotLeader(_) => true,
             PartitionProcessorRpcError::LostLeadership(_) => true,
-            PartitionProcessorRpcError::Stopping => true,
             PartitionProcessorRpcError::Internal(_) => false,
-            PartitionProcessorRpcError::Starting => false,
         }
     }
 }
