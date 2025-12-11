@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use cling::prelude::*;
 use tracing::error;
 
-use restate_cli_util::c_println;
+use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{SealChainRequest, new_cluster_ctrl_client};
 use restate_types::logs::LogId;
 use restate_types::nodes_config::Role;
@@ -64,7 +64,7 @@ async fn inner_seal(
 
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .seal_chain(request.clone())
                 .await
         })

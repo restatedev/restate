@@ -7,12 +7,13 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
+use std::collections::HashMap;
 
-use crate::connection::ConnectionInfo;
 use anyhow::{anyhow, bail};
 use clap::Parser;
 use cling::{Collect, Run};
-use restate_cli_util::c_println;
+
+use restate_cli_util::{CliContext, c_println};
 use restate_metadata_store::protobuf::metadata_proxy_svc::{
     GetRequest, PutRequest, client::new_metadata_proxy_client,
 };
@@ -25,7 +26,8 @@ use restate_types::partitions::PartitionConfiguration;
 use restate_types::replication::ReplicationProperty;
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Versioned};
-use std::collections::HashMap;
+
+use crate::connection::ConnectionInfo;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "reconfigure_partition")]
@@ -66,7 +68,7 @@ pub async fn reconfigure_partition(
 
     let get_response = connection
         .try_each(None, |channel| async {
-            new_metadata_proxy_client(channel)
+            new_metadata_proxy_client(channel, &CliContext::get().network)
                 .get(get_request.clone())
                 .await
         })
@@ -106,7 +108,7 @@ pub async fn reconfigure_partition(
 
     connection
         .try_each(None, |channel| async {
-            new_metadata_proxy_client(channel)
+            new_metadata_proxy_client(channel, &CliContext::get().network)
                 .put(request.clone())
                 .await
         })

@@ -15,6 +15,7 @@ mod put;
 
 use cling::prelude::*;
 
+use restate_cli_util::CliContext;
 use restate_metadata_store::protobuf::metadata_proxy_svc::{
     GetRequest, client::new_metadata_proxy_client,
 };
@@ -100,7 +101,7 @@ async fn get_value(
     let key = key.as_ref();
     let response = connection
         .try_each(None, |channel| async {
-            new_metadata_proxy_client(channel)
+            new_metadata_proxy_client(channel, &CliContext::get().network)
                 .get(GetRequest {
                     key: key.to_owned(),
                 })

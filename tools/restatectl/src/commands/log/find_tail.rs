@@ -13,8 +13,8 @@ use std::time::Duration;
 use cling::prelude::*;
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{
     FindTailRequest, TailState, new_cluster_ctrl_client,
 };
@@ -46,7 +46,7 @@ async fn find_tail(connection: &ConnectionInfo, opts: &FindTailOpts) -> anyhow::
                 let mut find_tail_request = find_tail_request.into_request();
                 find_tail_request.set_timeout(Duration::from_secs(10));
 
-                new_cluster_ctrl_client(channel)
+                new_cluster_ctrl_client(channel, &CliContext::get().network)
                     .find_tail(find_tail_request)
                     .await
             })
