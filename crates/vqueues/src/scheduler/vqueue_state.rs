@@ -349,8 +349,11 @@ impl<S: VQueueStore> VQueueState<S> {
         Ok(result)
     }
 
-    pub fn is_dormant(&self, meta: &VQueueMeta) -> bool {
-        (self.queue.is_empty() || meta.total_waiting() == 0)
+    pub fn is_dormant(&self, meta: &VQueueMeta, config: &VQueueConfig) -> bool {
+        // We hold on to the vqueue until we confirm/reject all pending assignments. If we didn't
+        // do so, we risk revisiting/redequeuing the unconfirmed items if the vqueue popped back to life
+        // (i.e., on enqueue). This is the reason why we check for `unconfirmed_assignments`
+        (self.queue.is_empty() || self.is_paused(meta, config).yes())
             && self.unconfirmed_assignments.is_empty()
     }
 

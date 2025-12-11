@@ -189,6 +189,10 @@ impl<Item> Assignments<Item> {
             .map(|segment| (segment.action, segment.items.into_iter()))
     }
 
+    pub fn into_iter_all(self) -> impl IntoIterator {
+        self.segments.into_iter().flat_map(|segment| segment.items)
+    }
+
     pub fn push(&mut self, action: Action, entry: Entry<Item>) {
         // manipulate the last segment if the action is the same.
         if let Some(last_segment) = self.segments.last_mut()
