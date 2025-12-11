@@ -112,7 +112,6 @@ fn invoker_effect_cmd() -> Command {
             &InvocationTarget::service("MyWonderfulService", handler.clone()),
             Some(&idempotency_key),
         ),
-        invocation_epoch: random(),
         kind: EffectKind::journal_entry(
             RawEntry::Command(RawCommand::new(
                 CommandType::SetState,

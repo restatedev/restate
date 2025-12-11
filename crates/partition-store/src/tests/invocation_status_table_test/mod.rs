@@ -23,8 +23,8 @@ use bytestring::ByteString;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
-    CompletionRangeEpochMap, InFlightInvocationMetadata, InvocationStatus, InvocationStatusV1,
-    JournalMetadata, ReadInvocationStatusTable, StatusTimestamps, WriteInvocationStatusTable,
+    InFlightInvocationMetadata, InvocationStatus, InvocationStatusV1, JournalMetadata,
+    ReadInvocationStatusTable, StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_types::RestateVersion;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
@@ -98,8 +98,6 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         journal_retention_duration: Duration::ZERO,
         idempotency_key: None,
         hotfix_apply_cancellation_after_deployment_is_pinned: false,
-        current_invocation_epoch: 1,
-        completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points([(5, 1)]),
         random_seed: None,
     })
 }
@@ -126,8 +124,6 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             journal_retention_duration: Duration::ZERO,
             idempotency_key: None,
             hotfix_apply_cancellation_after_deployment_is_pinned: false,
-            current_invocation_epoch: 1,
-            completion_range_epoch_map: CompletionRangeEpochMap::from_trim_points([(5, 1)]),
             random_seed: None,
         },
         waiting_for_notifications: HashSet::default(),

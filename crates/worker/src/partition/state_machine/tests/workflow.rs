@@ -94,7 +94,6 @@ async fn start_workflow_method() {
         .apply_multiple([
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
-                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -104,7 +103,6 @@ async fn start_workflow_method() {
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
-                invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
             })),
         ])
@@ -231,7 +229,6 @@ async fn attach_by_workflow_key() {
         .apply_multiple([
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
-                invocation_epoch: 0,
                 kind: InvokerEffectKind::JournalEntry {
                     entry_index: 1,
                     entry: ProtobufRawEntryCodec::serialize_enriched(Entry::output(
@@ -241,7 +238,6 @@ async fn attach_by_workflow_key() {
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
-                invocation_epoch: 0,
                 kind: InvokerEffectKind::End,
             })),
         ])

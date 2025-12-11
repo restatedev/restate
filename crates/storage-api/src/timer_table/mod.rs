@@ -13,7 +13,7 @@ use std::cmp::Ordering;
 use futures::Stream;
 
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
-use restate_types::invocation::{InvocationEpoch, ServiceInvocation};
+use restate_types::invocation::ServiceInvocation;
 use restate_types::time::MillisSinceEpoch;
 
 use crate::Result;
@@ -185,7 +185,8 @@ pub enum Timer {
     CompleteJournalEntry(
         InvocationId,
         u32,
-        #[serde(default, skip_serializing_if = "num_traits::Zero::is_zero")] InvocationEpoch,
+        // removed in v1.6
+        // #[serde(default, skip_serializing_if = "num_traits::Zero::is_zero")] InvocationEpoch,
     ),
     // TODO remove this variant when removing the old invocation status table
     CleanInvocationStatus(InvocationId),
@@ -197,7 +198,6 @@ impl Timer {
         timestamp: u64,
         invocation_id: InvocationId,
         journal_index: u32,
-        invocation_epoch: InvocationEpoch,
     ) -> (TimerKey, Self) {
         (
             TimerKey::complete_journal_entry(
@@ -205,7 +205,7 @@ impl Timer {
                 invocation_id.invocation_uuid(),
                 journal_index,
             ),
-            Timer::CompleteJournalEntry(invocation_id, journal_index, invocation_epoch),
+            Timer::CompleteJournalEntry(invocation_id, journal_index),
         )
     }
 
@@ -239,7 +239,7 @@ impl Timer {
     pub fn invocation_id(&self) -> InvocationId {
         match self {
             Timer::Invoke(service_invocation) => service_invocation.invocation_id,
-            Timer::CompleteJournalEntry(invocation_id, _, _) => *invocation_id,
+            Timer::CompleteJournalEntry(invocation_id, _) => *invocation_id,
             Timer::CleanInvocationStatus(invocation_id) => *invocation_id,
             Timer::NeoInvoke(invocation_id) => *invocation_id,
         }
@@ -253,7 +253,7 @@ impl PartitionStoreProtobufValue for Timer {
 impl WithPartitionKey for Timer {
     fn partition_key(&self) -> PartitionKey {
         match self {
-            Timer::CompleteJournalEntry(invocation_id, _, _) => invocation_id.partition_key(),
+            Timer::CompleteJournalEntry(invocation_id, _) => invocation_id.partition_key(),
             Timer::Invoke(service_invocation) => service_invocation.partition_key(),
             Timer::CleanInvocationStatus(invocation_id) => invocation_id.partition_key(),
             Timer::NeoInvoke(invocation_id) => invocation_id.partition_key(),

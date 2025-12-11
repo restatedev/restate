@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::debug_if_leader;
-use crate::partition::state_machine::invocation_status_ext::InvocationStatusExt;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext, entries};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::invocation_status_table::{
@@ -24,7 +22,7 @@ use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::errors::NOT_READY_INVOCATION_ERROR;
 use restate_types::identifiers::InvocationId;
-use restate_types::invocation::{InvocationEpoch, ResponseResult};
+use restate_types::invocation::ResponseResult;
 use restate_types::journal_v2;
 use restate_types::journal_v2::{
     AttachInvocationCompletion, AttachInvocationResult, CallCompletion, CallResult, CommandType,
@@ -35,7 +33,6 @@ use tracing::error;
 
 pub struct OnNotifyInvocationResponse {
     pub invocation_id: InvocationId,
-    pub invocation_epoch: InvocationEpoch,
     pub status: InvocationStatus,
     pub caller_completion_id: CompletionId,
     pub result: ResponseResult,
@@ -63,23 +60,10 @@ where
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S>) -> Result<(), Error> {
         let OnNotifyInvocationResponse {
             invocation_id,
-            invocation_epoch: this_completion_invocation_epoch,
             status,
             caller_completion_id,
             result,
         } = self;
-
-        // Verify that we need to ingest this
-        if !status.should_accept_completion(this_completion_invocation_epoch, caller_completion_id)
-        {
-            debug_if_leader!(
-                ctx.is_leader,
-                "Ignoring InvocationResponse epoch {} completion id {}",
-                this_completion_invocation_epoch,
-                caller_completion_id
-            );
-            return Ok(());
-        }
 
         // This code needs to be revisited once we remove Service Protocol <= V3, depending on what we still want to carry in InvocationResponse.
         //
@@ -215,7 +199,6 @@ mod tests {
                     target: JournalCompletionTarget::from_parts(
                         invocation_id,
                         result_completion_id,
-                        0,
                     ),
                     result: ResponseResult::Failure(expected_failure.clone()),
                 }),
