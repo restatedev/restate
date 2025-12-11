@@ -8,19 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt;
-use std::str::FromStr;
-
-use http::Uri;
-use http::uri::{InvalidUri, Parts, Scheme};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_serde_util::authority::AuthoritySerde;
 use restate_time_util::NonZeroFriendlyDuration;
 
 /// # HTTP client options
-#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "HttpClientOptions", default))]
@@ -38,16 +31,16 @@ pub struct HttpOptions {
     /// HTTPS proxy URIs are supported, but only HTTP endpoint traffic will be proxied currently.
     /// Can be overridden by the `HTTP_PROXY` environment variable.
     #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
-    pub http_proxy: Option<ProxyUri>,
+    pub http_proxy: Option<String>,
 
     /// # No proxy
     ///
-    /// HTTP authorities eg `localhost`, `restate.dev`, `127.0.0.1` that should not be proxied by the http_proxy.
-    /// Ports are ignored. Subdomains are also matched. An entry “*” matches all hostnames.
+    /// IP subnets, addresses, and domain names eg `localhost,restate.dev,127.0.0.1,::1,192.168.1.0/24` that should not be proxied by the http_proxy.
+    /// IP addresses must not have ports, and IPv6 addresses must not be wrapped in '[]'.
+    /// Subdomains are also matched. An entry “*” matches all hostnames.
     /// Can be overridden by the `NO_PROXY` environment variable, which supports comma separated values.
-    #[serde_as(as = "Vec<AuthoritySerde>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
-    pub no_proxy: Vec<http::uri::Authority>,
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    pub no_proxy: Option<NoProxy>,
 
     /// # Connect timeout
     ///
@@ -74,11 +67,20 @@ impl Default for HttpOptions {
         Self {
             http_keep_alive_options: Http2KeepAliveOptions::default(),
             http_proxy: None,
-            no_proxy: Vec::new(),
+            no_proxy: None,
             connect_timeout: NonZeroFriendlyDuration::from_secs_unchecked(10),
             initial_max_send_streams: None,
         }
     }
+}
+
+/// NO_PROXY can be provided as either a comma-separated string `example.com,::1,localhost`, or a list of strings `["example.com", "::1", "localhost"]`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum NoProxy {
+    // no_proxy was an array pre 1.6, so for backwards compatibility we will continue to accept that
+    List(Vec<String>),
+    CommaSeparated(String),
 }
 
 /// # HTTP/2 Keep alive options
@@ -115,78 +117,6 @@ impl Default for Http2KeepAliveOptions {
         Self {
             interval: NonZeroFriendlyDuration::from_secs_unchecked(40),
             timeout: NonZeroFriendlyDuration::from_secs_unchecked(20),
-        }
-    }
-}
-
-#[derive(Clone, Debug, thiserror::Error)]
-#[error("invalid proxy Uri (must have scheme, authority, and path): {0}")]
-pub struct InvalidProxyUri(Uri);
-
-#[derive(Clone, Debug, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ProxyUri {
-    uri: Uri,
-}
-
-impl fmt::Display for ProxyUri {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.uri.fmt(f)
-    }
-}
-
-impl TryFrom<String> for ProxyUri {
-    type Error = ProxyFromStrError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        ProxyUri::from_str(&value)
-    }
-}
-
-impl From<ProxyUri> for String {
-    fn from(value: ProxyUri) -> Self {
-        value.to_string()
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ProxyFromStrError {
-    #[error(transparent)]
-    InvalidUri(#[from] InvalidUri),
-    #[error(transparent)]
-    InvalidProxyUri(#[from] InvalidProxyUri),
-}
-
-impl FromStr for ProxyUri {
-    type Err = ProxyFromStrError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::new(Uri::from_str(s)?)?)
-    }
-}
-
-impl ProxyUri {
-    pub fn new(proxy_uri: Uri) -> Result<Self, InvalidProxyUri> {
-        match proxy_uri.clone().into_parts() {
-            // all three must be present
-            Parts {
-                scheme: Some(_),
-                authority: Some(_),
-                path_and_query: Some(_),
-                ..
-            } => Ok(Self { uri: proxy_uri }),
-            _ => Err(InvalidProxyUri(proxy_uri)),
-        }
-    }
-
-    pub fn dst(&self, dst: Uri) -> Uri {
-        // only proxy non TLS traffic, otherwise just pass through directly to underlying connector
-        if dst.scheme() != Some(&Scheme::HTTPS) {
-            let mut parts = self.clone().uri.into_parts();
-            parts.path_and_query = dst.path_and_query().cloned();
-
-            Uri::from_parts(parts).unwrap()
-        } else {
-            dst
         }
     }
 }
