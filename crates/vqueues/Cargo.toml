@@ -19,7 +19,7 @@ anyhow = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
 derive_more = { workspace = true }
 futures = { workspace = true }
-gardal = { workspace = true }
+gardal = { workspace = true, features = ["tokio"] }
 hashbrown = { version = "0.16"  }
 metrics = { workspace = true }
 pin-project = { workspace = true }
