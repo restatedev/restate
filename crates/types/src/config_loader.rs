@@ -134,19 +134,10 @@ impl ConfigLoader {
                     .map(|_| "rocksdb-total-memory-size".into()),
             );
 
-        let fig = match Env::var("DO_NOT_TRACK").as_deref() {
+        match Env::var("DO_NOT_TRACK").as_deref() {
             Some("yes" | "1" | "true") => fig.join(("disable-telemetry", true)),
             Some("no" | "0" | "false") => fig.join(("disable-telemetry", false)),
             _ => fig,
-        };
-
-        if let Some(no_proxy) = Env::var("NO_PROXY") {
-            fig.join((
-                "no-proxy",
-                no_proxy.split(',').map(str::trim).collect::<Vec<_>>(),
-            ))
-        } else {
-            fig
         }
     }
 
