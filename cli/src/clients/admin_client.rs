@@ -283,36 +283,40 @@ impl AdminClient {
     }
 
     /// Execute a request and return the response as a lazy Envelope.
-    pub(crate) async fn run<T>(
+    pub(crate) fn run<T>(
         &self,
         method: reqwest::Method,
         path: Url,
-    ) -> reqwest::Result<Envelope<T>>
+    ) -> impl Future<Output = reqwest::Result<Envelope<T>>> + 'static
     where
         T: DeserializeOwned + Send,
     {
         debug!("Sending request {} ({})", method, path);
         let request = self.prepare(method, path.clone());
-        let resp = request.send().await?;
-        debug!("Response from {} ({})", path, resp.status());
-        Ok(resp.into())
+        async move {
+            let resp = request.send().await?;
+            debug!("Response from {} ({})", path, resp.status());
+            Ok(resp.into())
+        }
     }
 
-    pub(crate) async fn run_with_body<T, B>(
+    pub(crate) fn run_with_body<T, B>(
         &self,
         method: reqwest::Method,
         path: Url,
         body: B,
-    ) -> reqwest::Result<Envelope<T>>
+    ) -> impl Future<Output = reqwest::Result<Envelope<T>>> + 'static
     where
         T: DeserializeOwned + Send,
         B: Serialize + std::fmt::Debug + Send,
     {
         debug!("Sending request {} ({}): {:?}", method, path, body);
         let request = self.prepare_with_body(method, path.clone(), body);
-        let resp = request.send().await?;
-        debug!("Response from {} ({})", path, resp.status());
-        Ok(resp.into())
+        async move {
+            let resp = request.send().await?;
+            debug!("Response from {} ({})", path, resp.status());
+            Ok(resp.into())
+        }
     }
 }
 

@@ -10,13 +10,15 @@
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
-use crate::clients::{self, AdminClientInterface};
+use crate::clients::{self, AdminClientInterface, batch_execute};
 use crate::ui::invocations::render_simple_invocation_list;
 
+use crate::commands::invocations::{
+    DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+};
 use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
 use comfy_table::{Cell, Color, Table};
-use futures::TryFutureExt;
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
 use restate_types::identifiers::InvocationId;
@@ -32,6 +34,9 @@ pub struct Pause {
     /// * `virtualObjectName/key`
     /// * `virtualObjectName/key/handler`
     query: String,
+    /// Limit the number of fetched invocations
+    #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
+    limit: usize,
 }
 
 pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
@@ -54,7 +59,7 @@ pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
         }
     };
     // Filter only by invoked/suspended/paused, this command has no effect on non-completed invocations
-    let filter = format!("{filter} AND status IN ('running', 'backing-off', 'ready')");
+    let filter = format!("{filter} AND status = 'invoked' LIMIT {}", opts.limit);
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {
@@ -64,45 +69,47 @@ pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
         );
     };
 
-    render_simple_invocation_list(&invocations);
+    render_simple_invocation_list(
+        &invocations,
+        DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    );
 
     // Get the invocation and confirm
     confirm_or_exit("Are you sure you want to pause these invocations?")?;
 
-    // Restart invocations
-    let mut paused = Vec::with_capacity(invocations.len());
-    let mut failed_to_pause = vec![];
-    for inv in invocations {
-        match client
-            .pause_invocation(&inv.id)
-            .map_err(anyhow::Error::from)
-            .await
-        {
-            Ok(_) => {
-                paused.push(inv.id);
-            }
-            Err(err) => {
-                failed_to_pause.push((inv.id, err));
-            }
-        }
-    }
+    // Pause invocations
+    let (paused, failed_to_pause) =
+        batch_execute(client, invocations, |client, invocation| async move {
+            client
+                .pause_invocation(&invocation.id)
+                .await
+                .map_err(anyhow::Error::from)
+        })
+        .await;
+    let succeeded_count = paused.len();
+    let failed_count = failed_to_pause.len();
 
     c_println!();
+    c_success!("Paused {} invocations", succeeded_count);
 
     // Print failed ones, if any
     if !failed_to_pause.is_empty() {
         c_warn!("Failed to pause:");
         let mut failed_to_restart_table = Table::new_styled();
         failed_to_restart_table.set_styled_header(vec!["ID", "REASON"]);
-        for (id, reason) in failed_to_pause {
-            failed_to_restart_table
-                .add_row(vec![Cell::new(&id), Cell::new(reason).fg(Color::DarkRed)]);
+        for (inv, reason) in failed_to_pause {
+            failed_to_restart_table.add_row(vec![
+                Cell::new(&inv.id),
+                Cell::new(reason).fg(Color::DarkRed),
+            ]);
         }
         c_indent_table!(0, failed_to_restart_table);
 
-        return Err(anyhow!("Failed to pause some invocations"));
-    } else {
-        c_success!("Request was sent successfully");
+        return Err(anyhow!(
+            "Failed to pause {} invocations out of {}",
+            failed_count,
+            failed_count + succeeded_count
+        ));
     }
 
     Ok(())

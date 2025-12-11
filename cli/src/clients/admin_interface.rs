@@ -10,184 +10,281 @@
 
 use super::AdminClient;
 use super::admin_client::Envelope;
+use futures::StreamExt;
+use futures::stream;
 use http::{Uri, Version};
-use std::collections::HashMap;
-
+use indicatif::ProgressBar;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_admin_rest_model::services::*;
 use restate_admin_rest_model::version::VersionInformation;
+use restate_futures_util::streams::StreamExt as RestateStreamExt;
 use restate_serde_util::SerdeableHeaderHashMap;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
 use restate_types::schema::deployment::ProtocolType;
 use restate_types::schema::service::ServiceMetadata;
+use std::collections::HashMap;
+
+const MAX_PARALLEL_REQUESTS: usize = 500;
 
 pub trait AdminClientInterface {
     /// Check if the admin service is healthy by invoking /health
-    async fn health(&self) -> reqwest::Result<Envelope<()>>;
-    async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>>;
-    async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>>;
-    async fn patch_service(
+    fn health(&self) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
+    fn get_services(
+        &self,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ListServicesResponse>>> + Send + 'static;
+    fn get_service(
+        &self,
+        name: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ServiceMetadata>>> + Send + 'static;
+    fn patch_service(
         &self,
         name: &str,
         modify_service_request: ModifyServiceRequest,
-    ) -> reqwest::Result<Envelope<ServiceMetadata>>;
-    async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>>;
-    async fn get_deployment<D: AsRef<str>>(
+    ) -> impl Future<Output = reqwest::Result<Envelope<ServiceMetadata>>> + Send + 'static;
+    fn get_deployments(
+        &self,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ListDeploymentsResponse>>> + Send + 'static;
+    fn get_deployment<D: AsRef<str>>(
         &self,
         id: D,
-    ) -> reqwest::Result<Envelope<DetailedDeploymentResponse>>;
-    async fn remove_deployment(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>>;
-
-    async fn discover_deployment(
-        &self,
-        body: RegisterDeploymentRequest,
-    ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>>;
-
-    async fn cancel_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
-
-    async fn kill_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
-
-    async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
-
-    async fn restart_invocation(
+    ) -> impl Future<Output = reqwest::Result<Envelope<DetailedDeploymentResponse>>> + Send + 'static;
+    fn remove_deployment(
         &self,
         id: &str,
-    ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>>;
+        force: bool,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
 
-    async fn resume_invocation(
+    fn discover_deployment(
+        &self,
+        body: RegisterDeploymentRequest,
+    ) -> impl Future<Output = reqwest::Result<Envelope<RegisterDeploymentResponse>>> + Send + 'static;
+
+    fn cancel_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
+
+    fn resume_invocation(
         &self,
         id: &str,
         deployment: Option<&str>,
-    ) -> reqwest::Result<Envelope<()>>;
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
 
-    async fn pause_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>>;
+    fn kill_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
 
-    async fn patch_state(
+    fn purge_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
+
+    fn restart_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<RestartAsNewInvocationResponse>>> + Send + 'static;
+
+    fn pause_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
+
+    fn patch_state(
         &self,
         service: &str,
         req: ModifyServiceStateRequest,
-    ) -> reqwest::Result<Envelope<()>>;
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
 
-    async fn version(&self) -> reqwest::Result<Envelope<VersionInformation>>;
+    fn version(
+        &self,
+    ) -> impl Future<Output = reqwest::Result<Envelope<VersionInformation>>> + Send + 'static;
 }
 
 impl AdminClientInterface for AdminClient {
-    async fn health(&self) -> reqwest::Result<Envelope<()>> {
+    fn health(&self) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
         let url = self.versioned_url(["health"]);
-        self.run(reqwest::Method::GET, url).await
+        self.run(reqwest::Method::GET, url)
     }
 
-    async fn get_services(&self) -> reqwest::Result<Envelope<ListServicesResponse>> {
+    fn get_services(
+        &self,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ListServicesResponse>>> + Send + 'static
+    {
         let url = self.versioned_url(["services"]);
-        self.run(reqwest::Method::GET, url).await
+        self.run(reqwest::Method::GET, url)
     }
 
-    async fn get_service(&self, name: &str) -> reqwest::Result<Envelope<ServiceMetadata>> {
+    fn get_service(
+        &self,
+        name: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ServiceMetadata>>> + Send + 'static {
         let url = self.versioned_url(["services", name]);
-        self.run(reqwest::Method::GET, url).await
+        self.run(reqwest::Method::GET, url)
     }
 
-    async fn patch_service(
+    fn patch_service(
         &self,
         name: &str,
         modify_service_request: ModifyServiceRequest,
-    ) -> reqwest::Result<Envelope<ServiceMetadata>> {
+    ) -> impl Future<Output = reqwest::Result<Envelope<ServiceMetadata>>> + Send + 'static {
         let url = self.versioned_url(["services", name]);
         self.run_with_body(reqwest::Method::PATCH, url, modify_service_request)
-            .await
     }
 
-    async fn get_deployments(&self) -> reqwest::Result<Envelope<ListDeploymentsResponse>> {
+    fn get_deployments(
+        &self,
+    ) -> impl Future<Output = reqwest::Result<Envelope<ListDeploymentsResponse>>> + Send + 'static
+    {
         let url = self.versioned_url(["deployments"]);
-        self.run(reqwest::Method::GET, url).await
+        self.run(reqwest::Method::GET, url)
     }
 
-    async fn get_deployment<D: AsRef<str>>(
+    fn get_deployment<D: AsRef<str>>(
         &self,
         id: D,
-    ) -> reqwest::Result<Envelope<DetailedDeploymentResponse>> {
+    ) -> impl Future<Output = reqwest::Result<Envelope<DetailedDeploymentResponse>>> + Send + 'static
+    {
         let url = self.versioned_url(["deployments", id.as_ref()]);
-        self.run(reqwest::Method::GET, url).await
+        self.run(reqwest::Method::GET, url)
     }
 
-    async fn remove_deployment(&self, id: &str, force: bool) -> reqwest::Result<Envelope<()>> {
+    fn remove_deployment(
+        &self,
+        id: &str,
+        force: bool,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
         let mut url = self.versioned_url(["deployments", id]);
         url.set_query(Some(&format!("force={force}")));
 
-        self.run(reqwest::Method::DELETE, url).await
+        self.run(reqwest::Method::DELETE, url)
     }
 
-    async fn discover_deployment(
+    fn discover_deployment(
         &self,
         body: RegisterDeploymentRequest,
-    ) -> reqwest::Result<Envelope<RegisterDeploymentResponse>> {
+    ) -> impl Future<Output = reqwest::Result<Envelope<RegisterDeploymentResponse>>> + Send + 'static
+    {
         let url = self.versioned_url(["deployments"]);
-        self.run_with_body(reqwest::Method::POST, url, body).await
+        self.run_with_body(reqwest::Method::POST, url, body)
     }
 
-    async fn cancel_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
+    fn cancel_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
         self.run(
             reqwest::Method::PATCH,
             self.versioned_url(["invocations", id, "cancel"]),
         )
-        .await
     }
 
-    async fn kill_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
-        self.run(
-            reqwest::Method::PATCH,
-            self.versioned_url(["invocations", id, "kill"]),
-        )
-        .await
-    }
-
-    async fn purge_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
-        self.run(
-            reqwest::Method::PATCH,
-            self.versioned_url(["invocations", id, "purge"]),
-        )
-        .await
-    }
-
-    async fn restart_invocation(
-        &self,
-        id: &str,
-    ) -> reqwest::Result<Envelope<RestartAsNewInvocationResponse>> {
-        let url = self.versioned_url(["invocations", id, "restart-as-new"]);
-        self.run(reqwest::Method::PATCH, url).await
-    }
-
-    async fn resume_invocation(
+    fn resume_invocation(
         &self,
         id: &str,
         deployment: Option<&str>,
-    ) -> reqwest::Result<Envelope<()>> {
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
         let mut url = self.versioned_url(["invocations", id, "resume"]);
         if let Some(deployment) = deployment {
             url.set_query(Some(&format!("deployment={deployment}")));
         }
-        self.run(reqwest::Method::PATCH, url).await
+        self.run(reqwest::Method::PATCH, url)
     }
 
-    async fn pause_invocation(&self, id: &str) -> reqwest::Result<Envelope<()>> {
+    fn kill_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
+        self.run(
+            reqwest::Method::PATCH,
+            self.versioned_url(["invocations", id, "kill"]),
+        )
+    }
+
+    fn purge_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
+        self.run(
+            reqwest::Method::PATCH,
+            self.versioned_url(["invocations", id, "purge"]),
+        )
+    }
+
+    fn restart_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<RestartAsNewInvocationResponse>>> + Send + 'static
+    {
+        let url = self.versioned_url(["invocations", id, "restart-as-new"]);
+        self.run(reqwest::Method::PATCH, url)
+    }
+
+    fn pause_invocation(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
         let url = self.versioned_url(["invocations", id, "pause"]);
-        self.run(reqwest::Method::PATCH, url).await
+        self.run(reqwest::Method::PATCH, url)
     }
 
-    async fn patch_state(
+    fn patch_state(
         &self,
         service: &str,
         req: ModifyServiceStateRequest,
-    ) -> reqwest::Result<Envelope<()>> {
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
         let url = self.versioned_url(["services", service, "state"]);
-        self.run_with_body(reqwest::Method::POST, url, req).await
+        self.run_with_body(reqwest::Method::POST, url, req)
     }
 
-    async fn version(&self) -> reqwest::Result<Envelope<VersionInformation>> {
+    fn version(
+        &self,
+    ) -> impl Future<Output = reqwest::Result<Envelope<VersionInformation>>> + Send + 'static {
         let url = self.versioned_url(["version"]);
-        self.run(reqwest::Method::GET, url).await
+        self.run(reqwest::Method::GET, url)
     }
+}
+
+pub async fn batch_execute<
+    In: Clone + Send + 'static,
+    Out: Send + 'static,
+    Fun: Fn(AdminClient, In) -> Fut + Copy + Send + 'static,
+    Fut: Future<Output = Result<Out, anyhow::Error>> + Send,
+>(
+    client: AdminClient,
+    input: Vec<In>,
+    fun: Fun,
+) -> (Vec<(In, Out)>, Vec<(In, anyhow::Error)>) {
+    let progress = ProgressBar::new(input.len() as u64);
+    progress.enable_steady_tick(std::time::Duration::from_millis(120));
+
+    let results = stream::iter(input)
+        .concurrent_map_unordered(
+            MAX_PARALLEL_REQUESTS,
+            client,
+            move |client, input| async move {
+                fun(client, input.clone())
+                    .await
+                    .map(|out| (input.clone(), out))
+                    .map_err(|e| (input.clone(), e))
+            },
+        )
+        .fold((vec![], vec![]), |(mut done, mut failed), result| {
+            progress.inc(1);
+            async {
+                match result {
+                    Ok(ok) => done.push(ok),
+                    Err(err) => failed.push(err),
+                }
+                (done, failed)
+            }
+        })
+        .await;
+
+    progress.finish_and_clear();
+
+    results
 }
 
 // Helper type used within the cli crate
