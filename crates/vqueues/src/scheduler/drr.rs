@@ -290,6 +290,7 @@ where
                     if qstate.is_dormant(meta) {
                         // retire the vqueue state
                         self.q.remove(*handle);
+                        self.eligible.remove(*handle);
                         self.id_lookup.remove(&qid);
                     } else if self.eligible.refresh_membership(qstate, meta, config) {
                         self.wake_up();
@@ -312,6 +313,7 @@ where
                 if qstate.is_dormant(meta) {
                     // retire the vqueue state
                     self.q.remove(*handle);
+                    self.eligible.remove(*handle);
                     self.id_lookup.remove(&qid);
                 } else if self.eligible.refresh_membership(qstate, meta, config) {
                     self.wake_up();
