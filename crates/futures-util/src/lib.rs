@@ -12,3 +12,4 @@ pub mod command;
 pub mod concurrency;
 pub mod overdue;
 pub mod pipe;
+pub mod streams;
