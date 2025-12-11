@@ -8,121 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::error::*;
-use crate::generate_meta_api_error;
-use crate::rest_api::create_envelope_header;
-use crate::state::AdminServiceState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use okapi_operation::*;
+use serde::Deserialize;
+
 use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
-use restate_types::identifiers::{
-    DeploymentId, InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey,
-};
+use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
     PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
 };
-use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_types::journal_v2::EntryIndex;
-use restate_wal_protocol::{Command, Envelope};
-use serde::Deserialize;
-use std::sync::Arc;
-use tracing::warn;
 
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-pub enum DeletionMode {
-    #[default]
-    #[serde(alias = "cancel")]
-    Cancel,
-    #[serde(alias = "kill")]
-    Kill,
-    #[serde(alias = "purge")]
-    Purge,
-}
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-pub struct DeleteInvocationParams {
-    pub mode: Option<DeletionMode>,
-}
-
-/// Terminate an invocation
-#[openapi(
-    summary = "Delete an invocation",
-    deprecated = true,
-    description = "Use kill_invocation/cancel_invocation/purge_invocation instead.",
-    operation_id = "delete_invocation",
-    tags = "invocation",
-    parameters(
-        path(
-            name = "invocation_id",
-            description = "Invocation identifier.",
-            schema = "std::string::String"
-        ),
-        query(
-            name = "mode",
-            description = "If cancel, it will gracefully terminate the invocation. \
-            If kill, it will terminate the invocation with a hard stop. \
-            If purge, it will only cleanup the response for completed invocations, and leave unaffected an in-flight invocation.",
-            required = false,
-            style = "simple",
-            allow_empty_value = false,
-            schema = "DeletionMode",
-        )
-    ),
-    responses(
-        ignore_return_type = true,
-        response(
-            status = "202",
-            description = "Accepted",
-            content = "okapi_operation::Empty",
-        ),
-        from_type = "MetaApiError",
-    )
-)]
-pub async fn delete_invocation<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
-    Path(invocation_id): Path<String>,
-    Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
-) -> Result<StatusCode, MetaApiError> {
-    let invocation_id = invocation_id
-        .parse::<InvocationId>()
-        .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
-
-    let cmd = match mode.unwrap_or_default() {
-        DeletionMode::Cancel => Command::TerminateInvocation(InvocationTermination {
-            invocation_id,
-            flavor: TerminationFlavor::Cancel,
-            response_sink: None,
-        }),
-        DeletionMode::Kill => Command::TerminateInvocation(InvocationTermination {
-            invocation_id,
-            flavor: TerminationFlavor::Kill,
-            response_sink: None,
-        }),
-        DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest {
-            invocation_id,
-            response_sink: None,
-        }),
-    };
-
-    let partition_key = invocation_id.partition_key();
-
-    let result = restate_bifrost::append_to_bifrost(
-        &state.bifrost,
-        Arc::new(Envelope::new(create_envelope_header(partition_key), cmd)),
-    )
-    .await;
-
-    if let Err(err) = result {
-        warn!("Could not append invocation termination command to Bifrost: {err}");
-        Err(MetaApiError::Internal(
-            "Failed sending invocation termination to the cluster.".to_owned(),
-        ))
-    } else {
-        Ok(StatusCode::ACCEPTED)
-    }
-}
+use super::error::*;
+use crate::generate_meta_api_error;
+use crate::state::AdminServiceState;
 
 generate_meta_api_error!(KillInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, InvocationWasAlreadyCompletedError]);
 
@@ -139,8 +41,8 @@ generate_meta_api_error!(KillInvocationError: [InvocationNotFoundError, Invocati
         schema = "std::string::String"
     ))
 )]
-pub async fn kill_invocation<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn kill_invocation<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(invocation_id): Path<String>,
 ) -> Result<(), KillInvocationError>
 where
@@ -199,8 +101,8 @@ generate_meta_api_error!(CancelInvocationError: [InvocationNotFoundError, Invoca
         from_type = "CancelInvocationError",
     )
 )]
-pub async fn cancel_invocation<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn cancel_invocation<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(invocation_id): Path<String>,
 ) -> Result<StatusCode, CancelInvocationError>
 where
@@ -241,8 +143,8 @@ generate_meta_api_error!(PurgeInvocationError: [InvocationNotFoundError, Invocat
         schema = "std::string::String"
     ))
 )]
-pub async fn purge_invocation<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn purge_invocation<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(invocation_id): Path<String>,
 ) -> Result<(), PurgeInvocationError>
 where
@@ -284,8 +186,8 @@ generate_meta_api_error!(PurgeJournalError: [InvocationNotFoundError, Invocation
         schema = "std::string::String"
     ))
 )]
-pub async fn purge_journal<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn purge_journal<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(invocation_id): Path<String>,
 ) -> Result<(), PurgeJournalError>
 where
@@ -398,8 +300,8 @@ generate_meta_api_error!(RestartInvocationError: [
         ),
     )
 )]
-pub async fn restart_as_new_invocation<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn restart_as_new_invocation<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(invocation_id): Path<String>,
     Query(RestartAsNewInvocationQueryParams { from, deployment }): Query<
         RestartAsNewInvocationQueryParams,
@@ -510,8 +412,8 @@ generate_meta_api_error!(ResumeInvocationError: [
         )
     )
 )]
-pub async fn resume_invocation<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn resume_invocation<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(invocation_id): Path<String>,
     Query(ResumeInvocationQueryParams { deployment }): Query<ResumeInvocationQueryParams>,
 ) -> Result<(), ResumeInvocationError>
@@ -596,8 +498,8 @@ generate_meta_api_error!(PauseInvocationError: [
         from_type = "PauseInvocationError",
     )
 )]
-pub async fn pause_invocation<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn pause_invocation<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(invocation_id): Path<String>,
 ) -> Result<StatusCode, PauseInvocationError>
 where

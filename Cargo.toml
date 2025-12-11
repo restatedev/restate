@@ -86,6 +86,7 @@ restate-utoipa = { path = "crates/utoipa" }
 restate-vqueues = { path = "crates/vqueues" }
 restate-wal-protocol = { path = "crates/wal-protocol" }
 restate-worker = { path = "crates/worker" }
+restate-ingestion-client = { path = "crates/ingestion-client" }
 
 # this workspace-hack package is overridden by a patch below to use workspace-hack subdir when building in this repo
 # outside this repo, the crates.io restate-workspace-hack (an empty package) will be used instead
