@@ -12,7 +12,8 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::Context;
-use datafusion::execution::SendableRecordBatchStream;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::prelude::SessionContext;
 use tokio::sync::mpsc;
@@ -23,7 +24,8 @@ use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{TaskCenter, TaskKind};
 use restate_types::GenerationalNodeId;
 use restate_types::net::remote_query_scanner::{
-    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, ScannerBatch, ScannerFailure, ScannerId,
+    RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerPredicate,
+    ScannerBatch, ScannerFailure, ScannerId,
 };
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -34,6 +36,7 @@ const SCANNER_EXPIRATION: Duration = Duration::from_secs(60);
 
 pub(crate) struct NextRequest {
     pub reciprocal: Reciprocal<Oneshot<RemoteQueryScannerNextResult>>,
+    pub next_predicate: Option<RemoteQueryScannerPredicate>,
 }
 
 pub(crate) type ScannerHandle = mpsc::UnboundedSender<NextRequest>;
@@ -45,6 +48,8 @@ pub(crate) struct ScannerTask {
     stream: SendableRecordBatchStream,
     rx: mpsc::UnboundedReceiver<NextRequest>,
     scanners: Weak<ScannerMap>,
+    ctx: Arc<TaskContext>,
+    schema: SchemaRef,
     predicate: Option<Arc<dyn PhysicalExpr>>,
 }
 
@@ -88,6 +93,8 @@ impl ScannerTask {
             stream,
             rx,
             scanners: Arc::downgrade(scanners),
+            ctx: SessionContext::new().task_ctx(),
+            schema,
             predicate,
         };
 
@@ -132,6 +139,21 @@ impl ScannerTask {
                     return;
                 }
             };
+
+            if let Some(next_predicate) = request.next_predicate {
+                match decode_expr(
+                    &self.ctx,
+                    &self.schema,
+                    &next_predicate.serialized_physical_expression,
+                ) {
+                    // for now, we are not updating the predicate being passed to ScanPartition,
+                    // so we rely on the filtering below to apply dynamic filters
+                    Ok(next_predicate) => self.predicate = Some(next_predicate),
+                    Err(e) => {
+                        warn!("Failed to decode next predicate: {e}")
+                    }
+                }
+            }
 
             let record_batch = loop {
                 // connection/request has been closed, don't bother with driving the stream.
