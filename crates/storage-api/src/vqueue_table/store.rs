@@ -25,7 +25,7 @@ pub trait VQueueStore {
     fn new_inbox_reader(&self, qid: &VQueueId) -> Self::InboxReader;
 }
 
-pub trait VQueueEntry: PartialOrd + PartialEq + Eq + Clone {
+pub trait VQueueEntry: PartialOrd + PartialEq + Eq + Clone + std::fmt::Debug {
     fn unique_hash(&self) -> u64;
     fn priority(&self) -> EffectivePriority;
     fn visible_at(&self) -> VisibleAt;

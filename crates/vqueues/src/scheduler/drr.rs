@@ -19,8 +19,7 @@ use metrics::counter;
 use pin_project::pin_project;
 use slotmap::SlotMap;
 use tokio::time::Instant;
-use tracing::warn;
-use tracing::{info, trace};
+use tracing::{info, trace, warn};
 
 use restate_futures_util::concurrency::Concurrency;
 use restate_storage_api::StorageError;
@@ -39,6 +38,7 @@ use crate::scheduler::vqueue_state::Pop;
 use super::Decision;
 use super::GlobalTokenBucket;
 use super::VQueueHandle;
+use super::VQueueSchedulerStatus;
 use super::vqueue_state::VQueueState;
 
 #[pin_project]
@@ -64,11 +64,7 @@ pub struct DRRScheduler<S: VQueueStore> {
     storage: S,
 }
 
-impl<S> DRRScheduler<S>
-where
-    S: VQueueStore,
-    S::Item: std::fmt::Debug,
-{
+impl<S: VQueueStore> DRRScheduler<S> {
     pub fn new(
         limit_qid_per_poll: NonZeroU16,
         max_items_per_decision: NonZeroU16,
@@ -321,6 +317,50 @@ where
             }
         }
         Ok(())
+    }
+
+    pub fn iter_status(
+        &self,
+        cache: VQueuesMeta<'_>,
+    ) -> impl Iterator<Item = (&VQueueId, VQueueSchedulerStatus)> {
+        self.q.iter().map(move |(_handle, qstate)| {
+            let Some(meta) = cache.get_vqueue(&qstate.qid) else {
+                return (&qstate.qid, VQueueSchedulerStatus::default());
+            };
+
+            let status = VQueueSchedulerStatus {
+                wait_stats: qstate.get_head_wait_stats(),
+                remaining_running: qstate.num_remaining_in_running_stage(),
+                waiting_inbox: qstate.num_waiting_inbox(meta),
+                tokens_used: qstate.num_tokens_used(meta),
+                status: self.eligible.get_status(qstate, meta, cache.config_pool()),
+            };
+
+            (&qstate.qid, status)
+        })
+    }
+
+    pub fn get_status(
+        &self,
+        qid: &VQueueId,
+        cache: VQueuesMeta<'_>,
+    ) -> Option<VQueueSchedulerStatus> {
+        let qstate = self
+            .id_lookup
+            .get(qid)
+            .and_then(|handle| self.q.get(*handle))?;
+
+        let Some(meta) = cache.get_vqueue(qid) else {
+            return Some(VQueueSchedulerStatus::default());
+        };
+
+        Some(VQueueSchedulerStatus {
+            wait_stats: qstate.get_head_wait_stats(),
+            remaining_running: qstate.num_remaining_in_running_stage(),
+            waiting_inbox: qstate.num_waiting_inbox(meta),
+            tokens_used: qstate.num_tokens_used(meta),
+            status: self.eligible.get_status(qstate, meta, cache.config_pool()),
+        })
     }
 
     fn wake_up(&mut self) {
