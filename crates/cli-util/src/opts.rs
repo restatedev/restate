@@ -91,6 +91,18 @@ pub struct NetworkOpts {
     /// insecure
     #[arg[long = "insecure-skip-tls-verify", default_value_t = false, global = true]]
     pub insecure_skip_tls_verify: bool,
+
+    /// Limits the maximum size of a encoded message.
+    ///
+    /// Default: `10MB`
+    #[arg[long, default_value_t = 10*1024*1024, global = true]]
+    pub max_encoding_message_size: usize,
+
+    /// Limits the maximum size of a decoded message.
+    ///
+    /// Default: `10MB`
+    #[arg[long, default_value_t = 10*1024*1024, global = true]]
+    pub max_decoding_message_size: usize,
 }
 
 impl CommonClientConnectionOptions for NetworkOpts {
@@ -112,6 +124,14 @@ impl CommonClientConnectionOptions for NetworkOpts {
 
     fn http2_adaptive_window(&self) -> bool {
         true
+    }
+
+    fn max_decoding_message_size(&self) -> usize {
+        self.max_decoding_message_size
+    }
+
+    fn max_encoding_message_size(&self) -> usize {
+        self.max_encoding_message_size
     }
 }
 

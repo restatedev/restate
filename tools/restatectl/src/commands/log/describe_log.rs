@@ -14,8 +14,8 @@ use itertools::{Itertools, Position};
 use log::render_loglet_params;
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{DescribeLogRequest, new_cluster_ctrl_client};
 use restate_types::Versioned;
 use restate_types::logs::LogId;
@@ -110,7 +110,7 @@ async fn describe_log(
 
         let describe_log_response = connection
             .try_each(Some(Role::Admin), |channel| async {
-                new_cluster_ctrl_client(channel)
+                new_cluster_ctrl_client(channel, &CliContext::get().network)
                     .describe_log(describe_log_request)
                     .await
             })

@@ -20,6 +20,7 @@ use tonic::{Code, Status, transport::Channel};
 use tracing::{debug, info};
 
 use crate::util::grpc_channel;
+use restate_cli_util::CliContext;
 use restate_core::protobuf::node_ctl_svc::{
     GetMetadataRequest, IdentResponse, new_node_ctl_client,
 };
@@ -168,7 +169,8 @@ impl ConnectionInfo {
         if let Some(address) = effective_addresses.into_iter().next() {
             if let Some(channel) = self.connect_internal(address, &mut open_connections).await {
                 if let Some(required_role) = role {
-                    let mut client = new_node_ctl_client(channel.clone());
+                    let mut client =
+                        new_node_ctl_client(channel.clone(), &CliContext::get().network);
                     let ident_response = match client.get_ident(()).await {
                         Ok(response) => response.into_inner(),
                         Err(status) => {
@@ -327,7 +329,7 @@ impl ConnectionInfo {
                 grpc_channel(address.clone())
             });
 
-            let mut client = new_node_ctl_client(channel.clone());
+            let mut client = new_node_ctl_client(channel.clone(), &CliContext::get().network);
 
             let response = match client.get_ident(()).await {
                 Ok(response) => response.into_inner(),

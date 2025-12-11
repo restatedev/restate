@@ -17,6 +17,7 @@ use tonic::Code;
 
 use crate::commands::metadata::MetadataCommonOpts;
 use crate::connection::{ConnectionInfo, NodeOperationError};
+use restate_cli_util::CliContext;
 use restate_metadata_store::protobuf::metadata_proxy_svc::{
     PutRequest, client::new_metadata_proxy_client,
 };
@@ -107,7 +108,7 @@ async fn patch_value_inner(
 
     connection
         .try_each(None, |channel| async {
-            new_metadata_proxy_client(channel)
+            new_metadata_proxy_client(channel, &CliContext::get().network)
                 .put(request.clone())
                 .await
                 .map_err(|status| {

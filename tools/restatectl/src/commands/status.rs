@@ -18,8 +18,8 @@ use tonic::{Code, IntoRequest};
 use tracing::{error, warn};
 
 use restate_cli_util::_comfy_table::{Cell, Color, Row, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{ClusterStateRequest, new_cluster_ctrl_client};
 use restate_metadata_server_grpc::grpc::new_metadata_server_client;
 use restate_time_util::DurationExt;
@@ -97,7 +97,7 @@ async fn compact_cluster_status(
 
     let cluster_state = connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .get_cluster_state(ClusterStateRequest::default())
                 .await
         })
@@ -218,9 +218,10 @@ async fn alive_node_status(
 
     if node_config.has_role(Role::MetadataServer) {
         let metadata_channel = grpc_channel(node_config.address.clone());
-        let metadata_store_status = new_metadata_server_client(metadata_channel)
-            .status(().into_request())
-            .await;
+        let metadata_store_status =
+            new_metadata_server_client(metadata_channel, &CliContext::get().network)
+                .status(().into_request())
+                .await;
 
         let metadata_cell = match metadata_store_status {
             Ok(response) => {

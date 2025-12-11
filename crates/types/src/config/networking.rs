@@ -72,6 +72,20 @@ pub struct NetworkingOptions {
     /// If network latency is high, it's recommended to set this to a higher value.
     /// Maximum theoretical value is 2^31-1 (2 GiB - 1), but we will sanitize this value to 500 MiB.
     data_stream_window_size: NonZeroByteCount,
+
+    /// # Max Encoding Message Size
+    ///
+    /// Limits the maximum size of a encoded message.
+    ///
+    /// Default: `10MB`
+    pub max_encoding_message_size: NonZeroByteCount,
+
+    /// # Max Decoding Message Size
+    ///
+    /// Limits the maximum size of a decoded message.
+    ///
+    /// Default: `10MB`
+    pub max_decoding_message_size: NonZeroByteCount,
 }
 
 impl NetworkingOptions {
@@ -105,6 +119,12 @@ impl Default for NetworkingOptions {
             // 2MiB
             data_stream_window_size: NonZeroByteCount::new(
                 NonZeroUsize::new(2 * 1024 * 1024).expect("Non zero number"),
+            ),
+            max_decoding_message_size: NonZeroByteCount::new(
+                NonZeroUsize::new(10 * 1024 * 1024).expect("Non zero number"),
+            ),
+            max_encoding_message_size: NonZeroByteCount::new(
+                NonZeroUsize::new(10 * 1024 * 1024).expect("Non zero number"),
             ),
         }
     }

@@ -19,8 +19,8 @@ use tonic::{IntoRequest, Status};
 use tracing::debug;
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{CliContext, c_println};
 use restate_metadata_server_grpc::grpc::new_metadata_server_client;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -72,9 +72,10 @@ pub async fn list_metadata_servers(
                     };
 
                     debug!("Querying metadata service status on node {address}");
-                    let metadata_store_status = new_metadata_server_client(channel)
-                        .status(().into_request())
-                        .await;
+                    let metadata_store_status =
+                        new_metadata_server_client(channel, &CliContext::get().network)
+                            .status(().into_request())
+                            .await;
 
                     (node_id, metadata_store_status)
                 }

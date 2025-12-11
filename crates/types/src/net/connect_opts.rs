@@ -20,6 +20,8 @@ pub trait CommonClientConnectionOptions {
     fn keep_alive_interval(&self) -> Duration;
     fn keep_alive_timeout(&self) -> Duration;
     fn http2_adaptive_window(&self) -> bool;
+    fn max_encoding_message_size(&self) -> usize;
+    fn max_decoding_message_size(&self) -> usize;
 }
 
 impl<T: CommonClientConnectionOptions> CommonClientConnectionOptions for &T {
@@ -41,6 +43,14 @@ impl<T: CommonClientConnectionOptions> CommonClientConnectionOptions for &T {
 
     fn http2_adaptive_window(&self) -> bool {
         (*self).http2_adaptive_window()
+    }
+
+    fn max_encoding_message_size(&self) -> usize {
+        (*self).max_encoding_message_size()
+    }
+
+    fn max_decoding_message_size(&self) -> usize {
+        (*self).max_decoding_message_size()
     }
 }
 
@@ -67,6 +77,14 @@ where
     fn http2_adaptive_window(&self) -> bool {
         (**self).http2_adaptive_window()
     }
+
+    fn max_encoding_message_size(&self) -> usize {
+        (**self).max_encoding_message_size()
+    }
+
+    fn max_decoding_message_size(&self) -> usize {
+        (**self).max_decoding_message_size()
+    }
 }
 
 impl CommonClientConnectionOptions for NetworkingOptions {
@@ -89,6 +107,14 @@ impl CommonClientConnectionOptions for NetworkingOptions {
     fn http2_adaptive_window(&self) -> bool {
         self.http2_adaptive_window
     }
+
+    fn max_encoding_message_size(&self) -> usize {
+        self.max_encoding_message_size.as_usize()
+    }
+
+    fn max_decoding_message_size(&self) -> usize {
+        self.max_decoding_message_size.as_usize()
+    }
 }
 
 impl CommonClientConnectionOptions for MetadataClientOptions {
@@ -110,5 +136,13 @@ impl CommonClientConnectionOptions for MetadataClientOptions {
 
     fn http2_adaptive_window(&self) -> bool {
         true
+    }
+
+    fn max_encoding_message_size(&self) -> usize {
+        Self::max_encoding_message_size(self)
+    }
+
+    fn max_decoding_message_size(&self) -> usize {
+        Self::max_decoding_message_size(self)
     }
 }
