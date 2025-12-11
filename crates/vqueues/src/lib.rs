@@ -227,9 +227,7 @@ where
         self.storage
             .put_vqueue_entry_state(&self.qid, &modified_card, Stage::Run, ());
 
-        if let Some(collector) = self.action_collector.as_deref_mut()
-            && is_active_now
-        {
+        if let Some(collector) = self.action_collector.as_deref_mut() {
             let inbox_event = VQueueEvent::new(
                 self.qid,
                 EventDetails::RunAttemptConfirmed {
