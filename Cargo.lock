@@ -7331,6 +7331,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-ingestion-client"
+version = "1.6.0-dev"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "dashmap",
+ "futures",
+ "googletest",
+ "pin-project",
+ "restate-core",
+ "restate-types",
+ "restate-workspace-hack",
+ "test-log",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "restate-ingress-http"
 version = "1.6.0-dev"
 dependencies = [
