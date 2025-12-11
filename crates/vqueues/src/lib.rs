@@ -35,7 +35,7 @@ pub enum EventDetails<Item> {
     RunAttemptConfirmed { item_hash: u64 },
     /// We cannot accept the run attempt request, notify the scheduler
     RunAttemptRejected { item_hash: u64 },
-    /// Entry has been removed from the waiting inbox
+    /// Entry has been removed from the inbox
     Removed { item_hash: u64 },
 }
 
@@ -353,9 +353,7 @@ where
         self.storage
             .put_vqueue_entry_state(&self.qid, &modified_card, Stage::Park, ());
 
-        if matches!(previous_stage, Stage::Inbox)
-            && let Some(collector) = self.action_collector.as_deref_mut()
-        {
+        if let Some(collector) = self.action_collector.as_deref_mut() {
             // Let the scheduler know about the new entry to keep its head-of-line cache of the vqueue
             // as fresh as possible.
             let inbox_event = VQueueEvent::new(
@@ -464,9 +462,7 @@ where
             self.storage.mark_vqueue_as_dormant(&self.qid);
         }
 
-        if matches!(previous_stage, Stage::Inbox)
-            && let Some(collector) = self.action_collector.as_deref_mut()
-        {
+        if let Some(collector) = self.action_collector.as_deref_mut() {
             let inbox_event = VQueueEvent::new(
                 self.qid,
                 EventDetails::Removed {

@@ -246,7 +246,7 @@ impl EligibilityTracker {
         }
     }
 
-    fn remove(&mut self, handle: VQueueHandle) {
+    pub fn remove(&mut self, handle: VQueueHandle) {
         match self.states.remove(handle) {
             // cancel scheduled wake ups
             Some(State::Throttled { wake_up, .. }) => {
