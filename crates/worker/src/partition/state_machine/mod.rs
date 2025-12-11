@@ -2827,7 +2827,9 @@ impl<S> StateMachineApplyContext<'_, S> {
 
                     self.run_invocation(
                         qid,
-                        &modified_card,
+                        // important to pass in the unique hash of the original card to correlate
+                        // permits hold by the LeaderState
+                        card.unique_hash(),
                         invocation_id,
                         record_unique_ts,
                         stats,
@@ -2844,7 +2846,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     async fn run_invocation(
         &mut self,
         qid: VQueueId,
-        card: &EntryCard,
+        item_hash: u64,
         invocation_id: InvocationId,
         at: UniqueTimestamp,
         wait_stats: WaitStats,
@@ -2904,7 +2906,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 info!("Starting invocation {invocation_id}, scheduler stats: {wait_stats:?}");
                 self.init_journal_and_vqueue_invoke(
                     qid,
-                    card.unique_hash(),
+                    item_hash,
                     invocation_id,
                     metadata,
                     invocation_input,
@@ -2916,7 +2918,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 info!("Resuming invocation {invocation_id}, scheduler stats: {wait_stats:?}");
                 self.action_collector.push(Action::VQInvoke {
                     qid,
-                    item_hash: card.unique_hash(),
+                    item_hash,
                     invocation_id,
                     invocation_target: metadata.invocation_target,
                     invoke_input_journal: InvokeInputJournal::NoCachedJournal,
