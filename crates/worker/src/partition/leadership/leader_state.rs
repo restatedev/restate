@@ -36,6 +36,7 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::logs::Keys;
+use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
@@ -466,11 +467,32 @@ impl LeaderState {
             Ok(commit_token) => {
                 self.awaiting_rpc_self_propose.push(SelfAppendFuture::new(
                     commit_token,
-                    success_response,
-                    reciprocal,
+                    |result: Result<(), PartitionProcessorRpcError>| {
+                        reciprocal.send(result.map(|_| success_response));
+                    },
                 ));
             }
             Err(e) => reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
+        }
+    }
+
+    pub async fn propose_many_with_callback<F>(
+        &mut self,
+        records: impl ExactSizeIterator<Item = IngestRecord>,
+        callback: F,
+    ) where
+        F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
+    {
+        match self
+            .self_proposer
+            .propose_many_with_notification(records)
+            .await
+        {
+            Ok(commit_token) => {
+                self.awaiting_rpc_self_propose
+                    .push(SelfAppendFuture::new(commit_token, callback));
+            }
+            Err(e) => callback(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
         }
     }
 
@@ -702,42 +724,72 @@ impl LeaderState {
     }
 }
 
+trait CallbackInner: Send + Sync + 'static {
+    fn call(self: Box<Self>, result: Result<(), PartitionProcessorRpcError>);
+}
+
+impl<F> CallbackInner for F
+where
+    F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
+{
+    fn call(self: Box<Self>, result: Result<(), PartitionProcessorRpcError>) {
+        self(result)
+    }
+}
+
+struct Callback {
+    inner: Box<dyn CallbackInner>,
+}
+
+impl Callback {
+    fn call(self, result: Result<(), PartitionProcessorRpcError>) {
+        self.inner.call(result);
+    }
+}
+
+impl<I> From<I> for Callback
+where
+    I: CallbackInner,
+{
+    fn from(value: I) -> Self {
+        Self {
+            inner: Box::new(value),
+        }
+    }
+}
+
 struct SelfAppendFuture {
     commit_token: CommitToken,
-    response: Option<(PartitionProcessorRpcResponse, RpcReciprocal)>,
+    callback: Option<Callback>,
 }
 
 impl SelfAppendFuture {
-    fn new(
-        commit_token: CommitToken,
-        success_response: PartitionProcessorRpcResponse,
-        response_reciprocal: RpcReciprocal,
-    ) -> Self {
+    fn new(commit_token: CommitToken, callback: impl Into<Callback>) -> Self {
         Self {
             commit_token,
-            response: Some((success_response, response_reciprocal)),
+            callback: Some(callback.into()),
         }
     }
 
     fn fail_with_internal(&mut self) {
-        if let Some((_, reciprocal)) = self.response.take() {
-            reciprocal.send(Err(PartitionProcessorRpcError::Internal(
+        if let Some(callback) = self.callback.take() {
+            callback.call(Err(PartitionProcessorRpcError::Internal(
                 "error when proposing to bifrost".to_string(),
             )));
         }
     }
 
     fn fail_with_lost_leadership(&mut self, this_partition_id: PartitionId) {
-        if let Some((_, reciprocal)) = self.response.take() {
-            reciprocal.send(Err(PartitionProcessorRpcError::LostLeadership(
+        if let Some(callback) = self.callback.take() {
+            callback.call(Err(PartitionProcessorRpcError::LostLeadership(
                 this_partition_id,
             )));
         }
     }
 
     fn succeed_with_appended(&mut self) {
-        if let Some((success_response, reciprocal)) = self.response.take() {
-            reciprocal.send(Ok(success_response));
+        if let Some(callback) = self.callback.take() {
+            callback.call(Ok(()))
         }
     }
 }
