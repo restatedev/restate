@@ -45,6 +45,7 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
+crossbeam-utils = { version = "0.8" }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
@@ -175,6 +176,7 @@ clap_builder = { version = "4", default-features = false, features = ["color", "
 comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
+crossbeam-utils = { version = "0.8" }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }

@@ -7108,6 +7108,7 @@ dependencies = [
  "restate-admin-rest-model",
  "restate-cli-util",
  "restate-cloud-tunnel-client",
+ "restate-futures-util",
  "restate-lite",
  "restate-serde-util",
  "restate-time-util",
@@ -7302,6 +7303,7 @@ name = "restate-futures-util"
 version = "1.6.0-dev"
 dependencies = [
  "anyhow",
+ "async-channel",
  "futures",
  "pin-project",
  "pin-project-lite",
@@ -8480,6 +8482,7 @@ dependencies = [
  "comfy-table",
  "criterion",
  "crossbeam-epoch",
+ "crossbeam-utils",
  "digest",
  "either",
  "enum-map",
