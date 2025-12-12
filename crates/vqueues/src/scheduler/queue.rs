@@ -270,6 +270,15 @@ impl<S: VQueueStore> Queue<S> {
         }
         Ok(())
     }
+
+    pub(crate) fn remaining_in_running_stage(&self) -> u32 {
+        match self.reader {
+            Reader::New { already_running } => already_running,
+            Reader::Running { remaining, .. } => remaining,
+            Reader::Inbox(..) => 0,
+            Reader::Closed => 0,
+        }
+    }
 }
 
 #[cfg(test)]

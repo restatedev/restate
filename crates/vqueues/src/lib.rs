@@ -15,7 +15,7 @@ mod vqueue_config;
 
 pub use cache::{VQueuesMeta, VQueuesMetaMut};
 pub use metric_definitions::describe_metrics;
-pub use scheduler::SchedulerService;
+pub use scheduler::{SchedulerService, SchedulingStatus, ThrottleScope, VQueueSchedulerStatus};
 
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaUpdates;

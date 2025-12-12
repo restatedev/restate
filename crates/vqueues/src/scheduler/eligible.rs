@@ -28,17 +28,18 @@ use crate::vqueue_config::VQueueConfig;
 
 use super::clock::SchedulerClock;
 use super::vqueue_state::VQueueState;
-use super::{ThrottleScope, VQueueHandle};
+use super::{SchedulingStatus, ThrottleScope, VQueueHandle};
 
 #[derive(Debug, Copy, Clone)]
-struct WakeUp {
+pub(super) struct WakeUp {
     ts: UniqueTimestamp,
     timer_key: delay_queue::Key,
 }
 
 #[derive(Debug, Copy, Clone)]
-enum State {
-    /// Needs a `poll_eligibility` to update the state
+pub(super) enum State {
+    /// Needs a `poll_eligibility` to update the state.
+    /// A vqueue in this state must be already added to the ready ring.
     NeedsPoll,
     // Poll to pick next item. Next item is available now. It's in the ready ring.
     Ready,
@@ -78,6 +79,27 @@ impl EligibilityTracker {
         self.ready_ring.push_back(handle);
     }
 
+    pub fn get_status<S: VQueueStore>(
+        &self,
+        qstate: &VQueueState<S>,
+        meta: &VQueueMeta,
+        config: &VQueueConfig,
+    ) -> SchedulingStatus {
+        match self.states.get(qstate.handle) {
+            None | Some(State::NeedsPoll) | Some(State::Ready) => SchedulingStatus::from(
+                qstate.check_eligibility(SchedulerClock.now_ts(), meta, config),
+            ),
+            Some(State::Throttled { wake_up, scope }) => SchedulingStatus::Throttled {
+                until: wake_up.ts.to_unix_millis(),
+                scope: *scope,
+            },
+            Some(State::Scheduled { wake_up }) => SchedulingStatus::Scheduled {
+                at: wake_up.ts.to_unix_millis(),
+            },
+            Some(State::BlockedOnCapacity) => SchedulingStatus::BlockedOnCapacity,
+        }
+    }
+
     pub fn poll_delayed(&mut self, cx: &mut std::task::Context<'_>) {
         while let Poll::Ready(Some(expired)) = self.delayed_eligibility.poll_expired(cx) {
             let timer_key = expired.key();
@@ -100,16 +122,12 @@ impl EligibilityTracker {
         }
     }
 
-    pub fn next_eligible<S>(
+    pub fn next_eligible<S: VQueueStore>(
         &mut self,
         storage: &S,
         vqueues: &mut SlotMap<VQueueHandle, VQueueState<S>>,
         cache: VQueuesMeta<'_>,
-    ) -> Result<Option<VQueueHandle>, StorageError>
-    where
-        S: VQueueStore,
-        S::Item: std::fmt::Debug,
-    {
+    ) -> Result<Option<VQueueHandle>, StorageError> {
         loop {
             // what is my current status
             let Some(handle) = self.ready_ring.front().copied() else {
@@ -134,7 +152,10 @@ impl EligibilityTracker {
                 State::NeedsPoll => {
                     let config = cache.config_pool().find(&qstate.qid.parent);
                     // update the state based on eligibility.
-                    match qstate.poll_eligibility(storage, SchedulerClock.now_ts(), meta, config)? {
+                    match qstate
+                        .poll_eligibility(storage, SchedulerClock.now_ts(), meta, config)?
+                        .as_compact()
+                    {
                         Eligibility::Eligible => {
                             *current_state = State::Ready;
                             return Ok(Some(handle));
@@ -180,18 +201,16 @@ impl EligibilityTracker {
     }
 
     /// Returns true if scheduler should be woken up
-    pub fn refresh_membership<S>(
+    pub fn refresh_membership<S: VQueueStore>(
         &mut self,
         vqueue: &VQueueState<S>,
         meta: &VQueueMeta,
         config: &VQueueConfig,
-    ) -> bool
-    where
-        S: VQueueStore,
-        S::Item: std::fmt::Debug,
-    {
+    ) -> bool {
         let current_state = self.states.get(vqueue.handle).copied();
-        let eligibility = vqueue.check_eligibility(SchedulerClock.now_ts(), meta, config);
+        let eligibility = vqueue
+            .check_eligibility(SchedulerClock.now_ts(), meta, config)
+            .as_compact();
 
         match (current_state, eligibility) {
             // --

@@ -20,6 +20,7 @@ use smallvec::SmallVec;
 use restate_futures_util::concurrency::{Concurrency, Permit};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{ScanVQueueTable, VQueueEntry, VQueueStore, WaitStats};
+use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::VQueueId;
 
 use crate::VQueueEvent;
@@ -27,6 +28,7 @@ use crate::metric_definitions::publish_scheduler_decision_metrics;
 use crate::{VQueuesMeta, VQueuesMetaMut};
 
 use self::drr::DRRScheduler;
+use self::vqueue_state::DetailedEligibility;
 
 mod clock;
 mod drr;
@@ -42,9 +44,101 @@ slotmap::new_key_type! { struct VQueueHandle; }
 type GlobalTokenBucket<C = gardal::TokioClock> =
     gardal::TokenBucket<gardal::PaddedAtomicSharedStorage, C>;
 
+/// Indicates the pause state of a vqueue.
+#[derive(Debug, Clone, Default)]
+pub enum IsPaused {
+    #[default]
+    /// The vqueue is enabled
+    No,
+    /// The vqueue is paused directly by the user
+    Directly,
+    /// The vqueue is paused because its parent is paused
+    ViaParent,
+}
+
+impl IsPaused {
+    pub fn yes(&self) -> bool {
+        matches!(self, IsPaused::Directly | IsPaused::ViaParent)
+    }
+}
+
+/// A public view of the scheduler's status of a single vqueue.
+///
+/// This struct provides introspection into the current scheduling state, and
+/// wait statistics for a vqueue.
+#[derive(Debug, Clone, Default)]
+pub struct VQueueSchedulerStatus {
+    /// Whether the vqueue is paused or not.
+    pub is_paused: IsPaused,
+    /// Statistics about the wait time experienced by the head item in the vqueue.
+    pub wait_stats: WaitStats,
+    /// Number of items remaining in the running stage.
+    pub remaining_running: u32,
+    /// Number of items waiting in the inbox stage.
+    pub waiting_inbox: u32,
+    /// Number of concurrency tokens currently in use by this vqueue.
+    pub tokens_used: u32,
+    /// The current scheduling status of this vqueue.
+    pub status: SchedulingStatus,
+}
+
+/// The current scheduling status of a vqueue.
+///
+/// This enum represents the various states a vqueue can be in from the
+/// scheduler's perspective.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SchedulingStatus {
+    #[default]
+    /// The vqueue is not tracked by the scheduler (e.g., it has no items).
+    Dormant,
+    /// The vqueue is empty.
+    Empty,
+    /// The vqueue head is ready to be scheduled and it's in the inbox/running stage.
+    Ready,
+    /// The vqueue is throttled until the specified time.
+    Throttled {
+        /// When the throttle expires.
+        until: MillisSinceEpoch,
+        /// The scope of throttling (global or per-vqueue).
+        scope: ThrottleScope,
+    },
+    /// The vqueue is scheduled to be woken up at the given time because the head
+    /// item is scheduled to run at that time.
+    Scheduled {
+        /// When the head item becomes visible.
+        at: MillisSinceEpoch,
+    },
+    /// The vqueue is blocked on invoker global capacity.
+    BlockedOnCapacity,
+    /// The vqueue is waiting for concurrency tokens. Concurrency tokens are released
+    /// when currently running items are completed or (in some cases) when running items
+    /// are parked.
+    WaitingConcurrencyTokens,
+}
+
+impl From<DetailedEligibility> for SchedulingStatus {
+    fn from(value: DetailedEligibility) -> Self {
+        match value {
+            DetailedEligibility::EligibleRunning | DetailedEligibility::EligibleInbox => {
+                SchedulingStatus::Ready
+            }
+            DetailedEligibility::Scheduled(ts) => SchedulingStatus::Scheduled {
+                at: ts.to_unix_millis(),
+            },
+            DetailedEligibility::WaitingConcurrencyTokens => {
+                SchedulingStatus::WaitingConcurrencyTokens
+            }
+            DetailedEligibility::Empty => SchedulingStatus::Empty,
+        }
+    }
+}
+
+/// The scope at which throttling is applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThrottleScope {
+    /// Throttling is applied globally across all vqueues.
     Global,
+    /// Throttling is applied to a specific vqueue.
     VQueue,
 }
 
@@ -203,6 +297,31 @@ impl<Item: VQueueEntry> Decision<Item> {
         self.q.len()
     }
 
+    /// Returns an iterator over the vqueue IDs in this decision.
+    pub fn iter_qids(&self) -> impl Iterator<Item = &VQueueId> {
+        self.q.keys()
+    }
+
+    #[cfg(test)]
+    pub fn num_start(&self) -> usize {
+        self.num_start as usize
+    }
+
+    #[cfg(test)]
+    pub fn num_run(&self) -> usize {
+        self.num_run as usize
+    }
+
+    #[cfg(test)]
+    pub fn num_resume(&self) -> usize {
+        self.num_resume as usize
+    }
+
+    #[cfg(test)]
+    pub fn num_yield(&self) -> usize {
+        self.num_yield as usize
+    }
+
     /// Total number of items in all queues
     pub fn total_items(&self) -> usize {
         self.num_start as usize
@@ -230,11 +349,7 @@ pub struct SchedulerService<S: VQueueStore> {
     state: State<S>,
 }
 
-impl<S> SchedulerService<S>
-where
-    S: VQueueStore,
-    S::Item: std::fmt::Debug,
-{
+impl<S: VQueueStore> SchedulerService<S> {
     pub fn new_disabled() -> Self
     where
         S: ScanVQueueTable,
@@ -306,6 +421,33 @@ where
             State::Active(ref mut drr_scheduler) => {
                 drr_scheduler.as_mut().poll_schedule_next(cx, vqueues)
             }
+        }
+    }
+
+    /// Returns the scheduling status for a specific vqueue.
+    ///
+    /// Returns `None` if the scheduler is disabled or the vqueue is not tracked.
+    pub fn get_status(
+        &self,
+        qid: &VQueueId,
+        vqueues: VQueuesMeta<'_>,
+    ) -> Option<VQueueSchedulerStatus> {
+        match self.state {
+            State::Disabled => None,
+            State::Active(ref drr_scheduler) => drr_scheduler.get_status(qid, vqueues),
+        }
+    }
+
+    /// Returns an iterator over the scheduling status of all tracked vqueues.
+    ///
+    /// Returns `None` if the scheduler is disabled.
+    pub fn iter_status(
+        &self,
+        vqueues: VQueuesMeta<'_>,
+    ) -> Option<impl Iterator<Item = (VQueueId, VQueueSchedulerStatus)>> {
+        match self.state {
+            State::Disabled => None,
+            State::Active(ref drr_scheduler) => Some(drr_scheduler.iter_status(vqueues)),
         }
     }
 }
