@@ -21,7 +21,9 @@ no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-admin = { workspace = true }
 restate-bifrost = { workspace = true }
+restate-clock = { workspace = true, features = ["cached-time"] }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-metadata-server = { workspace = true }
@@ -29,7 +31,6 @@ restate-node = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-types = { workspace = true }
-restate-admin = { workspace = true }
 
 anyhow = { workspace = true }
 http = { workspace = true }

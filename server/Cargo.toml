@@ -38,7 +38,9 @@ taskdump = ["restate-core/taskdump"]
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-admin = { workspace = true, features = ["all-metadata-providers"] }
 restate-bifrost = { workspace = true }
+restate-clock = { workspace = true, features = ["cached-time"] }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-metadata-server = { workspace = true }
@@ -47,7 +49,6 @@ restate-rocksdb = { workspace = true }
 restate-service-client = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio", "prometheus"] }
 restate-types = { workspace = true, features = ["clap"] }
-restate-admin = { workspace = true, features = ["all-metadata-providers"] }
 
 clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_help", "usage", "suggestions", "error-context", "std"] }
 codederror = { workspace = true }

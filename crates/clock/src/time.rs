@@ -15,6 +15,8 @@ use std::time::{Duration, SystemTime};
 
 use restate_encoding::{BilrostNewType, NetSerde};
 
+use crate::WallClock;
+
 /// Milliseconds since the unix epoch
 #[derive(
     Debug,
@@ -27,7 +29,6 @@ use restate_encoding::{BilrostNewType, NetSerde};
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    derive_more::Into,
     BilrostNewType,
     NetSerde,
 )]
@@ -40,18 +41,16 @@ impl MillisSinceEpoch {
     pub const MAX: MillisSinceEpoch = MillisSinceEpoch::new(u64::MAX);
 
     pub const fn new(millis_since_epoch: u64) -> Self {
-        MillisSinceEpoch(millis_since_epoch)
+        Self(millis_since_epoch)
     }
 
     pub fn now() -> Self {
-        SystemTime::now().into()
+        WallClock::now()
     }
 
+    #[inline]
     pub fn after(duration: Duration) -> MillisSinceEpoch {
-        SystemTime::now()
-            .checked_add(duration)
-            .map(|time| time.into())
-            .unwrap_or(Self::MAX)
+        WallClock::now() + duration
     }
 
     pub const fn as_u64(&self) -> u64 {
@@ -61,6 +60,7 @@ impl MillisSinceEpoch {
     /// Note, this doesn't fail if the timestamp is higher than Timestamp::MAX instead
     /// it returns the default value (now). There are no practical cases where this can happen
     /// so it's decided to do this for API convenience.
+    #[cfg(feature = "jiff")]
     pub fn into_timestamp(self) -> jiff::Timestamp {
         jiff::Timestamp::from_millisecond(self.0 as i64).unwrap_or_default()
     }
@@ -76,6 +76,13 @@ impl MillisSinceEpoch {
     /// If the earlier timestamp is later than this timestamp, this will return zero.
     pub fn saturating_sub_ms(&self, earlier: Self) -> u64 {
         self.0.saturating_sub(earlier.0)
+    }
+}
+
+impl From<MillisSinceEpoch> for u64 {
+    #[inline]
+    fn from(value: MillisSinceEpoch) -> Self {
+        value.0
     }
 }
 
@@ -119,6 +126,7 @@ impl From<SystemTime> for MillisSinceEpoch {
     }
 }
 
+#[cfg(feature = "prost-types")]
 /// # Panics
 /// If timestamp is out of range (e.g. older than UNIX_EPOCH) this conversion will panic.
 impl From<prost_types::Timestamp> for MillisSinceEpoch {
@@ -129,6 +137,7 @@ impl From<prost_types::Timestamp> for MillisSinceEpoch {
     }
 }
 
+#[cfg(feature = "prost-types")]
 impl From<MillisSinceEpoch> for prost_types::Timestamp {
     fn from(value: MillisSinceEpoch) -> Self {
         // safest approach is to convert into SystemTime first, then calculate distance to
@@ -214,6 +223,7 @@ impl From<SystemTime> for NanosSinceEpoch {
     }
 }
 
+#[cfg(feature = "prost-types")]
 /// # Panics
 /// If timestamp is out of range (e.g. older than UNIX_EPOCH) this conversion will panic.
 impl From<prost_types::Timestamp> for NanosSinceEpoch {
