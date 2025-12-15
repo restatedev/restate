@@ -1,0 +1,23 @@
+[package]
+name = "restate-clock"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+test-util = []
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+restate-encoding = { workspace = true }
+
+bytes = { workspace = true }
+bilrost = { workspace = true }
+jiff = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true }
