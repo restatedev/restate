@@ -21,6 +21,7 @@ use rustls::crypto::aws_lc_rs;
 use tracing::error;
 use tracing::{info, trace, warn};
 
+use restate_clock::ClockUpkeep;
 use restate_core::TaskCenter;
 use restate_core::TaskCenterBuilder;
 use restate_core::TaskCenterFutureExt;
@@ -94,6 +95,11 @@ struct RestateArguments {
 const EXIT_CODE_FAILURE: i32 = 1;
 
 fn main() {
+    // Start the global clock upkeep thread
+    let Ok(_clock) = ClockUpkeep::start() else {
+        eprintln!("Failed to start restate internal clock thread!");
+        std::process::exit(EXIT_CODE_FAILURE);
+    };
     // We need to install a crypto provider explicitly because we depend on crates that activate the
     // ring as well aws_lc_rs rustls features. Unfortunately, these features are not additive. See
     // https://github.com/rustls/rustls/issues/1877. We can remove this line of code once all our

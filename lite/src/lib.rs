@@ -85,6 +85,7 @@ impl Default for Options {
 pub struct Restate {
     config: Configuration,
     task_center: task_center::OwnedHandle,
+    clock_guard: Option<restate_clock::ClockUpkeep>,
     task: Option<TaskHandle<Result<()>>>,
     has_stopped: Option<oneshot::Receiver<Result<()>>>,
 }
@@ -203,6 +204,7 @@ impl Restate {
         let config = config.apply_cascading_values();
         config.validate()?;
 
+        let clock_guard = restate_clock::ClockUpkeep::start()?;
         let task_center = TaskCenterBuilder::default()
             .default_runtime_handle(Handle::current())
             .build()
@@ -253,6 +255,7 @@ impl Restate {
         Ok(Self {
             task_center,
             config,
+            clock_guard: Some(clock_guard),
             task: Some(task),
             has_stopped: Some(has_stopped),
         })
@@ -297,6 +300,7 @@ impl Restate {
         if let Some(task) = self.task.take() {
             task.cancel();
         }
+        let _ = self.clock_guard.take();
         if let Some(has_stopped) = self.has_stopped.take() {
             let _ = has_stopped.await;
         }

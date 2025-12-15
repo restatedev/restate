@@ -6996,6 +6996,7 @@ dependencies = [
  "pprof",
  "rand 0.9.1",
  "reqwest",
+ "restate-clock",
  "restate-core",
  "restate-node",
  "restate-rocksdb",
@@ -7160,6 +7161,22 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "unicode-width 0.1.14",
+]
+
+[[package]]
+name = "restate-clock"
+version = "1.6.0-dev"
+dependencies = [
+ "bilrost",
+ "bytes",
+ "criterion",
+ "jiff",
+ "prost-types 0.14.1",
+ "restate-clock",
+ "restate-encoding",
+ "restate-workspace-hack",
+ "schemars 0.8.22",
+ "serde",
 ]
 
 [[package]]
@@ -7484,6 +7501,7 @@ dependencies = [
  "reqwest",
  "restate-admin",
  "restate-bifrost",
+ "restate-clock",
  "restate-core",
  "restate-errors",
  "restate-metadata-server",
@@ -7519,6 +7537,7 @@ dependencies = [
  "rand 0.9.1",
  "regex",
  "reqwest",
+ "restate-clock",
  "restate-core",
  "restate-metadata-providers",
  "restate-metadata-server-grpc",
@@ -7929,6 +7948,7 @@ dependencies = [
  "reqwest",
  "restate-admin",
  "restate-bifrost",
+ "restate-clock",
  "restate-core",
  "restate-errors",
  "restate-local-cluster-runner",
@@ -8268,6 +8288,7 @@ dependencies = [
  "regex",
  "regress",
  "restate-base64-util",
+ "restate-clock",
  "restate-encoding",
  "restate-errors",
  "restate-serde-util",
@@ -8483,6 +8504,8 @@ dependencies = [
  "criterion",
  "crossbeam-epoch",
  "crossbeam-utils",
+ "darling 0.20.10",
+ "darling_core 0.20.10",
  "digest",
  "either",
  "enum-map",
@@ -8620,6 +8643,7 @@ dependencies = [
  "rand 0.9.1",
  "restate-bifrost",
  "restate-cli-util",
+ "restate-clock",
  "restate-core",
  "restate-futures-util",
  "restate-local-cluster-runner",
