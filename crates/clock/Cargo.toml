@@ -21,6 +21,7 @@ jiff = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

@@ -7176,6 +7176,7 @@ dependencies = [
  "restate-workspace-hack",
  "schemars 0.8.22",
  "serde",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
