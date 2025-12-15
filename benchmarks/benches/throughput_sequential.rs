@@ -26,6 +26,7 @@ fn throughput_benchmark(criterion: &mut Criterion) {
         .with(fmt::layer())
         .with(EnvFilter::from_default_env())
         .init();
+    let _clock = restate_clock::ClockUpkeep::start();
 
     let config = restate_benchmarks::restate_configuration();
     let tc = restate_benchmarks::spawn_restate(config);
