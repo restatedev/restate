@@ -76,7 +76,8 @@ impl WallClock {
     /// This is intended to be called exclusively from the [`ClockUpkeep`](crate::ClockUpkeep)
     /// background thread every 500μs.
     pub(crate) fn update_recent() {
-        RECENT_UNIX_TIMESTAMP_US.store(Self::now_us(), Ordering::Relaxed);
+        let new = Self::now_us();
+        RECENT_UNIX_TIMESTAMP_US.store(new, Ordering::Relaxed);
     }
 
     /// Returns the current unix timestamp in milliseconds via `SystemTime::now()`.

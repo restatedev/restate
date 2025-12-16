@@ -20,13 +20,13 @@ const PHY_TIME_BITS: u8 = 42;
 
 /// Maximum value for physical time (4_398_046_511_103 -> Fri May 15 2161 07:35:11 GMT)
 /// This is also the physical time mask (LSB 42 bits)
-const PHY_TIME_MAX: u64 = (1 << PHY_TIME_BITS) - 1;
+pub(super) const PHY_TIME_MAX: u64 = (1 << PHY_TIME_BITS) - 1;
 
 /// Number of bits to represent logical clock counter.
-const LC_BITS: u8 = 22;
+pub(super) const LC_BITS: u8 = 22;
 
 /// A mask to extract the logical clock counter (LSB 22 bits)
-const LC_MAX: u64 = (1 << LC_BITS) - 1;
+pub(super) const LC_MAX: u64 = (1 << LC_BITS) - 1;
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
@@ -90,7 +90,7 @@ impl UniqueTimestamp {
     ///
     /// Values are clamped to [`Self::MAX`] (which is `u64::MAX - 1`) since `u64::MAX`
     /// cannot be represented due to the internal `NonZeroU64` representation.
-    const fn new(raw: u64) -> Self {
+    pub(crate) const fn new(raw: u64) -> Self {
         // We store millis + 1 to enable niche optimization with NonZeroU64.
         // This maps 0..=u64::MAX-1 to 1..=u64::MAX (all valid NonZeroU64 values).
         // We use saturating_add to clamp u64::MAX to u64::MAX (which represents MAX).
@@ -163,16 +163,23 @@ impl UniqueTimestamp {
         self.0.get() - 1
     }
 
+    /// Splits the timestamp into its physical and logical components.
+    pub(super) const fn split(&self) -> (u64, u64) {
+        let raw = self.as_u64();
+        let phy = (raw >> LC_BITS) & PHY_TIME_MAX;
+        let lc = raw & LC_MAX;
+        (phy, lc)
+    }
+
     /// Physical time is the raw number of milliseconds since restate's epoch.
     #[inline(always)]
-    const fn physical_raw(&self) -> u64 {
+    pub(super) const fn physical_raw(&self) -> u64 {
         // extract the physical time
         (self.as_u64() >> LC_BITS) & PHY_TIME_MAX
     }
 
-    #[allow(dead_code)]
     #[inline(always)]
-    const fn logical_raw(&self) -> u64 {
+    pub(super) const fn logical_raw(&self) -> u64 {
         // extract the logical clock
         self.as_u64() & LC_MAX
     }
