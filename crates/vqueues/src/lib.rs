@@ -124,7 +124,7 @@ where
         E: bilrost::Message,
     {
         let visible_at = match visible_at {
-            VisibleAt::Now => VisibleAt::At(created_at),
+            VisibleAt::Now => VisibleAt::At(created_at.to_unix_millis()),
             VisibleAt::At(ts) => VisibleAt::At(ts),
         };
         let card = EntryCard::new(priority, visible_at, created_at, kind, id.into());
