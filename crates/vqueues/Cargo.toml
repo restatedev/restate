@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-clock = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-storage-api = { workspace = true }

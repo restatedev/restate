@@ -162,6 +162,12 @@ impl MillisSinceEpoch {
         // the internal representations directly: (a+1) - (b+1) = a - b
         self.0.get().saturating_sub(earlier.0.get())
     }
+
+    /// Returns the amount of time elapsed from another instant to this one, or
+    /// zero duration if that instant is later than this one.
+    pub const fn duration_since(&self, earlier: Self) -> Duration {
+        Duration::from_millis(self.0.get().saturating_sub(earlier.0.get()))
+    }
 }
 
 impl From<MillisSinceEpoch> for u64 {
@@ -430,6 +436,12 @@ impl NanosSinceEpoch {
     /// clock/duration is expected.
     pub fn elapsed(&self) -> Duration {
         Duration::from_nanos(Self::now().0.get().saturating_sub(self.0.get()))
+    }
+
+    /// Returns the amount of time elapsed from another instant to this one, or
+    /// zero duration if that instant is later than this one.
+    pub const fn duration_since(&self, earlier: Self) -> Duration {
+        Duration::from_nanos(self.0.get().saturating_sub(earlier.0.get()))
     }
 }
 

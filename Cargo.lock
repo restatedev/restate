@@ -8351,6 +8351,7 @@ dependencies = [
  "hashbrown 0.16.0",
  "metrics",
  "pin-project",
+ "restate-clock",
  "restate-core",
  "restate-futures-util",
  "restate-partition-store",
