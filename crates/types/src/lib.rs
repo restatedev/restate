@@ -23,7 +23,6 @@ pub mod cluster;
 pub mod cluster_state;
 pub mod health;
 
-pub mod clock;
 pub mod config;
 pub mod config_loader;
 pub mod deployment;
@@ -65,6 +64,10 @@ pub use version::*;
 
 // Re-export of the old time module by delegating to the restate-clock crate.
 pub use restate_clock::time;
+pub mod clock {
+    pub use restate_clock::*;
+}
+
 // Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
 pub type SharedString = metrics::SharedString;
 
