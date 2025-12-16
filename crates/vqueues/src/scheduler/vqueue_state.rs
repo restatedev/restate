@@ -360,14 +360,13 @@ impl<S: VQueueStore> VQueueState<S> {
     pub fn poll_eligibility(
         &mut self,
         storage: &S,
-        now: MillisSinceEpoch,
         meta: &VQueueMeta,
         config: &VQueueConfig,
     ) -> Result<DetailedEligibility, StorageError> {
         self.queue
             .advance_if_needed(storage, &self.unconfirmed_assignments, &self.qid)?;
 
-        Ok(self.check_eligibility(now, meta, config))
+        Ok(self.check_eligibility(meta, config))
     }
 
     pub fn is_paused(&self, meta: &VQueueMeta, config: &VQueueConfig) -> IsPaused {
@@ -382,7 +381,6 @@ impl<S: VQueueStore> VQueueState<S> {
 
     pub fn check_eligibility(
         &self,
-        now: MillisSinceEpoch,
         meta: &VQueueMeta,
         config: &VQueueConfig,
     ) -> DetailedEligibility {
@@ -399,7 +397,7 @@ impl<S: VQueueStore> VQueueState<S> {
 
         // Only applies to inboxed items.
         if let VisibleAt::At(ts) = inbox_head.visible_at()
-            && ts > now
+            && ts > SchedulerClock.now_millis()
         {
             return DetailedEligibility::Scheduled(ts);
         }
