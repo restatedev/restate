@@ -122,9 +122,7 @@ impl From<DetailedEligibility> for SchedulingStatus {
             DetailedEligibility::EligibleRunning | DetailedEligibility::EligibleInbox => {
                 SchedulingStatus::Ready
             }
-            DetailedEligibility::Scheduled(ts) => SchedulingStatus::Scheduled {
-                at: ts.to_unix_millis(),
-            },
+            DetailedEligibility::Scheduled(ts) => SchedulingStatus::Scheduled { at: ts },
             DetailedEligibility::WaitingConcurrencyTokens => {
                 SchedulingStatus::WaitingConcurrencyTokens
             }

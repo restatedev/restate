@@ -844,9 +844,9 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         let record_unique_ts = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
         let visible_at = if let Some(execution_time) = metadata.execution_time {
-            VisibleAt::from_unix_millis(execution_time)
+            VisibleAt::new(execution_time)
         } else {
-            VisibleAt::At(record_unique_ts)
+            VisibleAt::new(self.record_created_at)
         };
 
         VQueues::new(
@@ -867,7 +867,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         // 1. Check if we need to schedule it
         // only schedule the invocation if it's actually in the future
-        let invocation_status = if visible_at > record_unique_ts {
+        let invocation_status = if visible_at > self.record_created_at {
             InvocationStatus::Scheduled(ScheduledInvocation::from_pre_flight_invocation_metadata(
                 metadata,
                 self.record_created_at,

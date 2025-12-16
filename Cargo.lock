@@ -8093,6 +8093,7 @@ dependencies = [
  "prost-build",
  "prost-types 0.14.1",
  "rangemap",
+ "restate-clock",
  "restate-types",
  "restate-workspace-hack",
  "serde",

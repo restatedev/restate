@@ -10,6 +10,7 @@
 
 use smallvec::SmallVec;
 
+use restate_clock::time::MillisSinceEpoch;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::vqueue::EffectivePriority;
 
@@ -23,15 +24,15 @@ pub struct VQueueStatistics {
     pub(crate) avg_queue_duration_ms: u32,
     /// Timestamp of the last successful enqueue.
     #[bilrost(tag(2))]
-    pub(crate) last_enqueued_at: Option<UniqueTimestamp>,
+    pub(crate) last_enqueued_at: Option<MillisSinceEpoch>,
     /// The timestamp of the last start of a new entry.
     #[bilrost(tag(3))]
-    pub(crate) last_start_at: Option<UniqueTimestamp>,
+    pub(crate) last_start_at: Option<MillisSinceEpoch>,
     #[bilrost(tag(4))]
-    pub(crate) last_completion_at: Option<UniqueTimestamp>,
+    pub(crate) last_completion_at: Option<MillisSinceEpoch>,
     /// The timestamp of the last run attempt of a previously started entry.
     #[bilrost(tag(5))]
-    pub(crate) last_resume_at: Option<UniqueTimestamp>,
+    pub(crate) last_resume_at: Option<MillisSinceEpoch>,
 }
 
 impl VQueueStatistics {
@@ -120,11 +121,11 @@ impl VQueueMeta {
         &self.stats
     }
 
-    pub fn last_enqueued_ts(&self) -> Option<UniqueTimestamp> {
+    pub fn last_enqueued_ts(&self) -> Option<MillisSinceEpoch> {
         self.stats.last_enqueued_at
     }
 
-    pub fn last_start_ts(&self) -> Option<UniqueTimestamp> {
+    pub fn last_start_ts(&self) -> Option<MillisSinceEpoch> {
         self.stats.last_start_at
     }
 
@@ -174,7 +175,7 @@ impl VQueueMeta {
                 debug_assert!(priority.is_new());
                 self.length += 1;
                 self.add_to_waiting(priority);
-                self.stats.last_enqueued_at = Some(now);
+                self.stats.last_enqueued_at = Some(now.to_unix_millis());
             }
             Action::StartAttempt {
                 visible_at,
@@ -182,9 +183,9 @@ impl VQueueMeta {
                 updated_start_tb_zero_time: updated_run_token_bucket_zero_time,
             } => {
                 if priority.is_new() {
-                    self.stats.last_start_at = Some(now);
+                    self.stats.last_start_at = Some(now.to_unix_millis());
                 } else {
-                    self.stats.last_resume_at = Some(now);
+                    self.stats.last_resume_at = Some(now.to_unix_millis());
                 }
 
                 self.increment_running();
@@ -195,7 +196,7 @@ impl VQueueMeta {
                 {
                     // Only measure queue latency for new items and only consider the item
                     // queuing from the moment it became visible, not the creation ts.
-                    let latency_ms = now.milliseconds_since(visible_since);
+                    let latency_ms = now.to_unix_millis().saturating_sub_ms(visible_since);
                     self.stats.update_avg_queue_duration(latency_ms);
                 }
 
@@ -250,7 +251,7 @@ impl VQueueMeta {
             } => {
                 debug_assert!(self.length > 0);
                 self.length -= 1;
-                self.stats.last_completion_at = Some(now);
+                self.stats.last_completion_at = Some(now.to_unix_millis());
                 match previous_stage {
                     Stage::Unknown => {
                         anyhow::bail!("Unknown stage for vqueue entry complete action: {update:?}")
