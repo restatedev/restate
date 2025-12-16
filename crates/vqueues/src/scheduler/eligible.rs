@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::task::Poll;
 use std::time::Duration;
@@ -20,7 +19,7 @@ use tracing::trace;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::VQueueStore;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
-use restate_types::clock::UniqueTimestamp;
+use restate_types::time::MillisSinceEpoch;
 
 use crate::VQueuesMeta;
 use crate::scheduler::vqueue_state::Eligibility;
@@ -32,7 +31,7 @@ use super::{SchedulingStatus, ThrottleScope, VQueueHandle};
 
 #[derive(Debug, Copy, Clone)]
 pub(super) struct WakeUp {
-    ts: UniqueTimestamp,
+    ts: MillisSinceEpoch,
     timer_key: delay_queue::Key,
 }
 
@@ -87,15 +86,13 @@ impl EligibilityTracker {
     ) -> SchedulingStatus {
         match self.states.get(qstate.handle) {
             None | Some(State::NeedsPoll) | Some(State::Ready) => SchedulingStatus::from(
-                qstate.check_eligibility(SchedulerClock.now_ts(), meta, config),
+                qstate.check_eligibility(SchedulerClock.now_millis(), meta, config),
             ),
             Some(State::Throttled { wake_up, scope }) => SchedulingStatus::Throttled {
-                until: wake_up.ts.to_unix_millis(),
+                until: wake_up.ts,
                 scope: *scope,
             },
-            Some(State::Scheduled { wake_up }) => SchedulingStatus::Scheduled {
-                at: wake_up.ts.to_unix_millis(),
-            },
+            Some(State::Scheduled { wake_up }) => SchedulingStatus::Scheduled { at: wake_up.ts },
             Some(State::BlockedOnCapacity) => SchedulingStatus::BlockedOnCapacity,
         }
     }
@@ -153,7 +150,7 @@ impl EligibilityTracker {
                     let config = cache.config_pool().find(&qstate.qid.parent);
                     // update the state based on eligibility.
                     match qstate
-                        .poll_eligibility(storage, SchedulerClock.now_ts(), meta, config)?
+                        .poll_eligibility(storage, SchedulerClock.now_millis(), meta, config)?
                         .as_compact()
                     {
                         Eligibility::Eligible => {
@@ -161,7 +158,7 @@ impl EligibilityTracker {
                             return Ok(Some(handle));
                         }
                         Eligibility::EligibleAt(ts) => {
-                            let instant = SchedulerClock.ts_to_future_instant(ts);
+                            let instant = SchedulerClock.millis_to_future_instant(ts);
                             let timer_key = self.delayed_eligibility.insert_at(handle, instant);
                             *current_state = State::Scheduled {
                                 wake_up: WakeUp { ts, timer_key },
@@ -209,7 +206,7 @@ impl EligibilityTracker {
     ) -> bool {
         let current_state = self.states.get(vqueue.handle).copied();
         let eligibility = vqueue
-            .check_eligibility(SchedulerClock.now_ts(), meta, config)
+            .check_eligibility(SchedulerClock.now_millis(), meta, config)
             .as_compact();
 
         match (current_state, eligibility) {
@@ -234,7 +231,7 @@ impl EligibilityTracker {
                             ts: eligible_at,
                             timer_key: self.delayed_eligibility.insert_at(
                                 vqueue.handle,
-                                SchedulerClock.ts_to_future_instant(eligible_at),
+                                SchedulerClock.millis_to_future_instant(eligible_at),
                             ),
                         },
                     },
@@ -280,10 +277,10 @@ impl EligibilityTracker {
             }
             // We were scheduled as we should, but make sure that the time point is still the same
             (Some(State::Scheduled { wake_up }), Eligibility::EligibleAt(eligible_at_ts)) => {
-                if eligible_at_ts.cmp_physical(&wake_up.ts) != Ordering::Equal {
+                if eligible_at_ts != wake_up.ts {
                     self.delayed_eligibility.reset_at(
                         &wake_up.timer_key,
-                        SchedulerClock.ts_to_future_instant(eligible_at_ts),
+                        SchedulerClock.millis_to_future_instant(eligible_at_ts),
                     );
                     self.states.insert(
                         vqueue.handle,
@@ -305,7 +302,7 @@ impl EligibilityTracker {
                     // Reschedule the timer as the new eligibility is further in the future
                     self.delayed_eligibility.reset_at(
                         &wake_up.timer_key,
-                        SchedulerClock.ts_to_future_instant(eligible_at_ts),
+                        SchedulerClock.millis_to_future_instant(eligible_at_ts),
                     );
                     self.states.insert(
                         vqueue.handle,
@@ -359,8 +356,7 @@ impl EligibilityTracker {
 
     pub fn front_throttled(&mut self, delay: Duration, scope: ThrottleScope) {
         if let Some(handle) = self.ready_ring.front() {
-            let now = SchedulerClock.now_ts();
-            let wake_up_ts = now.add_millis(delay.as_millis() as u64).unwrap_or(now);
+            let wake_up_ts = SchedulerClock.now_millis() + delay;
 
             let old = self.states.insert(
                 *handle,

@@ -23,7 +23,7 @@ use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{
     EntryKind, VQueueEntry, VQueueStore, VisibleAt, WaitStats,
 };
-use restate_types::clock::UniqueTimestamp;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::VQueueId;
 
 use crate::metric_definitions::{
@@ -57,7 +57,7 @@ pub(super) enum Pop<Item> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::IsVariant)]
 pub(super) enum Eligibility {
     Eligible,
-    EligibleAt(UniqueTimestamp),
+    EligibleAt(MillisSinceEpoch),
     NotEligible,
 }
 
@@ -65,7 +65,7 @@ pub(super) enum Eligibility {
 pub(super) enum DetailedEligibility {
     EligibleRunning,
     EligibleInbox,
-    Scheduled(UniqueTimestamp),
+    Scheduled(MillisSinceEpoch),
     Empty,
     WaitingConcurrencyTokens,
 }
@@ -360,7 +360,7 @@ impl<S: VQueueStore> VQueueState<S> {
     pub fn poll_eligibility(
         &mut self,
         storage: &S,
-        now: UniqueTimestamp,
+        now: MillisSinceEpoch,
         meta: &VQueueMeta,
         config: &VQueueConfig,
     ) -> Result<DetailedEligibility, StorageError> {
@@ -382,7 +382,7 @@ impl<S: VQueueStore> VQueueState<S> {
 
     pub fn check_eligibility(
         &self,
-        now: UniqueTimestamp,
+        now: MillisSinceEpoch,
         meta: &VQueueMeta,
         config: &VQueueConfig,
     ) -> DetailedEligibility {
