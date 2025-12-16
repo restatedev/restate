@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 use tracing::info;
-use tracing::{instrument, warn};
+use tracing::{error, instrument, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
@@ -140,12 +140,10 @@ impl SpawnPartitionProcessorTask {
             Some(partition.partition_id),
             {
                 move || async move {
-
                     let open_partition_store = async {
                         if let Some(delay) = delay {
-                                tokio::time::sleep(delay)
-                                .await;
-                            }
+                            tokio::time::sleep(delay).await;
+                        }
 
                         match partition_store_manager
                             .open(&partition, fast_forward_lsn)
@@ -157,9 +155,13 @@ impl SpawnPartitionProcessorTask {
                     };
 
                     let partition_store = cancellation_token()
-                            .run_until_cancelled(open_partition_store).await;
+                        .run_until_cancelled(open_partition_store)
+                        .await;
                     let Some(partition_store) = partition_store else {
-                        info!(partition_id = %partition.partition_id, "Partition processor stopped due to cancellation signal");
+                        info!(
+                            partition_id = %partition.partition_id,
+                            "Partition processor stopped due to cancellation signal"
+                        );
                         return Ok(());
                     };
 
@@ -172,19 +174,47 @@ impl SpawnPartitionProcessorTask {
 
                     // Invoker needs to outlive the partition processor when shutdown signal is
                     // received. This is why it's not spawned as a "child".
-                    let invoker = TaskCenter::spawn_unmanaged_child(
+                    let mut invoker = TaskCenter::spawn_unmanaged_child(
                         TaskKind::SystemService,
                         invoker_name,
                         invoker.run(invoker_config),
                     )
-                    .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))?.into_guard();
+                    .map_err(|e| ProcessorError::from(anyhow::anyhow!(e)))?
+                    .into_guard();
 
-                    let result = pp.run().await;
+                    let mut run_fut = std::pin::pin!(pp.run());
 
-                    // Terminating the invoker after the processor has exited
-                    let _ = invoker.cancel_and_wait().await;
-                    info!(partition_id = %partition.partition_id, "Partition processor stopped");
-                    result
+                    tokio::select! {
+                        result = &mut run_fut => {
+                            let _ = invoker.cancel_and_wait().await;
+                            info!(
+                                partition_id = %partition.partition_id,
+                                "Partition processor stopped"
+                            );
+                            result
+                        }
+                        _ = &mut invoker => {
+                            warn!(
+                                partition_id = %partition.partition_id,
+                                "Invoker process stopped unexpectedly"
+                            );
+
+                            // Cancel the current task then run the PP to completion
+                            // for a clean PP shutdown
+                            let task_cancellation_token = cancellation_token();
+                            task_cancellation_token.cancel();
+                            if let Err(err) = run_fut.await {
+                                error!(
+                                    err = %err,
+                                    partition_id = %partition.partition_id,
+                                    "Partition processor exited with an error while handling \
+                                    invoker crash"
+                                );
+                            }
+
+                            Err(ProcessorError::InvokerStoppedUnexpectedly)
+                        }
+                    }
                 }
             },
         )?;
