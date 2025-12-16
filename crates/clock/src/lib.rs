@@ -8,15 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#[cfg(feature = "hlc")]
+mod hlc;
 #[cfg(feature = "test-util")]
 mod mock_clock;
+#[cfg(feature = "hlc")]
+pub mod storage;
 pub mod time;
 mod unique_timestamp;
 mod upkeep;
 mod wall_clock;
 
+#[cfg(feature = "hlc")]
+pub use hlc::HlcClock;
 #[cfg(feature = "test-util")]
 pub use mock_clock::MockClock;
+#[cfg(feature = "hlc")]
+pub use storage::{AtomicStorage, HlcClockStorage, LocalStorage};
 pub use unique_timestamp::{Error, UniqueTimestamp};
 pub use upkeep::ClockUpkeep;
 pub use wall_clock::WallClock;
@@ -69,3 +77,8 @@ impl<T: Clock> Clock for &T {
 /// RESTATE_EPOCH -> (2022-01-01 00:00:00 GMT)
 const RESTATE_EPOCH: crate::time::MillisSinceEpoch =
     crate::time::MillisSinceEpoch::new(1_640_995_200_000);
+
+#[cfg(feature = "hlc")]
+mod private {
+    pub trait Sealed {}
+}
