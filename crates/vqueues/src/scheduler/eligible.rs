@@ -85,9 +85,9 @@ impl EligibilityTracker {
         config: &VQueueConfig,
     ) -> SchedulingStatus {
         match self.states.get(qstate.handle) {
-            None | Some(State::NeedsPoll) | Some(State::Ready) => SchedulingStatus::from(
-                qstate.check_eligibility(SchedulerClock.now_millis(), meta, config),
-            ),
+            None | Some(State::NeedsPoll) | Some(State::Ready) => {
+                SchedulingStatus::from(qstate.check_eligibility(meta, config))
+            }
             Some(State::Throttled { wake_up, scope }) => SchedulingStatus::Throttled {
                 until: wake_up.ts,
                 scope: *scope,
@@ -149,17 +149,14 @@ impl EligibilityTracker {
                 State::NeedsPoll => {
                     let config = cache.config_pool().find(&qstate.qid.parent);
                     // update the state based on eligibility.
-                    match qstate
-                        .poll_eligibility(storage, SchedulerClock.now_millis(), meta, config)?
-                        .as_compact()
-                    {
+                    match qstate.poll_eligibility(storage, meta, config)?.as_compact() {
                         Eligibility::Eligible => {
                             *current_state = State::Ready;
                             return Ok(Some(handle));
                         }
                         Eligibility::EligibleAt(ts) => {
-                            let instant = SchedulerClock.millis_to_future_instant(ts);
-                            let timer_key = self.delayed_eligibility.insert_at(handle, instant);
+                            let duration = ts.duration_since(SchedulerClock.now_millis());
+                            let timer_key = self.delayed_eligibility.insert(handle, duration);
                             *current_state = State::Scheduled {
                                 wake_up: WakeUp { ts, timer_key },
                             };
@@ -205,9 +202,7 @@ impl EligibilityTracker {
         config: &VQueueConfig,
     ) -> bool {
         let current_state = self.states.get(vqueue.handle).copied();
-        let eligibility = vqueue
-            .check_eligibility(SchedulerClock.now_millis(), meta, config)
-            .as_compact();
+        let eligibility = vqueue.check_eligibility(meta, config).as_compact();
 
         match (current_state, eligibility) {
             // --
@@ -229,9 +224,9 @@ impl EligibilityTracker {
                     State::Scheduled {
                         wake_up: WakeUp {
                             ts: eligible_at,
-                            timer_key: self.delayed_eligibility.insert_at(
+                            timer_key: self.delayed_eligibility.insert(
                                 vqueue.handle,
-                                SchedulerClock.millis_to_future_instant(eligible_at),
+                                eligible_at.duration_since(SchedulerClock.now_millis()),
                             ),
                         },
                     },
@@ -278,9 +273,9 @@ impl EligibilityTracker {
             // We were scheduled as we should, but make sure that the time point is still the same
             (Some(State::Scheduled { wake_up }), Eligibility::EligibleAt(eligible_at_ts)) => {
                 if eligible_at_ts != wake_up.ts {
-                    self.delayed_eligibility.reset_at(
+                    self.delayed_eligibility.reset(
                         &wake_up.timer_key,
-                        SchedulerClock.millis_to_future_instant(eligible_at_ts),
+                        eligible_at_ts.duration_since(SchedulerClock.now_millis()),
                     );
                     self.states.insert(
                         vqueue.handle,
@@ -300,9 +295,9 @@ impl EligibilityTracker {
                 // end of the throttling period.
                 if eligible_at_ts > wake_up.ts {
                     // Reschedule the timer as the new eligibility is further in the future
-                    self.delayed_eligibility.reset_at(
+                    self.delayed_eligibility.reset(
                         &wake_up.timer_key,
-                        SchedulerClock.millis_to_future_instant(eligible_at_ts),
+                        eligible_at_ts.duration_since(SchedulerClock.now_millis()),
                     );
                     self.states.insert(
                         vqueue.handle,
