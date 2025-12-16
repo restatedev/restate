@@ -269,6 +269,8 @@ pub enum ProcessorError {
     ShutdownError(#[from] ShutdownError),
     #[error("log read stream has terminated")]
     LogReadStreamTerminated,
+    #[error("Invoker stopped unexpectedly")]
+    InvokerStoppedUnexpectedly,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
