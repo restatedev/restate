@@ -30,6 +30,7 @@ async fn main() {
     tracing_subscriber::fmt().init();
 
     let arguments = Arguments::parse();
+    restate_clock::ClockUpkeep::start().expect("to start the clock upkeep");
 
     let cluster_file = match arguments.cluster_file {
         None => {

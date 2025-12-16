@@ -9,11 +9,11 @@ publish = false
 
 [features]
 default = []
-schemars = ["dep:schemars", "restate-serde-util/schema", "restate-time-util/schema"]
+schemars = ["dep:schemars", "restate-serde-util/schema", "restate-time-util/schema", "restate-clock/schemars"]
 unsafe-mutable-config = []
 # Enables the tokio console subscriber and exposes its configuration
 console = []
-test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util"]
+test-util = ["unsafe-mutable-config", "dep:tempfile", "dep:restate-test-util", "restate-clock/test-util"]
 # Runs every partition in a separate rocksdb database
 # Note: this is currently backwards-incompatible with the production builds.
 multi-db = []
@@ -22,6 +22,7 @@ multi-db = []
 restate-workspace-hack = { workspace = true }
 
 restate-base64-util = { workspace = true }
+restate-clock = { workspace = true, features = ["prost-types"] }
 restate-encoding = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
