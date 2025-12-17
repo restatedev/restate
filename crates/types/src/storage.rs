@@ -17,7 +17,6 @@ use std::sync::Arc;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use chrono::Utc;
 use downcast_rs::{DowncastSync, impl_downcast};
-use serde::Deserialize;
 use tracing::error;
 
 use restate_encoding::{BilrostAs, NetSerde};
@@ -264,37 +263,6 @@ impl StorageEncode for PolyBytes {
 
     fn default_codec(&self) -> StorageCodecKind {
         StorageCodecKind::FlexbuffersSerde
-    }
-}
-
-/// SerializeAs/DeserializeAs to implement ser/de trait for [`PolyBytes`]
-/// Use it with `#[serde(with = "serde_with::As::<EncodedPolyBytes>")]`.
-pub struct EncodedPolyBytes {}
-
-impl serde_with::SerializeAs<PolyBytes> for EncodedPolyBytes {
-    fn serialize_as<S>(source: &PolyBytes, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match source {
-            PolyBytes::Bytes(bytes) => serializer.serialize_bytes(bytes.as_ref()),
-            PolyBytes::Typed(typed) => {
-                // todo: estimate size to avoid re allocations
-                let mut buf = BytesMut::new();
-                StorageCodec::encode(&**typed, &mut buf).expect("record serde is infallible");
-                serializer.serialize_bytes(buf.as_ref())
-            }
-        }
-    }
-}
-
-impl<'de> serde_with::DeserializeAs<'de, PolyBytes> for EncodedPolyBytes {
-    fn deserialize_as<D>(deserializer: D) -> Result<PolyBytes, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let buf = Bytes::deserialize(deserializer)?;
-        Ok(PolyBytes::Bytes(buf))
     }
 }
 

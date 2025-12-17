@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use bitflags::bitflags;
 use prost_dto::{FromProst, IntoProst};
-use serde::{Deserialize, Serialize};
 
 use restate_encoding::{ArcedSlice, BilrostNewType, NetSerde};
 
@@ -107,17 +106,7 @@ macro_rules! define_logserver_unary {
 }
 
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    Eq,
-    PartialEq,
-    Serialize,
-    Deserialize,
-    IntoProst,
-    FromProst,
-    bilrost::Enumeration,
-    NetSerde,
+    Debug, Clone, Copy, Eq, PartialEq, IntoProst, FromProst, bilrost::Enumeration, NetSerde,
 )]
 #[prost(target = "crate::protobuf::log_server_common::Status")]
 #[repr(u8)]
@@ -216,7 +205,7 @@ define_logserver_rpc! {
     @service = LogServerMetaService,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct LogServerRequestHeader {
     #[bilrost(tag(1))]
     pub loglet_id: LogletId,
@@ -235,9 +224,7 @@ impl LogServerRequestHeader {
     }
 }
 
-#[derive(
-    Debug, Clone, Serialize, Deserialize, IntoProst, FromProst, bilrost::Message, NetSerde,
-)]
+#[derive(Debug, Clone, IntoProst, FromProst, bilrost::Message, NetSerde)]
 #[prost(target = "crate::protobuf::log_server_common::ResponseHeader")]
 pub struct LogServerResponseHeader {
     /// The position after the last locally committed record on this node
@@ -275,7 +262,7 @@ impl LogServerResponseHeader {
 }
 
 // ** STORE
-#[derive(Debug, Clone, Serialize, Deserialize, BilrostNewType, NetSerde)]
+#[derive(Debug, Clone, BilrostNewType, NetSerde)]
 pub struct StoreFlags(u32);
 bitflags! {
     impl StoreFlags: u32 {
@@ -288,8 +275,6 @@ bitflags! {
     derive_more::Into,
     derive_more::From,
     derive_more::Deref,
-    Serialize,
-    Deserialize,
     Debug,
     Clone,
     Default,
@@ -304,7 +289,7 @@ impl From<Vec<Record>> for Payloads {
 }
 
 /// Store one or more records on a log-server
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Store {
     #[bilrost(1)]
     pub header: LogServerRequestHeader,
@@ -351,7 +336,7 @@ impl Store {
 }
 
 /// Response to a `Store` request
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Stored {
     #[bilrost(1)]
     pub header: LogServerResponseHeader,
@@ -391,7 +376,7 @@ impl Stored {
 }
 
 // ** RELEASE
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Release {
     #[bilrost(1)]
     pub header: LogServerRequestHeader,
@@ -399,7 +384,7 @@ pub struct Release {
 
 // ** SEAL
 /// Seals the loglet so no further stores can be accepted
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Seal {
     #[bilrost(1)]
     pub header: LogServerRequestHeader,
@@ -409,7 +394,7 @@ pub struct Seal {
 }
 
 /// Response to a `Seal` request
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Sealed {
     #[bilrost(1)]
     pub header: LogServerResponseHeader,
@@ -449,13 +434,13 @@ impl Sealed {
 }
 
 // ** GET_LOGLET_INFO
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct GetLogletInfo {
     #[bilrost(1)]
     pub header: LogServerRequestHeader,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, IntoProst, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, IntoProst, bilrost::Message, NetSerde)]
 #[prost(target = "crate::protobuf::log_server_common::LogletInfo")]
 pub struct LogletInfo {
     #[prost(required)]
@@ -504,7 +489,7 @@ impl LogletInfo {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, Copy, PartialEq, bilrost::Message, NetSerde)]
 pub struct Gap {
     /// to is inclusive
     #[bilrost(1)]
@@ -516,8 +501,6 @@ pub struct Gap {
     Clone,
     derive_more::IsVariant,
     derive_more::TryUnwrap,
-    Serialize,
-    Deserialize,
     NetSerde,
     Default,
     bilrost::Oneof,
@@ -551,7 +534,7 @@ pub enum MaybeRecord {
 /// If `to_offset` is higher than `local_tail`, then we return all records up-to the `local_tail`
 /// and the value of `local_tail` in the response header will indicate what is the snapshot of the
 /// local tail that was used during the read process and `next_offset` will be set accordingly.
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct GetRecords {
     pub header: LogServerRequestHeader,
     /// if set, the server will stop reading when the next record will tip of the total number of
@@ -571,7 +554,7 @@ pub struct GetRecords {
     pub to_offset: LogletOffset,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Records {
     #[bilrost(1)]
     pub header: LogServerResponseHeader,
@@ -630,7 +613,7 @@ impl Records {
 }
 
 // ** TRIM
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Trim {
     pub header: LogServerRequestHeader,
     /// The trim_point is inclusive (will be trimmed)
@@ -638,7 +621,7 @@ pub struct Trim {
 }
 
 /// Response to a `Trim` request
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Trimmed {
     #[bilrost(1)]
     pub header: LogServerResponseHeader,
@@ -680,7 +663,7 @@ impl Trimmed {
 // ** WAIT_FOR_TAIL
 
 /// Defines the tail we are interested in waiting for.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, bilrost::Oneof, NetSerde)]
+#[derive(Debug, Clone, Default, bilrost::Oneof, NetSerde)]
 pub enum TailUpdateQuery {
     #[default]
     #[doc(hidden)]
@@ -699,7 +682,7 @@ pub enum TailUpdateQuery {
 
 /// Subscribes to a notification that will be sent when the log-server reaches a minimum local-tail
 /// or global-tail value OR if the node is sealed.
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct WaitForTail {
     #[bilrost(1)]
     pub header: LogServerRequestHeader,
@@ -710,7 +693,7 @@ pub struct WaitForTail {
 }
 
 /// Response to a `WaitForTail` request
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct TailUpdated {
     pub header: LogServerResponseHeader,
 }
@@ -751,7 +734,7 @@ impl TailUpdated {
 // ** GET_DIGEST
 
 /// Request a digest of the loglet between two offsets from this node
-#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message, NetSerde)]
+#[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct GetDigest {
     pub header: LogServerRequestHeader,
     // inclusive
@@ -765,8 +748,6 @@ pub struct GetDigest {
     PartialEq,
     Eq,
     derive_more::Display,
-    Serialize,
-    Deserialize,
     IntoProst,
     FromProst,
     bilrost::Message,
@@ -787,8 +768,6 @@ pub struct DigestEntry {
     Eq,
     PartialEq,
     derive_more::Display,
-    Serialize,
-    Deserialize,
     IntoProst,
     FromProst,
     bilrost::Enumeration,
@@ -823,9 +802,7 @@ impl DigestEntry {
 }
 
 /// Response to a `GetDigest` request
-#[derive(
-    Debug, Clone, Serialize, Deserialize, IntoProst, FromProst, bilrost::Message, NetSerde,
-)]
+#[derive(Debug, Clone, IntoProst, FromProst, bilrost::Message, NetSerde)]
 #[prost(target = "crate::protobuf::log_server_common::Digest")]
 pub struct Digest {
     #[prost(required)]
