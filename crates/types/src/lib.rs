@@ -55,7 +55,6 @@ pub mod service_discovery;
 pub mod service_protocol;
 pub mod state_mut;
 pub mod storage;
-pub mod time;
 pub mod timer;
 pub mod vqueue;
 
@@ -64,6 +63,8 @@ pub use node_id::*;
 pub use restate_version::*;
 pub use version::*;
 
+// Re-export of the old time module by delegating to the restate-clock crate.
+pub use restate_clock::time;
 // Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
 pub type SharedString = metrics::SharedString;
 

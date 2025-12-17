@@ -44,6 +44,7 @@ restate-admin-rest-model = { path = "crates/admin-rest-model" }
 restate-base64-util = { path = "crates/base64-util" }
 restate-bifrost = { path = "crates/bifrost" }
 restate-cli-util = { path = "crates/cli-util" }
+restate-clock = { path = "crates/clock" }
 restate-cloud-tunnel-client = { path = "crates/cloud-tunnel-client" }
 restate-core = { path = "crates/core" }
 restate-core-derive = { path = "crates/core/derive" }
