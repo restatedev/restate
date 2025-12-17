@@ -46,8 +46,8 @@ use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::identifiers::{LeaderEpoch, PartitionLeaderEpoch};
+use restate_types::identifiers::{PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::message::MessageIndex;
 use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
@@ -63,7 +63,7 @@ use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
 use restate_wal_protocol::timer::TimerKeyValue;
 
-use crate::partition::cleaner::Cleaner;
+use crate::partition::cleaner::{self, Cleaner};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
@@ -131,7 +131,7 @@ pub(crate) enum ActionEffect {
     Invoker(Box<restate_invoker_api::Effect>),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
-    ScheduleCleanupTimer(InvocationId, Duration),
+    Cleaner(cleaner::CleanerEffect),
     PartitionMaintenance(PartitionDurability),
     UpsertSchema(Schema),
     AwaitingRpcSelfProposeDone,
@@ -421,15 +421,13 @@ where
                 TaskCenter::spawn_unmanaged(TaskKind::Shuffle, "shuffle", shuffle.run())?;
 
             let cleaner = Cleaner::new(
-                *leader_epoch,
                 partition_store.clone(),
-                self.bifrost.clone(),
+                self.partition.partition_id,
                 self.partition.key_range.clone(),
                 config.worker.cleanup_interval(),
             );
 
-            let cleaner_task_id =
-                TaskCenter::spawn_child(TaskKind::Cleaner, "cleaner", cleaner.run())?;
+            let cleaner_handle = cleaner.start()?;
 
             let trimmer_task_id = LogTrimmer::spawn(
                 self.bifrost.clone(),
@@ -458,7 +456,7 @@ where
                 *leader_epoch,
                 self.partition.key_range.clone(),
                 shuffle_task_handle,
-                cleaner_task_id,
+                cleaner_handle,
                 trimmer_task_id,
                 shuffle_hint_tx,
                 timer_service,
