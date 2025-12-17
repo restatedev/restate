@@ -33,6 +33,9 @@ pub const PARTITION_IS_EFFECTIVE_LEADER: &str = "restate.partition.is_effective_
 pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
     "restate.partition.record_committed_to_read_latency.seconds";
 
+pub const PARTITION_INGESTION_REQUEST_LEN: &str = "restate.partition.ingest.request.len";
+pub const PARTITION_INGESTION_REQUEST_SIZE: &str = "restate.partition.ingest.request.size.bytes";
+
 pub(crate) fn describe_metrics() {
     describe_gauge!(
         PARTITION_BLOCKED_FLARE,
@@ -96,5 +99,17 @@ pub(crate) fn describe_metrics() {
         PARTITION_APPLIED_LSN_LAG,
         Unit::Count,
         "Number of records between last applied lsn and the log tail"
+    );
+
+    describe_histogram!(
+        PARTITION_INGESTION_REQUEST_LEN,
+        Unit::Count,
+        "Number of records in a single ingestion request"
+    );
+
+    describe_histogram!(
+        PARTITION_INGESTION_REQUEST_SIZE,
+        Unit::Bytes,
+        "Total size of records in a single ingestion request"
     );
 }
