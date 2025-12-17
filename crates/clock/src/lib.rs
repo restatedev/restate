@@ -11,11 +11,13 @@
 #[cfg(feature = "test-util")]
 mod mock_clock;
 pub mod time;
+mod unique_timestamp;
 mod upkeep;
 mod wall_clock;
 
 #[cfg(feature = "test-util")]
 pub use mock_clock::MockClock;
+pub use unique_timestamp::{Error, UniqueTimestamp};
 pub use upkeep::ClockUpkeep;
 pub use wall_clock::WallClock;
 

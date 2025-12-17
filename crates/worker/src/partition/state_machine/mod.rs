@@ -476,7 +476,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 );
 
                 let record_unique_ts =
-                    UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+                    UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
                 for entry in cmd.assignment.entries {
                     inbox.yield_running(record_unique_ts, entry.card).await?;
                 }
@@ -842,7 +842,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         // todo(asoli): temporary until we move this to the invocation id creation site.
         let qid = Self::vqueue_id_from_invocation(&invocation_id, &metadata.invocation_target);
 
-        let record_unique_ts = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+        let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
         let visible_at = if let Some(execution_time) = metadata.execution_time {
             VisibleAt::new(execution_time)
         } else {
@@ -1708,7 +1708,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         if Configuration::pinned().common.experimental_enable_vqueues {
             let record_unique_ts =
-                UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             // Is this an invocation that has a vqueue inbox?
             if !VQueues::end_by_id(
                 self.storage,
@@ -1816,7 +1816,7 @@ impl<S> StateMachineApplyContext<'_, S> {
 
         if Configuration::pinned().common.experimental_enable_vqueues {
             let record_unique_ts =
-                UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
             // Is this an invocation that has a vqueue inbox?
             if !VQueues::end_by_id(
                 self.storage,
@@ -2661,7 +2661,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             }
 
             let record_unique_ts =
-                UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
             // we need to remove the invocation from the running list
             VQueues::end_by_id(
@@ -2749,7 +2749,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             VQueueInstance::from_raw(command.assignment.instance),
         );
 
-        let record_unique_ts = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+        let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
         let updated_run_token_bucket_zero_time =
             command.meta_updates.updated_token_bucket_zero_time;
         for entry in command.assignment.entries {
@@ -5055,7 +5055,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.is_leader.then_some(self.action_collector),
         );
 
-        let now = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+        let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
         let should_release_concurrency_token = match cause {
             ParkCause::Suspend => {
@@ -5129,7 +5129,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.is_leader.then_some(self.action_collector),
         );
 
-        let now = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+        let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
         match entry_state_header.stage() {
             Stage::Park => {
@@ -5214,7 +5214,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     where
         S: WriteVQueueTable + ReadVQueueTable + WriteFsmTable,
     {
-        let now = UniqueTimestamp::from_unix_millis(self.record_created_at).unwrap();
+        let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
         let visible_at = VisibleAt::Now;
 
         let service_id = &state_mutation.service_id;
