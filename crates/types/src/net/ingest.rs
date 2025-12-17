@@ -13,15 +13,19 @@ use std::sync::Arc;
 use bytes::{Bytes, BytesMut};
 use metrics::Key;
 
+use restate_encoding::ArcedSlice;
+
 use crate::identifiers::PartitionId;
 use crate::logs::{HasRecordKeys, Keys};
 use crate::net::partition_processor::PartitionLeaderService;
-use crate::net::{RpcRequest, bilrost_wire_codec, default_wire_codec, define_rpc};
+use crate::net::{RpcRequest, bilrost_wire_codec, define_rpc};
 use crate::storage::{StorageCodec, StorageEncode};
 
-#[derive(Debug, Eq, PartialEq, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Eq, PartialEq, Clone, bilrost::Message)]
 pub struct IngestRecord {
+    #[bilrost(1)]
     pub keys: Keys,
+    #[bilrost(2)]
     pub record: Bytes,
 }
 
@@ -50,8 +54,9 @@ impl HasRecordKeys for IngestRecord {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, bilrost::Message)]
 pub struct IngestRequest {
+    #[bilrost(tag(1), encoding(ArcedSlice<packed>))]
     pub records: Arc<[IngestRecord]>,
 }
 
@@ -69,8 +74,7 @@ impl From<Arc<[IngestRecord]>> for IngestRequest {
     }
 }
 
-// todo(azmy): Use bilrost (depends on the payload)
-default_wire_codec!(IngestRequest);
+bilrost_wire_codec!(IngestRequest);
 
 #[derive(Debug, Clone, bilrost::Oneof, bilrost::Message)]
 pub enum ResponseStatus {
@@ -107,12 +111,13 @@ define_rpc! {
     @service=PartitionLeaderService,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, bilrost::Message)]
 pub struct ReceivedIngestRequest {
+    #[bilrost(tag(1), encoding(packed))]
     pub records: Vec<IngestRecord>,
 }
 
-default_wire_codec!(ReceivedIngestRequest);
+bilrost_wire_codec!(ReceivedIngestRequest);
 
 /// The [`ReceivedIngestRequest`] uses the same TYPE
 /// as [`IngestRequest`] to be able to directly decode
