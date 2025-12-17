@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+hlc = []
 test-util = []
 
 [dependencies]
@@ -24,9 +25,24 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+restate-clock = {path = ".", default-features = false, features = ["test-util", "hlc"]}
+
 criterion = { workspace = true }
 serde_json = { workspace = true }
 
 [[bench]]
 name = "wall_clock"
 harness = false
+
+[[bench]]
+name = "hlc_clock"
+harness = false
+required-features = ["hlc"]
+
+[[example]]
+name = "brrr_single"
+required-features = ["hlc"]
+
+[[example]]
+name = "brrr_multi"
+required-features = ["hlc"]

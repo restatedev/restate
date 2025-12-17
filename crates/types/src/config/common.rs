@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
-use restate_time_util::NonZeroFriendlyDuration;
+use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
     AwsLambdaOptions, GossipOptions, HttpOptions, InvalidConfigurationError, ObjectStoreOptions,
@@ -441,6 +441,23 @@ pub struct CommonOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub experimental_enable_vqueues: bool,
+
+    /// # HLC maximum drift
+    ///
+    /// Restate uses an internal hybrid-logical-clock (HLC) to track causality between
+    /// different nodes in the cluster. This requires that the wall clock of all nodes
+    /// of the cluster to be synchronized (i.e. with NTP/PTP). This configuration option
+    /// allows you to configure the maximum allowed drift between nodes before the node
+    /// starts rejecting requests. The default value is `5000ms` which is sufficiently
+    /// large to cover the majority of cases.
+    ///
+    /// However, cluster operators may prefer to reduce this value (e.g. to `1000ms`) if
+    /// they trust the clock synchronization between nodes to be reliable.
+    ///
+    /// Setting this value to `0` disables the drift check entirely. This is not recommended
+    /// unless you are trying to recover a cluster from previous synchronization-related issues.
+    #[serde(default)]
+    hlc_max_drift: FriendlyDuration,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -599,6 +616,17 @@ impl CommonOptions {
 
         Ok(())
     }
+
+    pub fn hlc_max_drift(&self) -> Option<NonZeroUsize> {
+        if self.hlc_max_drift.is_zero() {
+            None
+        } else {
+            Some(
+                NonZeroUsize::new(self.hlc_max_drift.as_millis() as usize)
+                    .expect("duration milliseconds must fit into usize"),
+            )
+        }
+    }
 }
 
 impl Default for CommonOptions {
@@ -649,6 +677,7 @@ impl Default for CommonOptions {
             disable_telemetry: false,
             gossip: GossipOptions::default(),
             experimental_enable_vqueues: false,
+            hlc_max_drift: FriendlyDuration::from_millis(5000),
         }
     }
 }
