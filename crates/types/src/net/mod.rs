@@ -11,6 +11,7 @@
 pub mod address;
 pub mod codec;
 pub mod connect_opts;
+pub mod ingest;
 pub mod listener;
 pub mod log_server;
 pub mod metadata;
