@@ -13,6 +13,7 @@ test-util = []
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-clock = { workspace = true }
 restate-types = { workspace = true }
 
 ahash = { workspace = true }

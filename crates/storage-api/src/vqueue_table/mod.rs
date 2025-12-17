@@ -15,8 +15,7 @@ mod tables;
 
 use std::hash::Hash;
 
-use restate_types::clock::UniqueTimestamp;
-use restate_types::time::MillisSinceEpoch;
+use restate_clock::time::MillisSinceEpoch;
 
 pub use entry::*;
 pub use store::*;
@@ -25,56 +24,67 @@ pub use tables::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VisibleAt {
     Now,
-    At(UniqueTimestamp),
+    At(MillisSinceEpoch),
 }
 
+const _: () = {
+    assert!(
+        size_of::<MillisSinceEpoch>() == size_of::<VisibleAt>(),
+        "VisibleAt should be the same size as MilliSinceEpoch"
+    );
+};
+
 impl VisibleAt {
-    pub fn from_unix_millis(millis: MillisSinceEpoch) -> Self {
-        VisibleAt::At(UniqueTimestamp::from_unix_millis(millis).unwrap())
+    pub const fn new(millis: MillisSinceEpoch) -> Self {
+        if millis.is_zero() {
+            Self::Now
+        } else {
+            Self::At(millis)
+        }
     }
 
-    pub fn from_raw(raw: u64) -> Self {
+    pub const fn from_raw(raw: u64) -> Self {
         if raw == 0 {
-            return VisibleAt::Now;
+            return Self::Now;
         }
-        VisibleAt::At(UniqueTimestamp::try_from(raw).unwrap())
+        Self::At(MillisSinceEpoch::new(raw))
     }
 
-    pub fn as_u64(&self) -> u64 {
+    pub const fn as_u64(&self) -> u64 {
         match self {
-            VisibleAt::Now => 0,
-            VisibleAt::At(ts) => ts.as_u64(),
+            Self::Now => 0,
+            Self::At(ts) => ts.as_u64(),
         }
     }
 
-    pub fn is_visible(&self, now: UniqueTimestamp) -> bool {
+    pub fn is_visible(&self, now: MillisSinceEpoch) -> bool {
         match self {
-            VisibleAt::Now => true,
-            VisibleAt::At(ts) => *ts <= now,
+            Self::Now => true,
+            Self::At(ts) => *ts <= now,
         }
     }
 }
 
 impl From<Option<MillisSinceEpoch>> for VisibleAt {
     fn from(value: Option<MillisSinceEpoch>) -> Self {
-        value.map_or(VisibleAt::Now, VisibleAt::from_unix_millis)
+        value.map_or(Self::Now, Self::new)
     }
 }
 
-impl PartialEq<UniqueTimestamp> for VisibleAt {
-    fn eq(&self, other: &UniqueTimestamp) -> bool {
+impl PartialEq<MillisSinceEpoch> for VisibleAt {
+    fn eq(&self, other: &MillisSinceEpoch) -> bool {
         match self {
-            VisibleAt::Now => false,
-            VisibleAt::At(ts) => ts == other,
+            Self::Now => false,
+            Self::At(ts) => ts == other,
         }
     }
 }
 
-impl PartialOrd<UniqueTimestamp> for VisibleAt {
-    fn partial_cmp(&self, other: &UniqueTimestamp) -> Option<std::cmp::Ordering> {
+impl PartialOrd<MillisSinceEpoch> for VisibleAt {
+    fn partial_cmp(&self, other: &MillisSinceEpoch) -> Option<std::cmp::Ordering> {
         match self {
-            VisibleAt::Now => None,
-            VisibleAt::At(ts) => ts.partial_cmp(other),
+            Self::Now => None,
+            Self::At(ts) => ts.partial_cmp(other),
         }
     }
 }
@@ -84,13 +94,13 @@ impl PartialOrd<UniqueTimestamp> for VisibleAt {
 #[derive(Debug, Clone, Default, bilrost::Message)]
 pub struct WaitStats {
     /// Total milliseconds the item spent waiting on global invoker capacity
-    #[bilrost(1)]
+    #[bilrost(tag(1))]
     pub blocked_on_global_capacity_ms: u32,
     /// Total milliseconds the item was throttled on vqueue's "start" token bucket
-    #[bilrost(2)]
+    #[bilrost(tag(2))]
     pub vqueue_start_throttling_ms: u32,
     /// Total milliseconds the item was throttled on global "run" token bucket
-    #[bilrost(3)]
+    #[bilrost(tag(3))]
     pub global_throttling_ms: u32,
 }
 
