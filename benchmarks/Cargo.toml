@@ -16,6 +16,7 @@ no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"
 restate-workspace-hack = { workspace = true }
 
 mock-service-endpoint = { workspace = true }
+restate-clock = { workspace = true }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-node = { workspace = true, features = ["memory-loglet"] }
 restate-rocksdb = { workspace = true }

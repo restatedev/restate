@@ -84,6 +84,7 @@ pub enum ClusterStartError {
 
 impl Cluster {
     pub async fn start(self) -> Result<StartedCluster, ClusterStartError> {
+        let clock_guard = restate_clock::ClockUpkeep::start().expect("to start the clock upkeep");
         let Self {
             cluster_name,
             base_dir,
@@ -131,6 +132,7 @@ impl Cluster {
         }
 
         Ok(StartedCluster {
+            clock_guard,
             cluster_name,
             base_dir,
             nodes: started_nodes,
@@ -139,6 +141,8 @@ impl Cluster {
 }
 
 pub struct StartedCluster {
+    #[allow(dead_code)]
+    clock_guard: restate_clock::ClockUpkeep,
     cluster_name: String,
     base_dir: MaybeTempDir,
     pub nodes: Vec<StartedNode>,

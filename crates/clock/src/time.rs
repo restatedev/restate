@@ -15,6 +15,8 @@ use std::time::{Duration, SystemTime};
 
 use restate_encoding::{BilrostNewType, NetSerde};
 
+use crate::WallClock;
+
 /// Milliseconds since the unix epoch
 #[derive(
     Debug,
@@ -27,7 +29,6 @@ use restate_encoding::{BilrostNewType, NetSerde};
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    derive_more::Into,
     BilrostNewType,
     NetSerde,
 )]
@@ -36,22 +37,53 @@ use restate_encoding::{BilrostNewType, NetSerde};
 pub struct MillisSinceEpoch(u64);
 
 impl MillisSinceEpoch {
-    pub const UNIX_EPOCH: MillisSinceEpoch = MillisSinceEpoch::new(0);
-    pub const MAX: MillisSinceEpoch = MillisSinceEpoch::new(u64::MAX);
+    pub const UNIX_EPOCH: Self = Self::new(0);
+    pub const MAX: Self = Self::new(u64::MAX);
 
     pub const fn new(millis_since_epoch: u64) -> Self {
-        MillisSinceEpoch(millis_since_epoch)
+        Self(millis_since_epoch)
     }
 
+    /// Returns the current unix timestamp in milliseconds.
+    ///
+    /// This method uses the cached [`WallClock::recent_ms()`] timestamp when available,
+    /// providing ~100x better performance than a direct `SystemTime::now()` syscall.
+    /// The cached value is refreshed every 500μs by [`ClockUpkeep`](crate::ClockUpkeep),
+    /// so it may be up to ~1ms stale.
+    ///
+    /// # Fallback Behavior
+    ///
+    /// If [`ClockUpkeep`](crate::ClockUpkeep) has not been started (e.g., in tests or
+    /// standalone tools), this falls back to `SystemTime::now()`. The fallback path
+    /// is marked `#[cold]` to hint to the compiler that it's not the expected hot path.
+    ///
+    /// # Usage
+    ///
+    /// For production server binaries, ensure [`ClockUpkeep::start()`](crate::ClockUpkeep::start)
+    /// is called early in initialization to enable the fast path.
     pub fn now() -> Self {
-        SystemTime::now().into()
+        let recent = WallClock::recent_ms();
+        if recent.0 > 0 {
+            recent
+        } else {
+            // In tests or binaries where the upkeep thread is not running, we don't
+            // care about the performance of this call, so we can always call now()
+            // but we keep it non-inlined to hint to the compiler that it's unlikely
+            // the case.
+            Self::from_system_now()
+        }
     }
 
-    pub fn after(duration: Duration) -> MillisSinceEpoch {
-        SystemTime::now()
-            .checked_add(duration)
-            .map(|time| time.into())
-            .unwrap_or(Self::MAX)
+    // a hint to the compiler that this is unlikely to be called in the hot path.
+    #[cold]
+    #[inline(never)]
+    fn from_system_now() -> Self {
+        WallClock::now_ms()
+    }
+
+    #[inline]
+    pub fn after(duration: Duration) -> Self {
+        Self::now() + duration
     }
 
     pub const fn as_u64(&self) -> u64 {
@@ -61,6 +93,7 @@ impl MillisSinceEpoch {
     /// Note, this doesn't fail if the timestamp is higher than Timestamp::MAX instead
     /// it returns the default value (now). There are no practical cases where this can happen
     /// so it's decided to do this for API convenience.
+    #[cfg(feature = "jiff")]
     pub fn into_timestamp(self) -> jiff::Timestamp {
         jiff::Timestamp::from_millisecond(self.0 as i64).unwrap_or_default()
     }
@@ -76,6 +109,13 @@ impl MillisSinceEpoch {
     /// If the earlier timestamp is later than this timestamp, this will return zero.
     pub fn saturating_sub_ms(&self, earlier: Self) -> u64 {
         self.0.saturating_sub(earlier.0)
+    }
+}
+
+impl From<MillisSinceEpoch> for u64 {
+    #[inline]
+    fn from(value: MillisSinceEpoch) -> Self {
+        value.0
     }
 }
 
@@ -119,6 +159,7 @@ impl From<SystemTime> for MillisSinceEpoch {
     }
 }
 
+#[cfg(feature = "prost-types")]
 /// # Panics
 /// If timestamp is out of range (e.g. older than UNIX_EPOCH) this conversion will panic.
 impl From<prost_types::Timestamp> for MillisSinceEpoch {
@@ -129,6 +170,7 @@ impl From<prost_types::Timestamp> for MillisSinceEpoch {
     }
 }
 
+#[cfg(feature = "prost-types")]
 impl From<MillisSinceEpoch> for prost_types::Timestamp {
     fn from(value: MillisSinceEpoch) -> Self {
         // safest approach is to convert into SystemTime first, then calculate distance to
@@ -173,7 +215,24 @@ pub struct NanosSinceEpoch(u64);
 
 impl NanosSinceEpoch {
     pub fn now() -> Self {
-        SystemTime::now().into()
+        let recent_us = WallClock::recent_us();
+        if recent_us > 0 {
+            // the input is in microseconds, so we scale it to nanoseconds
+            Self(recent_us * 1_000)
+        } else {
+            // In tests or binaries where the upkeep thread is not running, we don't
+            // care about the performance of this call, so we can always call now()
+            // but we keep is non-inlined to hint to the compiler that it's unlikely
+            // the case.
+            Self::from_system_now()
+        }
+    }
+
+    // a hint to the compiler that this is unlikely to be called in the hot path.
+    #[cold]
+    #[inline(never)]
+    fn from_system_now() -> Self {
+        Self(WallClock::now_us() * 1_000)
     }
 
     pub fn as_u64(&self) -> u64 {
@@ -214,6 +273,7 @@ impl From<SystemTime> for NanosSinceEpoch {
     }
 }
 
+#[cfg(feature = "prost-types")]
 /// # Panics
 /// If timestamp is out of range (e.g. older than UNIX_EPOCH) this conversion will panic.
 impl From<prost_types::Timestamp> for NanosSinceEpoch {
