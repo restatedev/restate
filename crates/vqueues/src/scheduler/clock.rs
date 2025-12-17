@@ -15,14 +15,20 @@ use restate_types::clock::UniqueTimestamp;
 use restate_types::time::MillisSinceEpoch;
 
 struct Datum {
+    // NOTE: temporary, will be replaced in subsequent commits
+    millis_origin: MillisSinceEpoch,
     ts_origin: UniqueTimestamp,
     tokio_origin: tokio::time::Instant,
 }
 
-static DATUM: LazyLock<Datum> = LazyLock::new(|| Datum {
-    ts_origin: UniqueTimestamp::from_unix_millis(MillisSinceEpoch::now())
-        .expect("clock does not overflow"),
-    tokio_origin: tokio::time::Instant::now(),
+static DATUM: LazyLock<Datum> = LazyLock::new(|| {
+    let millis_origin = MillisSinceEpoch::now();
+    Datum {
+        millis_origin,
+        ts_origin: UniqueTimestamp::from_unix_millis(millis_origin)
+            .expect("clock does not overflow"),
+        tokio_origin: tokio::time::Instant::now(),
+    }
 });
 
 /// A clock that tracks the physical clock of the scheduler that is synchronized
@@ -38,11 +44,15 @@ impl SchedulerClock {
             .expect("clock doesn't overflow")
     }
 
-    /// Calculates a future tokio Instant from the physical clock of `ts`.
+    pub fn now_millis(&self) -> MillisSinceEpoch {
+        DATUM.millis_origin + DATUM.tokio_origin.elapsed()
+    }
+
+    /// Calculates a future tokio Instant from the given `MillisSinceEpoch`.
     ///
-    /// Returns the clock datum/origin point if the input `ts` is in the past.
-    pub fn ts_to_future_instant(&self, ts: UniqueTimestamp) -> tokio::time::Instant {
-        let delta = ts.milliseconds_since(DATUM.ts_origin);
+    /// Returns the clock datum/origin point if the input is in the past.
+    pub fn millis_to_future_instant(&self, millis: MillisSinceEpoch) -> tokio::time::Instant {
+        let delta = millis.saturating_sub_ms(DATUM.millis_origin);
         DATUM.tokio_origin + Duration::from_millis(delta)
     }
 }
