@@ -10,7 +10,7 @@
 
 use std::fmt::{Debug, Formatter};
 use std::num::NonZeroU64;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use crate::time::MillisSinceEpoch;
 
@@ -125,18 +125,6 @@ impl UniqueTimestamp {
     fn logical_raw(&self) -> u64 {
         // extract the logical clock
         self.0.get() & LC_MAX
-    }
-
-    /// Calculates the number of milliseconds by which this timestamp is ahead of the other,
-    /// or return 0 if the other timestamp is ahead.
-    pub fn milliseconds_since(&self, other: Self) -> u64 {
-        self.physical_raw().saturating_sub(other.physical_raw())
-    }
-
-    /// Returns the number of fractional seconds since RESTATE_EPOCH.
-    pub fn as_secs_f64(&self) -> f64 {
-        // NOTE: physical clock is in millis.
-        Duration::from_millis(self.physical_raw()).as_secs_f64()
     }
 }
 
