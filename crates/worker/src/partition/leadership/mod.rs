@@ -49,6 +49,7 @@ use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionProcessorRpcRequestId};
 use restate_types::identifiers::{LeaderEpoch, PartitionLeaderEpoch};
 use restate_types::message::MessageIndex;
+use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
@@ -56,7 +57,7 @@ use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
-use restate_types::storage::StorageEncodeError;
+use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_vqueues::{SchedulerService, VQueuesMeta, VQueuesMetaMut};
 use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
@@ -86,7 +87,9 @@ pub(crate) enum Error {
     #[error("failed writing to bifrost: {0}")]
     Bifrost(#[from] restate_bifrost::Error),
     #[error("failed serializing payload: {0}")]
-    Codec(#[from] StorageEncodeError),
+    Encode(#[from] StorageEncodeError),
+    #[error("failed deserializing payload: {0}")]
+    Decode(#[from] StorageDecodeError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
     #[error("error when self proposing")]
@@ -643,6 +646,26 @@ impl<I> LeadershipState<I> {
                         reciprocal,
                         success_response,
                     )
+                    .await;
+            }
+        }
+    }
+
+    /// propose to this partition
+    pub async fn propose_many_with_callback<F>(
+        &mut self,
+        records: impl ExactSizeIterator<Item = IngestRecord>,
+        callback: F,
+    ) where
+        F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
+    {
+        match &mut self.state {
+            State::Follower | State::Candidate { .. } => callback(Err(
+                PartitionProcessorRpcError::NotLeader(self.partition.partition_id),
+            )),
+            State::Leader(leader_state) => {
+                leader_state
+                    .propose_many_with_callback(records, callback)
                     .await;
             }
         }

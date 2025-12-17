@@ -31,7 +31,7 @@ use tracing::{Span, debug, error, info, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
-use restate_core::network::{Oneshot, Reciprocal, ServiceMessage, Verdict};
+use restate_core::network::{Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, Verdict};
 use restate_core::{Metadata, ShutdownError, cancellation_watcher, my_node_id};
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
@@ -48,6 +48,7 @@ use restate_types::config::Configuration;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::{KeyFilter, Lsn, Record, SequenceNumber};
 use restate_types::net::RpcRequest;
+use restate_types::net::ingest::{ReceivedIngestRequest, ResponseStatus};
 use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcResponse,
@@ -64,7 +65,8 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
-    PARTITION_BLOCKED_FLARE, PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN, PARTITION_INGESTION_REQUEST_SIZE,
+    PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
@@ -476,15 +478,7 @@ where
                     self.status.effective_mode = self.leadership_state.effective_mode();
                 }
                 Some(msg) = self.network_leader_svc_rx.recv() => {
-                    match msg {
-                        ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
-                            let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
-                            // note: split() decodes the payload
-                            let (response_tx, body) = msg.split();
-                            self.on_rpc(response_tx, body, &mut partition_store, live_schemas.live_load()).await;
-                        }
-                        msg => { msg.fail(Verdict::MessageUnrecognized); }
-                    }
+                    self.on_rpc(msg, &mut partition_store, live_schemas.live_load()).await;
                 }
                 _ = status_update_timer.tick() => {
                     if durable_lsn_watch.has_changed().map_err(|e| ProcessorError::Other(e.into()))? {
@@ -613,7 +607,7 @@ where
         Ok(())
     }
 
-    async fn on_rpc(
+    async fn on_pp_rpc_request(
         &mut self,
         response_tx: Reciprocal<
             Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
@@ -629,6 +623,61 @@ where
         )
         .await;
     }
+
+    async fn on_rpc(
+        &mut self,
+        msg: ServiceMessage<PartitionLeaderService>,
+        partition_store: &mut PartitionStore,
+        schemas: &Schema,
+    ) {
+        match msg {
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
+                let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
+                // note: split() decodes the payload
+                let (response_tx, body) = msg.split();
+                self.on_pp_rpc_request(response_tx, body, partition_store, schemas)
+                    .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {
+                self.on_pp_ingest_request(msg.into_typed()).await;
+            }
+            msg => {
+                msg.fail(Verdict::MessageUnrecognized);
+            }
+        }
+    }
+
+    async fn on_pp_ingest_request(&mut self, msg: Incoming<Rpc<ReceivedIngestRequest>>) {
+        let (reciprocal, request) = msg.split();
+        histogram!(
+            PARTITION_INGESTION_REQUEST_LEN, PARTITION_LABEL => self.partition_id_str.clone()
+        )
+        .record(request.records.len() as f64);
+
+        histogram!(
+            PARTITION_INGESTION_REQUEST_SIZE, PARTITION_LABEL => self.partition_id_str.clone()
+        )
+        .record(request.records.iter().fold(0, |s, r| s + r.estimate_size()) as f64);
+
+        self.leadership_state
+            .propose_many_with_callback(
+                request.records.into_iter(),
+                |result: Result<(), PartitionProcessorRpcError>| match result {
+                    Ok(_) => reciprocal.send(ResponseStatus::Ack.into()),
+                    Err(err) => match err {
+                        PartitionProcessorRpcError::NotLeader(id)
+                        | PartitionProcessorRpcError::LostLeadership(id) => {
+                            reciprocal.send(ResponseStatus::NotLeader { of: id }.into())
+                        }
+                        PartitionProcessorRpcError::Internal(msg) => {
+                            reciprocal.send(ResponseStatus::Internal { msg }.into())
+                        }
+                    },
+                },
+            )
+            .await;
+    }
+
     async fn maybe_advance<'a>(
         &mut self,
         maybe_record: LogEntry,

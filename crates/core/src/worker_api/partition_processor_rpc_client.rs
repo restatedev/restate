@@ -71,10 +71,6 @@ pub enum RpcErrorKind {
     Busy,
     #[error("internal error: {0}")]
     Internal(String),
-    #[error("partition processor starting")]
-    Starting,
-    #[error("partition processor stopping")]
-    Stopping,
 }
 
 impl PartitionProcessorInvocationClientError {
@@ -106,10 +102,8 @@ impl RpcError {
         match self.source {
             RpcErrorKind::Connect(_)
             | RpcErrorKind::NotLeader
-            | RpcErrorKind::Starting
             | RpcErrorKind::Busy
-            | RpcErrorKind::SendFailed
-            | RpcErrorKind::Stopping => {
+            | RpcErrorKind::SendFailed => {
                 // These are pre-flight error that we can distinguish,
                 // and for which we know for certain that no message was proposed yet to the log.
                 true
@@ -143,7 +137,7 @@ impl From<RpcReplyError> for RpcErrorKind {
             RpcReplyError::ServiceNotFound | RpcReplyError::SortCodeNotFound => Self::NotLeader,
             RpcReplyError::LoadShedding => Self::Busy,
             RpcReplyError::ServiceNotReady => Self::Busy,
-            RpcReplyError::ServiceStopped => Self::Stopping,
+            RpcReplyError::ServiceStopped => Self::NotLeader,
         }
     }
 }
@@ -154,8 +148,6 @@ impl From<PartitionProcessorRpcError> for RpcErrorKind {
             PartitionProcessorRpcError::NotLeader(_) => RpcErrorKind::NotLeader,
             PartitionProcessorRpcError::LostLeadership(_) => RpcErrorKind::LostLeadership,
             PartitionProcessorRpcError::Internal(msg) => RpcErrorKind::Internal(msg),
-            PartitionProcessorRpcError::Starting => RpcErrorKind::Starting,
-            PartitionProcessorRpcError::Stopping => RpcErrorKind::Stopping,
         }
     }
 }
