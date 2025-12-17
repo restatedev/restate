@@ -23,6 +23,7 @@ kafka-oidc = ["restate-ingress-kafka/oidc"]
 restate-workspace-hack = { workspace = true }
 
 restate-bifrost = { workspace = true }
+restate-clock = { workspace = true, features = ["jiff", "hlc"] }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
