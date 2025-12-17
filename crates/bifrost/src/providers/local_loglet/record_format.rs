@@ -19,7 +19,9 @@ use restate_types::time::NanosSinceEpoch;
 
 // use legacy for new appends until enough minor/major versions are released after current (1.0.x)
 // to allow for backwards compatibility.
-pub(super) const FORMAT_FOR_NEW_APPENDS: RecordFormat = RecordFormat::Legacy;
+//
+// CustomEncoding became the default in v1.6.0
+pub(super) const FORMAT_FOR_NEW_APPENDS: RecordFormat = RecordFormat::CustomEncoding;
 
 #[derive(Debug, derive_more::TryFrom, Eq, PartialEq, Ord, PartialOrd)]
 #[try_from(repr)]
