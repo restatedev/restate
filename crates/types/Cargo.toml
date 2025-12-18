@@ -22,7 +22,7 @@ multi-db = []
 restate-workspace-hack = { workspace = true }
 
 restate-base64-util = { workspace = true }
-restate-clock = { workspace = true, features = ["prost-types"] }
+restate-clock = { workspace = true, features = ["prost-types", "jiff"] }
 restate-encoding = { workspace = true }
 restate-errors = { workspace = true }
 restate-serde-util = { workspace = true }
