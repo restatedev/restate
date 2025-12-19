@@ -22,6 +22,7 @@ pub mod metadata_proxy_svc {
         const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Zstd;
 
         use bytestring::ByteString;
+        use restate_types::net::connect_opts::GrpcConnectionOptions;
         use tonic::{Code, Status};
         use tonic::{codec::CompressionEncoding, transport::Channel};
 
@@ -36,8 +37,13 @@ pub mod metadata_proxy_svc {
         use crate::metadata_store::{MetadataStore, ProvisionError, ReadError, WriteError};
 
         /// Creates a new MetadataProxySvcClient with appropriate configuration
-        pub fn new_metadata_proxy_client(channel: Channel) -> MetadataProxySvcClient<Channel> {
-            MetadataProxySvcClient::new(channel)
+        pub fn new_metadata_proxy_client<O: GrpcConnectionOptions>(
+            connection_options: Channel,
+            options: &O,
+        ) -> MetadataProxySvcClient<Channel> {
+            MetadataProxySvcClient::new(connection_options)
+                .max_encoding_message_size(options.max_message_size())
+                .max_decoding_message_size(options.max_message_size())
                 // note: the order of those calls defines the priority
                 .accept_compressed(CompressionEncoding::Zstd)
                 .accept_compressed(CompressionEncoding::Gzip)
@@ -48,16 +54,14 @@ pub mod metadata_proxy_svc {
             client: MetadataProxySvcClient<Channel>,
         }
 
-        #[cfg(feature = "grpc-client")]
         impl MetadataStoreProxy {
-            pub fn new(channel: Channel) -> Self {
+            pub fn new<O: GrpcConnectionOptions>(channel: Channel, connection_options: &O) -> Self {
                 Self {
-                    client: new_metadata_proxy_client(channel),
+                    client: new_metadata_proxy_client(channel, connection_options),
                 }
             }
         }
 
-        #[cfg(feature = "grpc-client")]
         #[async_trait::async_trait]
         impl MetadataStore for MetadataStoreProxy {
             async fn get(&self, key: ByteString) -> Result<Option<VersionedValue>, ReadError> {

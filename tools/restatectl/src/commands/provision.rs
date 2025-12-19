@@ -14,7 +14,7 @@ use cling::{Collect, Run};
 use tonic::Code;
 
 use restate_cli_util::ui::console::confirm_or_exit;
-use restate_cli_util::{c_error, c_println, c_warn};
+use restate_cli_util::{CliContext, c_error, c_println, c_warn};
 use restate_core::protobuf::node_ctl_svc::{ProvisionClusterRequest, new_node_ctl_client};
 use restate_types::logs::metadata::{ProviderConfiguration, ProviderKind};
 use restate_types::replication::ReplicationProperty;
@@ -75,7 +75,7 @@ async fn provision_cluster(
 
     let channel = grpc_channel(address.clone());
 
-    let mut client = new_node_ctl_client(channel);
+    let mut client = new_node_ctl_client(channel, &CliContext::get().network);
 
     let partition_replication = provision_opts
         .partition_replication

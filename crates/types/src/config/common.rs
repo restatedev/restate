@@ -26,6 +26,7 @@ use super::{
     PerfStatsLevel, RocksDbOptions,
 };
 use crate::PlainNodeId;
+use crate::config::NetworkingOptions;
 use crate::config::dynamodb_store::DynamoDbOptions;
 use crate::locality::NodeLocation;
 use crate::net::address::{AdvertisedAddress, ListenerPort};
@@ -576,9 +577,14 @@ impl CommonOptions {
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
-    pub fn set_derived_values(&mut self) -> Result<(), InvalidConfigurationError> {
+    pub fn set_derived_values(
+        &mut self,
+        network_options: &NetworkingOptions,
+    ) -> Result<(), InvalidConfigurationError> {
         self.tokio_console_listener_options
             .merge(&self.fabric_listener_options);
+
+        self.metadata_client.merge(network_options);
 
         if self.service_client.additional_request_headers.is_none() {
             let cluster_name_visible_ascii = self
@@ -742,6 +748,29 @@ pub struct MetadataClientOptions {
     ///
     /// Backoff policy used by the metadata client when it encounters concurrent modifications.
     pub backoff_policy: RetryPolicy,
+
+    /// # Max Grpc Message Size
+    ///
+    /// Limits the maximum size of a grpc message.
+    ///
+    /// Default: `10MB`
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_message_size: Option<NonZeroByteCount>,
+}
+
+impl MetadataClientOptions {
+    pub(crate) fn merge(&mut self, network_options: &NetworkingOptions) {
+        if self.max_message_size.is_none() {
+            self.max_message_size = Some(network_options.max_message_size);
+        }
+    }
+
+    pub fn max_message_size(&self) -> usize {
+        self.max_message_size
+            .map(|v| v.as_usize())
+            .unwrap_or(10 * 1024 * 1024)
+    }
 }
 
 impl Default for MetadataClientOptions {
@@ -758,6 +787,7 @@ impl Default for MetadataClientOptions {
                 Some(10),
                 Some(Duration::from_millis(1000)),
             ),
+            max_message_size: None,
         }
     }
 }

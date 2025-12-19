@@ -56,6 +56,8 @@ impl NodeCtlSvcHandler {
 
     pub fn into_server(self, config: &NetworkingOptions) -> NodeCtlSvcServer<Self> {
         let server = NodeCtlSvcServer::new(self)
+            .max_decoding_message_size(config.max_message_size.as_usize())
+            .max_encoding_message_size(config.max_message_size.as_usize())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
@@ -209,11 +211,14 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         let mut max_metadata_cluster_configuration = None;
 
         for (node_id, node_config) in nodes_configuration.iter_role(Role::MetadataServer) {
-            let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
-                node_config.address.clone(),
+            let mut metadata_server_client = new_metadata_server_client(
+                create_tonic_channel(
+                    node_config.address.clone(),
+                    &Configuration::pinned().networking,
+                    DNSResolution::Gai,
+                ),
                 &Configuration::pinned().networking,
-                DNSResolution::Gai,
-            ));
+            );
 
             let response = match metadata_server_client.status(()).await {
                 Ok(response) => response.into_inner(),
@@ -270,6 +275,8 @@ impl MetadataProxySvcHandler {
     pub fn into_server(self, config: &NetworkingOptions) -> MetadataProxySvcServer<Self> {
         let server = MetadataProxySvcServer::new(self)
             // note: the order of those calls defines the priority
+            .max_decoding_message_size(config.max_message_size.as_usize())
+            .max_encoding_message_size(config.max_message_size.as_usize())
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
         if config.disable_compression {

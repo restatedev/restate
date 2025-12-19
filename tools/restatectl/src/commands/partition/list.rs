@@ -14,9 +14,9 @@ use cling::prelude::*;
 use itertools::Itertools;
 
 use restate_cli_util::_comfy_table::{Attribute, Cell, Color, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::Tense;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{ClusterStateRequest, new_cluster_ctrl_client};
 use restate_types::logs::Lsn;
 use restate_types::nodes_config::Role;
@@ -67,7 +67,7 @@ pub async fn list_partitions(
 ) -> anyhow::Result<()> {
     let cluster_state = connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .get_cluster_state(ClusterStateRequest::default())
                 .await
         })

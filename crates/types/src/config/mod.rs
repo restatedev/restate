@@ -190,7 +190,10 @@ impl Configuration {
     pub fn new_unix_sockets() -> Self {
         let mut config = Configuration::default();
         config.common.fabric_listener_options.listen_mode = Some(ListenMode::Unix);
-        config.common.set_derived_values().unwrap();
+        config
+            .common
+            .set_derived_values(&config.networking)
+            .unwrap();
         config.admin.set_derived_values(&config.common);
         config.ingress.set_derived_values(&config.common);
         config
@@ -199,7 +202,10 @@ impl Configuration {
     pub fn new_random_ports() -> Self {
         let mut config = Configuration::default();
         config.common.fabric_listener_options.use_random_ports = Some(true);
-        config.common.set_derived_values().unwrap();
+        config
+            .common
+            .set_derived_values(&config.networking)
+            .unwrap();
         config.admin.set_derived_values(&config.common);
         config.ingress.set_derived_values(&config.common);
         config

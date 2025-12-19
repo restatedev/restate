@@ -13,8 +13,12 @@ use std::time::Duration;
 
 use crate::config::{MetadataClientOptions, NetworkingOptions};
 
+pub trait GrpcConnectionOptions {
+    /// Gets the maximum message size for grpc servers and clients.
+    fn max_message_size(&self) -> usize;
+}
 /// Helper trait to extract common client connection options from different configuration types.
-pub trait CommonClientConnectionOptions {
+pub trait CommonClientConnectionOptions: GrpcConnectionOptions {
     fn connect_timeout(&self) -> Duration;
     fn request_timeout(&self) -> Option<Duration>;
     fn keep_alive_interval(&self) -> Duration;
@@ -22,7 +26,16 @@ pub trait CommonClientConnectionOptions {
     fn http2_adaptive_window(&self) -> bool;
 }
 
-impl<T: CommonClientConnectionOptions> CommonClientConnectionOptions for &T {
+impl<T: GrpcConnectionOptions> GrpcConnectionOptions for &T {
+    fn max_message_size(&self) -> usize {
+        (*self).max_message_size()
+    }
+}
+
+impl<T> CommonClientConnectionOptions for &T
+where
+    T: CommonClientConnectionOptions + GrpcConnectionOptions,
+{
     fn connect_timeout(&self) -> Duration {
         (*self).connect_timeout()
     }
@@ -44,9 +57,18 @@ impl<T: CommonClientConnectionOptions> CommonClientConnectionOptions for &T {
     }
 }
 
+impl<T> GrpcConnectionOptions for Arc<T>
+where
+    T: GrpcConnectionOptions,
+{
+    fn max_message_size(&self) -> usize {
+        (**self).max_message_size()
+    }
+}
+
 impl<T> CommonClientConnectionOptions for Arc<T>
 where
-    T: CommonClientConnectionOptions,
+    T: CommonClientConnectionOptions + GrpcConnectionOptions,
 {
     fn connect_timeout(&self) -> Duration {
         (**self).connect_timeout()
@@ -69,6 +91,12 @@ where
     }
 }
 
+impl GrpcConnectionOptions for NetworkingOptions {
+    fn max_message_size(&self) -> usize {
+        self.max_message_size.as_usize()
+    }
+}
+
 impl CommonClientConnectionOptions for NetworkingOptions {
     fn connect_timeout(&self) -> Duration {
         self.connect_timeout.into()
@@ -88,6 +116,12 @@ impl CommonClientConnectionOptions for NetworkingOptions {
 
     fn http2_adaptive_window(&self) -> bool {
         self.http2_adaptive_window
+    }
+}
+
+impl GrpcConnectionOptions for MetadataClientOptions {
+    fn max_message_size(&self) -> usize {
+        Self::max_message_size(self)
     }
 }
 

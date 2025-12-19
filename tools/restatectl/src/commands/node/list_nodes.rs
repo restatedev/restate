@@ -19,9 +19,9 @@ use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use restate_cli_util::_comfy_table::{Cell, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::{Tense, duration_to_human_rough};
+use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::node_ctl_svc::{IdentResponse, new_node_ctl_client};
 use restate_types::health::MetadataServerStatus;
 use restate_types::net::address::{AdvertisedAddress, FabricPort, ListenerPort};
@@ -242,7 +242,7 @@ async fn fetch_extra_info(
         let address = node_config.address.clone();
         let get_ident = async move {
             let channel = grpc_channel(address.clone());
-            let mut node_ctl_svc_client = new_node_ctl_client(channel);
+            let mut node_ctl_svc_client = new_node_ctl_client(channel, &CliContext::get().network);
 
             let ident_response = node_ctl_svc_client.get_ident(()).await?.into_inner();
             Ok((address, ident_response))
