@@ -49,7 +49,7 @@ pub async fn count_deployment_active_inv(
         .run_count_agg_query(format!(
             "SELECT COUNT(1) AS inv_count
             FROM sys_invocation_status
-            WHERE pinned_deployment_id = '{deployment_id}'"
+            WHERE pinned_deployment_id = '{deployment_id}' AND status != 'completed'"
         ))
         .await?)
 }
@@ -64,7 +64,7 @@ pub async fn count_deployment_active_inv_by_method(
             target_handler_name as handler,
             COUNT(1) AS inv_count
             FROM sys_invocation_status
-            WHERE pinned_deployment_id = '{deployment_id}'
+            WHERE pinned_deployment_id = '{deployment_id} AND status != 'completed''
             GROUP BY pinned_deployment_id, target_service_name, target_handler_name"
     );
 
