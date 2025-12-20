@@ -8,28 +8,32 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_bifrost::Bifrost;
+use restate_core::network::TransportConnect;
+use restate_ingestion_client::IngestionClient;
 use restate_types::schema::registry::SchemaRegistry;
+use restate_wal_protocol::Envelope;
 
 #[derive(Clone, derive_builder::Builder)]
-pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations> {
+pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport> {
     pub schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
     pub invocation_client: Invocations,
-    pub bifrost: Bifrost,
+    pub ingestion_client: IngestionClient<Transport, Envelope>,
 }
 
-impl<Metadata, Discovery, Telemetry, Invocations>
-    AdminServiceState<Metadata, Discovery, Telemetry, Invocations>
+impl<Metadata, Discovery, Telemetry, Invocations, Transport>
+    AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>
+where
+    Transport: TransportConnect,
 {
     pub fn new(
         schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
         invocation_client: Invocations,
-        bifrost: Bifrost,
+        ingestion_client: IngestionClient<Transport, Envelope>,
     ) -> Self {
         Self {
             schema_registry,
             invocation_client,
-            bifrost,
+            ingestion_client,
         }
     }
 }
