@@ -164,6 +164,7 @@ impl UniqueTimestamp {
     }
 
     /// Splits the timestamp into its physical and logical components.
+    #[cfg(feature = "hlc")]
     pub(super) const fn split(&self) -> (u64, u64) {
         let raw = self.as_u64();
         let phy = (raw >> LC_BITS) & PHY_TIME_MAX;
