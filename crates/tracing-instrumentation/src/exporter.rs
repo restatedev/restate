@@ -247,7 +247,7 @@ impl SpanExporter for UserServiceModifierSpanExporter {
 
     fn shutdown(&mut self) -> OTelSdkResult {
         // noop
-        // this is heavely dependent on the opentelemetry otlp implementation
+        // this is heavily dependent on the opentelemetry otlp implementation
         // of shutdown which does nothing.
         Ok(())
     }

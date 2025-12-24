@@ -113,7 +113,7 @@ fn main() -> anyhow::Result<()> {
         task_center.shutdown_node("completed", 0).await;
         // print prometheus if asked.
         if !args.no_prometheus_stats {
-            // submit tokio metris
+            // submit tokio metrics
             print_prometheus_stats(&recorder);
         }
 

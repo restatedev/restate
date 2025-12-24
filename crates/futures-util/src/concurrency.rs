@@ -35,7 +35,7 @@ impl Concurrency {
 
     /// Creates a new concurrency semaphore with the given limit.
     ///
-    /// If `limit` is `None`, the sempahore is unbounded and will return `unlimited` permits.
+    /// If `limit` is `None`, the semaphore is unbounded and will return `unlimited` permits.
     /// Each returned permit can be split into unlimited number of permits again.
     pub fn new(limit: Option<NonZeroUsize>) -> Self {
         match limit {

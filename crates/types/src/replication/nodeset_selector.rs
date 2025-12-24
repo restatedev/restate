@@ -65,7 +65,7 @@ pub struct NodeSetSelectorOptions<'a> {
     /// Salt/seed for RNG/hash functions used by the nodeset selector
     salt: u64,
     target_size: NodeSetSize,
-    /// enabled by default, disable if you don't want repetable generation
+    /// enabled by default, disable if you don't want repeatable generation
     consistent_hashing: bool,
     top_priority_node: Option<PlainNodeId>,
     preferred_nodes: Option<&'a NodeSet>,
