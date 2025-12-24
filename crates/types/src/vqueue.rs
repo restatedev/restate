@@ -27,6 +27,8 @@ impl VQueueParent {
 
     // Note: this is chosen such that parent=0 is the most common case (unlimited service)
     pub const MIN_SYSTEM: VQueueParent = VQueueParent(0);
+
+    #[allow(clippy::identity_op)]
     pub const MAX_SYSTEM: VQueueParent = VQueueParent(u32::MAX & (!Self::USER_MASK));
 
     /// Used for unlimited vqueues (concurrency unlimited, unlimited capacity)

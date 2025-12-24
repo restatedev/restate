@@ -33,8 +33,8 @@ use metrics::counter;
 use restate_futures_util::concurrency::Permit;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
+use tracing::instrument;
 use tracing::{debug, trace, warn};
-use tracing::{error, instrument};
 
 use restate_core::cancellation_watcher;
 use restate_errors::warn_it;

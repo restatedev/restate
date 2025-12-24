@@ -23,7 +23,7 @@ use rand::seq::IteratorRandom;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Instant, Interval, MissedTickBehavior};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use restate_bifrost::{Bifrost, MaybeSealedSegment};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};

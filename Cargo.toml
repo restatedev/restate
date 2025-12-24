@@ -29,7 +29,7 @@ resolver = "2"
 version = "1.6.0-dev"
 authors = ["restate.dev"]
 edition = "2024"
-rust-version = "1.91.0"
+rust-version = "1.92.0"
 license = "BUSL-1.1"
 repository = "https://github.com/restatedev/restate"
 homepage = "https://github.com/restatedev/restate"
@@ -298,3 +298,8 @@ opt-level = 2
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
+
+[workspace.lints.rust]
+# Temporarily allow unused assignments until https://github.com/rust-lang/rust/issues/147648 has been fixed.
+# The problem is that error fields used by thiserror::error attribute generate false positives for unused_assignments.
+unused_assignments = "allow"

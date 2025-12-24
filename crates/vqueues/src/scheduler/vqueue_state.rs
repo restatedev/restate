@@ -15,7 +15,7 @@ use gardal::LocalTokenBucket;
 use hashbrown::HashSet;
 use metrics::counter;
 use tokio::time::Instant;
-use tracing::{debug, trace};
+use tracing::trace;
 
 use restate_futures_util::concurrency::{Concurrency, Permit};
 use restate_storage_api::StorageError;

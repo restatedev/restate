@@ -15,7 +15,7 @@ use http::{Request, Response, StatusCode};
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::trace::TraceLayer;
-use tracing::{Span, debug, error, info, info_span};
+use tracing::{Span, debug, info, info_span};
 
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_bifrost::Bifrost;

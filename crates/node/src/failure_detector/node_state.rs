@@ -12,7 +12,6 @@ use std::fmt::Display;
 use std::time::Duration;
 
 use tokio::time::Instant;
-use tracing::debug;
 
 use restate_core::network::{LazyConnection, NetworkSender, ReplyRx};
 use restate_core::network::{SendToken, Swimlane, TrySendError};
