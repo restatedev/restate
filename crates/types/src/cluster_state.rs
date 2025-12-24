@@ -495,7 +495,7 @@ mod tests {
         assert_eq!(poll!(&mut wait_for_alive_fut), Poll::Pending);
         // update the state to alive
         updater.set_node_state(node_id, NodeState::Alive);
-        // poll aagain, should be ready now
+        // poll again, should be ready now
         assert_eq!(
             poll!(&mut wait_for_alive_fut),
             Poll::Ready((node_id, NodeState::Alive))

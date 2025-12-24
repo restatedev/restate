@@ -194,7 +194,7 @@ jobs:
           secrets: |
             parca=${{ secrets.PARCA_TOKEN }}
           cache-from: type=gha,url=http://127.0.0.1:49160/,version=1
-          # don't cache debug/parca builds, its just too big
+          # don't cache debug/parca builds, it's just too big
           cache-to: ${{ (!inputs.debug && !inputs.parca) && 'type=gha,url=http://127.0.0.1:49160/,mode=max,version=1' || '' }}
 
       - name: Upload docker image tar as artifact
