@@ -27,7 +27,7 @@ use ::tracing::info;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
-use googletest::{all, assert_that, pat, property};
+use googletest::{all, assert_that, pat};
 use restate_core::TaskCenter;
 use restate_invoker_api::{Effect, EffectKind, InvokeInputJournal};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};

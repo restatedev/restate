@@ -19,7 +19,7 @@ use protobuf::ProtobufError;
 use raft_proto::eraftpb::Message;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
-use tracing::{debug, error};
+use tracing::debug;
 
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{Metadata, MetadataWriter, ShutdownError, cancellation_watcher};

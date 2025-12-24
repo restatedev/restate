@@ -131,3 +131,6 @@ harness = false
 [[bench]]
 name = "id_encoding"
 harness = false
+
+[lints]
+workspace = true
