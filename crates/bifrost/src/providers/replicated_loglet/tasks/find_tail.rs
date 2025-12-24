@@ -487,7 +487,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                     );
 
                     loop {
-                        // Re-evaluation conditition is any of:
+                        // Re-evaluation condition is any of:
                         // - todo(asoli): [optimization] Sequencer is reachable and has moved past max_local_tail
                         // - Any node with global_known_tail that reached the max_local_tail we are looking for (due to RELEASE message)
                         // - Any node gets sealed. Back to drawing board.
