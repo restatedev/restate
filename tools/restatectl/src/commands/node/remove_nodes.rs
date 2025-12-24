@@ -13,7 +13,7 @@ use clap::Parser;
 use cling::{Collect, Run};
 use itertools::Itertools;
 
-use restate_cli_util::c_println;
+use restate_cli_util::{CliContext, c_println};
 use restate_metadata_store::protobuf::metadata_proxy_svc::{
     PutRequest, client::new_metadata_proxy_client,
 };
@@ -66,7 +66,7 @@ pub async fn remove_nodes(
 
     connection
         .try_each(None, |channel| async {
-            new_metadata_proxy_client(channel)
+            new_metadata_proxy_client(channel, &CliContext::get().network)
                 .put(request.clone())
                 .await
         })

@@ -16,12 +16,12 @@ use serde_json::Value;
 use tonic::Code;
 
 use crate::commands::metadata::MetadataCommonOpts;
-use crate::connection::{ConnectionInfo, NodeOperationError};
+use crate::connection::{ConnectionInfo, NodeOperationError, SimpleStatusWrapper};
+use restate_cli_util::CliContext;
 use restate_metadata_store::protobuf::metadata_proxy_svc::{
     PutRequest, client::new_metadata_proxy_client,
 };
 use restate_types::Version;
-use restate_types::errors::SimpleStatus;
 use restate_types::metadata::Precondition;
 
 use super::GenericMetadataValue;
@@ -107,14 +107,14 @@ async fn patch_value_inner(
 
     connection
         .try_each(None, |channel| async {
-            new_metadata_proxy_client(channel)
+            new_metadata_proxy_client(channel, &CliContext::get().network)
                 .put(request.clone())
                 .await
                 .map_err(|status| {
                     if status.code() == Code::FailedPrecondition {
-                        NodeOperationError::Terminal(SimpleStatus::from(status))
+                        NodeOperationError::Terminal(SimpleStatusWrapper::from(status))
                     } else {
-                        NodeOperationError::RetryElsewhere(SimpleStatus::from(status))
+                        NodeOperationError::RetryElsewhere(SimpleStatusWrapper::from(status))
                     }
                 })
         })

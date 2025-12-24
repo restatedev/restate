@@ -14,7 +14,7 @@ use anyhow::{Context, bail};
 use cling::prelude::*;
 use tracing::error;
 
-use restate_cli_util::{c_eprintln, c_println};
+use restate_cli_util::{CliContext, c_eprintln, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{
     ChainExtension, SealAndExtendChainRequest, new_cluster_ctrl_client,
 };
@@ -131,7 +131,7 @@ async fn inner_reconfigure(
 
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .seal_and_extend_chain(request.clone())
                 .await
         })

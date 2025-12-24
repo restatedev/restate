@@ -33,7 +33,7 @@ use restate_types::errors::ConversionError;
 use restate_types::errors::SimpleStatus;
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::address::{AdvertisedAddress, FabricPort};
-use restate_types::net::connect_opts::CommonClientConnectionOptions;
+use restate_types::net::connect_opts::{CommonClientConnectionOptions, GrpcConnectionOptions};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
 use restate_types::storage::StorageCodec;
@@ -63,10 +63,13 @@ struct MetadataServerSvcClientWithAddress {
 }
 
 impl MetadataServerSvcClientWithAddress {
-    fn new(channel: ChannelWithAddress) -> Self {
+    fn new<O>(channel: ChannelWithAddress, connection_options: &O) -> Self
+    where
+        O: GrpcConnectionOptions + Send + Sync + ?Sized,
+    {
         let address = channel.address;
         Self {
-            client: new_metadata_server_client(channel.channel),
+            client: new_metadata_server_client(channel.channel, connection_options),
             address,
         }
     }
@@ -118,6 +121,7 @@ impl KnownLeader {
 #[derive(Clone)]
 pub struct GrpcMetadataServerClient {
     channel_manager: ChannelManager,
+    connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
     current_leader: Arc<Mutex<Option<MetadataServerSvcClientWithAddress>>>,
 }
 
@@ -126,12 +130,11 @@ impl GrpcMetadataServerClient {
         metadata_store_addresses: Vec<AdvertisedAddress<FabricPort>>,
         connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
     ) -> Self {
-        let channel_manager = ChannelManager::new(metadata_store_addresses, connection_options);
-        let svc_client = Arc::new(Mutex::new(
-            channel_manager
-                .choose_channel()
-                .map(MetadataServerSvcClientWithAddress::new),
-        ));
+        let channel_manager =
+            ChannelManager::new(metadata_store_addresses, Arc::clone(&connection_options));
+        let svc_client = Arc::new(Mutex::new(channel_manager.choose_channel().map(
+            |channel| MetadataServerSvcClientWithAddress::new(channel, connection_options.deref()),
+        )));
 
         if let Some(tc) = TaskCenter::try_with_current(|handle| handle.clone()) {
             if let Some(metadata) = Metadata::try_with_current(|m| m.clone()) {
@@ -154,33 +157,35 @@ impl GrpcMetadataServerClient {
 
         Self {
             channel_manager,
+            connection_options,
             current_leader: svc_client,
         }
     }
 
     fn choose_random_endpoint(&self) {
         // let's try another endpoint
-        *self.current_leader.lock() = self
-            .channel_manager
-            .choose_channel()
-            .map(MetadataServerSvcClientWithAddress::new);
+        *self.current_leader.lock() = self.channel_manager.choose_channel().map(|channel| {
+            MetadataServerSvcClientWithAddress::new(channel, self.connection_options.deref())
+        });
     }
 
     fn choose_known_leader(&self, known_leader: KnownLeader) {
         let channel = self
             .channel_manager
             .register_address(known_leader.node_id, known_leader.address);
-        *self.current_leader.lock() = Some(MetadataServerSvcClientWithAddress::new(channel));
+        *self.current_leader.lock() = Some(MetadataServerSvcClientWithAddress::new(
+            channel,
+            self.connection_options.deref(),
+        ));
     }
 
     fn current_client(&self) -> Option<MetadataServerSvcClientWithAddress> {
         let mut svc_client_guard = self.current_leader.lock();
 
         if svc_client_guard.is_none() {
-            *svc_client_guard = self
-                .channel_manager
-                .choose_channel()
-                .map(MetadataServerSvcClientWithAddress::new);
+            *svc_client_guard = self.channel_manager.choose_channel().map(|channel| {
+                MetadataServerSvcClientWithAddress::new(channel, self.connection_options.deref())
+            });
         }
 
         svc_client_guard.clone()
@@ -368,14 +373,17 @@ impl MetadataStore for GrpcMetadataServerClient {
             )));
         }
 
-        let mut client = MetadataServerSvcClientWithAddress::new(ChannelWithAddress::new(
-            advertised_address.clone(),
-            create_tonic_channel(
+        let mut client = MetadataServerSvcClientWithAddress::new(
+            ChannelWithAddress::new(
                 advertised_address.clone(),
-                &config.networking,
-                DNSResolution::Gai,
+                create_tonic_channel(
+                    advertised_address.clone(),
+                    self.connection_options.deref(),
+                    DNSResolution::Gai,
+                ),
             ),
-        ));
+            self.connection_options.deref(),
+        );
 
         let mut buffer = BytesMut::new();
         StorageCodec::encode(nodes_configuration, &mut buffer)

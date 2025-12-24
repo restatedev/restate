@@ -14,7 +14,7 @@ use clap::{Args, ValueEnum};
 use clap_verbosity_flag::{LogLevel, VerbosityFilter};
 use cling::Collect;
 
-use restate_types::net::connect_opts::CommonClientConnectionOptions;
+use restate_types::net::connect_opts::{CommonClientConnectionOptions, GrpcConnectionOptions};
 
 const DEFAULT_CONNECT_TIMEOUT: u64 = 3_000;
 const DEFAULT_REQUEST_TIMEOUT: u64 = 13_000;
@@ -91,6 +91,15 @@ pub struct NetworkOpts {
     /// insecure
     #[arg[long = "insecure-skip-tls-verify", default_value_t = false, global = true]]
     pub insecure_skip_tls_verify: bool,
+    /// Limits the maximum size of a grpc message.
+    #[arg[long, default_value_t = 10*1024*1024, global = true, hide = true]]
+    pub max_message_size: usize,
+}
+
+impl GrpcConnectionOptions for NetworkOpts {
+    fn max_message_size(&self) -> usize {
+        self.max_message_size
+    }
 }
 
 impl CommonClientConnectionOptions for NetworkOpts {

@@ -14,7 +14,7 @@ use cling::{Collect, Run};
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
-use restate_cli_util::{c_println, c_warn};
+use restate_cli_util::{CliContext, c_println, c_warn};
 use restate_core::protobuf::cluster_ctrl_svc::{
     GetClusterConfigurationRequest, SetClusterConfigurationRequest, new_cluster_ctrl_client,
 };
@@ -63,7 +63,7 @@ pub struct ConfigSetOpts {
 async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> anyhow::Result<()> {
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .get_cluster_configuration(GetClusterConfigurationRequest {})
                 .await
         })
@@ -162,7 +162,7 @@ async fn config_set(connection: &ConnectionInfo, set_opts: &ConfigSetOpts) -> an
 
     connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .set_cluster_configuration(request.clone())
                 .await
         })

@@ -78,7 +78,7 @@ impl ConfigLoader {
         let mut config: Configuration = figment.extract()?;
 
         // network base options need to be propagated downstream
-        config.common.set_derived_values()?;
+        config.common.set_derived_values(&config.networking)?;
         config.admin.set_derived_values(&config.common);
         config.ingress.set_derived_values(&config.common);
 
