@@ -31,8 +31,13 @@ use tracing::{Span, debug, error, info, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
-use restate_core::network::{Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, Verdict};
-use restate_core::{Metadata, ShutdownError, cancellation_watcher, my_node_id};
+use restate_core::network::{
+    Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, TransportConnect, Verdict,
+};
+use restate_core::{
+    Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_watcher, my_node_id,
+};
+use restate_ingestion_client::IngestionClient;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
@@ -47,12 +52,15 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStat
 use restate_types::config::Configuration;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::{KeyFilter, Lsn, Record, SequenceNumber};
-use restate_types::net::RpcRequest;
-use restate_types::net::ingest::{ReceivedIngestRequest, ResponseStatus};
+use restate_types::net::ingest::{
+    DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
+    ResponseStatus,
+};
 use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcResponse,
 };
+use restate_types::net::{RpcRequest, ingest};
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::{RetryPolicy, with_jitter};
 use restate_types::schema::Schema;
@@ -112,12 +120,16 @@ where
         }
     }
 
-    pub async fn build(
+    pub async fn build<T>(
         self,
         bifrost: Bifrost,
+        ingestion_client: IngestionClient<T, Envelope>,
         mut partition_store: PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
-    ) -> Result<PartitionProcessor<InvokerInputSender>, state_machine::Error> {
+    ) -> Result<PartitionProcessor<T, InvokerInputSender>, state_machine::Error>
+    where
+        T: TransportConnect,
+    {
         let PartitionProcessorBuilder {
             invoker_tx,
             target_leader_state_rx,
@@ -162,10 +174,13 @@ where
             Arc::clone(partition_store.partition()),
             invoker_tx,
             invoker_capacity,
+            ingestion_client,
             bifrost.clone(),
             last_seen_leader_epoch,
             trim_queue.clone(),
         );
+
+        let last_applied_log_lsn_watch = watch::Sender::new(Lsn::INVALID);
 
         Ok(PartitionProcessor {
             partition_id_str,
@@ -179,6 +194,7 @@ where
             status,
             replica_set_states,
             trim_queue,
+            last_applied_log_lsn_watch,
         })
     }
 
@@ -215,9 +231,9 @@ where
     }
 }
 
-pub struct PartitionProcessor<InvokerSender> {
+pub struct PartitionProcessor<T, InvokerSender> {
     partition_id_str: SharedString,
-    leadership_state: LeadershipState<InvokerSender>,
+    leadership_state: LeadershipState<T, InvokerSender>,
     state_machine: StateMachine,
     bifrost: Bifrost,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
@@ -228,6 +244,8 @@ pub struct PartitionProcessor<InvokerSender> {
 
     partition_store: PartitionStore,
     trim_queue: TrimQueue,
+
+    last_applied_log_lsn_watch: watch::Sender<Lsn>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -283,8 +301,19 @@ struct LsnEnvelope {
     pub envelope: Arc<Envelope>,
 }
 
-impl<InvokerSender> PartitionProcessor<InvokerSender>
+/// OrderedOperations are scheduled operations that
+/// will only get executed once the partition read up to
+/// the bifrost tail that was found once the operation
+/// was submitted.
+enum OrderedOp {
+    QueryLegacyDedupSn {
+        request: Incoming<Rpc<DedupSequenceNrQueryRequest>>,
+    },
+}
+
+impl<T, InvokerSender> PartitionProcessor<T, InvokerSender>
 where
+    T: TransportConnect,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
     #[instrument(
@@ -342,11 +371,17 @@ where
             .await?
             .unwrap_or(Lsn::INVALID);
 
+        self.last_applied_log_lsn_watch
+            .send_modify(|v| *v = last_applied_lsn);
+        let last_applied_lsn_watch = self.last_applied_log_lsn_watch.subscribe();
+
         let log_id = self.partition_store.partition().log_id();
         let partition_id = self.partition_store.partition_id();
         let my_node = my_node_id().as_plain();
 
         self.status.last_applied_log_lsn = Some(last_applied_lsn);
+        self.last_applied_log_lsn_watch
+            .send_replace(last_applied_lsn);
         let mut durable_lsn_watch = self.partition_store.get_durable_lsn().await?;
         let durable_lsn = durable_lsn_watch
             .borrow_and_update()
@@ -478,7 +513,7 @@ where
                     self.status.effective_mode = self.leadership_state.effective_mode();
                 }
                 Some(msg) = self.network_leader_svc_rx.recv() => {
-                    self.on_rpc(msg, &mut partition_store, live_schemas.live_load()).await;
+                    self.on_rpc(msg, &mut partition_store, live_schemas.live_load(), &last_applied_lsn_watch).await;
                 }
                 _ = status_update_timer.tick() => {
                     if durable_lsn_watch.has_changed().map_err(|e| ProcessorError::Other(e.into()))? {
@@ -536,6 +571,8 @@ where
                             // commit all changes so far, this is important so that the actuators see all changes
                             // when becoming leader.
                             transaction.commit().await?;
+                            // Notify all lsn watchers that the lsn has been committed
+                            self.last_applied_log_lsn_watch.send_if_modified(|_| true);
 
                             // We can ignore all actions collected so far because as a new leader we have to instruct the
                             // actuators afresh.
@@ -569,6 +606,8 @@ where
 
                     // Commit our changes and notify actuators about actions if we are the leader
                     transaction.commit().await?;
+                    // Notify all lsn watchers that the lsn has been committed
+                    self.last_applied_log_lsn_watch.send_if_modified(|_| true);
                     self.leadership_state.handle_actions(action_collector.drain(..), vqueues.view())?;
                 },
                 result = self.leadership_state.run(&self.state_machine, vqueues.view()) => {
@@ -629,6 +668,7 @@ where
         msg: ServiceMessage<PartitionLeaderService>,
         partition_store: &mut PartitionStore,
         schemas: &Schema,
+        last_applied_lsn_watch: &watch::Receiver<Lsn>,
     ) {
         match msg {
             ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
@@ -641,8 +681,101 @@ where
             ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {
                 self.on_pp_ingest_request(msg.into_typed()).await;
             }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == DedupSequenceNrQueryRequest::TYPE => {
+                self.wait_for_tail_then(
+                    last_applied_lsn_watch,
+                    OrderedOp::QueryLegacyDedupSn {
+                        request: msg.into_typed(),
+                    },
+                );
+            }
             msg => {
                 msg.fail(Verdict::MessageUnrecognized);
+            }
+        }
+    }
+
+    async fn on_ordered_op(partition_store: &mut PartitionStore, op: OrderedOp) {
+        match op {
+            OrderedOp::QueryLegacyDedupSn { request } => {
+                Self::on_dedup_sn_query(partition_store, request).await;
+            }
+        }
+    }
+
+    fn wait_for_tail_then(
+        &self,
+        last_applied_lsn_watch: &watch::Receiver<Lsn>,
+        ordered_op: OrderedOp,
+    ) {
+        let bifrost = self.bifrost.clone();
+        let log_id = self.partition_store.partition().log_id();
+        let mut last_applied_lsn_watch = last_applied_lsn_watch.clone();
+        let mut partition_store = self.partition_store.clone();
+
+        _ = TaskCenter::current().spawn_child(
+            TaskKind::Disposable,
+            "ordered-operation",
+            async move {
+                let tail = bifrost
+                    .find_tail(log_id, FindTailOptions::ConsistentRead)
+                    .await?;
+                let wait_for = tail.offset().as_u64().saturating_sub(1);
+                last_applied_lsn_watch
+                    .wait_for(|v| v.as_u64() >= wait_for)
+                    .await?;
+                Self::on_ordered_op(&mut partition_store, ordered_op).await;
+                Ok(())
+            },
+        );
+    }
+
+    /// Used mainly by kafka-ingress to query old style dedup information
+    /// during the migration to the new u128 based producer id introduced with v1.6.
+    async fn on_dedup_sn_query(
+        partition_store: &mut PartitionStore,
+        msg: Incoming<Rpc<DedupSequenceNrQueryRequest>>,
+    ) {
+        let (tx, body) = msg.split();
+        let producer_id = match body.producer_id {
+            ingest::ProducerId::Unknown => {
+                tx.send(DedupSequenceNrQueryResponse {
+                    status: ResponseStatus::Internal {
+                        msg: "missing producer id".into(),
+                    },
+                    sequence_number: None,
+                });
+                return;
+            }
+            ingest::ProducerId::String(v) => ProducerId::Other(v.into()),
+            ingest::ProducerId::Numeric(v) => ProducerId::Producer(v.into()),
+        };
+
+        match partition_store
+            .get_dedup_sequence_number(&producer_id)
+            .await
+        {
+            Ok(result) => {
+                let sequence_number = result.and_then(|v| {
+                    if let DedupSequenceNumber::Sn(sn) = v {
+                        Some(sn)
+                    } else {
+                        None
+                    }
+                });
+
+                tx.send(DedupSequenceNrQueryResponse {
+                    status: ResponseStatus::Ack,
+                    sequence_number,
+                });
+            }
+            Err(err) => {
+                tx.send(DedupSequenceNrQueryResponse {
+                    status: ResponseStatus::Internal {
+                        msg: err.to_string(),
+                    },
+                    sequence_number: None,
+                });
             }
         }
     }
@@ -718,6 +851,12 @@ where
         transaction.put_applied_lsn(lsn)?;
         // Update replay status
         self.status.last_applied_log_lsn = Some(lsn);
+        self.last_applied_log_lsn_watch.send_if_modified(|v| {
+            *v = lsn;
+            // A silent modification, Only notify watchers
+            // once the transaction has been committed
+            false
+        });
         self.status.last_record_applied_at = Some(MillisSinceEpoch::now());
         match self.status.replay_status {
             ReplayStatus::CatchingUp

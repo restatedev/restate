@@ -22,7 +22,7 @@ mod resume_invocation;
 
 use crate::partition;
 use crate::partition::leadership::LeadershipState;
-use restate_core::network::{Oneshot, Reciprocal};
+use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_invoker_api::InvokerHandle;
 use restate_storage_api::idempotency_table::ReadOnlyIdempotencyTable;
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
@@ -63,13 +63,14 @@ pub(super) trait Actuator {
     fn notify_invoker_to_pause(&mut self, invocation_id: InvocationId);
 }
 
-impl<
+impl<T, I> Actuator for LeadershipState<T, I>
+where
+    T: TransportConnect,
     I: InvokerHandle<
         partition::invoker_storage_reader::InvokerStorageReader<
             restate_partition_store::PartitionStore,
         >,
     >,
-> Actuator for LeadershipState<I>
 {
     async fn self_propose_and_respond_asynchronously<O: Into<PartitionProcessorRpcResponse>>(
         &mut self,
