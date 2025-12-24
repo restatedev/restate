@@ -110,7 +110,7 @@ This works completely different from above. It’s mainly because fat enums tran
 - Each variant must carry **EXACTLY** one value. Only **ONE** empty enum variant can show up at the top of the enum to work as the “empty state” AND it must be `untagged`
 - If a variant contains more than one value, it must have the `message` attribute
 - An enum that derives `bilrost::Oneof` can also derive `bilrost::Message`. In that case, it can be used as 
-  an property in a `Message` struct without the `oneof(..)` attribute. This is very handy for reusability
+  a property in a `Message` struct without the `oneof(..)` attribute. This is very handy for reusability
 
 ```rust
 // Derives Oneof

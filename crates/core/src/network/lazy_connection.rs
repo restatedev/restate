@@ -91,7 +91,7 @@ impl<T> std::error::Error for SendError<T> {}
 /// the current one, the connection will be closed and all enqueued messages will be dropped.
 ///
 /// You can use `auto_reconnect` to enable background re-connection, but it's important to
-/// note that reconnections will not happen in pre-emption cases or if we believe that the node is
+/// note that reconnections will not happen in preemption cases or if we believe that the node is
 /// gone for good (e.g. we observed its shutdown)
 ///
 /// The connection can be cheaply cloned and all clones will share the same connection and backing
