@@ -16,6 +16,7 @@ grpc-server = ["tonic/server", "tonic-prost", "prost"]
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-serde-util = { workspace = true }
 restate-time-util = { workspace = true }
 restate-types = { workspace = true }
 

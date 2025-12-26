@@ -26,7 +26,7 @@ use cling::prelude::*;
 use futures::{Stream, StreamExt, ready};
 use restate_cli_util::{
     _comfy_table::{Cell, Table},
-    c_eprintln, c_println,
+    CliContext, c_eprintln, c_println,
     ui::{
         console::{Styled, StyledTable},
         stylesheet::Style,
@@ -61,7 +61,7 @@ async fn query(connection: &ConnectionInfo, args: &SqlOpts) -> anyhow::Result<()
         .context("Failed to connect to node")?;
 
     let start_time = Instant::now();
-    let mut client = new_cluster_ctrl_client(channel);
+    let mut client = new_cluster_ctrl_client(channel, &CliContext::get().network);
 
     let response = client
         .query(QueryRequest {

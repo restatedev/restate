@@ -72,8 +72,23 @@ pub struct NetworkingOptions {
     /// If network latency is high, it's recommended to set this to a higher value.
     /// Maximum theoretical value is 2^31-1 (2 GiB - 1), but we will sanitize this value to 500 MiB.
     data_stream_window_size: NonZeroByteCount,
+
+    // The network fabric gRPC server ignores `max_message_size`; it uses its own cap defined in crates/core/src/network/grpc/mod.rs.
+    // This setting is honored by metadata-server, metadata-proxy, the node ctl service, and other clients.
+    //
+    /// # Max Grpc Message Size
+    ///
+    /// Limits the maximum size of a grpc message.
+    ///
+    /// Default: `10MB`
+    #[serde(default = "default_max_message_size")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub max_message_size: NonZeroByteCount,
 }
 
+fn default_max_message_size() -> NonZeroByteCount {
+    NonZeroByteCount::new(NonZeroUsize::new(10 * 1024 * 1024).expect("Non zero number"))
+}
 impl NetworkingOptions {
     pub fn stream_window_size(&self) -> u32 {
         // santize to 500MiB if set higher
@@ -106,6 +121,7 @@ impl Default for NetworkingOptions {
             data_stream_window_size: NonZeroByteCount::new(
                 NonZeroUsize::new(2 * 1024 * 1024).expect("Non zero number"),
             ),
+            max_message_size: default_max_message_size(),
         }
     }
 }

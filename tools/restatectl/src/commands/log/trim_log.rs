@@ -12,7 +12,7 @@ use anyhow::Context;
 use cling::prelude::*;
 use tracing::error;
 
-use restate_cli_util::c_println;
+use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{TrimLogRequest, new_cluster_ctrl_client};
 use restate_types::nodes_config::Role;
 
@@ -54,7 +54,7 @@ async fn trim_log_inner(
 
     connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .trim_log(trim_request)
                 .await
         })

@@ -8,19 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+#[cfg(feature = "grpc-client")]
+use restate_types::net::connect_opts::GrpcConnectionOptions;
+
 tonic::include_proto!("restate.metadata_server_svc");
 pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("metadata_server_svc");
 
 /// Creates a new MetadataServerSvcClient with appropriate configuration
 #[cfg(feature = "grpc-client")]
-pub fn new_metadata_server_client(
+pub fn new_metadata_server_client<O>(
     channel: tonic::transport::Channel,
-) -> metadata_server_svc_client::MetadataServerSvcClient<tonic::transport::Channel> {
+    connection_options: &O,
+) -> metadata_server_svc_client::MetadataServerSvcClient<tonic::transport::Channel>
+where
+    O: GrpcConnectionOptions + Send + Sync + ?Sized,
+{
     /// Default send compression for grpc clients
     use tonic::codec::CompressionEncoding;
     pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Zstd;
 
     metadata_server_svc_client::MetadataServerSvcClient::new(channel)
+        .max_decoding_message_size(connection_options.max_message_size())
+        .max_encoding_message_size(connection_options.max_message_size())
         // note: the order of those calls defines the priority
         .accept_compressed(CompressionEncoding::Zstd)
         .accept_compressed(CompressionEncoding::Gzip)

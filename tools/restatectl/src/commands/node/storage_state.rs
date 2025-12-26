@@ -15,7 +15,7 @@ use cling::prelude::*;
 
 use crate::commands::node::update_state;
 use crate::connection::ConnectionInfo;
-use restate_cli_util::c_println;
+use restate_cli_util::{CliContext, c_println};
 use restate_metadata_store::MetadataStoreClient;
 use restate_metadata_store::protobuf::metadata_proxy_svc::client::MetadataStoreProxy;
 use restate_types::config::MetadataClientOptions;
@@ -163,7 +163,7 @@ async fn set_storage_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyho
 
     connection
         .try_each(None, |channel| async {
-            let metadata_store_proxy = MetadataStoreProxy::new(channel);
+            let metadata_store_proxy = MetadataStoreProxy::new(channel, &CliContext::get().network);
             let metadata_store_client =
                 MetadataStoreClient::new(metadata_store_proxy, Some(backoff_policy.clone()));
 

@@ -71,6 +71,8 @@ impl MetadataServerHandler {
 
     pub fn into_server(self, config: &NetworkingOptions) -> MetadataServerSvcServer<Self> {
         let server = MetadataServerSvcServer::new(self)
+            .max_decoding_message_size(config.max_message_size.as_usize())
+            .max_encoding_message_size(config.max_message_size.as_usize())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);

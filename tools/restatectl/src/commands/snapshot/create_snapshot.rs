@@ -11,7 +11,7 @@
 use cling::prelude::*;
 use tracing::error;
 
-use restate_cli_util::c_println;
+use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::{
     cluster_ctrl_svc::{CreatePartitionSnapshotRequest, new_cluster_ctrl_client},
     node_ctl_svc::{GetMetadataRequest, new_node_ctl_client},
@@ -49,7 +49,7 @@ async fn create_snapshot(
     let ids: Vec<_> = if opts.partition_id.is_empty() {
         let mut response = connection
             .try_each(None, |channel| async move {
-                let mut client = new_node_ctl_client(channel.clone());
+                let mut client = new_node_ctl_client(channel.clone(), &CliContext::get().network);
                 client
                     .get_metadata(GetMetadataRequest {
                         kind: MetadataKind::PartitionTable.into(),
@@ -93,7 +93,7 @@ async fn inner_create_snapshot(
 
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .create_partition_snapshot(request)
                 .await
         })
