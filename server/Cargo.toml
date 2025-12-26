@@ -56,8 +56,8 @@ enumset = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-octocrab = { version = "0.44.0", features = ["stream"] }
-regex = "1.10.4"
+octocrab = { workspace = true, features = ["stream"] }
+regex = { workspace = true }
 rlimit = { workspace = true }
 rustls = { workspace = true, features = ["aws-lc-rs"] }
 schemars = { workspace = true, optional = true }
@@ -66,7 +66,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-panic = { version = "0.1.2" }
 ulid = { workspace = true }
-url = { version = "2.5.4", features = [] }
+url = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }
@@ -76,20 +76,15 @@ restate-metadata-server = { workspace = true, features = ["test-util"] }
 restate-metadata-store = { workspace = true, features = ["test-util"] }
 restate-metadata-providers = { workspace = true, features = ["replicated"] }
 restate-node = { workspace = true, features = ["memory-loglet"] }
-restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 mock-service-endpoint = { workspace = true }
 
 anyhow = { workspace = true }
-async-trait = { workspace = true }
-bytes = { workspace = true }
 bytestring = { workspace = true}
 googletest = { workspace = true }
-hyper-util = { workspace = true }
 tempfile = { workspace = true }
 test-log = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
-tower = { workspace = true }
 tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
@@ -103,7 +98,7 @@ tikv-jemallocator = { workspace = true }
 restate-core = { workspace = true, features = ["taskdump"] }
 
 [build-dependencies]
-vergen = { version = "8.0.0", default-features = false, features = [
+vergen = { workspace = true, default-features = false, features = [
     "build",
     "git",
     "gitcl",

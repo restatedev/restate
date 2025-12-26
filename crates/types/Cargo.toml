@@ -51,22 +51,20 @@ dyn-clone = { version = "1.0" }
 enum-map = { workspace = true }
 enum_dispatch = "0.3.13"
 enumset = { workspace = true, features = ["serde"] }
-figment = { version = "0.10.8", features = ["env", "toml"] }
+figment = { version = "0.10.19", features = ["env", "toml"] }
 flexbuffers = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true }
-generic-array = { version = "1.2.0" }
+generic-array = { version = "1.3.5" }
 hostname = { workspace = true }
 http = { workspace = true }
-humantime = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
-jiff = { workspace = true }
 jsonschema = { workspace = true }
 listenfd = { version = "1" }
 metrics = { workspace = true }
 moka = { workspace = true, features = ["sync", "logging"] }
-notify = { version = "8.0.0" }
+notify = { version = "8.2.0" }
 notify-debouncer-full = { version = "0.6" }
 num-traits = { workspace = true }
 opentelemetry = { workspace = true , features = ["trace"]}
@@ -120,9 +118,9 @@ prost-build = { workspace = true }
 prettyplease = "0.2"
 schemars = { workspace = true }
 serde_json = { workspace = true }
-syn = "2.0"
-typify = { version = "0.5.0" }
-jsonptr = "0.7.1"
+syn = { workspace = true }
+typify = { workspace = true }
+jsonptr = { workspace = true }
 
 [[bench]]
 name = "network_serialization"

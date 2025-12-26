@@ -11,7 +11,7 @@ publish = false
 proc-macro = true
 
 [dependencies]
-quote = "1"
-syn = { version = "2.0", features = ["full", "extra-traits"] }
+quote = {workspace = true}
+syn = { workspace = true, features = ["full", "extra-traits"] }
 
 restate-workspace-hack = { workspace = true }

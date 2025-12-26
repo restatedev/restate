@@ -124,12 +124,12 @@ impl Standby {
                 Some(request) = self.command_rx.recv() => {
                     match request {
                         MetadataCommand::AddNode(result_tx) => {
-                            if my_member_id.is_some() {
+                            if let Some(my_member_id) = my_member_id {
                                 pending_response_txs.push(result_tx);
 
                                 if join_cluster.is_terminated() {
                                     debug!("Node is asked to join the metadata cluster. Trying to join.");
-                                    join_cluster.set(Some(Self::join_cluster(my_member_id.expect("MemberId to be known")).fuse()).into());
+                                    join_cluster.set(Some(Self::join_cluster(my_member_id).fuse()).into());
                                 }
                             } else {
                                 let _ = result_tx.send(Err(MetadataCommandError::AddNode(AddNodeError::NotReadyToJoin)));

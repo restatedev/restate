@@ -16,21 +16,15 @@ restate-rocksdb = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 
-anyhow = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
 derive_more = { workspace = true }
-futures = { workspace = true }
 gardal = { workspace = true, features = ["tokio"] }
 hashbrown = { version = "0.16"  }
 metrics = { workspace = true }
 pin-project = { workspace = true }
-rocksdb = { workspace = true }
 slotmap = { version = "1" }
 smallvec = { workspace = true }
-strum = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["time"] }
 tracing = { workspace = true }
 

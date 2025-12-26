@@ -48,13 +48,8 @@ tonic-prost-build = { workspace = true }
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
-restate-metadata-server = { workspace = true }
-restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
-tempfile = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
-tracing-subscriber = { workspace = true }
-tracing-test = { workspace = true }

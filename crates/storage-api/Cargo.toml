@@ -23,11 +23,8 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 derive_more = { workspace = true }
 futures = { workspace = true }
-num-traits = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
-rangemap = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }
 static_assertions = { workspace = true }

@@ -74,7 +74,7 @@ tonic = { workspace = true, features = ["gzip", "zstd"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-jemalloc_pprof = "0.6.0"
+jemalloc_pprof = "0.8.1"
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }

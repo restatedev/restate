@@ -21,4 +21,3 @@ tracing = { workspace = true }
 [dev-dependencies]
 thiserror = { workspace = true }
 test-log = { workspace = true }
-tracing-subscriber = { workspace = true }

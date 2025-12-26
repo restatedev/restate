@@ -18,15 +18,12 @@ restate-invoker-api = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 
-anyhow = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 bilrost = { workspace = true }
 enum-map = { workspace = true }
 serde = { workspace = true, optional = true }
 strum = { workspace = true }
-prost = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

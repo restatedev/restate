@@ -53,14 +53,10 @@ async-channel = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
-datafusion = { workspace = true }
 derive_more = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
-gardal = { workspace = true }
-humantime = { workspace = true }
 itertools = { workspace = true }
-jiff = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 parking_lot = { workspace = true }
@@ -68,8 +64,6 @@ pin-project = { workspace = true }
 rand = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-serde_with = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -92,8 +86,6 @@ restate-types = { workspace = true, features = ["test-util"] }
 googletest = { workspace = true }
 mockall = { workspace = true }
 prost = { workspace = true }
-rocksdb = { workspace = true }
 rstest = { workspace = true }
-tempfile = { workspace = true }
 test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
