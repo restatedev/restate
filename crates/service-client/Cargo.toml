@@ -19,30 +19,29 @@ restate-types = { workspace = true }
 arc-swap = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
-aws-sdk-lambda = {version = "1.73.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
-aws-sdk-sts = {version = "1.63.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
+aws-sdk-lambda = {version = "1.112.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
+aws-sdk-sts = {version = "1.95.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
 base64 = { workspace = true }
-bs58 = { version = "0.5.0" }
+bs58 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 futures = { workspace = true }
-h2 = "0.4.5"
+h2 = "0.4.12"
 http = { workspace = true }
 http-body-util = { workspace = true }
 http-serde = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client"] }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy"] }
-jsonwebtoken = { version = "9.1.0" }
-pem = { version = "3.0.3" }
-ring = { version = "0.17.8" }
+jsonwebtoken = { workspace = true }
+pem = { version = "3.0.6" }
+ring = { version = "0.17.14" }
 rustls = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 thiserror = { workspace = true }
-tower = { workspace = true }
 tower-service = { version = "0.3" }
 tracing = { workspace = true }
 zstd = { workspace = true }

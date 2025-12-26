@@ -49,13 +49,13 @@ clap-verbosity-flag = { workspace = true }
 clap_complete = { workspace = true }
 cling = { workspace = true }
 comfy-table = { workspace = true }
-const_format = "0.2.32"
-convert_case = "0.6"
+const_format = { workspace = true }
+convert_case = "0.10"
 crossterm = { workspace = true }
-ctrlc = { version = "3.4.1" }
+ctrlc = { version = "3.5.1" }
 dialoguer = { workspace = true }
-dirs = { version = "5.0" }
-figment = { version = "0.10.8", features = ["env", "toml"] }
+dirs = { version = "6.0" }
+figment = { version = "0.10.19", features = ["env", "toml"] }
 futures = { workspace = true }
 hickory-resolver = "0.25.2"
 http = { workspace = true }
@@ -64,12 +64,12 @@ hyper-util = { workspace = true }
 hyper-rustls = { workspace = true }
 humantime = { workspace = true }
 indicatif = "0.18.3"
-indoc = { version = "2.0.4" }
+indoc = { version = "2.0.7" }
 itertools = { workspace = true }
-json-patch = "2.0.0"
+json-patch = "4.1.0"
 mnemonic = "1.1.1"
-octocrab = { version = "0.44.0", features = ["stream"] }
-open = "5.1.2"
+octocrab = { workspace = true, features = ["stream"] }
+open = "5.3.3"
 rand = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
 rustls = { workspace = true, features = ["aws-lc-rs"]}
@@ -81,19 +81,19 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs"] }
 tokio-util = { workspace = true }
-toml = "0.8.15"
-toml_edit = "0.22.12"
+toml = {workspace = true }
+toml_edit = "0.22.27"
 tower = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
-zip = "0.6"
+zip = "0.6.6"
 
 [dev-dependencies]
 restate-cli-util = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
-vergen = { version = "8.0.0", default-features = false, features = [
+vergen = { workspace = true, default-features = false, features = [
     "build",
     "git",
     "gitcl",
