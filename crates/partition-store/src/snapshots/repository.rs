@@ -16,7 +16,9 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
 use object_store::path::Path as ObjectPath;
-use object_store::{MultipartUpload, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
+use object_store::{
+    MultipartUpload, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
+};
 use restate_core::Metadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -786,7 +788,7 @@ async fn abort_tasks<T: 'static>(mut join_set: JoinSet<T>) {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use object_store::ObjectStore;
+    use object_store::ObjectStoreExt;
     use object_store::path::Path as ObjectPath;
     use std::sync::Arc;
     use std::time::SystemTime;
