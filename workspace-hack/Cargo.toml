@@ -23,6 +23,8 @@ arrow-cast = { version = "57", default-features = false, features = ["prettyprin
 arrow-ipc = { version = "57", features = ["lz4"] }
 arrow-schema = { version = "57", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
+aws-lc-sys = { version = "0.32", default-features = false, features = ["prebuilt-nasm"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
@@ -33,7 +35,6 @@ aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "htt
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", features = ["http2"] }
 axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
-base64 = { version = "0.22" }
 bilrost = { version = "0.1014", features = ["bytestring", "smallvec"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
@@ -151,6 +152,8 @@ arrow-cast = { version = "57", default-features = false, features = ["prettyprin
 arrow-ipc = { version = "57", features = ["lz4"] }
 arrow-schema = { version = "57", default-features = false, features = ["canonical_extension_types"] }
 aws-credential-types = { version = "1", default-features = false, features = ["test-util"] }
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
+aws-lc-sys = { version = "0.32", default-features = false, features = ["prebuilt-nasm"] }
 aws-runtime = { version = "1", default-features = false, features = ["event-stream"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
@@ -161,7 +164,6 @@ aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "htt
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", features = ["http2"] }
 axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
-base64 = { version = "0.22" }
 bilrost = { version = "0.1014", features = ["bytestring", "smallvec"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
