@@ -94,25 +94,12 @@ skip = [
     { name = "windows_i686_msvc" },
     { name = "windows_aarch64_msvc" },
     { name = "hermit-abi" },
-    # Clash between prost-reflect and tracing_instrumentation
-    { name = "ordered-float" },
-
-    # Clash between criterion clap dependency and our own
-    { name = "clap" },
-    { name = "clap_lex" },
-    { name = "clap_derive" },
 
     # Clash between tonic clap dependency (outdated) and hyper-rustls and prost-reflect
     { name = "base64" },
 
     # The following is an internal dependency needed by librocksdb-sys
     { name = "syn" },
-
-    # The following is a dev and build dependency used by tempfile but clashes with open telemetry.
-    { name = "redox_syscall" },
-
-    # Clash between criterion dependency and datafusion dependency
-    { name = "half" },
 
     # Clash between datafusion async-compression dependency and datafusion zstd dependency
     { name = "zstd-safe" },
@@ -124,30 +111,11 @@ skip = [
     # Clash between datafusion and invoker
     { name = "tokio-rustls" },
 
-    # Clash between rocksdb bindgen and prost-build
-    { name = "prettyplease" },
-
-    # Clash between our own and opentelemetry-otlp's Tonic dependency :-(
-    { name = "tonic" },
-
-    # Clash between tracing-subscriber and datafusion :-(
-    { name = "regex-syntax" },
-
     # Clash between pprof and datafusion :-(
     { name = "quick-xml" },
 
     # Clash with criterion
     { name = "itertools" },
-
-    # Clash between datafusion-expr and arrow
-    { name = "strum" },
-    { name = "strum_macros" },
-
-    # Clash between pgwire and arrow
-    { name = "time" },
-
-    # clash between datafusion and arrow
-    { name = "wasi" },
 
     # clash between rdkafka and many other libraries
     { name = "indexmap" },
@@ -156,13 +124,8 @@ skip = [
     { name = "prost" },
     { name = "prost-derive" },
 
-    # clash between aws-config and datafusion
-    { name = "fastrand" },
-
     # clash between aws-config and pgwire
     { name = "untrusted" },
-    { name = "spin" },
-    { name = "ring" },
 ]
 
 [sources]
