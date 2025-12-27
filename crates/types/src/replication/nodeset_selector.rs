@@ -12,7 +12,7 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hasher;
 
-use tracing::{debug, error};
+use tracing::debug;
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::PlainNodeId;

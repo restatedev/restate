@@ -17,7 +17,7 @@ assert2 = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 googletest = { workspace = true }
-pretty_assertions = "1.3"
+pretty_assertions = "1.4.1"
 prost = { workspace = true, optional = true }
 rand = { workspace = true }
 
