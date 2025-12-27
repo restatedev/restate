@@ -8,7 +8,6 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "crate is unmaintained. We need to migrate to a different crate than `paste`" },
     { id = "RUSTSEC-2024-0437", reason = "protobuf-rs stackoverflow in deep nested messages, not fixed yet" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash is not maintained anymore, currently used only by raft-rs" },
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is no longer maintained. It is currently pulled in by the object-store dependency. Remove once object-store has released a version that no longer depends on rustls-pemfile."},
 ]
 
 

@@ -181,7 +181,7 @@ metrics-util = { version = "0.20.1" }
 moka = "0.12.12"
 mockall = { version = "0.14.0" }
 num-traits = { version = "0.2.19" }
-object_store = { version = "0.12.4", features = ["aws", "azure", "gcp"] }
+object_store = { version = "0.13.0", features = ["aws", "azure", "gcp"] }
 octocrab = { version = "0.44.1" }
 opentelemetry = { version = "0.31" }
 opentelemetry-contrib = { version = "0.23" }
