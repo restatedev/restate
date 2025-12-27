@@ -172,7 +172,7 @@ itertools = "0.14.0"
 jiff = "0.2.17"
 jsonptr = "0.7.1"
 jsonschema = { version = "0.38.1", default-features = false }
-jsonwebtoken = { version = "9.1.0" }
+jsonwebtoken = { version = "10.2.0", features = ["aws_lc_rs"] }
 metrics = { version = "0.24" }
 metrics-exporter-prometheus = { version = "0.17", default-features = false, features = [
     "async-runtime",
