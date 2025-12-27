@@ -10,8 +10,6 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tracing::error;
-
 use restate_types::config::CommonOptions;
 
 use super::{OwnedHandle, TaskCenterInner};

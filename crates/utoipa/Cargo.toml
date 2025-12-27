@@ -20,7 +20,5 @@ indexmap = { workspace = true, features = ["serde"] }
 [dev-dependencies]
 restate-utoipa = { path = ".", features = ["debug"] }
 
-assert-json-diff = "2"
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(doc_cfg)'] }
