@@ -185,7 +185,6 @@ object_store = { version = "0.13.0", features = ["aws", "azure", "gcp"] }
 octocrab = { version = "0.44.1" }
 opentelemetry = { version = "0.31" }
 opentelemetry-contrib = { version = "0.23" }
-opentelemetry-http = { version = "0.31" }
 opentelemetry-otlp = { version = "0.31" }
 opentelemetry-semantic-conventions = { version = "0.31" }
 opentelemetry_sdk = { version = "0.31" }
@@ -201,7 +200,6 @@ prost-dto = { version = "0.0.4" }
 prost-types = { version = "0.14.1" }
 quote = "1"
 rand = "0.9.2"
-rangemap = "1.7.1"
 regex = { version = "1.12" }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
