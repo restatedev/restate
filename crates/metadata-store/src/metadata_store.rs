@@ -16,16 +16,17 @@ use bytes::BytesMut;
 use bytestring::ByteString;
 use metrics::{counter, histogram};
 use tokio::time::Instant;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use restate_time_util::DurationExt;
 use restate_types::errors::{
     BoxedMaybeRetryableError, GenericError, IntoMaybeRetryable, MaybeRetryableError,
 };
-use restate_types::metadata::{Precondition, VersionedValue};
+use restate_types::metadata::{GlobalMetadata, Precondition, VersionedValue};
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::retries::RetryPolicy;
+use restate_types::schema::Schema;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode, StorageEncodeError};
 use restate_types::{Version, Versioned};
 
@@ -36,6 +37,8 @@ use crate::metric_definitions::{
 };
 #[cfg(feature = "test-util")]
 use crate::test_util::InMemoryMetadataStore;
+
+const METADATA_SIZE_WARNING: usize = 4 * 1024 * 1024; //4MB
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
@@ -350,6 +353,7 @@ impl MetadataStoreClient {
             let versioned_value =
                 serialize_value(value).map_err(|err| WriteError::Codec(err.into()))?;
 
+            self.warn_if_oversized(&key, &versioned_value);
             self.inner.put(key, versioned_value, precondition).await
         };
 
@@ -493,6 +497,34 @@ impl MetadataStoreClient {
         nodes_configuration: &NodesConfiguration,
     ) -> Result<bool, ProvisionError> {
         self.inner.provision(nodes_configuration).await
+    }
+
+    fn warn_if_oversized(&self, key: &ByteString, value: &VersionedValue) {
+        let size = value.value.len();
+
+        if size < METADATA_SIZE_WARNING {
+            return;
+        }
+
+        match &key[..] {
+            Schema::KEY => {
+                warn!(
+                    "Schema metadata is {size} bytes (soft limit {METADATA_SIZE_WARNING}). \
+                    Remove unused deployments or services to keep metadata manageable."
+                );
+            }
+            NodesConfiguration::KEY => {
+                warn!(
+                    "Nodes metadata is {size} bytes (soft limit {METADATA_SIZE_WARNING}). \
+                    Remove dead nodes to keep metadata manageable."
+                );
+            }
+            _ => {
+                warn!(
+                    "Metadata entry '{key}' is {size} bytes, above the soft limit of {METADATA_SIZE_WARNING} bytes."
+                );
+            }
+        }
     }
 }
 
