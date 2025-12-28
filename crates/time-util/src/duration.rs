@@ -586,8 +586,8 @@ impl<'de, const CAN_BE_ZERO: bool> serde::de::Deserialize<'de> for Duration<CAN_
 
 #[cfg(feature = "schema")]
 impl schemars::JsonSchema for FriendlyDuration {
-    fn schema_name() -> String {
-        "FriendlyDuration".to_owned()
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "FriendlyDuration".into()
     }
 
     fn schema_id() -> std::borrow::Cow<'static, str> {
@@ -596,29 +596,28 @@ impl schemars::JsonSchema for FriendlyDuration {
         )
     }
 
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema: schemars::schema::SchemaObject = generator.subschema_for::<String>().into();
-        let validation = schema.string();
-        validation.min_length = Some(1);
-        let metadata = schema.metadata();
-        metadata.title = Some("Human-readable duration".to_owned());
-        metadata.description = Some("Duration string in either jiff human friendly or ISO8601 format. Check https://docs.rs/jiff/latest/jiff/struct.Span.html#parsing-and-printing for more details.".to_owned());
-        metadata.examples = vec![
-            serde_json::Value::String("10 hours".to_owned()),
-            serde_json::Value::String("5 days".to_owned()),
-            serde_json::Value::String("5d".to_owned()),
-            serde_json::Value::String("1h 4m".to_owned()),
-            serde_json::Value::String("P40D".to_owned()),
-            serde_json::Value::String("0".to_owned()),
-        ];
-        schema.into()
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "title": "Human-readable duration",
+            "description": "Duration string in either jiff human friendly or ISO8601 format. Check https://docs.rs/jiff/latest/jiff/struct.Span.html#parsing-and-printing for more details.",
+            "examples": [
+                "10 hours",
+                "5 days",
+                "5d",
+                "1h 4m",
+                "P40D",
+                "0"
+            ]
+        })
     }
 }
 
 #[cfg(feature = "schema")]
 impl schemars::JsonSchema for NonZeroFriendlyDuration {
-    fn schema_name() -> String {
-        "NonZeroFriendlyDuration".to_owned()
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "NonZeroFriendlyDuration".into()
     }
 
     fn schema_id() -> std::borrow::Cow<'static, str> {
@@ -627,21 +626,20 @@ impl schemars::JsonSchema for NonZeroFriendlyDuration {
         )
     }
 
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema: schemars::schema::SchemaObject = generator.subschema_for::<String>().into();
-        let validation = schema.string();
-        validation.min_length = Some(1);
-        let metadata = schema.metadata();
-        metadata.title = Some("Non-zero human-readable duration".to_owned());
-        metadata.description = Some("Non-zero duration string in either jiff human friendly or ISO8601 format. Check https://docs.rs/jiff/latest/jiff/struct.Span.html#parsing-and-printing for more details.".to_owned());
-        metadata.examples = vec![
-            serde_json::Value::String("10 hours".to_owned()),
-            serde_json::Value::String("5 days".to_owned()),
-            serde_json::Value::String("5d".to_owned()),
-            serde_json::Value::String("1h 4m".to_owned()),
-            serde_json::Value::String("P40D".to_owned()),
-        ];
-        schema.into()
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "title": "Non-zero human-readable duration",
+            "description": "Non-zero duration string in either jiff human friendly or ISO8601 format. Check https://docs.rs/jiff/latest/jiff/struct.Span.html#parsing-and-printing for more details.",
+            "examples": [
+                "10 hours",
+                "5 days",
+                "5d",
+                "1h 4m",
+                "P40D",
+            ]
+        })
     }
 }
 
