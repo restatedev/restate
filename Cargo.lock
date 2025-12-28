@@ -7132,7 +7132,7 @@ dependencies = [
  "restate-clock",
  "restate-encoding",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde",
  "serde_json",
  "thiserror 2.0.17",
@@ -7351,7 +7351,7 @@ dependencies = [
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -7391,7 +7391,7 @@ dependencies = [
  "restate-types",
  "restate-wal-protocol",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "thiserror 2.0.17",
  "tokio",
  "tracing",
@@ -7448,7 +7448,7 @@ dependencies = [
  "restate-timer-queue",
  "restate-types",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde",
  "tempfile",
  "test-log",
@@ -7739,7 +7739,7 @@ dependencies = [
  "restate-worker",
  "restate-workspace-hack",
  "rust-rocksdb",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "semver",
  "serde",
  "serde_json",
@@ -7875,7 +7875,7 @@ dependencies = [
  "http-serde",
  "prost 0.14.1",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -7917,7 +7917,7 @@ dependencies = [
  "restate-workspace-hack",
  "rlimit",
  "rustls 0.23.35",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde_json",
  "tempfile",
  "test-log",
@@ -7961,7 +7961,7 @@ dependencies = [
  "restate-workspace-hack",
  "ring",
  "rustls 0.23.35",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -8081,7 +8081,7 @@ dependencies = [
  "restate-storage-api",
  "restate-types",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde_json",
  "thiserror 2.0.17",
  "tokio",
@@ -8110,7 +8110,7 @@ version = "1.6.0-dev"
 dependencies = [
  "jiff",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -8128,7 +8128,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "test-log",
  "tokio",
  "tokio-util",
@@ -8164,7 +8164,7 @@ dependencies = [
  "restate-serde-util",
  "restate-types",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "thiserror 2.0.17",
  "tokio",
  "tonic",
@@ -8240,7 +8240,7 @@ dependencies = [
  "restate-utoipa",
  "restate-workspace-hack",
  "rustc-hash",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "semver",
  "serde",
  "serde_json",
@@ -8382,7 +8382,7 @@ dependencies = [
  "restate-wal-protocol",
  "restate-workspace-hack",
  "rstest",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde",
  "strum",
  "test-log",
@@ -8433,14 +8433,11 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "crossterm",
- "darling 0.21.3",
- "darling_core 0.21.3",
  "derive_more",
  "derive_more-impl",
  "digest",
  "either",
  "enum-map",
- "enumset",
  "flate2",
  "futures-channel",
  "futures-core",
@@ -8862,10 +8859,8 @@ version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
 dependencies = [
- "bytes",
  "dyn-clone",
- "enumset",
- "schemars_derive",
+ "schemars_derive 0.8.22",
  "serde",
  "serde_json",
 ]
@@ -8888,8 +8883,10 @@ version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54e910108742c57a770f492731f99be216a52fadd361b06c8fb59d74ccc267d2"
 dependencies = [
+ "bytes",
  "dyn-clone",
  "ref-cast",
+ "schemars_derive 1.2.0",
  "serde",
  "serde_json",
 ]
@@ -8899,6 +8896,18 @@ name = "schemars_derive"
 version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32e265784ad618884abaea0600a9adf15393368d840e0222d101a072f3f7534d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 2.0.111",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4908ad288c5035a8eb12cfdf0d49270def0a268ee162b75eeee0f85d155a7c45"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11160,7 +11169,7 @@ dependencies = [
  "restate-types",
  "restate-worker",
  "restate-workspace-hack",
- "schemars 0.8.22",
+ "schemars 1.2.0",
  "serde_json",
  "tempfile",
  "tokio",

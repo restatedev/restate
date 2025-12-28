@@ -21,9 +21,10 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use generic_array::ArrayLength;
 use rand::RngCore;
-use restate_encoding::{BilrostNewType, NetSerde};
 use sha2::{Digest, Sha256};
 use ulid::Ulid;
+
+use restate_encoding::{BilrostNewType, NetSerde};
 
 use crate::base62_util::{base62_encode_fixed_width_u128, base62_max_length_for_type};
 use crate::errors::IdDecodeError;
@@ -635,11 +636,11 @@ impl FromStr for InvocationId {
 
 #[cfg(feature = "schemars")]
 impl schemars::JsonSchema for InvocationId {
-    fn schema_name() -> String {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
         <String as schemars::JsonSchema>::schema_name()
     }
 
-    fn json_schema(g: &mut schemars::SchemaGenerator) -> schemars::schema::Schema {
+    fn json_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
         <String as schemars::JsonSchema>::json_schema(g)
     }
 }
@@ -771,17 +772,15 @@ impl LambdaARN {
 
 #[cfg(feature = "schemars")]
 impl schemars::JsonSchema for LambdaARN {
-    fn schema_name() -> String {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
         "LambdaARN".into()
     }
 
-    fn json_schema(_: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-        schemars::schema::SchemaObject {
-            instance_type: Some(schemars::schema::InstanceType::String.into()),
-            format: Some("arn".to_string()),
-            ..Default::default()
-        }
-        .into()
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "format": "arn",
+        })
     }
 }
 
@@ -1055,11 +1054,11 @@ macro_rules! ulid_backed_id {
 
             #[cfg(feature = "schemars")]
             impl schemars::JsonSchema for [< $res_name Id >] {
-                fn schema_name() -> String {
+                fn schema_name() -> std::borrow::Cow<'static, str> {
                     <String as schemars::JsonSchema>::schema_name()
                 }
 
-                fn json_schema(g: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+                fn json_schema(g: &mut schemars::SchemaGenerator) -> schemars::Schema {
                     <String as schemars::JsonSchema>::json_schema(g)
                 }
             }

@@ -190,31 +190,28 @@ impl<P: ListenerPort> Default for BindAddress<P> {
 
 #[cfg(feature = "schemars")]
 impl<P: ListenerPort> schemars::JsonSchema for BindAddress<P> {
-    fn schema_name() -> String {
-        format!("BindAddress-{}", P::NAME)
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        format!("BindAddress-{}", P::NAME).into()
     }
 
     fn schema_id() -> std::borrow::Cow<'static, str> {
         format!("{}::BindAddress[{}]", std::module_path!(), P::NAME).into()
     }
 
-    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema: schemars::schema::SchemaObject = generator.subschema_for::<String>().into();
-        schema.format = Some("ip:port".to_owned());
-        let metadata = schema.metadata();
-        metadata.title = Some("Bind address".to_owned());
-        metadata.description = Some(format!(
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "format": "ip:port",
+            "title": "Bind address",
+            "description": format!(
             "The local network address to bind on for {}. This service uses default port {} and \
                 will create a unix-socket file at the data directory under the name `{}`",
             P::NAME,
             P::DEFAULT_PORT,
             P::UDS_NAME
-        ));
-        metadata.examples = vec![
-            serde_json::Value::String(format!("0.0.0.0:{}", P::DEFAULT_PORT)),
-            serde_json::Value::String(format!("127.0.0.1:{}", P::DEFAULT_PORT)),
-        ];
-        schema.into()
+        ),
+            "examples": [format!("0.0.0.0:{}", P::DEFAULT_PORT), format!("127.0.0.1:{}", P::DEFAULT_PORT)]
+        })
     }
 }
 
@@ -281,30 +278,26 @@ pub struct AdvertisedAddress<P: ListenerPort> {
 
 #[cfg(feature = "schemars")]
 impl<P: ListenerPort> schemars::JsonSchema for AdvertisedAddress<P> {
-    fn schema_name() -> String {
-        format!("AdvertisedAddress-{}", P::NAME)
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        format!("AdvertisedAddress-{}", P::NAME).into()
     }
 
     fn schema_id() -> std::borrow::Cow<'static, str> {
         format!("{}::AdvertisedAddress[{}]", std::module_path!(), P::NAME).into()
     }
 
-    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema: schemars::schema::SchemaObject = generator.subschema_for::<String>().into();
-        let metadata = schema.metadata();
-        metadata.title = Some("advertised address".to_owned());
-        metadata.description = Some(format!(
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "title": "advertised address",
+            "description": format!(
             "An externally accessible URI address for {}. This can be set to unix:restate-data/{} \
                 to advertise the automatically created unix-socket instead of using tcp if needed",
             P::NAME,
             P::UDS_NAME
-        ));
-        metadata.examples = vec![
-            serde_json::Value::String(format!("http//127.0.0.1:{}/", P::DEFAULT_PORT)),
-            serde_json::Value::String("https://my-host/".to_owned()),
-            serde_json::Value::String(format!("unix:/data/restate-data/{}", P::UDS_NAME)),
-        ];
-        schema.into()
+        ),
+            "examples": [format!("http//127.0.0.1:{}/", P::DEFAULT_PORT), "https://my-host/", format!("unix:/data/restate-data/{}", P::UDS_NAME)]
+        })
     }
 }
 

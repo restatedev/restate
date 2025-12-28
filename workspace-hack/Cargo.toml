@@ -46,12 +46,9 @@ comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
-darling = { version = "0.21" }
-darling_core = { version = "0.21", default-features = false, features = ["suggestions"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
-enumset = { version = "1", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }
@@ -176,12 +173,9 @@ comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
-darling = { version = "0.21" }
-darling_core = { version = "0.21", default-features = false, features = ["suggestions"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
-enumset = { version = "1", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }

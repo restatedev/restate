@@ -193,6 +193,10 @@ impl<P: ListenerPort> Default for ListenerOptions<P> {
 pub struct CommonOptions {
     /// Defines the roles which this Restate node should run, by default the node
     /// starts with all roles.
+    #[cfg_attr(
+        feature = "schemars",
+        schemars(schema_with = "schema::enumset_role_schema")
+    )]
     pub roles: EnumSet<Role>,
 
     /// # Node Name
@@ -485,6 +489,16 @@ pub struct CommonOptions {
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
+
+#[cfg(feature = "schemars")]
+pub(crate) mod schema {
+    use super::*;
+
+    pub fn enumset_role_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // EnumSet<Role> serializes as an array of Role values
+        generator.subschema_for::<Vec<Role>>()
+    }
+}
 
 impl CommonOptions {
     pub fn fabric_listener_options(&self) -> &ListenerOptions<FabricPort> {
@@ -862,7 +876,8 @@ impl Default for MetadataClientOptions {
     feature = "schemars",
     schemars(
         title = "Metadata client type",
-        description = "The metadata client type to store metadata"
+        description = "The metadata client type to store metadata",
+        !try_from,
     )
 )]
 pub enum MetadataClientKind {
