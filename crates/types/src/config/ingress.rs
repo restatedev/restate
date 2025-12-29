@@ -13,6 +13,7 @@ use std::num::NonZeroUsize;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
+use crate::config::IngestionOptions;
 use crate::net::address::{AdvertisedAddress, BindAddress, HttpIngressPort};
 use crate::net::listener::AddressBook;
 
@@ -43,6 +44,12 @@ pub struct IngressOptions {
     /// Ingress endpoint that the Web UI should use to interact with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     advertised_ingress_endpoint: Option<AdvertisedAddress<HttpIngressPort>>,
+
+    /// # Ingestion Options
+    ///
+    /// Settings for the ingestion client
+    /// Currently only used by the Kafka ingress and the admin API.
+    pub ingestion: IngestionOptions,
 }
 
 impl IngressOptions {
