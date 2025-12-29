@@ -20,6 +20,7 @@ use restate_serde_util::NonZeroByteCount;
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{CommonOptions, ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use crate::config::IngestionOptions;
 use crate::identifiers::PartitionId;
 use crate::rate::Rate;
 use crate::retries::RetryPolicy;
@@ -96,6 +97,12 @@ pub struct WorkerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(default, skip_serializing_if = "FriendlyDuration::is_zero")]
     trim_delay_interval: FriendlyDuration,
+
+    /// # Worker Shuffle Options
+    ///
+    /// Settings for the shared ingestion client used by all workers to
+    /// manage record ingestion across partitions (shuffle).
+    pub shuffle: IngestionOptions,
 }
 
 impl WorkerOptions {
@@ -132,6 +139,20 @@ impl Default for WorkerOptions {
             snapshots: SnapshotsOptions::default(),
             trim_delay_interval: FriendlyDuration::ZERO,
             durability_mode: None,
+            shuffle: IngestionOptions {
+                inflight_memory_budget: NonZeroByteCount::new(
+                    NonZeroUsize::new(10 * 1024 * 1024).expect("non zero"),
+                ), // 10 MiB
+                connection_retry_policy: RetryPolicy::exponential(
+                    Duration::from_millis(10),
+                    2.0,
+                    None,
+                    Some(Duration::from_secs(1)),
+                ),
+                request_batch_size: NonZeroByteCount::new(
+                    NonZeroUsize::new(50 * 1024).expect("non zero"),
+                ),
+            },
         }
     }
 }

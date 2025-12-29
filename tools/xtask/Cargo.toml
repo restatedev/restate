@@ -9,8 +9,8 @@ publish = false
 
 [dependencies]
 restate-admin = { workspace = true, features = ["options_schema"] }
-restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
+restate-ingestion-client = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["discovery"]}
