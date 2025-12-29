@@ -107,11 +107,14 @@ async fn fast_forward_over_trim_gap() -> googletest::Result<()> {
 
     drop(worker_1_ready);
 
-    let mut client = new_cluster_ctrl_client(create_tonic_channel(
-        cluster.nodes[0].advertised_address().clone(),
-        &NetworkingOptions::default(),
-        DNSResolution::Gai,
-    ));
+    let mut client = new_cluster_ctrl_client(
+        create_tonic_channel(
+            cluster.nodes[0].advertised_address().clone(),
+            &NetworkingOptions::default(),
+            DNSResolution::Gai,
+        ),
+        &base_config.networking,
+    );
 
     info!("Waiting until the partition processor has become the leader");
     any_partition_active(&mut client).await?;

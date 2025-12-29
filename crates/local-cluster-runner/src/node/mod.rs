@@ -814,11 +814,14 @@ impl StartedNode {
             return true;
         }
 
-        let mut metadata_server_client = new_metadata_server_client(create_tonic_channel(
-            self.fabric_advertised_address.clone(),
+        let mut metadata_server_client = new_metadata_server_client(
+            create_tonic_channel(
+                self.fabric_advertised_address.clone(),
+                &self.config().networking,
+                DNSResolution::Gai,
+            ),
             &self.config().networking,
-            DNSResolution::Gai,
-        ));
+        );
 
         let Ok(response) = metadata_server_client
             .status(())
@@ -869,7 +872,7 @@ impl StartedNode {
             Some(60), // our test infra is sometimes slow until the node starts up
             Some(Duration::from_secs(1)),
         );
-        let client = new_node_ctl_client(channel);
+        let client = new_node_ctl_client(channel, &self.config().networking);
 
         let response = retry_policy
             .retry(|| {
@@ -900,11 +903,14 @@ impl StartedNode {
     }
 
     pub async fn add_as_metadata_member(&self) -> anyhow::Result<()> {
-        let mut client = new_metadata_server_client(create_tonic_channel(
-            self.advertised_address().clone(),
+        let mut client = new_metadata_server_client(
+            create_tonic_channel(
+                self.advertised_address().clone(),
+                &self.config().networking,
+                DNSResolution::Gai,
+            ),
             &self.config().networking,
-            DNSResolution::Gai,
-        ));
+        );
 
         client.add_node(()).await?;
 
@@ -912,11 +918,14 @@ impl StartedNode {
     }
 
     pub async fn remove_metadata_member(&self, node_to_remove: PlainNodeId) -> anyhow::Result<()> {
-        let mut client = new_metadata_server_client(create_tonic_channel(
-            self.advertised_address().clone(),
+        let mut client = new_metadata_server_client(
+            create_tonic_channel(
+                self.advertised_address().clone(),
+                &self.config().networking,
+                DNSResolution::Gai,
+            ),
             &self.config().networking,
-            DNSResolution::Gai,
-        ));
+        );
 
         client
             .remove_node(RemoveNodeRequest {
@@ -929,11 +938,14 @@ impl StartedNode {
     }
 
     pub async fn get_metadata_server_status(&self) -> anyhow::Result<StatusResponse> {
-        let mut client = new_metadata_server_client(create_tonic_channel(
-            self.advertised_address().clone(),
+        let mut client = new_metadata_server_client(
+            create_tonic_channel(
+                self.advertised_address().clone(),
+                &self.config().networking,
+                DNSResolution::Gai,
+            ),
             &self.config().networking,
-            DNSResolution::Gai,
-        ));
+        );
         let response = client.status(()).await?.into_inner();
         Ok(response)
     }

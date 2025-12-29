@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
 use std::sync::RwLock;
 use std::{cmp::Ordering, fmt::Display, sync::Arc};
 
@@ -19,21 +20,87 @@ use tokio::sync::{Mutex, MutexGuard};
 use tonic::{Code, Status, transport::Channel};
 use tracing::{debug, info};
 
-use crate::util::grpc_channel;
+use restate_cli_util::CliContext;
 use restate_core::protobuf::node_ctl_svc::{
     GetMetadataRequest, IdentResponse, new_node_ctl_client,
 };
 use restate_metadata_store::ReadModifyWriteError;
+use restate_types::errors;
 use restate_types::partition_table::PartitionTable;
 use restate_types::{
     Version, Versioned,
-    errors::SimpleStatus,
     logs::metadata::Logs,
     net::address::{AdvertisedAddress, FabricPort},
     nodes_config::{NodesConfiguration, Role},
     protobuf::common::{MetadataKind, NodeStatus},
     storage::{StorageCodec, StorageDecode, StorageDecodeError},
 };
+
+use crate::util::grpc_channel;
+
+/// A wrapper around errors::SimplStatus but decorates
+/// the error message with possibly helpful hints for the
+/// user.
+#[derive(Clone)]
+pub struct SimpleStatusWrapper(pub errors::SimpleStatus);
+
+impl Debug for SimpleStatusWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.0, f)
+    }
+}
+
+impl From<tonic::Status> for SimpleStatusWrapper {
+    fn from(status: tonic::Status) -> Self {
+        Self(errors::SimpleStatus(status))
+    }
+}
+
+impl AsRef<tonic::Status> for SimpleStatusWrapper {
+    fn as_ref(&self) -> &tonic::Status {
+        self.0.as_ref()
+    }
+}
+
+impl From<SimpleStatusWrapper> for tonic::Status {
+    fn from(status: SimpleStatusWrapper) -> Self {
+        status.0.into()
+    }
+}
+
+impl SimpleStatusWrapper {
+    /// Returns the status code
+    pub fn code(&self) -> tonic::Code {
+        self.0.code()
+    }
+
+    /// Returns the status message
+    pub fn message(&self) -> &str {
+        self.0.message()
+    }
+}
+
+impl std::fmt::Display for SimpleStatusWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.0, f)?;
+
+        // Extra helpful messages.
+        if self.code() == Code::OutOfRange {
+            write!(
+                f,
+                "\n💡 Please contact Restate server admin/operator and ask for the configured message sizes."
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+impl std::error::Error for SimpleStatusWrapper {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
+}
 
 #[derive(Clone, Parser, Collect, Debug)]
 pub struct ConnectionInfo {
@@ -168,12 +235,13 @@ impl ConnectionInfo {
         if let Some(address) = effective_addresses.into_iter().next() {
             if let Some(channel) = self.connect_internal(address, &mut open_connections).await {
                 if let Some(required_role) = role {
-                    let mut client = new_node_ctl_client(channel.clone());
+                    let mut client =
+                        new_node_ctl_client(channel.clone(), &CliContext::get().network);
                     let ident_response = match client.get_ident(()).await {
                         Ok(response) => response.into_inner(),
                         Err(status) => {
                             let mut errors = NodesErrors::default();
-                            errors.error(address.clone(), SimpleStatus::from(status));
+                            errors.error(address.clone(), SimpleStatusWrapper::from(status));
                             return Err(ConnectionInfoError::NodesErrors(errors));
                         }
                     };
@@ -327,12 +395,12 @@ impl ConnectionInfo {
                 grpc_channel(address.clone())
             });
 
-            let mut client = new_node_ctl_client(channel.clone());
+            let mut client = new_node_ctl_client(channel.clone(), &CliContext::get().network);
 
             let response = match client.get_ident(()).await {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
-                    errors.error(address.clone(), SimpleStatus::from(status));
+                    errors.error(address.clone(), SimpleStatusWrapper::from(status));
                     self.dead_nodes.write().unwrap().insert(address.clone());
                     continue;
                 }
@@ -371,7 +439,7 @@ impl ConnectionInfo {
             let mut response = match client.get_metadata(request).await {
                 Ok(response) => response.into_inner(),
                 Err(status) => {
-                    errors.error(address.clone(), SimpleStatus::from(status));
+                    errors.error(address.clone(), SimpleStatusWrapper::from(status));
                     continue;
                 }
             };
@@ -481,7 +549,7 @@ impl ConnectionInfo {
             } else {
                 errors.error(
                     node.address.clone(),
-                    SimpleStatus::from(Status::unavailable(format!(
+                    SimpleStatusWrapper::from(Status::unavailable(format!(
                         "Node {} was previously flagged as unreachable, not attempting to connect",
                         node.address
                     ))),
@@ -538,17 +606,19 @@ pub enum NodeOperationError {
     /// An error that can be retried on a different node
     /// but terminal on this node.
     #[error(transparent)]
-    RetryElsewhere(SimpleStatus),
+    RetryElsewhere(SimpleStatusWrapper),
     /// Don not retry on any other node(s)
     #[error(transparent)]
-    Terminal(SimpleStatus),
+    Terminal(SimpleStatusWrapper),
 }
 
 impl From<Status> for NodeOperationError {
     fn from(value: Status) -> Self {
         match value.code() {
-            Code::FailedPrecondition => Self::Terminal(SimpleStatus(value)),
-            _ => Self::RetryElsewhere(SimpleStatus(value)),
+            Code::FailedPrecondition | Code::OutOfRange => {
+                Self::Terminal(SimpleStatusWrapper::from(value))
+            }
+            _ => Self::RetryElsewhere(SimpleStatusWrapper::from(value)),
         }
     }
 }
@@ -561,11 +631,15 @@ where
         match value {
             ReadModifyWriteError::FailedOperation(err) => {
                 // we don't ever try again
-                NodeOperationError::Terminal(SimpleStatus(Status::unknown(err.to_string())))
+                NodeOperationError::Terminal(SimpleStatusWrapper::from(Status::unknown(
+                    err.to_string(),
+                )))
             }
             ReadModifyWriteError::ReadWrite(err) => {
                 // possible node failure, we can try the next reachable node
-                NodeOperationError::RetryElsewhere(SimpleStatus(Status::unknown(err.to_string())))
+                NodeOperationError::RetryElsewhere(SimpleStatusWrapper::from(Status::unknown(
+                    err.to_string(),
+                )))
             }
         }
     }
@@ -624,11 +698,11 @@ impl Display for NoRoleError {
 
 #[derive(Debug, Default)]
 pub struct NodesErrors {
-    node_status: Vec<(AdvertisedAddress<FabricPort>, SimpleStatus)>,
+    node_status: Vec<(AdvertisedAddress<FabricPort>, SimpleStatusWrapper)>,
 }
 
 impl NodesErrors {
-    fn error(&mut self, node: AdvertisedAddress<FabricPort>, simple_status: SimpleStatus) {
+    fn error(&mut self, node: AdvertisedAddress<FabricPort>, simple_status: SimpleStatusWrapper) {
         self.node_status.push((node, simple_status));
     }
 

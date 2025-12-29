@@ -14,7 +14,7 @@ use anyhow::bail;
 use assert2::let_assert;
 use cling::prelude::*;
 
-use restate_cli_util::c_println;
+use restate_cli_util::{CliContext, c_println};
 use restate_metadata_store::MetadataStoreClient;
 use restate_metadata_store::protobuf::metadata_proxy_svc::client::MetadataStoreProxy;
 use restate_types::PlainNodeId;
@@ -121,7 +121,7 @@ async fn set_worker_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyhow
 
     connection
         .try_each(None, |channel| async {
-            let metadata_store_proxy = MetadataStoreProxy::new(channel);
+            let metadata_store_proxy = MetadataStoreProxy::new(channel, &CliContext::get().network);
             let metadata_store_client =
                 MetadataStoreClient::new(metadata_store_proxy, Some(backoff_policy.clone()));
 

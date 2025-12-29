@@ -15,8 +15,8 @@ use clap_stdin::FileOrStdin;
 use cling::{Collect, Run};
 
 use restate_cli_util::_comfy_table::Table;
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{MigrateMetadataRequest, new_cluster_ctrl_client};
 use restate_types::config::MetadataClientOptions;
 use restate_types::nodes_config::Role;
@@ -54,7 +54,7 @@ async fn migrate(connection: &ConnectionInfo, opts: &MigrateOpts) -> anyhow::Res
 
     connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .migrate_metadata(MigrateMetadataRequest {
                     force_override: opts.force,
                     target_client_config: content.clone(),

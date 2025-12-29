@@ -198,7 +198,7 @@ impl Restate {
             .unwrap();
 
         // apply config cascading propagation
-        config.common.set_derived_values()?;
+        config.common.set_derived_values(&config.networking)?;
         config.ingress.set_derived_values(&config.common);
         config.admin.set_derived_values(&config.common);
         let config = config.apply_cascading_values();

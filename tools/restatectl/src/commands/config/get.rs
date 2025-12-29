@@ -14,7 +14,7 @@ use restate_core::protobuf::cluster_ctrl_svc::{
     GetClusterConfigurationRequest, new_cluster_ctrl_client,
 };
 
-use restate_cli_util::c_println;
+use restate_cli_util::{CliContext, c_println};
 use restate_types::nodes_config::Role;
 
 use super::cluster_config_string;
@@ -27,7 +27,7 @@ pub struct ConfigGetOpts {}
 async fn config_get(connection: &ConnectionInfo, _get_opts: &ConfigGetOpts) -> anyhow::Result<()> {
     let response = connection
         .try_each(Some(Role::Admin), |channel| async {
-            new_cluster_ctrl_client(channel)
+            new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .get_cluster_configuration(GetClusterConfigurationRequest {})
                 .await
         })
