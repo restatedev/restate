@@ -20,7 +20,7 @@ use std::time::Duration;
 use anyhow::Context;
 use prost_dto::IntoProst;
 use std::sync::Arc;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use codederror::CodedError;
 use restate_bifrost::BifrostService;

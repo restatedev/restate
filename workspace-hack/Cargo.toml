@@ -46,6 +46,8 @@ comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
+darling = { version = "0.21" }
+darling_core = { version = "0.21", default-features = false, features = ["suggestions"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
@@ -55,13 +57,11 @@ futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }
 futures-executor = { version = "0.3" }
 futures-sink = { version = "0.3" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 gardal = { version = "0.0.1-alpha.9", features = ["async"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hdrhistogram = { version = "7" }
@@ -71,8 +71,7 @@ hyper = { version = "1", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
-indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
-indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
+indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
 lexical-parse-float = { version = "1", features = ["format"] }
@@ -95,7 +94,7 @@ phf_shared = { version = "0.11" }
 portable-atomic = { version = "1" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
-prost-582f2526e08bb6a0 = { package = "prost", version = "0.14" }
+prost = { version = "0.14" }
 prost-types = { version = "0.14" }
 protobuf = { version = "2", default-features = false, features = ["with-bytes"] }
 quanta = { version = "0.12" }
@@ -115,7 +114,7 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
-serde_core = { version = "1", default-features = false, features = ["alloc", "rc", "result", "std"] }
+serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
@@ -129,8 +128,7 @@ tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt", "ti
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
-tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "util"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
+tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
@@ -177,25 +175,22 @@ comfy-table = { version = "7" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
-darling = { version = "0.20" }
-darling_core = { version = "0.20", default-features = false, features = ["suggestions"] }
+darling = { version = "0.21" }
+darling_core = { version = "0.21", default-features = false, features = ["suggestions"] }
 digest = { version = "0.10", features = ["mac", "std"] }
 either = { version = "1" }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
 enumset = { version = "1", default-features = false, features = ["serde"] }
-enumset_derive = { version = "0.11", default-features = false, features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 futures-channel = { version = "0.3", features = ["sink"] }
 futures-core = { version = "0.3" }
 futures-executor = { version = "0.3" }
 futures-sink = { version = "0.3" }
-futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 gardal = { version = "0.0.1-alpha.9", features = ["async"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15" }
 hashbrown-582f2526e08bb6a0 = { package = "hashbrown", version = "0.14", features = ["raw"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hdrhistogram = { version = "7" }
@@ -205,11 +200,9 @@ hyper = { version = "1", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
-indexmap-dff4ba8e3ae991db = { package = "indexmap", version = "1", default-features = false, features = ["serde-1"] }
-indexmap-f595c2ba2a3f28df = { package = "indexmap", version = "2", features = ["serde"] }
+indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
@@ -230,7 +223,7 @@ phf_shared = { version = "0.11" }
 portable-atomic = { version = "1" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
-prost-582f2526e08bb6a0 = { package = "prost", version = "0.14" }
+prost = { version = "0.14" }
 prost-build = { version = "0.14", features = ["cleanup-markdown"] }
 prost-types = { version = "0.14" }
 protobuf = { version = "2", default-features = false, features = ["with-bytes"] }
@@ -251,7 +244,7 @@ rustls-webpki = { version = "0.103", default-features = false, features = ["aws-
 schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
-serde_core = { version = "1", default-features = false, features = ["alloc", "rc", "result", "std"] }
+serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["hex", "json"] }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
@@ -265,8 +258,7 @@ tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt", "ti
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
-tower-9fbad63c4bcf4a8f = { package = "tower", version = "0.4", features = ["balance", "buffer", "limit", "util"] }
-tower-d8f496e17d97b5cb = { package = "tower", version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
+tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
@@ -283,44 +275,48 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
+crossterm = { version = "0.29" }
+derive_more = { version = "2", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-nix = { version = "0.29", features = ["fs", "signal"] }
+nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["no-recursion-limit", "prost-derive"] }
-rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
+rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
+crossterm = { version = "0.29" }
+derive_more = { version = "2", features = ["full"] }
+derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "constructor", "debug", "deref", "deref_mut", "display", "eq", "error", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "mul", "mul_assign", "not", "sum", "try_from", "try_into", "try_unwrap", "unwrap"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
+itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-nix = { version = "0.29", features = ["fs", "signal"] }
+nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["no-recursion-limit", "prost-derive"] }
-rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
+rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
+crossterm = { version = "0.29" }
+derive_more = { version = "2", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-nix = { version = "0.29", features = ["fs", "signal"] }
+nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["no-recursion-limit", "prost-derive"] }
-rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
+rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
+crossterm = { version = "0.29" }
+derive_more = { version = "2", features = ["full"] }
+derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "constructor", "debug", "deref", "deref_mut", "display", "eq", "error", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "mul", "mul_assign", "not", "sum", "try_from", "try_into", "try_unwrap", "unwrap"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
+itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-nix = { version = "0.29", features = ["fs", "signal"] }
+nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
-prost-594e8ee84c453af0 = { package = "prost", version = "0.13", features = ["no-recursion-limit", "prost-derive"] }
-rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["stdio", "termios"] }
-rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["fs", "stdio", "termios"] }
+rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 
 ### END HAKARI SECTION

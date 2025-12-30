@@ -34,7 +34,6 @@ restate-types = { workspace = true }
 
 anyhow = { workspace = true }
 http = { workspace = true }
-parking_lot = { workspace = true }
 reqwest = { workspace = true }
 rlimit = { workspace = true }
 serde_json = { workspace = true }
@@ -49,7 +48,7 @@ tempfile = { workspace = true }
 tikv-jemallocator = { workspace = true }
 
 [build-dependencies]
-vergen = { version = "8.0.0", default-features = false, features = [
+vergen = { workspace = true, default-features = false, features = [
     "build",
     "git",
     "gitcl",

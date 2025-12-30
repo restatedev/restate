@@ -19,15 +19,11 @@ restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-types = { workspace = true }
 
-anyhow = { workspace = true }
 bytes = { workspace = true }
-bytestring = { workspace = true }
 codederror = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true, features = ["tokio"] }
-num-traits = { workspace = true }
 serde = { workspace = true, optional = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
