@@ -51,7 +51,7 @@ aws-sdk-dynamodb = { workspace = true, optional = true }
 bilrost = { workspace = true, optional = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-const_format = "0.2.32"
+const_format = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true }

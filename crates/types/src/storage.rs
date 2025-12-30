@@ -17,7 +17,6 @@ use std::sync::Arc;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use chrono::Utc;
 use downcast_rs::{DowncastSync, impl_downcast};
-use tracing::error;
 
 use restate_encoding::{BilrostAs, NetSerde};
 

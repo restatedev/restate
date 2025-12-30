@@ -189,7 +189,7 @@ impl GlobalMetadata for NodesConfiguration {
             Err(anyhow::anyhow!(
                 "Cannot accept nodes-configuration update that mutates the cluster fingerprint. Rejected a change of fingerprint from '{}' to incoming value of '{}'.",
                 previous_config.cluster_fingerprint(),
-                self.cluster_fingerprint().to_string()
+                self.cluster_fingerprint()
             ))
         } else {
             Ok(())
