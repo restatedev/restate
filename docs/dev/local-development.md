@@ -6,7 +6,7 @@ This file contains recommendations for how to set up your local development envi
 
 ### Required dependencies
 
-To build the project, you need the Rust toolchain. Follow the guide here <https://rustup.rs/> to setup Rust, Cargo, etc.
+To build the project, you need the Rust toolchain. Follow the guide here <https://rustup.rs/> to set up Rust, Cargo, etc.
 
 The project contains some Rust libraries binding to native libraries/build tools, which you'll require during the development, notably:
 
@@ -18,7 +18,7 @@ The project contains some Rust libraries binding to native libraries/build tools
 
 Optionally, you can install [just](https://github.com/casey/just) to make use of our [justfile](https://github.com/restatedev/restate/blob/main/justfile).
 
-To setup these on Fedora, run:
+To set up these on Fedora, run:
 
 ```shell
 sudo dnf install clang lld lldb libcxx cmake openssl-devel rocksdb-devel protobuf-compiler protobuf-devel just liburing-devel perl
