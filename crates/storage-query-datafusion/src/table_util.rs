@@ -97,9 +97,9 @@ impl<B: Builder> BatchSender<B> {
 
 impl<B: Builder> Drop for BatchSender<B> {
     fn drop(&mut self) {
-        if !self.builder.empty() {
-            // Safety: self.builder is exclusively taken at drop time, and never accessed again.
-            let builder = unsafe { ManuallyDrop::take(&mut self.builder) };
+        // Safety: self.builder is exclusively taken at drop time, and never accessed again.
+        let builder = unsafe { ManuallyDrop::take(&mut self.builder) };
+        if !builder.empty() {
             let _ = self.tx.blocking_send(builder.finish());
         }
     }
