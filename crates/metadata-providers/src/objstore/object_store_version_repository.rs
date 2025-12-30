@@ -14,7 +14,9 @@ use anyhow::Context;
 use bytes::Bytes;
 use bytestring::ByteString;
 use object_store::path::{Path, PathPart};
-use object_store::{Attribute, Error, ObjectStore, PutMode, PutOptions, PutPayload, UpdateVersion};
+use object_store::{
+    Attribute, Error, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
+};
 use tracing::{debug, info, instrument};
 use url::Url;
 
