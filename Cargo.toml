@@ -207,10 +207,10 @@ reqwest = { version = "0.12", default-features = false, features = [
     "stream",
 ] }
 rlimit = { version = "0.10.2" }
-rocksdb = { version = "0.43.0", package = "rust-rocksdb", features = [
+rocksdb = { version = "0.44.3", package = "rust-rocksdb", features = [
     "multi-threaded-cf",
     "jemalloc",
-], git = "https://github.com/restatedev/rust-rocksdb", rev = "de8911652d398e9bfbb6bbc42a7b4f7296f6d101" }
+], git = "https://github.com/restatedev/rust-rocksdb", rev = "060a890466468930638f0056fe5e284865c99702" }
 rstest = "0.26.1"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
 schemars = { version = "1.2", features = ["bytes1"] }
