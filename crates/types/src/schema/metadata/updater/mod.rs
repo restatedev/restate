@@ -1293,7 +1293,10 @@ struct UnsupportedExternalRefRetrieveError(String);
 struct UnsupportedExternalRefRetriever;
 
 impl jsonschema::Retrieve for UnsupportedExternalRefRetriever {
-    fn retrieve(&self, uri: &jsonschema::Uri<&str>) -> Result<Value, Box<dyn Error + Send + Sync>> {
+    fn retrieve(
+        &self,
+        uri: &jsonschema::Uri<String>,
+    ) -> Result<Value, Box<dyn Error + Send + Sync>> {
         Err(UnsupportedExternalRefRetrieveError(uri.to_string()).into())
     }
 }

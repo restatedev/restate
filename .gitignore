@@ -20,3 +20,6 @@
 **/*.trace
 **/flamegraph.svg
 .sl
+
+# Claude code
+.claude

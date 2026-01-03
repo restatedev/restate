@@ -20,7 +20,6 @@ restate-workspace-hack = { workspace = true }
 
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
-restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }

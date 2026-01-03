@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::IntoStreamingRequest;
 use tonic::metadata::MetadataValue;
-use tracing::{debug, trace};
+use tracing::trace;
 
 use restate_core::network::net_util;
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};

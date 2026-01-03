@@ -13,7 +13,6 @@ restate-fs-util = { workspace = true }
 
 bincode = { workspace = true, default-features = false, features = ["std", "serde"] }
 futures = { workspace = true }
-pin-project = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util"] }
 

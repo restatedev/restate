@@ -208,10 +208,7 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
     );
 
     for db in &all_dbs {
-        labels.push(format!(
-            "db=\"{}\"",
-            formatting::sanitize_label_value(db.name())
-        ));
+        labels.insert("db".to_owned(), formatting::sanitize_label_value(db.name()));
 
         // Tickers (Counters)
         for ticker in ROCKSDB_TICKERS {
@@ -274,8 +271,7 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
         // Properties (Gauges)
         // For properties, we need to get them for each column family.
         for cf in &db.cfs() {
-            let sanitized_cf_name = formatting::sanitize_label_value(cf);
-            labels.push(format!("cf=\"{sanitized_cf_name}\""));
+            labels.insert("cf".to_owned(), formatting::sanitize_label_value(cf));
             for (property, unit) in ROCKSDB_CF_PROPERTIES {
                 format_rocksdb_property_for_prometheus(
                     &mut out,
@@ -288,9 +284,7 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
                         .unwrap_or_default(),
                 );
             }
-            labels.pop();
         }
-        labels.pop();
     }
     out
 }

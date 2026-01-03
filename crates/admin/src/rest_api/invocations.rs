@@ -15,7 +15,6 @@ use crate::state::AdminServiceState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use okapi_operation::*;
 use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
 use restate_types::identifiers::{
     DeploymentId, InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey,
@@ -31,7 +30,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use tracing::warn;
 
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub enum DeletionMode {
     #[default]
     #[serde(alias = "cancel")]
@@ -41,45 +40,29 @@ pub enum DeletionMode {
     #[serde(alias = "purge")]
     Purge,
 }
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct DeleteInvocationParams {
     pub mode: Option<DeletionMode>,
 }
 
-/// Terminate an invocation
-#[openapi(
-    summary = "Delete an invocation",
-    deprecated = true,
-    description = "Use kill_invocation/cancel_invocation/purge_invocation instead.",
+/// Terminate an invocation (deprecated)
+///
+/// **Deprecated**: Use the specific endpoints `/invocations/{id}/kill`, `/invocations/{id}/cancel`, or `/invocations/{id}/purge` instead.
+#[utoipa::path(
+    delete,
+    path = "/invocations/{invocation_id}",
     operation_id = "delete_invocation",
-    tags = "invocation",
-    parameters(
-        path(
-            name = "invocation_id",
-            description = "Invocation identifier.",
-            schema = "std::string::String"
-        ),
-        query(
-            name = "mode",
-            description = "If cancel, it will gracefully terminate the invocation. \
-            If kill, it will terminate the invocation with a hard stop. \
-            If purge, it will only cleanup the response for completed invocations, and leave unaffected an in-flight invocation.",
-            required = false,
-            style = "simple",
-            allow_empty_value = false,
-            schema = "DeletionMode",
-        )
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+        DeleteInvocationParams
     ),
     responses(
-        ignore_return_type = true,
-        response(
-            status = "202",
-            description = "Accepted",
-            content = "okapi_operation::Empty",
-        ),
-        from_type = "MetaApiError",
-    )
+        (status = 202, description = "Invocation termination request accepted"),
+        MetaApiError
+    ),
 )]
+#[deprecated(note = "Use kill_invocation/cancel_invocation/purge_invocation instead.")]
 pub async fn delete_invocation<Metadata, Discovery, Telemetry, Invocations>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
     Path(invocation_id): Path<String>,
@@ -127,17 +110,22 @@ pub async fn delete_invocation<Metadata, Discovery, Telemetry, Invocations>(
 generate_meta_api_error!(KillInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, InvocationWasAlreadyCompletedError]);
 
 /// Kill an invocation
-#[openapi(
-    summary = "Kill an invocation",
-    description = "Kill the given invocation. \
-    This does not guarantee consistency for virtual object instance state, in-flight invocations to other services, etc.",
+///
+/// Forcefully terminates an invocation. **Warning**: This operation does not guarantee consistency for virtual object instance state,
+/// in-flight invocations to other services, or other side effects. Use with caution.
+/// For more information, see the [cancellation documentation](https://docs.restate.dev/services/invocation/managing-invocations#kill).
+#[utoipa::path(
+    patch,
+    path = "/invocations/{invocation_id}/kill",
     operation_id = "kill_invocation",
-    tags = "invocation",
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    ))
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+    ),
+    responses(
+        (status = 200, description = "Invocation killed successfully"),
+        KillInvocationError
+    )
 )]
 pub async fn kill_invocation<Metadata, Discovery, Telemetry, Invocations>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
@@ -171,32 +159,21 @@ where
 generate_meta_api_error!(CancelInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, InvocationWasAlreadyCompletedError]);
 
 /// Cancel an invocation
-#[openapi(
-    summary = "Cancel an invocation",
-    description = "Cancel the given invocation. \
-    Canceling an invocation allows it to free any resources it is holding and roll back any changes it has made so far, running compensation code. \
-    For more details, checkout https://docs.restate.dev/guides/sagas",
+///
+/// Gracefully cancels an invocation. The invocation is terminated, but its progress is persisted, allowing consistency guarantees to be maintained.
+/// For more information, see the [cancellation documentation](https://docs.restate.dev/services/invocation/managing-invocations#cancel).
+#[utoipa::path(
+    patch,
+    path = "/invocations/{invocation_id}/cancel",
     operation_id = "cancel_invocation",
-    tags = "invocation",
-    external_docs(url = "https://docs.restate.dev/guides/sagas"),
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    )),
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+    ),
     responses(
-        ignore_return_type = true,
-        response(
-            status = "200",
-            description = "The invocation has been cancelled.",
-            content = "okapi_operation::Empty",
-        ),
-        response(
-            status = "202",
-            description = "The cancellation signal was appended to the journal and will be processed by the SDK.",
-            content = "okapi_operation::Empty",
-        ),
-        from_type = "CancelInvocationError",
+        (status = 200, description = "Invocation cancelled successfully"),
+        (status = 202, description = "Cancellation request accepted and will be processed asynchronously"),
+        CancelInvocationError
     )
 )]
 pub async fn cancel_invocation<Metadata, Discovery, Telemetry, Invocations>(
@@ -229,17 +206,23 @@ where
 
 generate_meta_api_error!(PurgeInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, PurgeInvocationNotCompletedError]);
 
-/// Purge an invocation
-#[openapi(
-    summary = "Purge an invocation",
-    description = "Purge the given invocation. This cleanups all the state for the given invocation. This command applies only to completed invocations.",
+/// Purge a completed invocation
+///
+/// Deletes all state associated with a completed invocation, including its journal and metadata.
+/// This operation only applies to invocations that have already completed. For more information,
+/// see the [purging documentation](https://docs.restate.dev/services/invocation/managing-invocations#purge).
+#[utoipa::path(
+    patch,
+    path = "/invocations/{invocation_id}/purge",
     operation_id = "purge_invocation",
-    tags = "invocation",
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    ))
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+    ),
+    responses(
+        (status = 200, description = "Invocation purged successfully"),
+        PurgeInvocationError
+    )
 )]
 pub async fn purge_invocation<Metadata, Discovery, Telemetry, Invocations>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
@@ -272,17 +255,22 @@ where
 
 generate_meta_api_error!(PurgeJournalError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, PurgeInvocationNotCompletedError]);
 
-/// Purge an invocation
-#[openapi(
-    summary = "Purge an invocation journal",
-    description = "Purge the given invocation journal. This cleanups only the journal for the given invocation, retaining the metadata. This command applies only to completed invocations.",
+/// Purge invocation journal
+///
+/// Deletes only the journal entries for a completed invocation, while retaining its metadata.
+/// This operation only applies to invocations that have already completed.
+#[utoipa::path(
+    patch,
+    path = "/invocations/{invocation_id}/purge-journal",
     operation_id = "purge_journal",
-    tags = "invocation",
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    ))
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+    ),
+    responses(
+        (status = 200, description = "Invocation journal purged successfully, metadata retained"),
+        PurgeJournalError
+    )
 )]
 pub async fn purge_journal<Metadata, Discovery, Telemetry, Invocations>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
@@ -313,7 +301,7 @@ where
     Ok(())
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub enum PatchDeploymentId {
     #[default]
     #[serde(alias = "keep")]
@@ -338,9 +326,17 @@ impl PatchDeploymentId {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct RestartAsNewInvocationQueryParams {
+    /// From which entry index the invocation should restart from.
+    /// By default the invocation restarts from the beginning (equivalent to 'from = 0'), retaining only the input of the original invocation.
+    /// When greater than 0, the new invocation will copy the old journal prefix up to 'from' included, plus eventual completions for commands in the given prefix.
+    /// If the journal prefix contains commands that have not been completed, this operation will fail.
     pub from: Option<EntryIndex>,
+    /// When restarting from journal prefix, provide a deployment id to use to replace the currently pinned deployment id.
+    /// If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id.
+    /// When not provided, the invocation will resume on latest.
+    /// Note: this parameter can be used only in combination with 'from'.
     pub deployment: Option<PatchDeploymentId>,
 }
 
@@ -359,43 +355,22 @@ generate_meta_api_error!(RestartInvocationError: [
     RestartAsNewInvocationIncompatibleDeploymentIdError
 ]);
 
-/// Restart an invocation
-#[openapi(
-    summary = "Restart as new invocation",
-    description = "Restart the given invocation as new. \
-    This will restart the invocation as a new invocation with a different invocation id. \
-    By using the 'from' query parameter, some of the partial progress can be copied over to the new invocation.",
+/// Restart invocation as new
+///
+/// Creates a new invocation from a completed invocation, optionally copying partial progress from the original invocation's journal.
+/// The new invocation will have a different invocation ID. Use the `from` parameter to specify how much of the original journal to preserve.
+#[utoipa::path(
+    patch,
+    path = "/invocations/{invocation_id}/restart-as-new",
     operation_id = "restart_as_new_invocation",
-    tags = "invocation",
-    parameters(
-        path(
-            name = "invocation_id",
-            description = "Invocation identifier.",
-            schema = "std::string::String"
-        ),
-        query(
-            name = "from",
-            description = "From which entry index the invocation should restart from. \
-            By default the invocation restarts from the beginning (equivalent to 'from = 0'), retaining only the input of the original invocation. \
-            When greater than 0, the new invocation will copy the old journal prefix up to 'from' included, plus eventual completions for commands in the given prefix. \
-            If the journal prefix contains commands that have not been completed, this operation will fail.",
-            required = false,
-            style = "simple",
-            allow_empty_value = false,
-            schema = "u32",
-        ),
-        query(
-            name = "deployment",
-            description = "When restarting from journal prefix, provide a deployment id to use to replace the currently pinned deployment id. \
-            If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id. \
-            When not provided, the invocation will resume on latest. \
-            Note: this parameter can be used only in combination with 'from'.",
-            required = false,
-            style = "simple",
-            allow_empty_value = false,
-            // TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766
-            schema = "String",
-        ),
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+        RestartAsNewInvocationQueryParams
+    ),
+    responses(
+        (status = 200, description = "Invocation restarted successfully with a new invocation ID", body = RestartAsNewInvocationResponse),
+        RestartInvocationError
     )
 )]
 pub async fn restart_as_new_invocation<Metadata, Discovery, Telemetry, Invocations>(
@@ -468,8 +443,12 @@ where
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct ResumeInvocationQueryParams {
+    /// When resuming from paused/suspended, provide a deployment id to use to replace the currently pinned deployment id.
+    /// If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id.
+    /// When not provided, the invocation will resume on the pinned deployment id.
+    /// When provided and the invocation is either running, or no deployment is pinned, this operation will fail.
     pub deployment: Option<PatchDeploymentId>,
 }
 
@@ -485,29 +464,21 @@ generate_meta_api_error!(ResumeInvocationError: [
 ]);
 
 /// Resume an invocation
-#[openapi(
-    summary = "Resume an invocation",
-    description = "Resume the given invocation. In case the invocation is backing-off, this will immediately trigger the retry timer. If the invocation is suspended or paused, this will resume it.",
+///
+/// Resumes a paused or suspended invocation. If the invocation is backing off due to a retry, this will immediately trigger the retry.
+/// Optionally, you can change the deployment ID that will be used when the invocation resumes. For more information see [resume documentation](https://docs.restate.dev/services/invocation/managing-invocations#resume)
+#[utoipa::path(
+    patch,
+    path = "/invocations/{invocation_id}/resume",
     operation_id = "resume_invocation",
-    tags = "invocation",
-    parameters(
-        path(
-            name = "invocation_id",
-            description = "Invocation identifier.",
-            schema = "std::string::String"
-        ),
-        query(
-            name = "deployment",
-            description = "When resuming from paused/suspended, provide a deployment id to use to replace the currently pinned deployment id. \
-            If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id. \
-            When not provided, the invocation will resume on the pinned deployment id. \
-            When provided and the invocation is either running, or no deployment is pinned, this operation will fail.",
-            required = false,
-            style = "simple",
-            allow_empty_value = false,
-            // TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766
-            schema = "String",
-        )
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+        ResumeInvocationQueryParams
+    ),
+    responses(
+        (status = 200, description = "Invocation resumed successfully"),
+        ResumeInvocationError
     )
 )]
 pub async fn resume_invocation<Metadata, Discovery, Telemetry, Invocations>(
@@ -571,29 +542,18 @@ generate_meta_api_error!(PauseInvocationError: [
 ]);
 
 /// Pause an invocation
-#[openapi(
-    summary = "Pause an invocation",
-    description = "Pause the given invocation. This applies only to running invocations, and will cause them to eventually pause.",
+#[utoipa::path(
+    patch,
+    path = "/invocations/{invocation_id}/pause",
     operation_id = "pause_invocation",
-    tags = "invocation",
-    parameters(path(
-        name = "invocation_id",
-        description = "Invocation identifier.",
-        schema = "std::string::String"
-    )),
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+    ),
     responses(
-        ignore_return_type = true,
-        response(
-            status = "200",
-            description = "Already paused",
-            content = "okapi_operation::Empty",
-        ),
-        response(
-            status = "202",
-            description = "Accepted",
-            content = "okapi_operation::Empty",
-        ),
-        from_type = "PauseInvocationError",
+        (status = 200, description = "Invocation is already paused"),
+        (status = 202, description = "Pausing invocation"),
+        PauseInvocationError,
     )
 )]
 pub async fn pause_invocation<Metadata, Discovery, Telemetry, Invocations>(

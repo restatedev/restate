@@ -15,8 +15,6 @@ use std::{env, io};
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
-use schemars::r#gen::SchemaSettings;
-
 use restate_admin::service::AdminService;
 use restate_bifrost::Bifrost;
 use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
@@ -44,9 +42,10 @@ use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::SubscriptionController;
 use restate_worker::WorkerHandle;
 use restate_worker::WorkerHandleError;
+use schemars::generate::SchemaSettings;
 
 fn generate_config_schema() -> anyhow::Result<()> {
-    let schema = SchemaSettings::draft2019_09()
+    let schema = SchemaSettings::draft2020_12()
         .into_generator()
         .into_root_schema_for::<Configuration>();
     println!("{}", serde_json::to_string_pretty(&schema)?);

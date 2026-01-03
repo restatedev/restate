@@ -27,7 +27,7 @@ kafka-oidc = ["restate-worker/kafka-oidc"]
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
-restate-admin = { workspace = true, features = ["storage-query"]}
+restate-admin = { workspace = true }
 restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
 restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
@@ -57,6 +57,7 @@ derive_more = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+indexmap = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
@@ -74,7 +75,7 @@ tonic = { workspace = true, features = ["gzip", "zstd"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-jemalloc_pprof = "0.6.0"
+jemalloc_pprof = "0.8.1"
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
