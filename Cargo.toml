@@ -174,7 +174,7 @@ jsonptr = "0.7.1"
 jsonschema = { version = "0.38.1", default-features = false }
 jsonwebtoken = { version = "10.2.0", features = ["aws_lc_rs"] }
 metrics = { version = "0.24" }
-metrics-exporter-prometheus = { version = "0.17", default-features = false, features = [
+metrics-exporter-prometheus = { version = "0.18.1", default-features = false, features = [
     "async-runtime",
 ] }
 metrics-util = { version = "0.20.1" }

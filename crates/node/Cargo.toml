@@ -59,6 +59,7 @@ derive_more = { workspace = true }
 enumset = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+indexmap = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
