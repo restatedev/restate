@@ -63,7 +63,7 @@ pub trait InvocationTargetResolver {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum OnMaxAttempts {
     /// Pause the invocation when max attempts are reached.
     #[default]

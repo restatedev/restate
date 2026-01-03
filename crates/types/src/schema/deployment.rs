@@ -28,10 +28,12 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::Display)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum ProtocolType {
+    /// Request/Response
     #[display("Request/Response")]
     RequestResponse,
+    /// Bidirectional Stream
     #[display("Bidirectional Stream")]
     BidiStream,
 }
@@ -119,7 +121,7 @@ impl Deployment {
 
 /// Lambda compression
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum EndpointLambdaCompression {
     Zstd,
 }

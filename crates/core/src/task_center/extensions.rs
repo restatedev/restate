@@ -157,6 +157,8 @@ where
     F: Future<Output = O>,
 {
     fn with_metadata(self, metadata: &Metadata) -> WithMetadata<Self> {
+        // temporary mute until overrides include more fields
+        #[allow(unused_variables)]
         let current_overrides = OVERRIDES.try_with(Clone::clone).unwrap_or_default();
         // temporary mute until overrides include more fields
         #[allow(clippy::needless_update)]

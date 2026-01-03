@@ -20,6 +20,8 @@ use std::fmt;
 #[derive(Debug, Default, Clone)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(transparent))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "utoipa-schema", schema(value_type = HashMap<String, String>))]
 pub struct SerdeableHeaderHashMap(
     #[cfg_attr(feature = "schema", schemars(with = "HashMap<String, String>"))]
     HashMap<HeaderName, HeaderValue>,
