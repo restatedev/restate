@@ -9,17 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use axum::http::StatusCode;
-use okapi_operation::*;
 
 /// Health check endpoint
-#[openapi(
-    summary = "Health check",
-    description = "Check REST API Health.",
+#[utoipa::path(
+    get,
+    path = "/health",
     operation_id = "health",
-    tags = "health",
+    tag = "health",
     responses(
-        ignore_return_type = true,
-        response(status = "200", description = "OK", content = "okapi_operation::Empty"),
+        (status = 200, description = "The Admin API is ready to accept requests."),
     )
 )]
 pub async fn health() -> StatusCode {

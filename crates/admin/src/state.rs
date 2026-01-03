@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_bifrost::Bifrost;
+use restate_storage_query_datafusion::context::QueryContext;
 use restate_types::schema::registry::SchemaRegistry;
 
 #[derive(Clone, derive_builder::Builder)]
@@ -16,6 +17,8 @@ pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations> {
     pub schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
     pub invocation_client: Invocations,
     pub bifrost: Bifrost,
+    // Some value if the query endpoint is activated
+    pub query_context: Option<QueryContext>,
 }
 
 impl<Metadata, Discovery, Telemetry, Invocations>
@@ -25,11 +28,13 @@ impl<Metadata, Discovery, Telemetry, Invocations>
         schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
         invocation_client: Invocations,
         bifrost: Bifrost,
+        query_context: Option<QueryContext>,
     ) -> Self {
         Self {
             schema_registry,
             invocation_client,
             bifrost,
+            query_context,
         }
     }
 }
