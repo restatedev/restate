@@ -37,6 +37,6 @@ restate-types = { workspace = true, features = ["test-util"] }
 prost-build = { workspace = true }
 prettyplease = "0.2"
 serde_json = { workspace = true }
-syn = "2.0"
-typify = { version = "0.3.0" }
-jsonptr = "0.6.3"
+syn = { workspace = true }
+typify = { workspace = true }
+jsonptr = { workspace = true }

@@ -18,7 +18,7 @@ use restate_types::identifiers::SubscriptionId;
 use restate_types::schema::subscriptions::Subscription;
 
 #[serde_as]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSubscriptionRequest {
     /// # Source
@@ -27,7 +27,7 @@ pub struct CreateSubscriptionRequest {
     ///
     /// * `kafka://<cluster_name>/<topic_name>`, e.g. `kafka://my-cluster/my-topic`
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schema", schemars(with = "String"))]
+    #[cfg_attr(feature = "schema", schema(value_type = String, format = "uri"))]
     pub source: Uri,
     /// # Sink
     ///
@@ -35,7 +35,7 @@ pub struct CreateSubscriptionRequest {
     ///
     /// * `service://<service_name>/<service_name>`, e.g. `service://Counter/count`
     #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[cfg_attr(feature = "schema", schemars(with = "String"))]
+    #[cfg_attr(feature = "schema", schema(value_type = String, format = "uri"))]
     pub sink: Uri,
     /// # Options
     ///
@@ -43,7 +43,8 @@ pub struct CreateSubscriptionRequest {
     pub options: Option<HashMap<String, String>>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+/// Subscription details.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SubscriptionResponse {
     pub id: SubscriptionId,
@@ -63,14 +64,17 @@ impl From<Subscription> for SubscriptionResponse {
     }
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(utoipa::IntoParams))]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ListSubscriptionsParams {
+    /// Filter by the exact specified sink.
     pub sink: Option<String>,
+    /// Filter by the exact specified source.
     pub source: Option<String>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+/// List of all subscriptions.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ListSubscriptionsResponse {
     pub subscriptions: Vec<SubscriptionResponse>,
