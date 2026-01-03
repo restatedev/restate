@@ -11,6 +11,7 @@
 pub mod deployments;
 pub mod handlers;
 pub mod invocations;
+pub mod query;
 pub mod services;
 pub mod subscriptions;
 pub mod version;

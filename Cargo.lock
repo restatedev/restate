@@ -945,7 +945,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -964,7 +963,6 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -5514,50 +5512,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "okapi"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a64853d7ab065474e87696f7601cee817d200e86c42e04004e005cb3e20c3c5"
-dependencies = [
- "log",
- "schemars 0.8.22",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "okapi-operation"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62b3ac29c4611a403bd1239d580058541b18984c2e603153f754c49993f0c080"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "http 1.4.0",
- "indexmap 2.12.0",
- "mime",
- "okapi",
- "okapi-operation-macro",
- "paste",
- "serde",
- "tower",
-]
-
-[[package]]
-name = "okapi-operation-macro"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5391918a0c3a742ad2e76c69581e3b142795dc4c3f3c468f37acf92e434e6a2e"
-dependencies = [
- "darling 0.20.10",
- "proc-macro2",
- "quote",
- "syn 2.0.111",
- "thiserror 2.0.17",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6929,7 +6883,6 @@ dependencies = [
  "itertools 0.14.0",
  "metrics",
  "mime_guess",
- "okapi-operation",
  "parking_lot",
  "prost-dto",
  "rand 0.9.2",
@@ -6948,7 +6901,6 @@ dependencies = [
  "restate-wal-protocol",
  "restate-web-ui",
  "restate-workspace-hack",
- "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_with",
@@ -6960,6 +6912,8 @@ dependencies = [
  "tower-http",
  "tracing",
  "urlencoding",
+ "utoipa",
+ "utoipa-axum",
 ]
 
 [[package]]
@@ -6975,11 +6929,11 @@ dependencies = [
  "restate-time-util",
  "restate-types",
  "restate-workspace-hack",
- "schemars 0.8.22",
  "serde",
  "serde_json",
  "serde_with",
  "strum",
+ "utoipa",
 ]
 
 [[package]]
@@ -7925,6 +7879,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "utoipa",
 ]
 
 [[package]]
@@ -8310,6 +8265,7 @@ dependencies = [
  "typed-builder",
  "typify",
  "ulid",
+ "utoipa",
  "xxhash-rust",
 ]
 
@@ -8462,7 +8418,6 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "axum",
- "axum-core",
  "bilrost",
  "bitflags 2.10.0",
  "byteorder",
@@ -8551,7 +8506,6 @@ dependencies = [
  "rustls 0.23.35",
  "rustls-pki-types",
  "rustls-webpki 0.103.8",
- "schemars 0.8.22",
  "semver",
  "serde",
  "serde_core",
@@ -8576,6 +8530,8 @@ dependencies = [
  "tracing-subscriber",
  "typenum",
  "ulid",
+ "utoipa",
+ "utoipa-gen",
  "uuid",
  "xxhash-rust",
  "zerocopy 0.8.31",
@@ -8909,7 +8865,6 @@ dependencies = [
  "bytes",
  "dyn-clone",
  "enumset",
- "indexmap 1.9.3",
  "schemars_derive",
  "serde",
  "serde_json",
@@ -10564,6 +10519,43 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+
+[[package]]
+name = "utoipa"
+version = "5.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2fcc29c80c21c31608227e0912b2d7fddba57ad76b606890627ba8ee7964e993"
+dependencies = [
+ "indexmap 2.12.0",
+ "serde",
+ "serde_json",
+ "utoipa-gen",
+]
+
+[[package]]
+name = "utoipa-axum"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c25bae5bccc842449ec0c5ddc5cbb6a3a1eaeac4503895dc105a1138f8234a0"
+dependencies = [
+ "axum",
+ "paste",
+ "tower-layer",
+ "tower-service",
+ "utoipa",
+]
+
+[[package]]
+name = "utoipa-gen"
+version = "5.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d79d08d92ab8af4c5e8a6da20c47ae3f61a0f1dabc1997cdf2d082b757ca08b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 2.0.111",
+]
 
 [[package]]
 name = "uuid"

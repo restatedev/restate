@@ -10,7 +10,6 @@
 
 use axum::Json;
 use http::StatusCode;
-use okapi_operation::openapi;
 
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::node_ctl_svc::new_node_ctl_client;
@@ -18,17 +17,22 @@ use restate_core::{Metadata, my_node_id};
 use restate_types::config::Configuration;
 use restate_types::{NodeId, PlainNodeId};
 
-use crate::rest_api::error::GenericRestError;
+use crate::rest_api::error::{ErrorDescriptionResponse, GenericRestError};
 
 /// Cluster state endpoint
-#[openapi(
-    summary = "Cluster health",
-    description = "Get the cluster health.",
+#[utoipa::path(
+    get,
+    path = "/cluster-health",
     operation_id = "cluster_health",
-    tags = "cluster_health",
-    deprecated = true
+    tag = "cluster_health",
+    responses(
+        (status = 200, description = "Cluster health information", body = ClusterHealthResponse),
+        (status = 500, description = "Internal Server Error", body = ErrorDescriptionResponse),
+        (status = 503, description = "The cluster does not seem to be provisioned yet.", body = ErrorDescriptionResponse),
+    )
 )]
 // todo: Remove in v1.7.0 as it should no longer be actively used
+#[deprecated]
 pub async fn cluster_health() -> Result<Json<ClusterHealthResponse>, GenericRestError> {
     let nodes_configuration = Metadata::with_current(|m| m.nodes_config_ref());
     let node_config = nodes_configuration
@@ -59,8 +63,9 @@ pub async fn cluster_health() -> Result<Json<ClusterHealthResponse>, GenericRest
     Ok(Json(cluster_health_response))
 }
 
+/// Cluster health information
 #[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema, prost_dto::FromProst,
+    Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema, prost_dto::FromProst,
 )]
 #[prost(target = "restate_core::protobuf::node_ctl_svc::ClusterHealthResponse")]
 pub struct ClusterHealthResponse {
@@ -71,7 +76,7 @@ pub struct ClusterHealthResponse {
 }
 
 #[derive(
-    Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema, prost_dto::FromProst,
+    Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema, prost_dto::FromProst,
 )]
 #[prost(target = "restate_core::protobuf::node_ctl_svc::EmbeddedMetadataClusterHealth")]
 pub struct EmbeddedMetadataClusterHealth {

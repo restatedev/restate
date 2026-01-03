@@ -21,10 +21,9 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use generic_array::ArrayLength;
 use rand::RngCore;
+use restate_encoding::{BilrostNewType, NetSerde};
 use sha2::{Digest, Sha256};
 use ulid::Ulid;
-
-use restate_encoding::{BilrostNewType, NetSerde};
 
 use crate::base62_util::{base62_encode_fixed_width_u128, base62_max_length_for_type};
 use crate::errors::IdDecodeError;
@@ -786,6 +785,44 @@ impl schemars::JsonSchema for LambdaARN {
     }
 }
 
+#[cfg(feature = "utoipa-schema")]
+mod utoipa_schema {
+    use crate::identifiers::{InvocationId, LambdaARN};
+    use std::borrow::Cow;
+    use utoipa::openapi::{Object, RefOr, Schema, SchemaFormat, Type};
+    use utoipa::{PartialSchema, ToSchema};
+
+    impl ToSchema for LambdaARN {
+        fn name() -> Cow<'static, str> {
+            "LambdaARN".into()
+        }
+    }
+
+    impl PartialSchema for LambdaARN {
+        fn schema() -> RefOr<Schema> {
+            Schema::Object(
+                Object::builder()
+                    .schema_type(Type::String)
+                    .format(Some(SchemaFormat::Custom("arn".to_owned())))
+                    .build(),
+            )
+            .into()
+        }
+    }
+
+    impl ToSchema for InvocationId {
+        fn name() -> Cow<'static, str> {
+            String::name()
+        }
+    }
+
+    impl PartialSchema for InvocationId {
+        fn schema() -> RefOr<Schema> {
+            String::schema()
+        }
+    }
+}
+
 impl Display for LambdaARN {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         self.arn.fmt(f)
@@ -961,6 +998,8 @@ macro_rules! ulid_backed_id {
                 ::restate_encoding::BilrostAs
             )]
             #[bilrost_as([< $res_name IdMessage >])]
+            #[cfg_attr(feature = "utoipa-schema", derive(::utoipa::ToSchema))]
+            #[cfg_attr(feature = "utoipa-schema", schema(value_type = String))]
             pub struct [< $res_name Id >](pub(crate) Ulid);
 
             impl [< $res_name Id >] {

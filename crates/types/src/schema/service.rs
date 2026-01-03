@@ -44,8 +44,9 @@ pub trait ServiceMetadataResolver {
     fn list_service_names(&self) -> Vec<String>;
 }
 
+/// Metadata of a registered service.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub struct ServiceMetadata {
     /// # Name
     ///
@@ -61,7 +62,7 @@ pub struct ServiceMetadata {
     ///
     /// Handlers for this service.
     #[serde(with = "serde_with::As::<restate_serde_util::MapAsVec>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Vec<HandlerMetadata>"))]
+    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Vec<HandlerMetadata>))]
     pub handlers: HashMap<String, HandlerMetadata>,
 
     /// # Documentation
@@ -103,7 +104,6 @@ pub struct ServiceMetadata {
         with = "serde_with::As::<FriendlyDuration>",
         default = "default_idempotency_retention"
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "String" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub idempotency_retention: Duration,
 
     /// # Workflow completion retention
@@ -116,7 +116,6 @@ pub struct ServiceMetadata {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub workflow_completion_retention: Option<Duration>,
 
     /// # Journal retention
@@ -132,7 +131,6 @@ pub struct ServiceMetadata {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub journal_retention: Option<Duration>,
 
     /// # Inactivity timeout
@@ -151,7 +149,6 @@ pub struct ServiceMetadata {
         with = "serde_with::As::<FriendlyDuration>",
         default = "default_inactivity_timeout"
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "String" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub inactivity_timeout: Duration,
 
     /// # Abort timeout
@@ -171,7 +168,6 @@ pub struct ServiceMetadata {
         with = "serde_with::As::<FriendlyDuration>",
         default = "default_abort_timeout"
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "String" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub abort_timeout: Duration,
 
     /// # Enable lazy state
@@ -196,14 +192,6 @@ pub struct ServiceMetadata {
     pub info: Vec<Info>,
 }
 
-impl restate_serde_util::MapAsVecItem for ServiceMetadata {
-    type Key = String;
-
-    fn key(&self) -> Self::Key {
-        self.name.clone()
-    }
-}
-
 fn default_idempotency_retention() -> Duration {
     DEFAULT_IDEMPOTENCY_RETENTION
 }
@@ -218,7 +206,7 @@ fn default_abort_timeout() -> Duration {
 
 /// # Service retry policy
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub struct ServiceRetryPolicyMetadata {
     /// # Initial Interval
     ///
@@ -229,7 +217,6 @@ pub struct ServiceRetryPolicyMetadata {
         default = "default_initial_interval",
         with = "serde_with::As::<FriendlyDuration>"
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "String" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub initial_interval: Duration,
 
     /// # Factor
@@ -242,6 +229,8 @@ pub struct ServiceRetryPolicyMetadata {
     ///
     /// Number of maximum attempts (including the initial) before giving up. Infinite retries if unset. No retries if set to 1.
     #[serde(default)]
+    // todo remove once utoipa supports NonZero integers (https://github.com/juhaku/utoipa/pull/1334)
+    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Option<usize>, minimum = 1))]
     pub max_attempts: Option<NonZeroUsize>,
 
     /// # Max interval
@@ -250,7 +239,6 @@ pub struct ServiceRetryPolicyMetadata {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub max_interval: Option<Duration>,
 
     /// # On max attempts
@@ -282,7 +270,7 @@ fn default_exponentiation_factor() -> f32 {
 
 // This type is used only for exposing the handler metadata, and not internally. See [ServiceAndHandlerType].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum HandlerMetadataType {
     Exclusive,
     Shared,
@@ -305,8 +293,9 @@ impl From<InvocationTargetType> for Option<HandlerMetadataType> {
     }
 }
 
+/// Handler metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub struct HandlerMetadata {
     /// # Name
     ///
@@ -340,7 +329,6 @@ pub struct HandlerMetadata {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub idempotency_retention: Option<Duration>,
 
     /// # Journal retention
@@ -358,7 +346,6 @@ pub struct HandlerMetadata {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub journal_retention: Option<Duration>,
 
     /// # Inactivity timeout
@@ -378,7 +365,6 @@ pub struct HandlerMetadata {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub inactivity_timeout: Option<Duration>,
 
     /// # Abort timeout
@@ -399,7 +385,6 @@ pub struct HandlerMetadata {
         skip_serializing_if = "Option::is_none",
         default
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub abort_timeout: Option<Duration>,
 
     /// # Enable lazy state
@@ -463,7 +448,7 @@ impl restate_serde_util::MapAsVecItem for HandlerMetadata {
 
 /// # Handler retry policy overrides
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub struct HandlerRetryPolicyMetadata {
     /// # Initial Interval
     ///
@@ -475,7 +460,6 @@ pub struct HandlerRetryPolicyMetadata {
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub initial_interval: Option<Duration>,
 
     /// # Factor
@@ -487,7 +471,8 @@ pub struct HandlerRetryPolicyMetadata {
     /// # Max attempts
     ///
     /// Number of maximum attempts (including the initial) before giving up. Infinite retries if unset. No retries if set to 1.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // todo remove once utoipa supports NonZero integers (https://github.com/juhaku/utoipa/pull/1334)
+    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Option<usize>, minimum = 1))]
     pub max_attempts: Option<NonZeroUsize>,
 
     /// # Max interval
@@ -500,7 +485,6 @@ pub struct HandlerRetryPolicyMetadata {
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub max_interval: Option<Duration>,
 
     /// # On max attempts

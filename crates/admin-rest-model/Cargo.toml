@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-schema = ["dep:schemars", "restate-serde-util/schema", "restate-types/schemars"]
+schema = ["dep:utoipa", "restate-serde-util/utoipa-schema", "restate-types/utoipa-schema"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -23,7 +23,7 @@ derive_more = { workspace = true }
 http = { workspace = true }
 http-serde = { workspace = true }
 humantime = { workspace = true }
-schemars = { workspace = true, optional = true }
+utoipa = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }

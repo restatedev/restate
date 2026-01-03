@@ -13,22 +13,25 @@ use super::error::*;
 use crate::state::AdminServiceState;
 use axum::Json;
 use axum::extract::{Path, State};
-use okapi_operation::*;
 use restate_admin_rest_model::handlers::*;
 use restate_types::schema::registry::MetadataService;
 use restate_types::schema::service::HandlerMetadata;
 
-/// List discovered handlers for service
-#[openapi(
-    summary = "List service handlers",
-    description = "List all the handlers of the given service.",
+/// List service handlers
+///
+/// Returns a list of all handlers (methods) available in the specified service.
+#[utoipa::path(
+    get,
+    path = "/services/{service}/handlers",
     operation_id = "list_service_handlers",
-    tags = "service_handler",
-    parameters(path(
-        name = "service",
-        description = "Fully qualified service name.",
-        schema = "std::string::String"
-    ))
+    tag = "service_handler",
+    params(
+        ("service" = String, Path, description = "Fully qualified service name."),
+    ),
+    responses(
+        (status = 200, description = "List of handlers available in the service", body = ListServiceHandlersResponse),
+        MetaApiError
+    )
 )]
 pub async fn list_service_handlers<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
@@ -43,23 +46,21 @@ where
     }
 }
 
-/// Get a handler of a service
-#[openapi(
-    summary = "Get service handler",
-    description = "Get the handler of a service",
+/// Get service handler
+///
+/// Returns detailed metadata about a specific handler within a service, including its input/output types and handler type.
+#[utoipa::path(
+    get,
+    path = "/services/{service}/handlers/{handler}",
     operation_id = "get_service_handler",
-    tags = "service_handler",
-    parameters(
-        path(
-            name = "service",
-            description = "Fully qualified service name.",
-            schema = "std::string::String"
-        ),
-        path(
-            name = "handler",
-            description = "Handler name.",
-            schema = "std::string::String"
-        )
+    tag = "service_handler",
+    params(
+        ("service" = String, Path, description = "Fully qualified service name."),
+        ("handler" = String, Path, description = "Handler name."),
+    ),
+    responses(
+        (status = 200, description = "Handler metadata including input/output types and configuration", body = HandlerMetadata),
+        MetaApiError
     )
 )]
 pub async fn get_service_handler<Metadata, Discovery, Telemetry, Invocations, Transport>(

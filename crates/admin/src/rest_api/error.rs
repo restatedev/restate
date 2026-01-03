@@ -8,26 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use assert2::let_assert;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use codederror::{Code, CodedError};
-use okapi_operation::okapi::map;
-use okapi_operation::okapi::openapi3::{RefOr, Responses};
-use okapi_operation::{Components, ToMediaTypes, ToResponses, okapi};
 use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;
 use restate_types::schema::registry::SchemaRegistryError;
-use schemars::JsonSchema;
 use serde::Serialize;
 use std::ops::RangeInclusive;
 // --- Few helpers to define Admin API errors.
 
 /// Macro to generate an Admin API Error enum with the given variants.
 ///
-/// All the errors should implement both axum IntoResponse and okapi_operation ToResponses (see macro below).
+/// All the errors should implement axum IntoResponse and Utoipa's IntoResponses (see macro below).
 ///
 /// Example usage:
 ///
@@ -59,49 +54,24 @@ macro_rules! generate_meta_api_error {
             }
         }
 
-        // Generate ToResponses implementation
-        impl okapi_operation::ToResponses for $enum_name {
-            fn generate(components: &mut okapi_operation::Components) -> Result<okapi_operation::okapi::openapi3::Responses, okapi_operation::anyhow::Error> {
-                // Collect responses from all variants
-                let responses = vec![
-                    $(
-                        <$variant as okapi_operation::ToResponses>::generate(components)?,
-                    )*
-                ];
+        impl utoipa::IntoResponses for $enum_name {
+            fn responses() -> std::collections::BTreeMap<String, utoipa::openapi::RefOr<utoipa::openapi::response::Response>> {
+                let mut result = std::collections::BTreeMap::default();
 
-                // Fold the responses into one
-                $crate::rest_api::error::merge_error_responses(responses)
+                $(
+                    result.extend(<$variant as utoipa::IntoResponses>::responses());
+                )*
+
+                result
             }
         }
     };
 }
 
-pub(crate) fn merge_error_responses(responses: Vec<Responses>) -> Result<Responses, anyhow::Error> {
-    let mut result_responses = Responses::default();
-    for t_responses in responses {
-        assert!(
-            t_responses.default.is_none(),
-            "Errors should not define a default response"
-        );
-        for (status, response) in t_responses.responses {
-            let_assert!(RefOr::Object(new_response) = response);
-            result_responses
-                .responses
-                .entry(status)
-                .and_modify(|res| {
-                    let_assert!(RefOr::Object(old_response) = res);
-                    old_response.description =
-                        format!("{}\n{}", old_response.description, new_response.description);
-                })
-                .or_insert_with(|| RefOr::Object(new_response));
-        }
-    }
+// merge_error_responses removed - no longer needed with utoipa
 
-    Ok(result_responses)
-}
-
-/// Macro to implement both axum IntoResponse and okapi_operation ToResponses,
-/// such that the error can be used both as value from axum handlers and to auto generate the OpenAPI documentation.
+/// Macro to implement both axum IntoResponse and Utoipa's IntoResponses for error types.
+/// Error responses are listed explicitly in handler #[utoipa::path] annotations.
 ///
 /// Example usage:
 ///
@@ -125,18 +95,22 @@ macro_rules! impl_meta_api_error {
             }
         }
 
-        impl ToResponses for $error_name {
-            fn generate(components: &mut Components) -> Result<Responses, anyhow::Error> {
-                let error_media_type =
-                    <Json<ErrorDescriptionResponse> as ToMediaTypes>::generate(components)?;
-                Ok(Responses {
-                    responses: map! {
-                        StatusCode::$status_code.to_string() => okapi::openapi3::RefOr::Object(
-                            okapi::openapi3::Response { content: error_media_type.clone(), description: $description.to_owned(), ..Default::default() }
-                        ),
-                    },
-                    ..Default::default()
-                })
+        impl utoipa::IntoResponses for $error_name {
+            fn responses() -> std::collections::BTreeMap<String, utoipa::openapi::RefOr<utoipa::openapi::response::Response>> {
+
+                utoipa::openapi::ResponsesBuilder::new()
+                    .response(
+                        StatusCode::$status_code.as_str(),
+                        utoipa::openapi::ResponseBuilder::new()
+                            .description($description)
+                            .content(
+                                "application/json",
+                                utoipa::openapi::ContentBuilder::new()
+                                    .schema(Some(<ErrorDescriptionResponse as utoipa::PartialSchema>::schema()))
+                                    .build())
+                        .build())
+                .build()
+                .into()
             }
         }
     };
@@ -307,7 +281,7 @@ pub enum MetaApiError {
 /// # Error description response
 ///
 /// Error details of the response
-#[derive(Debug, Serialize, JsonSchema)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct ErrorDescriptionResponse {
     message: String,
     /// # Restate code
@@ -346,34 +320,61 @@ impl IntoResponse for MetaApiError {
     }
 }
 
-impl ToResponses for MetaApiError {
-    fn generate(components: &mut Components) -> Result<Responses, anyhow::Error> {
-        let error_media_type =
-            <Json<ErrorDescriptionResponse> as ToMediaTypes>::generate(components)?;
-        Ok(Responses {
-            responses: map! {
-                "400".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "403".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "404".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "409".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "500".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "503".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type, ..Default::default() }
-                )
-            },
-            ..Default::default()
-        })
+impl utoipa::IntoResponses for MetaApiError {
+    fn responses()
+    -> std::collections::BTreeMap<String, utoipa::openapi::RefOr<utoipa::openapi::Response>> {
+        use std::collections::BTreeMap;
+        use utoipa::openapi::{Ref, RefOr};
+
+        let mut responses = BTreeMap::new();
+        responses.insert(
+            "400".to_string(),
+            RefOr::Ref(Ref::from_response_name("BadRequest")),
+        );
+        responses.insert(
+            "404".to_string(),
+            RefOr::Ref(Ref::from_response_name("NotFound")),
+        );
+        responses.insert(
+            "405".to_string(),
+            RefOr::Ref(Ref::from_response_name("MethodNotAllowed")),
+        );
+        responses.insert(
+            "409".to_string(),
+            RefOr::Ref(Ref::from_response_name("Conflict")),
+        );
+        responses.insert(
+            "500".to_string(),
+            RefOr::Ref(Ref::from_response_name("InternalServerError")),
+        );
+        responses
     }
+}
+
+pub mod meta_api_error {
+    //! Those types are only used to generate the corresponding OpenAPI specification for error types
+    //! that are referenced by [`super::MetaApiError`] when calling [`utoipa::IntoResponses`].
+    #![allow(dead_code)]
+
+    /// Bad request
+    #[derive(utoipa::ToResponse)]
+    pub struct BadRequest(super::ErrorDescriptionResponse);
+
+    /// Not found
+    #[derive(utoipa::ToResponse)]
+    pub struct NotFound(super::ErrorDescriptionResponse);
+
+    /// Method not allowed
+    #[derive(utoipa::ToResponse)]
+    pub struct MethodNotAllowed(super::ErrorDescriptionResponse);
+
+    /// Conflict
+    #[derive(utoipa::ToResponse)]
+    pub struct Conflict(super::ErrorDescriptionResponse);
+
+    /// Internal server error
+    #[derive(utoipa::ToResponse)]
+    pub struct InternalServerError(super::ErrorDescriptionResponse);
 }
 
 impl From<ShutdownError> for MetaApiError {
@@ -402,32 +403,4 @@ impl IntoResponse for GenericRestError {
     }
 }
 
-impl ToResponses for GenericRestError {
-    fn generate(components: &mut Components) -> Result<Responses, anyhow::Error> {
-        let error_media_type =
-            <Json<ErrorDescriptionResponse> as ToMediaTypes>::generate(components)?;
-        Ok(Responses {
-            responses: map! {
-                "400".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "403".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "404".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "409".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "500".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type.clone(), ..Default::default() }
-                ),
-                "503".into() => okapi::openapi3::RefOr::Object(
-                    okapi::openapi3::Response { content: error_media_type, ..Default::default() }
-                )
-            },
-            ..Default::default()
-        })
-    }
-}
+// ToResponses removed - errors listed explicitly in handler annotations

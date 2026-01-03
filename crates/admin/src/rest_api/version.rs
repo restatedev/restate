@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use axum::Json;
-use okapi_operation::*;
 use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
 use restate_core::TaskCenter;
 use restate_types::config::Configuration;
@@ -22,12 +21,17 @@ use restate_types::config::Configuration;
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V3;
 pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V3;
 
-/// Version information endpoint
-#[openapi(
-    summary = "Admin version information",
-    description = "Obtain admin version information.",
+/// Get version information
+///
+/// Returns the server version, supported Admin API versions, and the advertised ingress endpoint.
+#[utoipa::path(
+    get,
+    path = "/version",
     operation_id = "version",
-    tags = "version"
+    tag = "version",
+    responses(
+        (status = 200, description = "Server version information including supported API versions and ingress endpoint.", body = VersionInformation)
+    )
 )]
 pub async fn version() -> Json<VersionInformation> {
     Json(VersionInformation {

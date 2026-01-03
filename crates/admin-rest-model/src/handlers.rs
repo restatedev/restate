@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use restate_types::schema::service::HandlerMetadata;
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+/// List of all the handlers of a service
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListServiceHandlersResponse {
     pub handlers: Vec<HandlerMetadata>,

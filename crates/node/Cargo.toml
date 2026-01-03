@@ -27,7 +27,7 @@ kafka-oidc = ["restate-worker/kafka-oidc"]
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
-restate-admin = { workspace = true, features = ["storage-query"]}
+restate-admin = { workspace = true }
 restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
 restate-core = { workspace = true }
 restate-futures-util = { workspace = true }

@@ -41,6 +41,7 @@ pub trait GrpcPort {}
 /// HTTP Ingress Service 8080
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub struct HttpIngressPort;
 impl ListenerPort for HttpIngressPort {
     const NAME: &'static str = "http-ingress-server";
@@ -304,6 +305,36 @@ impl<P: ListenerPort> schemars::JsonSchema for AdvertisedAddress<P> {
             serde_json::Value::String(format!("unix:/data/restate-data/{}", P::UDS_NAME)),
         ];
         schema.into()
+    }
+}
+
+#[cfg(feature = "utoipa-schema")]
+mod utoipa_schema {
+    use crate::net::address::{AdvertisedAddress, ListenerPort};
+    use std::borrow::Cow;
+    use utoipa::__dev::ComposeSchema;
+    use utoipa::ToSchema;
+    use utoipa::openapi::{Object, RefOr, Schema, Type};
+
+    impl<P: ListenerPort> ToSchema for AdvertisedAddress<P> {
+        fn name() -> Cow<'static, str> {
+            format!("AdvertisedAddress-{}", P::NAME).into()
+        }
+    }
+
+    impl<P: ListenerPort> ComposeSchema for AdvertisedAddress<P> {
+        fn compose(_new_generics: Vec<RefOr<Schema>>) -> RefOr<Schema> {
+            Schema::Object(Object::builder().schema_type(Type::String).title(Some("advertised address")).description(Some(format!(
+                "An externally accessible URI address for {}. This can be set to unix:restate-data/{} \
+                to advertise the automatically created unix-socket instead of using tcp if needed",
+                P::NAME,
+                P::UDS_NAME
+            ))).examples(vec![
+                format!("http//127.0.0.1:{}/", P::DEFAULT_PORT),
+                "https://my-host/".to_owned(),
+                format!("unix:/data/restate-data/{}", P::UDS_NAME),
+            ]).build()).into()
+        }
     }
 }
 
