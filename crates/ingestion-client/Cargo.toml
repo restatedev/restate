@@ -8,7 +8,11 @@ license.workspace = true
 publish = false
 
 [dependencies]
-arc-swap = { workspace = true }
+
+restate-core = { workspace = true }
+restate-types = { workspace = true }
+restate-workspace-hack = { workspace = true }
+
 dashmap = { workspace = true }
 futures = { workspace = true }
 pin-project = { workspace = true }
@@ -18,12 +22,7 @@ tokio-util = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
-restate-core = { workspace = true }
-restate-types = { workspace = true }
-restate-workspace-hack = { workspace = true }
-
 [dev-dependencies]
-bytes = { workspace = true }
 googletest = { workspace = true }
 test-log = { workspace = true }
 

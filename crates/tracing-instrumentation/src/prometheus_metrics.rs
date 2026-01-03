@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use indexmap::IndexMap;
 use metrics_exporter_prometheus::formatting;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use tokio::task::AbortHandle;
@@ -20,7 +21,7 @@ use restate_types::config::CommonOptions;
 pub struct Prometheus {
     handle: Option<PrometheusHandle>,
     upkeep_task: Option<AbortHandle>,
-    global_labels: Vec<String>,
+    global_labels: IndexMap<String, String>,
 }
 
 impl Prometheus {
@@ -34,7 +35,7 @@ impl Prometheus {
             return Self {
                 handle: None,
                 upkeep_task: None,
-                global_labels: vec![],
+                global_labels: IndexMap::default(),
             };
         }
         let builder = PrometheusBuilder::default()
@@ -53,16 +54,16 @@ impl Prometheus {
         Self {
             handle: Some(prometheus_handle),
             upkeep_task: None,
-            global_labels: vec![
-                format!(
-                    "cluster_name=\"{}\"",
-                    formatting::sanitize_label_value(opts.cluster_name())
+            global_labels: IndexMap::from([
+                (
+                    "cluster_name".to_owned(),
+                    formatting::sanitize_label_value(opts.cluster_name()),
                 ),
-                format!(
-                    "node_name=\"{}\"",
-                    formatting::sanitize_label_value(opts.node_name())
+                (
+                    "node_name".to_owned(),
+                    formatting::sanitize_label_value(opts.node_name()),
                 ),
-            ],
+            ]),
         }
     }
 
@@ -70,7 +71,7 @@ impl Prometheus {
         self.handle.as_ref()
     }
 
-    pub fn global_labels(&self) -> &Vec<String> {
+    pub fn global_labels(&self) -> &IndexMap<String, String> {
         &self.global_labels
     }
 

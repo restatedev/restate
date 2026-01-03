@@ -175,6 +175,7 @@ impl From<u64> for GenerationalNodeId {
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(transparent))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 #[display("N{}", _0)]
 #[debug("N{}", _0)]
 pub struct PlainNodeId(u32);

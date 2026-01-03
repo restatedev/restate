@@ -12,7 +12,7 @@ use codederror::Code;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub struct Info {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     code: Option<String>,

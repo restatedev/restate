@@ -30,20 +30,18 @@ futures = { workspace = true }
 enumset = { workspace = true }
 http = { workspace = true }
 itertools = { workspace = true }
-nix = { version = "0.29.0", features = ["signal"] }
+nix = { version = "0.30.1", features = ["signal"] }
 rand = { workspace = true }
-regex = "1.1"
+regex = { workspace = true }
 reqwest = { workspace = true }
 rev_lines = "0.3.0"
-rlimit = { workspace = true }
 serde = { workspace = true }
 strum = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process", "fs"] }
 tonic = { workspace = true }
-toml = "0.8"
+toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 typed-builder = { workspace = true }
-test_bin = "0.4.0"
