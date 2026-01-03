@@ -27,6 +27,7 @@ restate-types = { workspace = true }
 
 console-subscriber = { version = "0.5.0", features = ["parking_lot"], optional = true }
 http = { workspace = true }
+indexmap = { workspace = true }
 metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }
 metrics-util = { workspace = true, optional = true }
