@@ -15,22 +15,18 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 
 /// Creates a new ClusterCtrlSvcClient with appropriate configuration
 #[cfg(feature = "grpc-client")]
-pub fn new_log_server_client(
+pub fn new_log_server_client<O: restate_types::net::connect_opts::GrpcConnectionOptions>(
     channel: tonic::transport::Channel,
+    connection_options: &O,
 ) -> log_server_svc_client::LogServerSvcClient<tonic::transport::Channel> {
-    /// The maximum size for a grpc message for core networking service.
-    /// This impacts the buffer limit for prost codec.
-    pub const MAX_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
-
     use tonic::codec::CompressionEncoding;
     /// Default send compression for grpc clients
     pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Zstd;
 
     log_server_svc_client::LogServerSvcClient::new(channel)
-        .max_decoding_message_size(MAX_MESSAGE_SIZE)
-        .max_encoding_message_size(MAX_MESSAGE_SIZE)
+        .max_decoding_message_size(connection_options.max_message_size())
         // note: the order of those calls defines the priority
-        .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
-        .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
+        .accept_compressed(CompressionEncoding::Zstd)
+        .accept_compressed(CompressionEncoding::Gzip)
         .send_compressed(DEFAULT_GRPC_COMPRESSION)
 }

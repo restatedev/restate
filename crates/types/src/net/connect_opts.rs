@@ -13,6 +13,10 @@ use std::time::Duration;
 
 use crate::config::{MetadataClientOptions, NetworkingOptions};
 
+/// The default maximum size for a grpc message (32 MiB).
+/// This impacts the buffer limit for prost codec.
+pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
+
 pub trait GrpcConnectionOptions {
     /// Gets the maximum message size for grpc servers and clients.
     fn max_message_size(&self) -> usize;
@@ -92,6 +96,7 @@ where
 }
 
 impl GrpcConnectionOptions for NetworkingOptions {
+    #[inline]
     fn max_message_size(&self) -> usize {
         self.max_message_size.as_usize()
     }

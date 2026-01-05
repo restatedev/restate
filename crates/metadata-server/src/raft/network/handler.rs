@@ -19,6 +19,7 @@ use tonic::{Request, Response, Status, Streaming};
 
 use restate_types::PlainNodeId;
 use restate_types::config::NetworkingOptions;
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 
 use super::MetadataServerNetworkSvcServer;
 use crate::raft::network::connection_manager::ConnectionError;
@@ -46,8 +47,7 @@ impl<M> MetadataServerNetworkHandler<M> {
 
     pub fn into_server(self, config: &NetworkingOptions) -> MetadataServerNetworkSvcServer<Self> {
         let server = MetadataServerNetworkSvcServer::new(self)
-            .max_decoding_message_size(config.max_message_size.as_usize())
-            .max_encoding_message_size(config.max_message_size.as_usize())
+            .max_decoding_message_size(config.max_message_size())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
