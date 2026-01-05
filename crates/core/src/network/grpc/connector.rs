@@ -17,7 +17,7 @@ use tokio_stream::StreamExt;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Endpoint;
 use tonic::transport::channel::Channel;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, PeerNetAddress};
@@ -71,7 +71,13 @@ impl TransportConnect for GrpcConnector {
         };
 
         let incoming = client.create_connection(output_stream).await?.into_inner();
-        Ok(incoming.map_while(|x| x.ok()))
+        Ok(incoming.map_while(|x| match x {
+            Ok(msg) => Some(msg),
+            Err(err) => {
+                warn!(%err, "Error while receiving network message from peer, connection will be dropped");
+                None
+            }
+        }))
     }
 }
 
