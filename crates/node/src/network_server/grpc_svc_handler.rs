@@ -23,6 +23,7 @@ use restate_metadata_store::protobuf::metadata_proxy_svc::metadata_proxy_svc_ser
 use restate_metadata_store::protobuf::metadata_proxy_svc::{
     DeleteRequest, GetRequest, GetResponse, GetVersionResponse, PutRequest,
 };
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
@@ -56,8 +57,7 @@ impl NodeCtlSvcHandler {
 
     pub fn into_server(self, config: &NetworkingOptions) -> NodeCtlSvcServer<Self> {
         let server = NodeCtlSvcServer::new(self)
-            .max_decoding_message_size(config.max_message_size.as_usize())
-            .max_encoding_message_size(config.max_message_size.as_usize())
+            .max_decoding_message_size(config.max_message_size())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
@@ -274,9 +274,8 @@ impl MetadataProxySvcHandler {
 
     pub fn into_server(self, config: &NetworkingOptions) -> MetadataProxySvcServer<Self> {
         let server = MetadataProxySvcServer::new(self)
+            .max_decoding_message_size(config.max_message_size())
             // note: the order of those calls defines the priority
-            .max_decoding_message_size(config.max_message_size.as_usize())
-            .max_encoding_message_size(config.max_message_size.as_usize())
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
         if config.disable_compression {
