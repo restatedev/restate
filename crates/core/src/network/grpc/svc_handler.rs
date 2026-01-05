@@ -12,6 +12,7 @@ use futures::stream::BoxStream;
 use tokio_stream::StreamExt;
 use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status, Streaming};
+use tracing::warn;
 
 use restate_types::config::NetworkingOptions;
 
@@ -70,7 +71,13 @@ impl CoreNodeSvc for CoreNodeSvcHandler {
         request: Request<Streaming<Message>>,
     ) -> Result<Response<Self::CreateConnectionStream>, Status> {
         let incoming = request.into_inner();
-        let transformed = incoming.map_while(|x| x.ok());
+        let transformed = incoming.map_while(|x| match x {
+            Ok(msg) => Some(msg),
+            Err(err) => {
+                warn!(%err, "Error while receiving network message from peer, connection will be dropped");
+                None
+            }
+        });
         let output_stream = self
             .connections
             .accept_incoming_connection(transformed)
