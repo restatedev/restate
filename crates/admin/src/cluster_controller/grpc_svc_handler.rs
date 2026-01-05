@@ -39,6 +39,7 @@ use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, partition_processor_epoch_key};
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::net::partition_processor_manager::Snapshot;
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::partitions::PartitionTable;
@@ -80,8 +81,7 @@ impl ClusterCtrlSvcHandler {
 
     pub fn into_server(self, config: &NetworkingOptions) -> ClusterCtrlSvcServer<Self> {
         let server = ClusterCtrlSvcServer::new(self)
-            .max_decoding_message_size(config.max_message_size.as_usize())
-            .max_encoding_message_size(config.max_message_size.as_usize())
+            .max_decoding_message_size(config.max_message_size())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);

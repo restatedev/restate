@@ -29,7 +29,6 @@ where
 
     metadata_server_svc_client::MetadataServerSvcClient::new(channel)
         .max_decoding_message_size(connection_options.max_message_size())
-        .max_encoding_message_size(connection_options.max_message_size())
         // note: the order of those calls defines the priority
         .accept_compressed(CompressionEncoding::Zstd)
         .accept_compressed(CompressionEncoding::Gzip)
