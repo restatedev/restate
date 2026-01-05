@@ -239,7 +239,7 @@ where
 
     /// Loop opening the request to deployment and consuming the stream
     #[instrument(
-        level = "debug",
+        level = "info",
         name = "invoker_invocation_task",
         fields(
             rpc.system = "restate",
