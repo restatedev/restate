@@ -12,14 +12,15 @@ use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
 use http::{Request, Response, StatusCode};
+use restate_ingestion_client::IngestionClient;
+use restate_wal_protocol::Envelope;
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::trace::TraceLayer;
 use tracing::{Span, debug, info, info_span};
 
 use restate_admin_rest_model::version::AdminApiVersion;
-use restate_bifrost::Bifrost;
-use restate_core::network::net_util;
+use restate_core::network::{TransportConnect, net_util};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_service_client::HttpClient;
 use restate_service_protocol::discovery::ServiceDiscovery;
@@ -39,9 +40,9 @@ use crate::{rest_api, state};
 #[error("could not create the service client: {0}")]
 pub struct BuildError(#[from] restate_service_client::BuildError);
 
-pub struct AdminService<Metadata, Discovery, Telemetry, Invocations> {
+pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> {
     listeners: Listeners<AdminPort>,
-    bifrost: Bifrost,
+    ingestion_client: IngestionClient<Transport, Envelope>,
     schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
     invocation_client: Invocations,
     #[cfg(feature = "storage-query")]
@@ -50,21 +51,23 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations> {
     metadata_writer: MetadataWriter,
 }
 
-impl<Invocations> AdminService<MetadataService, ServiceDiscovery, TelemetryClient, Invocations>
+impl<Invocations, Transport>
+    AdminService<MetadataService, ServiceDiscovery, TelemetryClient, Invocations, Transport>
 where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
+    Transport: TransportConnect,
 {
     pub fn new(
         listeners: Listeners<AdminPort>,
         metadata_writer: MetadataWriter,
-        bifrost: Bifrost,
+        ingestion_client: IngestionClient<Transport, Envelope>,
         invocation_client: Invocations,
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
     ) -> Self {
         Self {
             listeners,
-            bifrost,
+            ingestion_client,
             #[cfg(feature = "metadata-api")]
             metadata_writer: metadata_writer.clone(),
             schema_registry: SchemaRegistry::new(
@@ -98,7 +101,7 @@ where
         let rest_state = state::AdminServiceState::new(
             self.schema_registry,
             self.invocation_client,
-            self.bifrost,
+            self.ingestion_client,
         );
 
         let router = axum::Router::new();

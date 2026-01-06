@@ -283,7 +283,7 @@ impl Node {
                     partition_store_manager.clone(),
                     networking.clone(),
                     bifrost_svc.handle(),
-                    ingestion_client,
+                    ingestion_client.clone(),
                     metadata_manager.writer(),
                 )
                 .await?,
@@ -314,6 +314,7 @@ impl Node {
                 AdminRole::create(
                     tc.health().admin_status(),
                     bifrost.clone(),
+                    ingestion_client,
                     updateable_config.clone(),
                     PartitionRouting::new(replica_set_states.clone(), tc),
                     metadata.updateable_partition_table(),

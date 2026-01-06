@@ -28,6 +28,7 @@ restate-admin-rest-model = { workspace = true, features = ["schema"] }
 restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-loglet"] }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
+restate-ingestion-client = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-metadata-providers = { workspace = true }
 restate-service-client = { workspace = true }
