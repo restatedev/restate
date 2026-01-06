@@ -8,238 +8,75 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::hash::Hash;
 use std::sync::{Arc, OnceLock, Weak};
+use std::time::Duration;
 
-use crate::dispatcher::{DispatchKafkaEvent, KafkaIngressDispatcher, KafkaIngressEvent};
-use crate::metric_definitions::{KAFKA_INGRESS_CONSUMER_LAG, KAFKA_INGRESS_REQUESTS};
-use base64::Engine;
-use bytes::Bytes;
+use anyhow::Context;
+use futures::StreamExt;
+use futures::future::OptionFuture;
 use metrics::{counter, gauge};
 use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{
     BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer,
 };
 use rdkafka::error::KafkaError;
-use rdkafka::message::BorrowedMessage;
 use rdkafka::topic_partition_list::TopicPartitionListElem;
 use rdkafka::types::RDKafkaErrorCode;
 use rdkafka::{ClientConfig, ClientContext, Message, Statistics};
-use restate_core::{TaskCenter, TaskHandle, TaskKind, task_center};
-use restate_types::invocation::Header;
-use restate_types::live::Live;
-use restate_types::message::MessageIndex;
-use restate_types::schema::Schema;
-use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
+
+use restate_core::network::{NetworkSender, Swimlane, TransportConnect};
+use restate_core::{Metadata, TaskCenter, TaskHandle, TaskKind, task_center};
+use restate_ingestion_client::{IngestionClient, IngestionError, RecordCommit};
+use restate_types::identifiers::partitioner::HashPartitioner;
+use restate_types::identifiers::{SubscriptionId, WithPartitionKey};
+use restate_types::net::ingest::{DedupSequenceNrQueryRequest, ProducerId, ResponseStatus};
+use restate_types::partitions::FindPartition;
+use restate_types::retries::RetryPolicy;
+use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink};
+use restate_wal_protocol::Envelope;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{Instrument, debug, info, info_span, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error(transparent)]
-    Kafka(#[from] KafkaError),
-    #[error(
-        "error processing message topic {topic} partition {partition} offset {offset}: {cause}"
-    )]
-    Event {
-        topic: String,
-        partition: i32,
-        offset: i64,
-        #[source]
-        cause: anyhow::Error,
-    },
-    #[error("ingress dispatcher channel is closed")]
-    IngressDispatcherClosed,
-    #[error(
-        "received a message on the main partition queue for topic {0} partition {1} despite partitioned queues"
-    )]
-    UnexpectedMainQueueMessage(String, i32),
-}
+use crate::Error;
+use crate::builder::EnvelopeBuilder;
+use crate::metric_definitions::{KAFKA_INGRESS_CONSUMER_LAG, KAFKA_INGRESS_REQUESTS};
 
-type MessageConsumer = StreamConsumer<RebalanceContext>;
-
-#[derive(Debug, Hash)]
-pub struct KafkaDeduplicationId {
-    consumer_group: String,
-    topic: String,
-    partition: i32,
-}
-
-impl fmt::Display for KafkaDeduplicationId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}-{}-{}",
-            self.consumer_group, self.topic, self.partition
-        )
+impl From<IngestionError> for Error {
+    fn from(value: IngestionError) -> Self {
+        match value {
+            IngestionError::Closed => Self::IngestionClosed,
+            IngestionError::PartitionTableError(err) => Self::PartitionTableError(err),
+        }
     }
 }
-
-impl KafkaDeduplicationId {
-    pub(crate) fn requires_proxying(subscription: &Subscription) -> bool {
-        // Service event receiver requires proxying because we don't want to scatter deduplication ids (kafka topic/partition offsets) in all the Restate partitions.
-        matches!(
-            subscription.sink(),
-            Sink::Invocation {
-                event_invocation_target_template: EventInvocationTargetTemplate::Service { .. }
-            },
-        )
-    }
-}
+type MessageConsumer<T> = StreamConsumer<RebalanceContext<T>>;
 
 #[derive(Clone)]
-pub struct MessageSender {
-    subscription: Subscription,
-    dispatcher: KafkaIngressDispatcher,
-    schema: Live<Schema>,
-
-    subscription_id: String,
-    ingress_request_counter: metrics::Counter,
-}
-
-impl MessageSender {
-    pub fn new(
-        subscription: Subscription,
-        dispatcher: KafkaIngressDispatcher,
-        schema: Live<Schema>,
-    ) -> Self {
-        Self {
-            subscription_id: subscription.id().to_string(),
-            ingress_request_counter: counter!(
-                KAFKA_INGRESS_REQUESTS,
-                "subscription" => subscription.id().to_string()
-            ),
-            subscription,
-            dispatcher,
-            schema,
-        }
-    }
-
-    async fn send(&self, consumer_group_id: &str, msg: BorrowedMessage<'_>) -> Result<(), Error> {
-        // Prepare ingress span
-        let ingress_span = info_span!(
-            "kafka_ingress_consume",
-            otel.name = "kafka_ingress_consume",
-            messaging.system = "kafka",
-            messaging.operation = "receive",
-            messaging.source.name = msg.topic(),
-            messaging.destination.name = %self.subscription.sink(),
-            restate.subscription.id = %self.subscription.id(),
-            messaging.consumer.group.name = consumer_group_id
-        );
-        info!(parent: &ingress_span, "Processing Kafka ingress request");
-
-        let key = if let Some(k) = msg.key() {
-            Bytes::copy_from_slice(k)
-        } else {
-            Bytes::default()
-        };
-        let payload = if let Some(p) = msg.payload() {
-            Bytes::copy_from_slice(p)
-        } else {
-            Bytes::default()
-        };
-        let headers = Self::generate_events_attributes(&msg, &self.subscription_id);
-
-        let (deduplication_id, deduplication_index) =
-            Self::generate_deduplication_id(consumer_group_id, &msg);
-        let req = KafkaIngressEvent::new(
-            &self.subscription,
-            self.schema.pinned(),
-            key,
-            payload,
-            deduplication_id,
-            deduplication_index,
-            headers,
-            consumer_group_id,
-            msg.topic(),
-            msg.partition(),
-            msg.offset(),
-        )
-        .map_err(|cause| Error::Event {
-            topic: msg.topic().to_string(),
-            partition: msg.partition(),
-            offset: msg.offset(),
-            cause,
-        })?;
-
-        self.ingress_request_counter.increment(1);
-
-        self.dispatcher
-            .dispatch_kafka_event(req)
-            .instrument(ingress_span)
-            .await
-            .map_err(|_| Error::IngressDispatcherClosed)?;
-        Ok(())
-    }
-
-    fn generate_events_attributes(msg: &impl Message, subscription_id: &str) -> Vec<Header> {
-        let mut headers = Vec::with_capacity(6);
-        headers.push(Header::new("kafka.offset", msg.offset().to_string()));
-        headers.push(Header::new("kafka.topic", msg.topic()));
-        headers.push(Header::new("kafka.partition", msg.partition().to_string()));
-        if let Some(timestamp) = msg.timestamp().to_millis() {
-            headers.push(Header::new("kafka.timestamp", timestamp.to_string()));
-        }
-        headers.push(Header::new(
-            "restate.subscription.id".to_string(),
-            subscription_id,
-        ));
-
-        if let Some(key) = msg.key() {
-            headers.push(Header::new(
-                "kafka.key",
-                &*base64::prelude::BASE64_URL_SAFE.encode(key),
-            ));
-        }
-
-        headers
-    }
-
-    fn generate_deduplication_id(
-        consumer_group: &str,
-        msg: &impl Message,
-    ) -> (KafkaDeduplicationId, MessageIndex) {
-        (
-            KafkaDeduplicationId {
-                consumer_group: consumer_group.to_owned(),
-                topic: msg.topic().to_owned(),
-                partition: msg.partition(),
-            },
-            msg.offset() as u64,
-        )
-    }
-
-    fn update_consumer_stats(&self, stats: Statistics) {
-        for topic in stats.topics {
-            for partition in topic.1.partitions {
-                let lag = partition.1.consumer_lag as f64;
-                gauge!(
-                    KAFKA_INGRESS_CONSUMER_LAG,
-                     "subscription" => self.subscription.id().to_string(),
-                     "topic" => topic.0.to_string(),
-                     "partition" =>  partition.0.to_string()
-                )
-                .set(lag);
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct ConsumerTask {
+pub struct ConsumerTask<T> {
     client_config: ClientConfig,
     topics: Vec<String>,
-    sender: MessageSender,
+    ingestion: IngestionClient<T, Envelope>,
+    builder: EnvelopeBuilder,
 }
 
-impl ConsumerTask {
-    pub fn new(client_config: ClientConfig, topics: Vec<String>, sender: MessageSender) -> Self {
+impl<T> ConsumerTask<T>
+where
+    T: TransportConnect,
+{
+    pub fn new(
+        client_config: ClientConfig,
+        topics: Vec<String>,
+        ingestion: IngestionClient<T, Envelope>,
+        builder: EnvelopeBuilder,
+    ) -> Self {
         Self {
             client_config,
             topics,
-            sender,
+            ingestion,
+            builder,
         }
     }
 
@@ -251,7 +88,7 @@ impl ConsumerTask {
             .expect("group.id must be set")
             .to_string();
         debug!(
-            restate.subscription.id = %self.sender.subscription.id(),
+            restate.subscription.id = %self.builder.subscription().id(),
             messaging.consumer.group.name = consumer_group_id,
             "Starting consumer for topics {:?} with configuration {:?}",
             self.topics, self.client_config
@@ -264,10 +101,11 @@ impl ConsumerTask {
             consumer: OnceLock::new(),
             topic_partition_tasks: parking_lot::Mutex::new(HashMap::new()),
             failures_tx,
-            sender: self.sender.clone(),
+            ingestion: self.ingestion.clone(),
+            builder: self.builder.clone(),
             consumer_group_id,
         };
-        let consumer: Arc<MessageConsumer> =
+        let consumer: Arc<MessageConsumer<T>> =
             Arc::new(self.client_config.create_with_context(rebalance_context)?);
         // this OnceLock<Weak> dance is needed because the rebalance callbacks don't get a handle on the consumer,
         // which is strange because practically everything you'd want to do with them involves the consumer.
@@ -303,9 +141,9 @@ impl ConsumerTask {
 }
 
 #[derive(derive_more::Deref)]
-struct ConsumerDrop(Arc<MessageConsumer>);
+struct ConsumerDrop<T: TransportConnect>(Arc<MessageConsumer<T>>);
 
-impl Drop for ConsumerDrop {
+impl<T: TransportConnect> Drop for ConsumerDrop<T> {
     fn drop(&mut self) {
         debug!(
             "Stopping consumer with id {}",
@@ -332,18 +170,33 @@ impl fmt::Display for TopicPartition {
     }
 }
 
-struct RebalanceContext {
+struct RebalanceContext<T: TransportConnect> {
     task_center_handle: task_center::Handle,
-    consumer: OnceLock<Weak<MessageConsumer>>,
+    consumer: OnceLock<Weak<MessageConsumer<T>>>,
     topic_partition_tasks: parking_lot::Mutex<HashMap<TopicPartition, AbortOnDrop>>,
     failures_tx: mpsc::UnboundedSender<Error>,
-    sender: MessageSender,
+    ingestion: IngestionClient<T, Envelope>,
+    builder: EnvelopeBuilder,
     consumer_group_id: String,
 }
 
-impl ClientContext for RebalanceContext {
+impl<T> ClientContext for RebalanceContext<T>
+where
+    T: TransportConnect,
+{
     fn stats(&self, statistics: Statistics) {
-        self.sender.update_consumer_stats(statistics);
+        for topic in statistics.topics {
+            for partition in topic.1.partitions {
+                let lag = partition.1.consumer_lag as f64;
+                gauge!(
+                    KAFKA_INGRESS_CONSUMER_LAG,
+                     "subscription" => self.builder.subscription().id().to_string(),
+                     "topic" => topic.0.to_string(),
+                     "partition" =>  partition.0.to_string()
+                )
+                .set(lag);
+            }
+        }
     }
 }
 
@@ -358,7 +211,10 @@ impl ClientContext for RebalanceContext {
 // and their queues are destroyed. Split partition queues will stop working in this case. We should ensure
 // that they are not polled again after the assign. Then there will be a further rebalance callback after the revoke
 // and we will set up new split partition streams before the assign.
-impl ConsumerContext for RebalanceContext {
+impl<T> ConsumerContext for RebalanceContext<T>
+where
+    T: TransportConnect,
+{
     fn pre_rebalance(&self, _base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         let mut topic_partition_tasks = self.topic_partition_tasks.lock();
         let consumer = self
@@ -375,6 +231,12 @@ impl ConsumerContext for RebalanceContext {
             Rebalance::Assign(partitions) if partitions.count() > 0 => {
                 for partition in partitions.elements() {
                     let partition: TopicPartition = partition.into();
+                    info!(
+                        subscription = %self.builder.subscription().id(),
+                        topic = %partition.0,
+                        partition = %partition.1,
+                        "Assigned kafka partition"
+                    );
 
                     if let Some(task_id) = topic_partition_tasks.remove(&partition) {
                         // This probably implies a problem in our assumptions, because librdkafka shouldn't be assigning us a partition again without having revoked it.
@@ -387,8 +249,9 @@ impl ConsumerContext for RebalanceContext {
 
                     match consumer.split_partition_queue(&partition.0, partition.1) {
                         Some(queue) => {
-                            let task = topic_partition_queue_consumption_loop(
-                                self.sender.clone(),
+                            let task = TopicPartitionConsumptionTask::new(
+                                self.ingestion.clone(),
+                                self.builder.clone(),
                                 partition.clone(),
                                 queue,
                                 Arc::clone(&consumer),
@@ -399,7 +262,7 @@ impl ConsumerContext for RebalanceContext {
                             if let Ok(task_handle) = self.task_center_handle.spawn_unmanaged(
                                 TaskKind::Ingress,
                                 "kafka-partition-ingest",
-                                task,
+                                task.run(),
                             ) {
                                 topic_partition_tasks.insert(partition, AbortOnDrop(task_handle));
                             } else {
@@ -418,7 +281,14 @@ impl ConsumerContext for RebalanceContext {
             }
             Rebalance::Revoke(partitions) if partitions.count() > 0 => {
                 for partition in partitions.elements() {
-                    let partition = partition.into();
+                    let partition: TopicPartition = partition.into();
+                    info!(
+                        subscription = %self.builder.subscription().id(),
+                        topic = %partition.0,
+                        partition = %partition.1,
+                        "Revoked kafka partition"
+                    );
+
                     match topic_partition_tasks.remove(&partition) {
                         Some(task_id) => {
                             debug!(
@@ -457,36 +327,256 @@ impl Drop for AbortOnDrop {
     }
 }
 
-async fn topic_partition_queue_consumption_loop(
-    sender: MessageSender,
+struct TopicPartitionConsumptionTask<T, C>
+where
+    T: TransportConnect,
+    C: ConsumerContext,
+{
+    ingestion: IngestionClient<T, Envelope>,
+    builder: EnvelopeBuilder,
     topic_partition: TopicPartition,
-    topic_partition_consumer: StreamPartitionQueue<impl ConsumerContext>,
-    consumer: Arc<MessageConsumer>,
+    topic_partition_consumer: StreamPartitionQueue<C>,
+    consumer: Arc<MessageConsumer<T>>,
     consumer_group_id: String,
     failed: mpsc::UnboundedSender<Error>,
-) {
-    debug!(
-        restate.subscription.id = %sender.subscription.id(),
-        messaging.consumer.group.name = consumer_group_id,
-        "Starting topic '{}' partition '{}' consumption loop",
-        topic_partition.0,
-        topic_partition.1
-    );
-    // this future will be aborted when the partition is no longer needed, so any exit is a failure
-    let err = loop {
-        let res = topic_partition_consumer.recv().await;
-        let msg = match res {
-            Ok(msg) => msg,
-            Err(err) => break err.into(),
-        };
-        let offset = msg.offset();
-        if let Err(err) = sender.send(&consumer_group_id, msg).await {
-            break err;
-        }
-        if let Err(err) = consumer.store_offset(&topic_partition.0, topic_partition.1, offset) {
-            break err.into();
-        }
-    };
+}
 
-    _ = failed.send(err);
+impl<T, C> TopicPartitionConsumptionTask<T, C>
+where
+    T: TransportConnect,
+    C: ConsumerContext,
+{
+    fn new(
+        ingestion: IngestionClient<T, Envelope>,
+        builder: EnvelopeBuilder,
+        topic_partition: TopicPartition,
+        topic_partition_consumer: StreamPartitionQueue<C>,
+        consumer: Arc<MessageConsumer<T>>,
+        consumer_group_id: String,
+        failed: mpsc::UnboundedSender<Error>,
+    ) -> Self {
+        Self {
+            ingestion,
+            builder,
+            topic_partition,
+            topic_partition_consumer,
+            consumer,
+            consumer_group_id,
+            failed,
+        }
+    }
+
+    async fn run(mut self) {
+        // this future will be aborted when the partition is no longer needed, so any exit is a failure
+        let err = match self.run_inner().await {
+            Err(err) => err,
+            Ok(_) => Error::UnexpectedConsumptionTaskExited {
+                subscription: self.builder.subscription().id().to_string(),
+                topic: self.topic_partition.0,
+                partition: self.topic_partition.1,
+            },
+        };
+
+        _ = self.failed.send(err);
+    }
+
+    /// query the legacy dedup information for this consumption task.
+    async fn legacy_dedup_offset(&self) -> Option<u64> {
+        if !matches!(
+            self.builder.subscription().sink(),
+            Sink::Invocation {
+                event_invocation_target_template: EventInvocationTargetTemplate::Service { .. }
+            }
+        ) {
+            // legacy dedup is only valid for services which used to
+            // be proxied
+            return None;
+        }
+
+        #[derive(Hash)]
+        pub struct LegacyKafkaDeduplicationId<'a> {
+            consumer_group: &'a str,
+            topic: &'a str,
+            partition: i32,
+        }
+
+        // producer id constructed as {consumer-group}-{topic}-{kafka-partition}
+        let legacy_producer_id = format!(
+            "{}-{}-{}",
+            self.consumer_group_id, self.topic_partition.0, self.topic_partition.1
+        );
+
+        let proxy_partition_key =
+            HashPartitioner::compute_partition_key(&LegacyKafkaDeduplicationId {
+                consumer_group: &self.consumer_group_id,
+                topic: &self.topic_partition.0,
+                partition: self.topic_partition.1,
+            });
+
+        RetryPolicy::exponential(
+            Duration::from_millis(50),
+            2.0,
+            None,
+            Some(Duration::from_secs(1)),
+        )
+        .retry_with_inspect(
+            || async {
+                let partition_id = Metadata::with_current(|m| {
+                    m.partition_table_ref()
+                        .find_partition_id(proxy_partition_key)
+                })?;
+
+                let node_id = self
+                    .ingestion
+                    .partition_routing()
+                    .get_node_by_partition(partition_id)
+                    .with_context(|| {
+                        format!("cannot lookup node id for partition id {partition_id}")
+                    })?;
+
+                // we use long timeout of 5 seconds in case partition processor is catching up
+                let response = self
+                    .ingestion
+                    .networking()
+                    .call_rpc(
+                        node_id,
+                        Swimlane::General,
+                        DedupSequenceNrQueryRequest {
+                            producer_id: ProducerId::String(legacy_producer_id.clone()),
+                        },
+                        Some(partition_id.into()),
+                        Some(Duration::from_secs(5)),
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to query legacy dedup \
+                            sequence number for producer '{legacy_producer_id}' \
+                            from node {node_id}"
+                        )
+                    })?;
+
+                match response.status {
+                    ResponseStatus::Ack => Ok(response.sequence_number),
+                    status => Err(anyhow::anyhow!(
+                        "failed to query latest dedup \
+                        sequence number from node {node_id} for '{legacy_producer_id}': {status:?}"
+                    )),
+                }
+            },
+            |attempts, err| {
+                if attempts >= 10 {
+                    warn!("Failed to query legacy dedup information: {err:#} .. retrying");
+                } else {
+                    debug!("Failed to query legacy dedup information: {err:#} .. retrying");
+                }
+            },
+        )
+        .await
+        .expect("tries forever")
+    }
+
+    #[instrument(skip(self), fields(
+        restate.subscription.id = %self.builder.subscription().id(),
+        topic=%self.topic_partition.0,
+        kafka_partition=%self.topic_partition.1,
+        consumer_group=%self.consumer_group_id)
+    )]
+    async fn run_inner(&mut self) -> Result<(), Error> {
+        debug!("Starting topic consumption loop");
+
+        let legacy_dedup_offset = self.legacy_dedup_offset().await;
+        debug!("Legacy dedup offset: {legacy_dedup_offset:?}",);
+
+        let producer_id = dedup_producer_id(
+            &self.builder.subscription().id(),
+            &self.consumer_group_id,
+            &self.topic_partition.0,
+            self.topic_partition.1,
+        );
+
+        let ingress_request_counter = counter!(
+            KAFKA_INGRESS_REQUESTS,
+            "subscription" => self.builder.subscription().id().to_string(),
+            "topic" => self.topic_partition.0.to_string(),
+            "partition" => self.topic_partition.1.to_string(),
+        );
+
+        let mut inflight = VecDeque::new();
+
+        let mut consumer_stream = self.topic_partition_consumer.stream();
+        loop {
+            tokio::select! {
+                biased;
+                Some(committed) = Self::head_committed(&mut inflight) => {
+                    _ = inflight.pop_front().expect("to exist");
+                    let offset = committed.map_err(|_| Error::IngestionClosed)?;
+
+                    ingress_request_counter.increment(1);
+                    trace!(
+                        offset=%offset,
+                        "Store kafka offset",
+                    );
+
+                    self.consumer.store_offset(&self.topic_partition.0, self.topic_partition.1, offset)?;
+                },
+                Some(received) = consumer_stream.next() => {
+                    let msg = received?;
+                    let offset = msg.offset();
+                    if legacy_dedup_offset.is_some_and(|dedup_offset| offset as u64 <= dedup_offset) {
+                        // skip duplicated messages. Any gap should be small.
+                        debug!(
+                            offset=%offset,
+                            "Skipping kafka message (dedup)"
+                        );
+                        self.consumer.store_offset(&self.topic_partition.0, self.topic_partition.1, offset)?;
+                        continue;
+                    }
+
+                    trace!(
+                        offset=%offset,
+                        "Ingesting kafka message"
+                    );
+
+                    let envelope = self.builder.build(producer_id, &self.consumer_group_id, msg)?;
+
+                    let commit_token = self
+                        .ingestion
+                        .ingest(envelope.partition_key(), envelope)
+                        .await?
+                        .map(|_| offset);
+
+                    inflight.push_back(commit_token);
+                }
+            }
+        }
+    }
+
+    #[inline]
+    pub fn head_committed(
+        inflight: &mut VecDeque<RecordCommit<i64>>,
+    ) -> OptionFuture<&mut RecordCommit<i64>> {
+        OptionFuture::from(inflight.front_mut())
+    }
+}
+
+// Do not change. Changing this hasher will create new producer-id which can
+// cause duplicates
+fn dedup_producer_id(
+    subscription: &SubscriptionId,
+    consumer_group: &str,
+    topic: &str,
+    partition: i32,
+) -> u128 {
+    let mut hasher = xxhash_rust::xxh3::Xxh3::new();
+
+    subscription.hash(&mut hasher);
+    '\0'.hash(&mut hasher);
+    consumer_group.hash(&mut hasher);
+    '\0'.hash(&mut hasher);
+    topic.hash(&mut hasher);
+    '\0'.hash(&mut hasher);
+    partition.hash(&mut hasher);
+
+    hasher.digest128()
 }

@@ -25,12 +25,13 @@ use tracing::{debug, info, trace, warn};
 use codederror::CodedError;
 use restate_bifrost::BifrostService;
 use restate_core::network::{
-    GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking,
+    GrpcConnector, MessageRouterBuilder, NetworkServerBuilder, Networking, Swimlane,
 };
 use restate_core::partitions::PartitionRouting;
 use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind};
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
 use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_ingestion_client::{IngestionClient, SessionOptions};
 use restate_log_server::LogServerService;
 use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
@@ -133,7 +134,7 @@ pub struct Node {
     metadata_server_role: Option<BoxedMetadataServer>,
     failure_detector: FailureDetector<Networking<GrpcConnector>>,
     admin_role: Option<AdminRole<GrpcConnector>>,
-    worker_role: Option<WorkerRole>,
+    worker_role: Option<WorkerRole<GrpcConnector>>,
     ingress_role: Option<IngressRole<GrpcConnector>>,
     log_server: Option<LogServerService>,
     networking: Networking<GrpcConnector>,
@@ -256,6 +257,23 @@ impl Node {
             None
         };
 
+        // initialize the ingestion client.
+        let ingestion_client = IngestionClient::new(
+            networking.clone(),
+            Metadata::with_current(|m| m.updateable_partition_table()),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            config
+                .ingress
+                .ingestion
+                .inflight_memory_budget
+                .as_non_zero_usize(),
+            Some(SessionOptions {
+                batch_size: config.ingress.ingestion.request_batch_size.as_usize(),
+                connection_retry_policy: config.ingress.ingestion.connection_retry_policy.clone(),
+                swimlane: Swimlane::IngressData,
+            }),
+        );
+
         let worker_role = if config.has_role(Role::Worker) {
             Some(
                 WorkerRole::create(
@@ -265,6 +283,7 @@ impl Node {
                     partition_store_manager.clone(),
                     networking.clone(),
                     bifrost_svc.handle(),
+                    ingestion_client,
                     metadata_manager.writer(),
                 )
                 .await?,

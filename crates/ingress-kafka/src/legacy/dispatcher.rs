@@ -15,7 +15,7 @@ use opentelemetry::trace::{Span, SpanContext, TraceContextExt};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use std::borrow::Borrow;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::trace;
 
 use restate_bifrost::Bifrost;
 use restate_storage_api::deduplication_table::DedupInformation;
@@ -29,7 +29,7 @@ use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTarge
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
 use restate_wal_protocol::{Command, Destination, Envelope, Header, Source};
 
-use crate::consumer_task::KafkaDeduplicationId;
+use crate::legacy::consumer_task::KafkaDeduplicationId;
 
 #[derive(Debug)]
 pub struct KafkaIngressEvent {
@@ -202,7 +202,7 @@ impl DispatchKafkaEvent for KafkaIngressDispatcher {
         let (log_id, lsn) =
             restate_bifrost::append_to_bifrost(&self.bifrost, Arc::new(envelope)).await?;
 
-        debug!(
+        trace!(
             log_id = %log_id,
             lsn = %lsn,
             "Ingress request written to bifrost"

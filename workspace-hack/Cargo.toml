@@ -138,6 +138,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parki
 typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
+xxhash-rust = { version = "0.8", default-features = false, features = ["std", "xxh3"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 zstd = { version = "0.13" }
@@ -269,6 +270,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parki
 typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
+xxhash-rust = { version = "0.8", default-features = false, features = ["std", "xxh3"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 zstd = { version = "0.13" }
