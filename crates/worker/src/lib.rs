@@ -34,6 +34,7 @@ use restate_core::partitions::PartitionRouting;
 use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
+use restate_ingestion_client::IngestionClient;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_partition_store::snapshots::SnapshotRepository;
@@ -51,6 +52,7 @@ use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::subscriptions::SubscriptionResolver;
+use restate_wal_protocol::Envelope;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
@@ -91,21 +93,26 @@ pub enum BuildError {
     SnapshotRepository(#[from] anyhow::Error),
 }
 
-pub struct Worker {
+pub struct Worker<T> {
     storage_query_context: QueryContext,
     datafusion_remote_scanner: RemoteQueryScannerServer,
-    ingress_kafka: IngressKafkaService,
+    ingress_kafka: IngressKafkaService<T>,
     subscription_controller_handle: SubscriptionControllerHandle,
     partition_processor_manager: PartitionProcessorManager,
 }
 
-impl Worker {
-    pub async fn create<T: TransportConnect>(
+impl<T> Worker<T>
+where
+    T: TransportConnect,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create(
         health_status: HealthStatus<WorkerStatus>,
         replica_set_states: PartitionReplicaSetStates,
         partition_store_manager: Arc<PartitionStoreManager>,
         networking: Networking<T>,
         bifrost: Bifrost,
+        ingestion_client: IngestionClient<T, Envelope>,
         router_builder: &mut MessageRouterBuilder,
         metadata_writer: MetadataWriter,
     ) -> Result<Self, BuildError> {
@@ -122,7 +129,9 @@ impl Worker {
         let schema = metadata.updateable_schema();
 
         // ingress_kafka
-        let ingress_kafka = IngressKafkaService::new(bifrost.clone(), schema.clone());
+        let ingress_kafka =
+            IngressKafkaService::new(bifrost.clone(), ingestion_client.clone(), schema.clone());
+
         let subscription_controller_handle =
             SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
 

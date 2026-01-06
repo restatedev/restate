@@ -20,6 +20,7 @@ restate-workspace-hack = { workspace = true }
 
 restate-bifrost = { workspace = true }
 restate-core = { workspace = true }
+restate-ingestion-client = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
@@ -30,6 +31,7 @@ anyhow = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true }
+futures = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
@@ -44,6 +46,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
+xxhash-rust = { workspace = true, features = ["xxh3", "std"] }
 
 [dev-dependencies]
 restate-types = { workspace = true, features = ["test-util"] }

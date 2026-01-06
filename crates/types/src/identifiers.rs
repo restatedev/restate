@@ -450,7 +450,24 @@ pub trait WithInvocationId {
 pub type EncodedInvocationId = [u8; InvocationId::RAW_BYTES_LEN];
 
 impl InvocationId {
+    /// Creates a new [`InvocationId`], using a deterministic partition key from the invocation
+    /// target/idempotency key when available; otherwise a random partition key is used.
     pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
+        Self::generate_or_else(invocation_target, idempotency_key, || {
+            rand::rng().next_u64()
+        })
+    }
+
+    /// Creates a new [`InvocationId`]; prefers a deterministic partition key from the invocation
+    /// target/idempotency key, otherwise uses the provided fallback function to produce one.
+    pub fn generate_or_else<F>(
+        invocation_target: &InvocationTarget,
+        idempotency_key: Option<&str>,
+        f: F,
+    ) -> Self
+    where
+        F: FnOnce() -> PartitionKey,
+    {
         // --- Partition key generation
         let partition_key =
                 // Either try to generate the deterministic partition key, if possible
@@ -459,7 +476,7 @@ impl InvocationId {
                     idempotency_key,
                 )
                 // If no deterministic partition key can be generated, just pick a random number
-                .unwrap_or_else(|| rand::rng().next_u64());
+                .unwrap_or_else(f);
 
         // --- Invocation UUID generation
         InvocationId::from_parts(

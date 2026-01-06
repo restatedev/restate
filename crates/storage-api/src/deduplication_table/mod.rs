@@ -14,6 +14,7 @@ use bytestring::ByteString;
 
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::message::MessageIndex;
+use serde::{Deserialize, Serialize};
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -45,6 +46,13 @@ impl DedupInformation {
             sequence_number: DedupSequenceNumber::Sn(sequence_number),
         }
     }
+
+    pub fn producer(producer_id: u128, message_index: MessageIndex) -> Self {
+        DedupInformation {
+            producer_id: ProducerId::Producer(producer_id.into()),
+            sequence_number: DedupSequenceNumber::Sn(message_index),
+        }
+    }
 }
 
 static SELF_PRODUCER: ByteString = ByteString::from_static("SELF");
@@ -53,6 +61,7 @@ static SELF_PRODUCER: ByteString = ByteString::from_static("SELF");
 pub enum ProducerId {
     Partition(PartitionId),
     Other(ByteString),
+    Producer(U128),
 }
 
 impl ProducerId {
@@ -139,4 +148,41 @@ pub trait WriteDeduplicationTable {
         producer_id: ProducerId,
         dedup_sequence_number: &DedupSequenceNumber,
     ) -> Result<()>;
+}
+
+// Flexbuffers does not support u128 so we need to
+// make this representation for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct U128 {
+    h: u64,
+    l: u64,
+}
+
+impl From<u128> for U128 {
+    fn from(value: u128) -> Self {
+        Self {
+            h: (value >> 64) as u64,
+            l: value as u64,
+        }
+    }
+}
+
+impl From<U128> for u128 {
+    fn from(value: U128) -> Self {
+        let v = (value.h as u128) << 64;
+        v | (value.l as u128)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::deduplication_table::U128;
+
+    #[test]
+    fn test_u128() {
+        let x = u128::MAX;
+        let y = U128::from(x);
+        let z = u128::from(y);
+        assert_eq!(x, z);
+    }
 }

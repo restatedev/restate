@@ -13,10 +13,11 @@ use std::sync::Arc;
 use bytes::{Bytes, BytesMut};
 use metrics::Key;
 
-use restate_encoding::ArcedSlice;
+use restate_encoding::{ArcedSlice, RestateEncoding};
 
 use crate::identifiers::PartitionId;
 use crate::logs::{HasRecordKeys, Keys};
+use crate::message::MessageIndex;
 use crate::net::partition_processor::PartitionLeaderService;
 use crate::net::{RpcRequest, bilrost_wire_codec, define_rpc};
 use crate::storage::{StorageCodec, StorageEncode};
@@ -126,4 +127,49 @@ impl RpcRequest for ReceivedIngestRequest {
     const TYPE: &str = stringify!(IngestRequest);
     type Response = IngestResponse;
     type Service = PartitionLeaderService;
+}
+
+// The following messages are used by the kafka ingress
+// only during the migration from using string based
+// producer ids to number producer ids.
+// added on version v1.6.0
+// todo(azmy): deprecate
+
+/// Query the sequence number associated with
+/// the deduplication key
+
+#[derive(Debug, Clone, bilrost::Oneof)]
+pub enum ProducerId {
+    Unknown,
+    #[bilrost(1)]
+    String(String),
+    #[bilrost(tag(2), encoding(RestateEncoding))]
+    Numeric(u128),
+}
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct DedupSequenceNrQueryRequest {
+    // ProducerId of the deduplication information
+    // required.
+    #[bilrost(oneof(1, 2))]
+    pub producer_id: ProducerId,
+}
+
+bilrost_wire_codec!(DedupSequenceNrQueryRequest);
+
+/// Last sequence number recorded by the partition processor
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct DedupSequenceNrQueryResponse {
+    #[bilrost(1)]
+    pub status: ResponseStatus,
+    #[bilrost(2)]
+    pub sequence_number: Option<MessageIndex>,
+}
+
+bilrost_wire_codec!(DedupSequenceNrQueryResponse);
+
+define_rpc! {
+    @request = DedupSequenceNrQueryRequest,
+    @response = DedupSequenceNrQueryResponse,
+    @service = PartitionLeaderService,
 }

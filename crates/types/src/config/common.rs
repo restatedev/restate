@@ -459,6 +459,18 @@ pub struct CommonOptions {
     /// unless you are trying to recover a cluster from previous synchronization-related issues.
     #[serde(default)]
     hlc_max_drift: FriendlyDuration,
+
+    /// # Experimental Kafka batch ingestion
+    ///
+    /// Use the new experimental kafka ingestion path which leverages batching
+    /// for a faster kafka ingestion.
+    ///
+    /// Set to `true` to enable the experimental ingestion mechanism.
+    ///
+    /// The legacy path will be removed in v1.7.
+    ///
+    /// Defaults to `false` in v1.6.
+    pub experimental_kafka_batch_ingestion: bool,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -684,6 +696,7 @@ impl Default for CommonOptions {
             gossip: GossipOptions::default(),
             experimental_enable_vqueues: false,
             hlc_max_drift: FriendlyDuration::from_millis(5000),
+            experimental_kafka_batch_ingestion: false,
         }
     }
 }
@@ -1062,6 +1075,62 @@ impl Default for TracingOptions {
             tracing_json_path: None,
             tracing_filter: "info".to_owned(),
             tracing_headers: SerdeableHeaderHashMap::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(
+        title = "Ingestion Options",
+        description = "Options for ingestion client"
+    )
+)]
+pub struct IngestionOptions {
+    /// # Inflight Memory Budget
+    ///
+    /// Maximum total size of in-flight ingestion requests in bytes.
+    /// Tune this to your workload so there are enough unpersisted
+    /// requests for efficient batching without exhausting memory.
+    ///
+    /// Defaults to 1 MiB.
+    pub inflight_memory_budget: NonZeroByteCount,
+
+    /// # Connection retry policy
+    ///
+    /// Retry policy for the ingestion client. It must allow unlimited
+    /// retries; if configured with a cap, the client falls back to
+    /// retrying every 2 seconds.
+    pub connection_retry_policy: RetryPolicy,
+
+    /// # Request Batch Size
+    ///
+    /// Maximum size of a single ingestion request batch.
+    /// Tune to keep enough requests per batch for
+    /// throughput; overly large batches can increase tail latency.
+    ///
+    /// Defaults to 50 KiB.
+    pub request_batch_size: NonZeroByteCount,
+}
+
+impl Default for IngestionOptions {
+    fn default() -> Self {
+        Self {
+            inflight_memory_budget: NonZeroByteCount::new(
+                NonZeroUsize::new(1024 * 1024).expect("non zero"),
+            ), //1 MiB
+            connection_retry_policy: RetryPolicy::exponential(
+                Duration::from_millis(10),
+                2.0,
+                None,
+                Some(Duration::from_secs(2)),
+            ),
+            request_batch_size: NonZeroByteCount::new(
+                NonZeroUsize::new(50 * 1024).expect("non zero"),
+            ),
         }
     }
 }

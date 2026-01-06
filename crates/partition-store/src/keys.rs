@@ -487,6 +487,21 @@ impl KeyCodec for PaddedPartitionId {
     }
 }
 
+impl KeyCodec for u128 {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        // store u128 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
+        target.put_u128(*self);
+    }
+
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        Ok(source.get_u128())
+    }
+
+    fn serialized_length(&self) -> usize {
+        16
+    }
+}
+
 impl KeyCodec for UniqueTimestamp {
     fn encode<B: BufMut>(&self, target: &mut B) {
         // store u64 in big-endian order to support byte-wise increment operation. See `crate::scan::try_increment`.
@@ -640,6 +655,10 @@ impl KeyCodec for ProducerId {
                 target.put_u8(1);
                 KeyCodec::encode(i, target)
             }
+            ProducerId::Producer(i) => {
+                target.put_u8(2);
+                KeyCodec::encode(&u128::from(*i), target)
+            }
         }
     }
 
@@ -650,6 +669,7 @@ impl KeyCodec for ProducerId {
                 ProducerId::Partition(padded.into())
             }
             1 => ProducerId::Other(KeyCodec::decode(source)?),
+            2 => ProducerId::Producer(u128::decode(source)?.into()),
             i => {
                 return Err(StorageError::Generic(anyhow!(
                     "Unexpected wrong discriminator for SequenceNumberSource: {}",
@@ -663,6 +683,7 @@ impl KeyCodec for ProducerId {
         1 + match self {
             ProducerId::Partition(p) => KeyCodec::serialized_length(&PaddedPartitionId::from(*p)),
             ProducerId::Other(i) => KeyCodec::serialized_length(i),
+            ProducerId::Producer(i) => KeyCodec::serialized_length(&u128::from(*i)),
         }
     }
 }

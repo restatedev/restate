@@ -8,32 +8,35 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashSet;
-use std::time::Duration;
-
 use anyhow::Context;
-use restate_wal_protocol::Envelope;
-use tokio::sync::mpsc;
-use tracing::warn;
+use restate_core::network::{Networking, TransportConnect};
+use restate_core::partitions::PartitionRouting;
+use std::collections::HashSet;
 
+use restate_bifrost::Bifrost;
 use restate_core::cancellation_watcher;
-use restate_core::network::TransportConnect;
-use restate_ingestion_client::IngestionClient;
 use restate_types::config::IngressOptions;
 use restate_types::identifiers::SubscriptionId;
 use restate_types::live::{Live, LiveLoad};
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
 use restate_types::schema::subscriptions::{Source, Subscription};
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tracing::warn;
 
-use super::*;
-use crate::builder::EnvelopeBuilder;
-use crate::subscription_controller::task_orchestrator::TaskOrchestrator;
+use crate::legacy::consumer_task::{self, MessageSender};
+use crate::legacy::dispatcher::KafkaIngressDispatcher;
+use crate::legacy::metric_definitions;
+use crate::legacy::subscription_controller::task_orchestrator::TaskOrchestrator;
+use crate::{Command, SubscriptionCommandReceiver, SubscriptionCommandSender};
 
 // For simplicity of the current implementation, this currently lives in this module
 // In future versions, we should either pull this out in a separate process, or generify it and move it to the worker, or an ad-hoc module
 pub struct Service<T> {
-    ingestion: IngestionClient<T, Envelope>,
+    networking: Networking<T>,
+    partition_routing: PartitionRouting,
+    dispatcher: KafkaIngressDispatcher,
     schema: Live<Schema>,
 
     commands_tx: SubscriptionCommandSender,
@@ -44,12 +47,19 @@ impl<T> Service<T>
 where
     T: TransportConnect,
 {
-    pub fn new(ingestion: IngestionClient<T, Envelope>, schema: Live<Schema>) -> Self {
+    pub fn new(
+        networking: Networking<T>,
+        partition_routing: PartitionRouting,
+        bifrost: Bifrost,
+        schema: Live<Schema>,
+    ) -> Self {
         metric_definitions::describe_metrics();
         let (commands_tx, commands_rx) = mpsc::channel(10);
 
         Service {
-            ingestion,
+            networking,
+            partition_routing,
+            dispatcher: KafkaIngressDispatcher::new(bifrost),
             schema,
             commands_tx,
             commands_rx,
@@ -139,10 +149,11 @@ where
 
         // Create the consumer task
         let consumer_task = consumer_task::ConsumerTask::new(
+            self.networking.clone(),
+            self.partition_routing.clone(),
             client_config,
             vec![topic.to_string()],
-            self.ingestion.clone(),
-            EnvelopeBuilder::new(subscription, self.schema.clone()),
+            MessageSender::new(subscription, self.dispatcher.clone(), self.schema.clone()),
         );
 
         task_orchestrator.start(subscription_id, consumer_task);
@@ -183,7 +194,8 @@ where
 }
 
 mod task_orchestrator {
-    use crate::consumer_task;
+    use crate::Error;
+    use crate::legacy::consumer_task;
     use restate_core::network::TransportConnect;
     use restate_core::{TaskCenterFutureExt, TaskKind};
     use restate_timer_queue::TimerQueue;
@@ -215,7 +227,7 @@ mod task_orchestrator {
         retry_policy: RetryPolicy,
         running_tasks_to_subscriptions: HashMap<task::Id, SubscriptionId>,
         subscription_id_to_task_state: HashMap<SubscriptionId, TaskState<T>>,
-        tasks: JoinSet<Result<(), crate::Error>>,
+        tasks: JoinSet<Result<(), Error>>,
         timer_queue: TimerQueue<SubscriptionId>,
     }
 
@@ -248,10 +260,7 @@ mod task_orchestrator {
             self.tasks.is_empty() && self.timer_queue.is_empty()
         }
 
-        fn handle_task_closed(
-            &mut self,
-            result: Result<(task::Id, Result<(), crate::Error>), JoinError>,
-        ) {
+        fn handle_task_closed(&mut self, result: Result<(task::Id, Result<(), Error>), JoinError>) {
             let task_id = match result {
                 Ok((id, _)) => id,
                 Err(ref err) => err.id(),
