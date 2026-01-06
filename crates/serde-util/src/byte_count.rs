@@ -73,17 +73,17 @@ impl schemars::JsonSchema for ByteCount<false> {
 }
 
 impl ByteCount<true> {
-    pub fn new(value: u64) -> Self {
+    pub const fn new(value: u64) -> Self {
         Self(value)
     }
 }
 
 impl ByteCount<false> {
-    pub fn new(value: NonZeroUsize) -> Self {
-        Self(usize::from(value) as u64)
+    pub const fn new(value: NonZeroUsize) -> Self {
+        Self(value.get() as u64)
     }
 
-    pub fn as_non_zero_usize(&self) -> NonZeroUsize {
+    pub const fn as_non_zero_usize(&self) -> NonZeroUsize {
         NonZeroUsize::new(self.0 as usize).expect("ByteCount is not zero")
     }
 }
@@ -95,11 +95,11 @@ impl<const CAN_BE_ZERO: bool> Display for ByteCount<CAN_BE_ZERO> {
 }
 
 impl<const CAN_BE_ZERO: bool> ByteCount<CAN_BE_ZERO> {
-    pub fn as_u64(&self) -> u64 {
+    pub const fn as_u64(&self) -> u64 {
         self.0
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub const fn as_usize(&self) -> usize {
         self.0 as usize
     }
 }

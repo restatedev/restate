@@ -21,8 +21,8 @@ use tracing::{debug, warn};
 
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, PeerNetAddress};
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 
-use super::MAX_MESSAGE_SIZE;
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
@@ -52,18 +52,19 @@ impl TransportConnect for GrpcConnector {
         };
 
         debug!("Connecting to {} at {}", destination, address);
-        let channel = create_channel(address, swimlane, &Configuration::pinned().networking);
+        let networking = &Configuration::pinned().networking;
+        let channel = create_channel(address, swimlane, networking);
 
         // Establish the connection
         let client = CoreNodeSvcClient::new(channel)
-            .max_decoding_message_size(MAX_MESSAGE_SIZE)
+            .max_decoding_message_size(networking.message_size_limit().get())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
         // Apply send compression only if compression is enabled. Note that this doesn't impact the
         // "receive" compression. The receive compression is always applied if the peer compresses
         // its send stream.
-        let mut client = if Configuration::pinned().networking.disable_compression {
+        let mut client = if networking.disable_compression {
             client
         } else {
             client.send_compressed(DEFAULT_GRPC_COMPRESSION)

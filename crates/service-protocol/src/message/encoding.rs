@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::mem;
+use std::num::NonZeroUsize;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytes_utils::SegmentedBuf;
@@ -30,7 +31,7 @@ pub enum EncodingError {
     UnknownMessageType(#[from] UnknownMessageType),
     #[error("hit message size limit: {0} >= {1}")]
     #[code(restate_errors::RT0003)]
-    MessageSizeLimit(usize, usize),
+    MessageSizeLimit(usize, NonZeroUsize),
 }
 
 // --- Input message encoder
@@ -126,15 +127,15 @@ fn encode_msg(msg: &ProtocolMessage, buf: &mut impl BufMut) -> Result<(), prost:
 pub struct Decoder {
     buf: SegmentedBuf<Bytes>,
     state: DecoderState,
-    message_size_warning: usize,
-    message_size_limit: usize,
+    message_size_warning: NonZeroUsize,
+    message_size_limit: NonZeroUsize,
 }
 
 impl Decoder {
     pub fn new(
         service_protocol_version: ServiceProtocolVersion,
-        message_size_warning: usize,
-        message_size_limit: Option<usize>,
+        message_size_warning: NonZeroUsize,
+        message_size_limit: NonZeroUsize,
     ) -> Self {
         assert_ne!(
             service_protocol_version,
@@ -145,7 +146,7 @@ impl Decoder {
             buf: SegmentedBuf::new(),
             state: DecoderState::WaitingHeader,
             message_size_warning,
-            message_size_limit: message_size_limit.unwrap_or(usize::MAX),
+            message_size_limit,
         }
     }
 
@@ -198,8 +199,8 @@ impl DecoderState {
     fn decode(
         &mut self,
         mut buf: impl Buf,
-        message_size_warning: usize,
-        message_size_limit: usize,
+        message_size_warning: NonZeroUsize,
+        message_size_limit: NonZeroUsize,
     ) -> Result<Option<(MessageHeader, ProtocolMessage)>, EncodingError> {
         let mut res = None;
 
@@ -209,7 +210,7 @@ impl DecoderState {
                 let message_length =
                     usize::try_from(header.frame_length()).expect("u32 must convert into usize");
 
-                if message_length >= message_size_warning {
+                if message_length >= message_size_warning.get() {
                     warn!(
                         "Message size warning for '{:?}': {} >= {}. \
                     Generating very large messages can make the system unstable if configured with too little memory. \
@@ -219,7 +220,7 @@ impl DecoderState {
                         ByteCount::from(message_size_warning),
                     );
                 }
-                if message_length >= message_size_limit {
+                if message_length >= message_size_limit.get() {
                     return Err(EncodingError::MessageSizeLimit(
                         message_length,
                         message_size_limit,
@@ -383,7 +384,11 @@ mod tests {
     #[test]
     fn fill_decoder_with_several_messages() {
         let mut encoder = Encoder::new(ServiceProtocolVersion::V1);
-        let mut decoder = Decoder::new(ServiceProtocolVersion::V1, usize::MAX, None);
+        let mut decoder = Decoder::new(
+            ServiceProtocolVersion::V1,
+            NonZeroUsize::MAX,
+            NonZeroUsize::MAX,
+        );
 
         let expected_msg_0 = ProtocolMessage::new_start_message(
             "key".into(),
@@ -440,7 +445,11 @@ mod tests {
 
     fn partial_decoding_test(split_index: usize) {
         let mut encoder = Encoder::new(ServiceProtocolVersion::V1);
-        let mut decoder = Decoder::new(ServiceProtocolVersion::V1, usize::MAX, None);
+        let mut decoder = Decoder::new(
+            ServiceProtocolVersion::V1,
+            NonZeroUsize::MAX,
+            NonZeroUsize::MAX,
+        );
 
         let expected_msg: ProtocolMessage = ProtobufRawEntryCodec::serialize_as_input_entry(
             vec![],
@@ -467,8 +476,8 @@ mod tests {
     fn hit_message_size_limit() {
         let mut decoder = Decoder::new(
             ServiceProtocolVersion::V1,
-            (u8::MAX / 2) as usize,
-            Some(u8::MAX as usize),
+            NonZeroUsize::new((u8::MAX / 2) as usize).unwrap(),
+            NonZeroUsize::new(u8::MAX as usize).unwrap(),
         );
 
         let mut encoder = Encoder::new(ServiceProtocolVersion::V1);
@@ -487,6 +496,6 @@ mod tests {
             EncodingError::MessageSizeLimit(msg_size, limit) = decoder.consume_next().unwrap_err()
         );
         assert_eq!(msg_size, expected_msg_size);
-        assert_eq!(limit, u8::MAX as usize)
+        assert_eq!(limit, NonZeroUsize::new(u8::MAX as usize).unwrap())
     }
 }

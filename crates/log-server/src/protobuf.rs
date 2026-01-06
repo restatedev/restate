@@ -15,12 +15,13 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 
 /// Creates a new ClusterCtrlSvcClient with appropriate configuration
 #[cfg(feature = "clients")]
-pub fn new_log_server_client(
+pub fn new_log_server_client<O: restate_types::net::connect_opts::GrpcConnectionOptions>(
     channel: tonic::transport::Channel,
+    connection_options: &O,
 ) -> log_server_svc_client::LogServerSvcClient<tonic::transport::Channel> {
-    use restate_core::network::grpc::{DEFAULT_GRPC_COMPRESSION, MAX_MESSAGE_SIZE};
+    use restate_core::network::grpc::DEFAULT_GRPC_COMPRESSION;
     log_server_svc_client::LogServerSvcClient::new(channel)
-        .max_decoding_message_size(MAX_MESSAGE_SIZE)
+        .max_decoding_message_size(connection_options.max_message_size().get())
         // note: the order of those calls defines the priority
         .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
         .accept_compressed(tonic::codec::CompressionEncoding::Gzip)

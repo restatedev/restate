@@ -15,6 +15,7 @@ use tonic::{Request, Response, Status, Streaming};
 use tracing::warn;
 
 use restate_types::config::NetworkingOptions;
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 
 use crate::network::ConnectionManager;
 use crate::network::protobuf::core_node_svc::core_node_svc_server::{
@@ -22,8 +23,6 @@ use crate::network::protobuf::core_node_svc::core_node_svc_server::{
 };
 use crate::network::protobuf::core_node_svc::{RpcRequest, RpcResponse};
 use crate::network::protobuf::network::Message;
-
-use super::MAX_MESSAGE_SIZE;
 
 pub struct CoreNodeSvcHandler {
     connections: ConnectionManager,
@@ -36,7 +35,7 @@ impl CoreNodeSvcHandler {
 
     pub fn into_server(self, config: &NetworkingOptions) -> CoreNodeSvcServer<Self> {
         let server = CoreNodeSvcServer::new(self)
-            .max_decoding_message_size(MAX_MESSAGE_SIZE)
+            .max_decoding_message_size(config.message_size_limit().get())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
