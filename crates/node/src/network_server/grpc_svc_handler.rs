@@ -57,7 +57,6 @@ impl NodeCtlSvcHandler {
     pub fn into_server(self, config: &NetworkingOptions) -> NodeCtlSvcServer<Self> {
         let server = NodeCtlSvcServer::new(self)
             .max_decoding_message_size(config.max_message_size.as_usize())
-            .max_encoding_message_size(config.max_message_size.as_usize())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
@@ -276,7 +275,6 @@ impl MetadataProxySvcHandler {
         let server = MetadataProxySvcServer::new(self)
             // note: the order of those calls defines the priority
             .max_decoding_message_size(config.max_message_size.as_usize())
-            .max_encoding_message_size(config.max_message_size.as_usize())
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
         if config.disable_compression {
