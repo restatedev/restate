@@ -34,7 +34,8 @@ use tracing::{debug, error, info, info_span, instrument, trace, warn};
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{
-    BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver, Verdict,
+    BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver,
+    TransportConnect, Verdict,
 };
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{
@@ -42,6 +43,7 @@ use restate_core::{
     my_node_id,
 };
 use restate_core::{RuntimeTaskHandle, TaskCenter};
+use restate_ingestion_client::IngestionClient;
 use restate_invoker_api::StatusHandle;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_invoker_impl::ChannelStatusReader;
@@ -77,6 +79,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString};
+use restate_wal_protocol::Envelope;
 
 use crate::metric_definitions::NUM_PARTITIONS;
 use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
@@ -107,7 +110,7 @@ impl From<&PartitionSnapshotMetadata> for SnapshotCreated {
     }
 }
 
-pub struct PartitionProcessorManager {
+pub struct PartitionProcessorManager<T> {
     health_status: HealthStatus<WorkerStatus>,
     updateable_config: Live<Configuration>,
     processor_states: BTreeMap<PartitionId, ProcessorState>,
@@ -138,6 +141,8 @@ pub struct PartitionProcessorManager {
     wait_for_partition_table_update: bool,
 
     invoker_capacity: InvokerCapacity,
+
+    ingestion_client: IngestionClient<T, Envelope>,
 }
 
 type SnapshotResult = Result<SnapshotCreated, SnapshotError>;
@@ -243,7 +248,10 @@ impl StatusHandle for MultiplexedInvokerStatusReader {
     }
 }
 
-impl PartitionProcessorManager {
+impl<T> PartitionProcessorManager<T>
+where
+    T: TransportConnect,
+{
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         health_status: HealthStatus<WorkerStatus>,
@@ -254,6 +262,7 @@ impl PartitionProcessorManager {
         router_builder: &mut MessageRouterBuilder,
         bifrost: Bifrost,
         snapshot_repository: Option<SnapshotRepository>,
+        ingestion_client: IngestionClient<T, Envelope>,
     ) -> Self {
         let ppm_svc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
         let pp_rpc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
@@ -292,6 +301,7 @@ impl PartitionProcessorManager {
             partition_table: Metadata::with_current(|m| m.updateable_partition_table()),
             wait_for_partition_table_update: false,
             invoker_capacity,
+            ingestion_client,
         }
     }
 
@@ -1300,6 +1310,7 @@ impl PartitionProcessorManager {
             self.partition_store_manager.clone(),
             self.fast_forward_on_startup.remove(&partition_id),
             self.invoker_capacity.clone(),
+            self.ingestion_client.clone(),
         );
 
         self.asynchronous_operations
@@ -1457,7 +1468,9 @@ mod tests {
     use googletest::IntoTestResult;
     use restate_bifrost::BifrostService;
     use restate_bifrost::providers::memory_loglet;
+    use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
+    use restate_ingestion_client::IngestionClient;
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
@@ -1471,6 +1484,7 @@ mod tests {
         MemberState, PartitionReplicaSetStates, ReplicaSetState,
     };
     use restate_types::{GenerationalNodeId, Version};
+    use std::num::NonZeroUsize;
     use std::time::Duration;
     use test_log::test;
     use tracing::info;
@@ -1505,6 +1519,14 @@ mod tests {
 
         let partition_store_manager = PartitionStoreManager::create().await?;
 
+        let ingestion_client = IngestionClient::new(
+            env_builder.networking.clone(),
+            env_builder.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            None,
+        );
+
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             Live::from_value(Configuration::default()),
@@ -1514,6 +1536,7 @@ mod tests {
             &mut env_builder.router_builder,
             bifrost,
             None,
+            ingestion_client,
         );
 
         // only needed for setting up the metadata

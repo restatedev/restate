@@ -471,6 +471,17 @@ pub struct CommonOptions {
     ///
     /// Defaults to `false` in v1.6.
     pub experimental_kafka_batch_ingestion: bool,
+
+    /// # Experimental Shuffler batch ingestion
+    ///
+    /// Use the new experimental batch ingestion path.
+    ///
+    /// Set to `true` to enable the experimental ingestion mechanism.
+    ///
+    /// The legacy path will be removed in v1.7.
+    ///
+    /// Defaults to `false` in v1.6.
+    pub experimental_shuffler_batch_ingestion: bool,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -697,6 +708,7 @@ impl Default for CommonOptions {
             experimental_enable_vqueues: false,
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental_kafka_batch_ingestion: false,
+            experimental_shuffler_batch_ingestion: false,
         }
     }
 }

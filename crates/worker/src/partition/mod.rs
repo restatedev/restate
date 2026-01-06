@@ -31,10 +31,13 @@ use tracing::{Span, debug, error, info, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
-use restate_core::network::{Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, Verdict};
+use restate_core::network::{
+    Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, TransportConnect, Verdict,
+};
 use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_watcher, my_node_id,
 };
+use restate_ingestion_client::IngestionClient;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction};
 use restate_storage_api::deduplication_table::{
@@ -117,12 +120,16 @@ where
         }
     }
 
-    pub async fn build(
+    pub async fn build<T>(
         self,
         bifrost: Bifrost,
+        ingestion_client: IngestionClient<T, Envelope>,
         mut partition_store: PartitionStore,
         replica_set_states: PartitionReplicaSetStates,
-    ) -> Result<PartitionProcessor<InvokerInputSender>, state_machine::Error> {
+    ) -> Result<PartitionProcessor<T, InvokerInputSender>, state_machine::Error>
+    where
+        T: TransportConnect,
+    {
         let PartitionProcessorBuilder {
             invoker_tx,
             target_leader_state_rx,
@@ -167,6 +174,7 @@ where
             Arc::clone(partition_store.partition()),
             invoker_tx,
             invoker_capacity,
+            ingestion_client,
             bifrost.clone(),
             last_seen_leader_epoch,
             trim_queue.clone(),
@@ -223,9 +231,9 @@ where
     }
 }
 
-pub struct PartitionProcessor<InvokerSender> {
+pub struct PartitionProcessor<T, InvokerSender> {
     partition_id_str: SharedString,
-    leadership_state: LeadershipState<InvokerSender>,
+    leadership_state: LeadershipState<T, InvokerSender>,
     state_machine: StateMachine,
     bifrost: Bifrost,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
@@ -303,8 +311,9 @@ enum OrderedOp {
     },
 }
 
-impl<InvokerSender> PartitionProcessor<InvokerSender>
+impl<T, InvokerSender> PartitionProcessor<T, InvokerSender>
 where
+    T: TransportConnect,
     InvokerSender: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>> + Clone,
 {
     #[instrument(
