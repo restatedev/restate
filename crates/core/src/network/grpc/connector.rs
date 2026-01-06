@@ -56,7 +56,6 @@ impl TransportConnect for GrpcConnector {
 
         // Establish the connection
         let client = CoreNodeSvcClient::new(channel)
-            .max_encoding_message_size(MAX_MESSAGE_SIZE)
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)

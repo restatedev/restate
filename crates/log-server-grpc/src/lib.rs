@@ -28,7 +28,6 @@ pub fn new_log_server_client(
 
     log_server_svc_client::LogServerSvcClient::new(channel)
         .max_decoding_message_size(MAX_MESSAGE_SIZE)
-        .max_encoding_message_size(MAX_MESSAGE_SIZE)
         // note: the order of those calls defines the priority
         .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
         .accept_compressed(tonic::codec::CompressionEncoding::Gzip)

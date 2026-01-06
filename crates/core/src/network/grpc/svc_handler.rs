@@ -37,7 +37,6 @@ impl CoreNodeSvcHandler {
     pub fn into_server(self, config: &NetworkingOptions) -> CoreNodeSvcServer<Self> {
         let server = CoreNodeSvcServer::new(self)
             .max_decoding_message_size(MAX_MESSAGE_SIZE)
-            .max_encoding_message_size(MAX_MESSAGE_SIZE)
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
