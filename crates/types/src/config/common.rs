@@ -22,8 +22,8 @@ use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
-    AwsLambdaOptions, GossipOptions, HttpOptions, InvalidConfigurationError, ObjectStoreOptions,
-    PerfStatsLevel, RocksDbOptions,
+    AwsLambdaOptions, DEFAULT_MESSAGE_SIZE_LIMIT, GossipOptions, HttpOptions,
+    InvalidConfigurationError, ObjectStoreOptions, PerfStatsLevel, RocksDbOptions,
 };
 use crate::PlainNodeId;
 use crate::config::NetworkingOptions;
@@ -803,27 +803,30 @@ pub struct MetadataClientOptions {
     /// Backoff policy used by the metadata client when it encounters concurrent modifications.
     pub backoff_policy: RetryPolicy,
 
-    /// # Max Grpc Message Size
+    /// # Metadata Network Message Size
     ///
-    /// Limits the maximum size of a grpc message.
+    /// Maximum size of network messages that metadata client can receive from a metadata server.
     ///
-    /// Default: `10MB`
-    #[cfg_attr(feature = "schemars", schemars(skip))]
+    /// If unset, defaults to `networking.message-size-limit`. If set, it will be clamped at
+    /// the value of `networking.message-size-limit` since larger messages cannot be transmitted
+    /// over the cluster internal network.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_message_size: Option<NonZeroByteCount>,
+    pub message_size_limit: Option<NonZeroByteCount>,
 }
 
 impl MetadataClientOptions {
     pub(crate) fn merge(&mut self, network_options: &NetworkingOptions) {
-        if self.max_message_size.is_none() {
-            self.max_message_size = Some(network_options.max_message_size);
-        }
+        self.message_size_limit = Some(
+            self.message_size_limit
+                .map(|limit| limit.min(network_options.message_size_limit))
+                .unwrap_or(network_options.message_size_limit),
+        );
     }
 
-    pub fn max_message_size(&self) -> usize {
-        self.max_message_size
-            .map(|v| v.as_usize())
-            .unwrap_or(10 * 1024 * 1024)
+    pub fn message_size_limit(&self) -> NonZeroUsize {
+        self.message_size_limit
+            .map(|v| v.as_non_zero_usize())
+            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT)
     }
 }
 
@@ -841,7 +844,7 @@ impl Default for MetadataClientOptions {
                 Some(10),
                 Some(Duration::from_millis(1000)),
             ),
-            max_message_size: None,
+            message_size_limit: None,
         }
     }
 }
