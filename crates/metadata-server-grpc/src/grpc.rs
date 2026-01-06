@@ -28,7 +28,7 @@ where
     pub const DEFAULT_GRPC_COMPRESSION: CompressionEncoding = CompressionEncoding::Zstd;
 
     metadata_server_svc_client::MetadataServerSvcClient::new(channel)
-        .max_decoding_message_size(connection_options.max_message_size())
+        .max_decoding_message_size(connection_options.message_size_limit().get())
         // note: the order of those calls defines the priority
         .accept_compressed(CompressionEncoding::Zstd)
         .accept_compressed(CompressionEncoding::Gzip)

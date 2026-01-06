@@ -22,7 +22,7 @@ pub mod cluster_ctrl_svc {
         connection_options: &O,
     ) -> cluster_ctrl_svc_client::ClusterCtrlSvcClient<tonic::transport::Channel> {
         cluster_ctrl_svc_client::ClusterCtrlSvcClient::new(channel)
-            .max_decoding_message_size(connection_options.max_message_size())
+            .max_decoding_message_size(connection_options.message_size_limit().get())
             // note: the order of those calls defines the priority
             .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
             .accept_compressed(tonic::codec::CompressionEncoding::Gzip)
@@ -68,7 +68,7 @@ pub mod node_ctl_svc {
         connection_options: &O,
     ) -> NodeCtlSvcClient<Channel> {
         node_ctl_svc_client::NodeCtlSvcClient::new(channel)
-            .max_decoding_message_size(connection_options.max_message_size())
+            .max_decoding_message_size(connection_options.message_size_limit().get())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip)

@@ -194,6 +194,7 @@ impl Configuration {
             .common
             .set_derived_values(&config.networking)
             .unwrap();
+        config.worker.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
         config.ingress.set_derived_values(&config.common);
         config
@@ -206,6 +207,7 @@ impl Configuration {
             .common
             .set_derived_values(&config.networking)
             .unwrap();
+        config.worker.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
         config.ingress.set_derived_values(&config.common);
         config
