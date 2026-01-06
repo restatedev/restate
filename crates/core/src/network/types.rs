@@ -17,6 +17,7 @@ use bytes::Bytes;
 use futures::FutureExt;
 use tokio::sync::oneshot;
 
+use restate_time_util::DurationExt;
 use restate_types::net::address::AdvertisedAddress;
 use restate_types::net::address::FabricPort;
 use restate_types::net::metadata::MetadataKind;
@@ -176,7 +177,7 @@ pub enum RpcError {
     Send(#[from] MessageSendError),
     #[error(transparent)]
     Receive(#[from] RpcReplyError),
-    #[error("timed out")]
+    #[error("timed out after {}", .0.friendly())]
     Timeout(Duration),
 }
 
