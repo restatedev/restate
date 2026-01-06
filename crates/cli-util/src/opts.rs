@@ -8,13 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use clap::{Args, ValueEnum};
 use clap_verbosity_flag::{LogLevel, VerbosityFilter};
 use cling::Collect;
 
-use restate_types::net::connect_opts::{CommonClientConnectionOptions, GrpcConnectionOptions};
+use restate_types::config::DEFAULT_MESSAGE_SIZE_LIMIT;
+use restate_types::net::connect_opts::{
+    CommonClientConnectionOptions, GrpcConnectionOptions, MESSAGE_SIZE_OVERHEAD,
+};
 
 const DEFAULT_CONNECT_TIMEOUT: u64 = 3_000;
 const DEFAULT_REQUEST_TIMEOUT: u64 = 13_000;
@@ -79,7 +83,7 @@ pub(crate) struct ConfirmMode {
     pub yes: bool,
 }
 
-#[derive(Args, Clone, Default)]
+#[derive(Args, Clone)]
 pub struct NetworkOpts {
     /// Connection timeout for network calls, in milliseconds.
     #[arg(long, default_value_t = DEFAULT_CONNECT_TIMEOUT, global = true)]
@@ -91,14 +95,26 @@ pub struct NetworkOpts {
     /// insecure
     #[arg[long = "insecure-skip-tls-verify", default_value_t = false, global = true]]
     pub insecure_skip_tls_verify: bool,
-    /// Limits the maximum size of a grpc message.
-    #[arg[long, default_value_t = 10*1024*1024, global = true, hide = true]]
-    pub max_message_size: usize,
+    /// Sets the maximum size of a network messages.
+    #[arg[long, default_value_t = DEFAULT_MESSAGE_SIZE_LIMIT, global = true, hide = true]]
+    pub message_size_limit: NonZeroUsize,
+}
+
+impl Default for NetworkOpts {
+    fn default() -> Self {
+        Self {
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            insecure_skip_tls_verify: false,
+            message_size_limit: DEFAULT_MESSAGE_SIZE_LIMIT,
+        }
+    }
 }
 
 impl GrpcConnectionOptions for NetworkOpts {
-    fn max_message_size(&self) -> usize {
-        self.max_message_size
+    fn message_size_limit(&self) -> NonZeroUsize {
+        self.message_size_limit
+            .saturating_add(MESSAGE_SIZE_OVERHEAD)
     }
 }
 

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
@@ -1152,8 +1153,8 @@ impl<S> DecoderStream<S> {
     fn new(
         inner: S,
         service_protocol_version: ServiceProtocolVersion,
-        message_size_warning: usize,
-        message_size_limit: Option<usize>,
+        message_size_warning: NonZeroUsize,
+        message_size_limit: NonZeroUsize,
     ) -> Self {
         Self {
             inner,

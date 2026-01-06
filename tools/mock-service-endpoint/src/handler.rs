@@ -10,6 +10,7 @@
 
 use std::convert::Infallible;
 use std::fmt::{Display, Formatter};
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 
 use async_stream::{stream, try_stream};
@@ -83,7 +84,11 @@ pub async fn serve(
     };
 
     let req_body = BodyStream::new(req_body);
-    let mut decoder = Decoder::new(ServiceProtocolVersion::V5, usize::MAX, None);
+    let mut decoder = Decoder::new(
+        ServiceProtocolVersion::V5,
+        NonZeroUsize::MAX,
+        NonZeroUsize::MAX,
+    );
     let mut encoder = Encoder::new(ServiceProtocolVersion::V5);
 
     let incoming = stream! {

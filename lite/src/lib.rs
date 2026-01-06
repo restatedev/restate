@@ -201,6 +201,7 @@ impl Restate {
         config.common.set_derived_values(&config.networking)?;
         config.ingress.set_derived_values(&config.common);
         config.admin.set_derived_values(&config.common);
+        config.worker.set_derived_values(&config.networking)?;
         let config = config.apply_cascading_values();
         config.validate()?;
 

@@ -19,7 +19,10 @@ use tracing::warn;
 use restate_serde_util::NonZeroByteCount;
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
-use super::{CommonOptions, ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{
+    CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions, ObjectStoreOptions,
+    RocksDbOptions, RocksDbOptionsBuilder,
+};
 use crate::config::IngestionOptions;
 use crate::identifiers::PartitionId;
 use crate::rate::Rate;
@@ -106,6 +109,11 @@ pub struct WorkerOptions {
 }
 
 impl WorkerOptions {
+    /// set networking-derived values if they are not configured to reduce verbose configurations
+    pub fn set_derived_values(&mut self, opts: &NetworkingOptions) {
+        self.invoker.merge(opts);
+    }
+
     pub fn internal_queue_length(&self) -> usize {
         self.internal_queue_length.into()
     }
@@ -266,16 +274,18 @@ pub struct InvokerOptions {
     /// # Message size warning
     ///
     /// Threshold to log a warning in case protocol messages coming from a service are larger than the specified amount.
-    #[serde_as(as = "NonZeroByteCount")]
-    #[cfg_attr(feature = "schemars", schemars(with = "NonZeroByteCount"))]
-    pub message_size_warning: NonZeroUsize,
+    pub message_size_warning: NonZeroByteCount,
 
     /// # Message size limit
     ///
-    /// Threshold to fail the invocation in case protocol messages coming from a service are larger than the specified amount.
-    #[serde_as(as = "Option<NonZeroByteCount>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
-    message_size_limit: Option<NonZeroUsize>,
+    /// Maximum size of journal messages that can be received from a service. If a service sends a message
+    /// larger than this limit, the invocation will fail.
+    ///
+    /// If unset, defaults to `networking.message-size-limit`. If set, it will be clamped at
+    /// the value of `networking.message-size-limit` since larger messages cannot be transmitted
+    /// over the cluster internal network.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_size_limit: Option<NonZeroByteCount>,
 
     /// # Temporary directory
     ///
@@ -342,8 +352,18 @@ impl InvokerOptions {
         self.in_memory_queue_length_limit.into()
     }
 
-    pub fn message_size_limit(&self) -> Option<usize> {
-        self.message_size_limit.map(Into::into)
+    pub fn message_size_limit(&self) -> NonZeroUsize {
+        self.message_size_limit
+            .map(|v| v.as_non_zero_usize())
+            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT)
+    }
+
+    pub(crate) fn merge(&mut self, opts: &NetworkingOptions) {
+        self.message_size_limit = Some(
+            self.message_size_limit
+                .map(|limit| limit.min(opts.message_size_limit))
+                .unwrap_or(opts.message_size_limit),
+        );
     }
 }
 
@@ -353,7 +373,9 @@ impl Default for InvokerOptions {
             in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
             inactivity_timeout: FriendlyDuration::new(DEFAULT_INACTIVITY_TIMEOUT),
             abort_timeout: FriendlyDuration::new(DEFAULT_ABORT_TIMEOUT),
-            message_size_warning: NonZeroUsize::new(10 * 1024 * 1024).unwrap(), // 10MiB
+            message_size_warning: NonZeroByteCount::new(
+                NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            ),
             message_size_limit: None,
             tmp_dir: None,
             concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),

@@ -42,7 +42,7 @@ pub mod metadata_proxy_svc {
             options: &O,
         ) -> MetadataProxySvcClient<Channel> {
             MetadataProxySvcClient::new(connection_options)
-                .max_decoding_message_size(options.max_message_size())
+                .max_decoding_message_size(options.message_size_limit().get())
                 // note: the order of those calls defines the priority
                 .accept_compressed(CompressionEncoding::Zstd)
                 .accept_compressed(CompressionEncoding::Gzip)

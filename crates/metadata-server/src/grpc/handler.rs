@@ -30,6 +30,7 @@ use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::ConversionError;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::storage::StorageCodec;
 
@@ -71,7 +72,7 @@ impl MetadataServerHandler {
 
     pub fn into_server(self, config: &NetworkingOptions) -> MetadataServerSvcServer<Self> {
         let server = MetadataServerSvcServer::new(self)
-            .max_decoding_message_size(config.max_message_size.as_usize())
+            .max_decoding_message_size(config.message_size_limit().get())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);
