@@ -25,9 +25,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::network::{Oneshot, Reciprocal};
+use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
+use restate_ingestion_client::IngestionClient;
 use restate_invoker_api::InvokeInputJournal;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::PartitionStore;
@@ -59,9 +60,9 @@ use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_vqueues::{SchedulerService, VQueuesMeta, VQueuesMetaMut};
-use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability};
 use restate_wal_protocol::timer::TimerKeyValue;
+use restate_wal_protocol::{Command, Envelope};
 
 use crate::partition::cleaner::{self, Cleaner};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -156,26 +157,29 @@ impl State {
     }
 }
 
-pub(crate) struct LeadershipState<I> {
+pub(crate) struct LeadershipState<T, I> {
     state: State,
     last_seen_leader_epoch: Option<LeaderEpoch>,
 
     partition: Arc<Partition>,
     invoker_tx: I,
+    ingestion_client: IngestionClient<T, Envelope>,
     invoker_capacity: InvokerCapacity,
     bifrost: Bifrost,
     trim_queue: TrimQueue,
 }
 
-impl<I> LeadershipState<I>
+impl<T, I> LeadershipState<T, I>
 where
     I: restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
+    T: TransportConnect,
 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         partition: Arc<Partition>,
         invoker_tx: I,
         invoker_capacity: InvokerCapacity,
+        ingestion_client: IngestionClient<T, Envelope>,
         bifrost: Bifrost,
         last_seen_leader_epoch: Option<LeaderEpoch>,
         trim_queue: TrimQueue,
@@ -184,6 +188,7 @@ where
             state: State::Follower,
             partition,
             invoker_tx,
+            ingestion_client,
             invoker_capacity,
             bifrost,
             last_seen_leader_epoch,
@@ -412,7 +417,8 @@ where
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 config.worker.internal_queue_length(),
-                self.bifrost.clone(),
+                &self.bifrost,
+                self.ingestion_client.clone(),
             );
 
             let shuffle_hint_tx = shuffle.create_hint_sender();
@@ -597,7 +603,7 @@ where
     }
 }
 
-impl<I> LeadershipState<I> {
+impl<T, I> LeadershipState<T, I> {
     pub async fn handle_rpc_proposal_command(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
@@ -717,7 +723,9 @@ mod tests {
     use crate::partition::leadership::{LeadershipState, State};
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
+    use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
+    use restate_ingestion_client::IngestionClient;
     use restate_invoker_api::capacity::InvokerCapacity;
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::PartitionStoreManager;
@@ -731,6 +739,7 @@ mod tests {
     use restate_vqueues::VQueuesMetaMut;
     use restate_wal_protocol::control::AnnounceLeader;
     use restate_wal_protocol::{Command, Envelope};
+    use std::num::NonZeroUsize;
     use std::ops::RangeInclusive;
     use std::sync::Arc;
     use test_log::test;
@@ -751,11 +760,20 @@ mod tests {
 
         let partition_store_manager = PartitionStoreManager::create().await?;
 
+        let ingress = IngestionClient::new(
+            env.networking.clone(),
+            env.metadata.updateable_partition_table(),
+            PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+            NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
+            None,
+        );
+
         let invoker_tx = MockInvokerHandle::default();
         let mut state = LeadershipState::new(
             Arc::new(PARTITION),
             invoker_tx,
             InvokerCapacity::new_unlimited(),
+            ingress,
             bifrost.clone(),
             None,
             TrimQueue::default(),

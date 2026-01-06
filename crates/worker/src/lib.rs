@@ -22,6 +22,9 @@ mod subscription_integration;
 use std::sync::Arc;
 
 use codederror::CodedError;
+use restate_core::network::Swimlane;
+use restate_ingestion_client::SessionOptions;
+use restate_wal_protocol::Envelope;
 use tracing::info;
 
 use restate_bifrost::Bifrost;
@@ -52,7 +55,6 @@ use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::subscriptions::SubscriptionResolver;
-use restate_wal_protocol::Envelope;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition_processor_manager::PartitionProcessorManager;
@@ -98,7 +100,7 @@ pub struct Worker<T> {
     datafusion_remote_scanner: RemoteQueryScannerServer,
     ingress_kafka: IngressKafkaService<T>,
     subscription_controller_handle: SubscriptionControllerHandle,
-    partition_processor_manager: PartitionProcessorManager,
+    partition_processor_manager: PartitionProcessorManager<T>,
 }
 
 impl<T> Worker<T>
@@ -145,6 +147,24 @@ where
             )));
         }
 
+        // A dedicated ingestion client for PPM that uses
+        // BifrostData swimlane
+        let ppm_ingestion_client = IngestionClient::new(
+            networking.clone(),
+            Metadata::with_current(|m| m.updateable_partition_table()),
+            partition_routing.clone(),
+            config
+                .worker
+                .shuffle
+                .inflight_memory_budget
+                .as_non_zero_usize(),
+            Some(SessionOptions {
+                batch_size: config.worker.shuffle.request_batch_size.as_usize(),
+                connection_retry_policy: config.worker.shuffle.connection_retry_policy.clone(),
+                swimlane: Swimlane::BifrostData,
+            }),
+        );
+
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             Configuration::live(),
@@ -159,6 +179,7 @@ where
             )
             .await
             .map_err(BuildError::SnapshotRepository)?,
+            ppm_ingestion_client,
         );
 
         let remote_scanner_manager = RemoteScannerManager::new(
