@@ -14,6 +14,7 @@ use mlua::{Table, Value};
 use restate_service_protocol_v4::message_codec::{Decoder, Message, MessageType};
 use restate_time_util::DurationExt;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +33,11 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
     // We should store it somewhere, but right now wireshark doesn't support conversations in lua api
     // so we just keep it simple and assume all messages are self contained within the same http data frame
     // https://ask.wireshark.org/question/11650/lua-wireshark-dissector-combine-data-from-2-udp-packets
-    let mut dec = Decoder::new(ServiceProtocolVersion::V4, usize::MAX, None);
+    let mut dec = Decoder::new(
+        ServiceProtocolVersion::V4,
+        NonZeroUsize::MAX,
+        NonZeroUsize::MAX,
+    );
 
     // Convert the buffer and push it to the decoder
     let buf = match buf_lua {

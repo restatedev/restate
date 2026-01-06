@@ -514,7 +514,7 @@ impl MetadataStoreClient {
         value: &VersionedValue,
     ) -> Result<(), MetadataSizeHardLimitError> {
         let config = &Configuration::pinned().common.metadata_client;
-        let grp_msg_size_limit = config.max_message_size() as f64;
+        let grp_msg_size_limit = config.message_size_limit().get() as f64;
 
         let soft_limit = (grp_msg_size_limit * METADATA_SIZE_SOFT_LIMIT) as usize;
         let hard_limit = (grp_msg_size_limit * METADATA_SIZE_HARD_LIMIT) as usize;

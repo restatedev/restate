@@ -8,14 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{MetadataClientOptions, NetworkingOptions};
 
+/// Overhead added to user-facing max_message_size.
+///
+/// This accounts for message wrapping (headers, envelopes, encoding overhead)
+/// when messages are transmitted over the internal message fabric.
+pub const MESSAGE_SIZE_OVERHEAD: usize = 1 * 1024 * 1024; // 1 MiB
+
 pub trait GrpcConnectionOptions {
-    /// Gets the maximum message size for grpc servers and clients.
-    fn max_message_size(&self) -> usize;
+    /// The maximum message size for tonic gRPC configuration.
+    /// Implementations should add [`MESSAGE_SIZE_OVERHEAD`] to account for message
+    /// wrapping when transmitted over the internal network.
+    fn message_size_limit(&self) -> NonZeroUsize;
 }
 /// Helper trait to extract common client connection options from different configuration types.
 pub trait CommonClientConnectionOptions: GrpcConnectionOptions {
@@ -27,8 +36,8 @@ pub trait CommonClientConnectionOptions: GrpcConnectionOptions {
 }
 
 impl<T: GrpcConnectionOptions> GrpcConnectionOptions for &T {
-    fn max_message_size(&self) -> usize {
-        (*self).max_message_size()
+    fn message_size_limit(&self) -> NonZeroUsize {
+        (*self).message_size_limit()
     }
 }
 
@@ -61,8 +70,8 @@ impl<T> GrpcConnectionOptions for Arc<T>
 where
     T: GrpcConnectionOptions,
 {
-    fn max_message_size(&self) -> usize {
-        (**self).max_message_size()
+    fn message_size_limit(&self) -> NonZeroUsize {
+        (**self).message_size_limit()
     }
 }
 
@@ -92,8 +101,11 @@ where
 }
 
 impl GrpcConnectionOptions for NetworkingOptions {
-    fn max_message_size(&self) -> usize {
-        self.max_message_size.as_usize()
+    #[inline]
+    fn message_size_limit(&self) -> NonZeroUsize {
+        self.message_size_limit
+            .as_non_zero_usize()
+            .saturating_add(MESSAGE_SIZE_OVERHEAD)
     }
 }
 
@@ -120,8 +132,8 @@ impl CommonClientConnectionOptions for NetworkingOptions {
 }
 
 impl GrpcConnectionOptions for MetadataClientOptions {
-    fn max_message_size(&self) -> usize {
-        Self::max_message_size(self)
+    fn message_size_limit(&self) -> NonZeroUsize {
+        Self::message_size_limit(self).saturating_add(MESSAGE_SIZE_OVERHEAD)
     }
 }
 

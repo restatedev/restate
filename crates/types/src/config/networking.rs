@@ -14,9 +14,13 @@ use std::time::Duration;
 use restate_serde_util::NonZeroByteCount;
 use restate_time_util::NonZeroFriendlyDuration;
 
-use crate::retries::RetryPolicy;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+
+use crate::retries::RetryPolicy;
+
+/// The default maximum size for messages (32 MiB).
+pub const DEFAULT_MESSAGE_SIZE_LIMIT: NonZeroUsize = NonZeroUsize::new(32 * 1024 * 1024).unwrap();
 
 /// # Networking options
 ///
@@ -73,21 +77,26 @@ pub struct NetworkingOptions {
     /// Maximum theoretical value is 2^31-1 (2 GiB - 1), but we will sanitize this value to 500 MiB.
     data_stream_window_size: NonZeroByteCount,
 
-    // The network fabric gRPC server ignores `max_message_size`; it uses its own cap defined in crates/core/src/network/grpc/mod.rs.
-    // This setting is honored by metadata-server, metadata-proxy, the node ctl service, and other clients.
-    //
-    /// # Max Grpc Message Size
+    /// # Networking Message Size Limit
     ///
-    /// Limits the maximum size of a grpc message.
+    /// Maximum size of a message that can be sent or received over the network.
+    /// This applies to communication between Restate cluster nodes, as well as
+    /// between Restate servers and external tools such as CLI and management APIs.
     ///
-    /// Default: `10MB`
-    #[serde(default = "default_max_message_size")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    pub max_message_size: NonZeroByteCount,
+    /// Default: `32MiB`
+    #[serde(
+        default = "default_message_size_limit",
+        skip_serializing_if = "is_default_message_size_limit"
+    )]
+    pub message_size_limit: NonZeroByteCount,
 }
 
-fn default_max_message_size() -> NonZeroByteCount {
-    NonZeroByteCount::new(NonZeroUsize::new(10 * 1024 * 1024).expect("Non zero number"))
+const fn default_message_size_limit() -> NonZeroByteCount {
+    NonZeroByteCount::new(DEFAULT_MESSAGE_SIZE_LIMIT)
+}
+
+fn is_default_message_size_limit(value: &NonZeroByteCount) -> bool {
+    value.as_non_zero_usize() == DEFAULT_MESSAGE_SIZE_LIMIT
 }
 impl NetworkingOptions {
     pub fn stream_window_size(&self) -> u32 {
@@ -121,7 +130,7 @@ impl Default for NetworkingOptions {
             data_stream_window_size: NonZeroByteCount::new(
                 NonZeroUsize::new(2 * 1024 * 1024).expect("Non zero number"),
             ),
-            max_message_size: default_max_message_size(),
+            message_size_limit: default_message_size_limit(),
         }
     }
 }
