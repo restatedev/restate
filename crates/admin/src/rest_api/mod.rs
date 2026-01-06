@@ -23,6 +23,7 @@ mod version;
 use okapi_operation::axum_integration::{delete, get, patch, post};
 use okapi_operation::okapi::openapi3::{ExternalDocs, Tag};
 use okapi_operation::*;
+use restate_core::network::TransportConnect;
 use restate_types::identifiers::PartitionKey;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
@@ -32,14 +33,15 @@ use crate::state::AdminServiceState;
 
 pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 
-pub fn create_router<Metadata, Discovery, Telemetry, Invocations>(
-    state: AdminServiceState<Metadata, Discovery, Telemetry, Invocations>,
+pub fn create_router<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    state: AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>,
 ) -> axum::Router<()>
 where
     Metadata: MetadataService + Send + Sync + Clone + 'static,
     Discovery: DiscoveryClient + Send + Sync + Clone + 'static,
     Telemetry: TelemetryClient + Send + Sync + Clone + 'static,
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
+    Transport: TransportConnect,
 {
     let mut router = axum_integration::Router::new()
         .route(
@@ -90,10 +92,6 @@ where
         .route(
             "/services/{service}/handlers/{handler}",
             get(openapi_handler!(handlers::get_service_handler)),
-        )
-        .route(
-            "/invocations/{invocation_id}",
-            delete(openapi_handler!(invocations::delete_invocation)),
         )
         .route(
             "/invocations/{invocation_id}/kill",

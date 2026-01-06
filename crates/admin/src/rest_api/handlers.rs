@@ -30,8 +30,8 @@ use restate_types::schema::service::HandlerMetadata;
         schema = "std::string::String"
     ))
 )]
-pub async fn list_service_handlers<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn list_service_handlers<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(service_name): Path<String>,
 ) -> Result<Json<ListServiceHandlersResponse>, MetaApiError>
 where
@@ -62,8 +62,8 @@ where
         )
     )
 )]
-pub async fn get_service_handler<Metadata, Discovery, Telemetry, Invocations>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations>>,
+pub async fn get_service_handler<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path((service_name, handler_name)): Path<(String, String)>,
 ) -> Result<Json<HandlerMetadata>, MetaApiError>
 where
