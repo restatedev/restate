@@ -16,6 +16,7 @@ use super::Notification;
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::iter::Empty;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
@@ -145,8 +146,8 @@ pub(super) struct InvocationTask<IR, EE, DMR> {
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
-    message_size_warning: usize,
-    message_size_limit: Option<usize>,
+    message_size_warning: NonZeroUsize,
+    message_size_limit: NonZeroUsize,
     retry_count_since_last_stored_entry: u32,
 
     // Invoker tx/rx
@@ -207,8 +208,8 @@ where
         default_inactivity_timeout: Duration,
         default_abort_timeout: Duration,
         disable_eager_state: bool,
-        message_size_warning: usize,
-        message_size_limit: Option<usize>,
+        message_size_warning: NonZeroUsize,
+        message_size_limit: NonZeroUsize,
         retry_count_since_last_stored_entry: u32,
         invocation_reader: IR,
         entry_enricher: EE,

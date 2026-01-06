@@ -146,7 +146,7 @@ where
                     opts.inactivity_timeout.into(),
                     opts.abort_timeout.into(),
                     opts.disable_eager_state,
-                    opts.message_size_warning.get(),
+                    opts.message_size_warning.as_non_zero_usize(),
                     opts.message_size_limit(),
                     retry_count_since_last_stored_entry,
                     storage_reader,
@@ -1881,7 +1881,7 @@ mod tests {
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
-            .message_size_warning(NonZeroUsize::new(1024).unwrap())
+            .message_size_warning(NonZeroUsize::new(1024).unwrap().into())
             .message_size_limit(None)
             .build()
             .unwrap();
@@ -1951,7 +1951,7 @@ mod tests {
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
-            .message_size_warning(NonZeroUsize::new(1024).unwrap())
+            .message_size_warning(NonZeroUsize::new(1024).unwrap().into())
             .message_size_limit(None)
             .build()
             .unwrap();
@@ -2066,7 +2066,7 @@ mod tests {
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
-            .message_size_warning(NonZeroUsize::new(1024).unwrap())
+            .message_size_warning(NonZeroUsize::new(1024).unwrap().into())
             .message_size_limit(None)
             .build()
             .unwrap();
@@ -2143,7 +2143,7 @@ mod tests {
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
             .disable_eager_state(false)
-            .message_size_warning(NonZeroUsize::new(1024).unwrap())
+            .message_size_warning(NonZeroUsize::new(1024).unwrap().into())
             .message_size_limit(None)
             .build()
             .unwrap();

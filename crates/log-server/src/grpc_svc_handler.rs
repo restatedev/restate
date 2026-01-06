@@ -12,9 +12,9 @@ use async_trait::async_trait;
 use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
 
-use restate_core::network::grpc::MAX_MESSAGE_SIZE;
 use restate_types::config::NetworkingOptions;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::net::log_server::{GetDigest, LogServerResponseHeader, LogletInfo};
 
 use crate::logstore::LogStore;
@@ -42,7 +42,7 @@ where
 
     pub fn into_server(self, config: &NetworkingOptions) -> LogServerSvcServer<Self> {
         let server = LogServerSvcServer::new(self)
-            .max_decoding_message_size(MAX_MESSAGE_SIZE)
+            .max_decoding_message_size(config.message_size_limit().get())
             // note: the order of those calls defines the priority
             .accept_compressed(CompressionEncoding::Zstd)
             .accept_compressed(CompressionEncoding::Gzip);

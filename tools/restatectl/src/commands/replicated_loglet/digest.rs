@@ -14,8 +14,8 @@ use cling::prelude::*;
 use tracing::{info, warn};
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{CliContext, c_println};
 use restate_log_server_grpc::{GetDigestRequest, GetLogletInfoRequest, new_log_server_client};
 use restate_types::PlainNodeId;
 use restate_types::logs::TailOffsetWatch;
@@ -83,7 +83,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
     // get loglet info
     let mut loglet_infos: HashMap<PlainNodeId, _> = HashMap::default();
     for (node_id, channel) in nodeset_channels.iter() {
-        let mut client = new_log_server_client(channel.clone());
+        let mut client = new_log_server_client(channel.clone(), &CliContext::get().network);
         let Ok(Some(loglet_info)) = client
             .get_loglet_info(GetLogletInfoRequest {
                 loglet_id: opts.loglet_id.into(),
@@ -131,7 +131,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
             from_offset,
             to_offset,
         };
-        let mut client = new_log_server_client(channel.clone());
+        let mut client = new_log_server_client(channel.clone(), &CliContext::get().network);
         let digest = match client.get_digest(req).await {
             Ok(response) => response.into_inner().digest.expect("always set by servers"),
             Err(err) => {
