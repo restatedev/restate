@@ -1392,4 +1392,52 @@ mod tests {
 
         Ok(())
     }
+
+    /// Test that records enqueued rapidly are properly committed.
+    #[restate_core::test]
+    async fn test_background_appender_rapid_enqueue() -> googletest::Result<()> {
+        let mut config = restate_types::config::Configuration::default();
+        config.networking.message_size_limit = small_byte_limit(50 * 1024); // 50KB
+        let config = config.apply_cascading_values();
+        set_current_config(config);
+
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+
+        let background_appender: crate::BackgroundAppender<String> = bifrost
+            .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, 1000, 100)?;
+
+        let mut handle = background_appender.start("test-appender")?;
+        let sender = handle.sender();
+
+        // Rapidly enqueue many records using try_enqueue (non-blocking)
+        let mut enqueued = 0;
+        for i in 0..100 {
+            match sender.try_enqueue(format!("rapid-record-{i}")) {
+                Ok(()) => enqueued += 1,
+                Err(EnqueueError::Full(_)) => {
+                    // Queue is full, use async enqueue
+                    sender.enqueue(format!("rapid-record-{i}")).await?;
+                    enqueued += 1;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        assert_that!(enqueued, eq(100));
+
+        // Wait for all to be committed
+        let token = sender.notify_committed().await?;
+        token.await?;
+
+        handle.drain().await?;
+
+        // Verify tail advanced correctly (100 records)
+        let tail = bifrost
+            .find_tail(LogId::new(0), FindTailOptions::default())
+            .await?;
+        assert_that!(tail.offset(), eq(Lsn::from(101u64)));
+
+        Ok(())
+    }
 }
