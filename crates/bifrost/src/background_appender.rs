@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
+
 use futures::FutureExt;
 use pin_project::pin_project;
 use restate_types::logs::Record;
@@ -57,6 +59,7 @@ where
     /// behaviour to the owner of [`AppenderHandle`] to drain or drop when appropriate.
     pub fn start(self, name: &'static str) -> Result<AppenderHandle<T>, ShutdownError> {
         let (tx, rx) = tokio::sync::mpsc::channel(self.queue_capacity);
+        let record_size_limit = self.appender.record_size_limit();
 
         let handle = TaskCenter::spawn_unmanaged_child(
             restate_core::TaskKind::BifrostAppender,
@@ -68,6 +71,7 @@ where
             inner_handle: Some(handle),
             sender: Some(LogSender {
                 tx,
+                record_size_limit,
                 _phantom: std::marker::PhantomData,
             }),
         })
@@ -230,10 +234,22 @@ impl<T> AppenderHandle<T> {
 #[derive(Clone)]
 pub struct LogSender<T> {
     tx: tokio::sync::mpsc::Sender<AppendOperation>,
+    record_size_limit: NonZeroUsize,
     _phantom: std::marker::PhantomData<T>,
 }
 
 impl<T: StorageEncode> LogSender<T> {
+    fn check_record_size<E>(&self, record: &Record) -> Result<(), EnqueueError<E>> {
+        let record_size = record.estimated_encode_size();
+        if record_size > self.record_size_limit.get() {
+            return Err(EnqueueError::RecordTooLarge {
+                record_size,
+                limit: self.record_size_limit,
+            });
+        }
+        Ok(())
+    }
+
     /// Attempt to enqueue a record to the appender. Returns immediately if the
     /// appender is pushing back or if the appender is draining or drained.
     pub fn try_enqueue<A>(&self, record: A) -> Result<(), EnqueueError<A>>
@@ -247,6 +263,7 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         let record = record.into().into_record();
+        self.check_record_size(&record)?;
         permit.send(AppendOperation::Enqueue(record));
         Ok(())
     }
@@ -267,6 +284,7 @@ impl<T: StorageEncode> LogSender<T> {
 
         let (tx, rx) = oneshot::channel();
         let record = record.into().into_record();
+        self.check_record_size(&record)?;
         permit.send(AppendOperation::EnqueueWithNotification(record, tx));
         Ok(CommitToken { rx })
     }
@@ -281,6 +299,7 @@ impl<T: StorageEncode> LogSender<T> {
             return Err(EnqueueError::Closed(record));
         };
         let record = record.into().into_record();
+        self.check_record_size(&record)?;
         permit.send(AppendOperation::Enqueue(record));
 
         Ok(())
@@ -303,7 +322,9 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            permit.send(AppendOperation::Enqueue(record.into().into_record()));
+            let record = record.into().into_record();
+            self.check_record_size(&record)?;
+            permit.send(AppendOperation::Enqueue(record));
         }
         Ok(())
     }
@@ -323,7 +344,9 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            permit.send(AppendOperation::Enqueue(record.into().into_record()));
+            let record = record.into().into_record();
+            self.check_record_size(&record)?;
+            permit.send(AppendOperation::Enqueue(record));
         }
 
         Ok(())
@@ -343,10 +366,9 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         let (tx, rx) = oneshot::channel();
-        permit.send(AppendOperation::EnqueueWithNotification(
-            record.into().into_record(),
-            tx,
-        ));
+        let record = record.into().into_record();
+        self.check_record_size(&record)?;
+        permit.send(AppendOperation::EnqueueWithNotification(record, tx));
 
         Ok(CommitToken { rx })
     }
