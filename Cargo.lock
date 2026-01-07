@@ -7047,6 +7047,7 @@ dependencies = [
  "restate-log-server",
  "restate-metadata-store",
  "restate-rocksdb",
+ "restate-serde-util",
  "restate-storage-api",
  "restate-test-util",
  "restate-types",
