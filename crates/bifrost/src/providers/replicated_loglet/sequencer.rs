@@ -15,7 +15,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 
-use bytes::BytesMut;
 use crossbeam_utils::CachePadded;
 use tokio::sync::Semaphore;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -284,30 +283,12 @@ impl<T: TransportConnect> Sequencer<T> {
                 .fetch_add(len, std::sync::atomic::Ordering::Relaxed),
         );
 
-        // Add to cache before we commit those records, we also do this to try and cache the
-        // records before we transform/serialize their payloads.
-        //
         // The records being in cache does not mean they are committed, all readers must respect
         // the result of find_tail() or the global_known_tail.
         self.record_cache
             .extend(*self.sequencer_shared_state.loglet_id(), offset, &payloads);
 
         let (loglet_commit, commit_resolver) = LogletCommit::deferred();
-
-        // Why not in bifrost's appender? because we don't need serialization in all loglet providers.
-        // In-memory loglet won't require this setup and it would be a waste of cpu-cycles to serialize.
-        // estimate total to allocate one big allocation for all payloads. This is not particularly
-        // useful with flexbuffers, but will be useful when Store/Record are representative as
-        // protobuf or flatbuffers.
-        let estimated_bufsize: usize = payloads
-            .iter()
-            .map(|record| record.estimated_encode_size())
-            .sum();
-        let mut buf = BytesMut::with_capacity(estimated_bufsize);
-        let payloads = payloads
-            .iter()
-            .map(|record| record.to_encoded(&mut buf))
-            .collect();
 
         let appender = SequencerAppender::new(
             Arc::clone(&self.sequencer_shared_state),
