@@ -93,8 +93,8 @@ pub(crate) enum Error {
     Decode(#[from] StorageDecodeError),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
-    #[error("error when self proposing")]
-    SelfProposer,
+    #[error("error when self proposing: {0}")]
+    SelfProposer(String),
     #[error("task '{name}' failed: {cause}")]
     TaskFailed {
         name: &'static str,

@@ -20,9 +20,11 @@ use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use crate::logs::metadata::{NodeSetSize, ProviderKind};
+use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
 use crate::retries::RetryPolicy;
 
-use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use super::networking::DEFAULT_MESSAGE_SIZE_LIMIT;
+use super::{CommonOptions, NetworkingOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
 /// # Bifrost options
 #[serde_as]
@@ -86,6 +88,20 @@ pub struct BifrostOptions {
     /// of replicas, or for other reasons.
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     pub disable_auto_improvement: bool,
+
+    /// # Record size limit
+    ///
+    /// Maximum size of a single record that can be appended to Bifrost.
+    /// If a record exceeds this limit, the append operation will fail immediately.
+    ///
+    /// If unset, defaults to `networking.message-size-limit`. If set, it will be clamped at
+    /// the value of `networking.message-size-limit` since larger records cannot be transmitted
+    /// over the cluster internal network.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    // Hide the configuration until record size estimation is implemented, currently this option is
+    // not effective due to the fixed size estimation of typed records.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    record_size_limit: Option<NonZeroByteCount>,
 }
 
 impl BifrostOptions {
@@ -99,8 +115,26 @@ impl BifrostOptions {
         )
     }
 
+    /// Returns the record size limit, defaulting to `networking.message-size-limit` if not set.
+    pub fn record_size_limit(&self) -> NonZeroUsize {
+        self.record_size_limit
+            .map(|v| v.as_non_zero_usize())
+            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT)
+            // Add a bit of overhead to account for the overhead of the record envelope
+            .saturating_add(MESSAGE_SIZE_OVERHEAD.div_ceil(2))
+    }
+
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.local.apply_common(common);
+    }
+
+    /// Clamps the record size limit to the networking message size limit.
+    pub(crate) fn set_derived_values(&mut self, networking: &NetworkingOptions) {
+        self.record_size_limit = Some(
+            self.record_size_limit
+                .map(|limit| limit.min(networking.message_size_limit))
+                .unwrap_or(networking.message_size_limit),
+        );
     }
 }
 
@@ -122,6 +156,7 @@ impl Default for BifrostOptions {
             seal_retry_interval: NonZeroFriendlyDuration::from_secs_unchecked(2),
             record_cache_memory_size: ByteCount::from(250u64 * 1024 * 1024), // 250 MiB
             disable_auto_improvement: false,
+            record_size_limit: None,
         }
     }
 }
