@@ -127,6 +127,16 @@ pub(crate) struct InvalidFieldError(pub(crate) &'static str, pub(crate) String);
 impl_meta_api_error!(InvalidFieldError: BAD_REQUEST);
 
 #[derive(Debug, thiserror::Error)]
+#[error("The query parameter '{0}' is invalid. Reason: {1}")]
+pub(crate) struct InvalidQueryParameterError(pub(crate) &'static str, pub(crate) String);
+impl_meta_api_error!(InvalidQueryParameterError: BAD_REQUEST);
+
+#[derive(Debug, thiserror::Error)]
+#[error("Batch size {0} exceeds maximum allowed size of {1}")]
+pub(crate) struct BatchTooLargeError(pub(crate) usize, pub(crate) usize);
+impl_meta_api_error!(BatchTooLargeError: BAD_REQUEST "The batch size exceeds the maximum allowed.");
+
+#[derive(Debug, thiserror::Error)]
 #[error("The requested invocation '{0}' does not exist")]
 pub(crate) struct InvocationNotFoundError(pub(crate) String);
 impl_meta_api_error!(InvocationNotFoundError: NOT_FOUND);
