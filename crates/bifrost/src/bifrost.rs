@@ -758,6 +758,7 @@ impl Drop for PreferenceToken {
 mod tests {
     use super::*;
 
+    use std::num::NonZeroUsize;
     use std::sync::atomic::AtomicUsize;
 
     use futures::StreamExt;
@@ -770,13 +771,20 @@ mod tests {
     use restate_core::TestCoreEnvBuilder;
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv};
     use restate_rocksdb::RocksDbManager;
+    use restate_types::config::set_current_config;
     use restate_types::logs::SequenceNumber;
     use restate_types::logs::metadata::{SegmentIndex, new_single_node_loglet_params};
     use restate_types::metadata::Precondition;
     use restate_types::partition_table::PartitionTable;
     use restate_types::{Version, Versioned};
 
+    use crate::error::EnqueueError;
     use crate::providers::memory_loglet::{self};
+
+    // Helper to create a small byte count for testing
+    fn small_byte_limit(bytes: usize) -> restate_serde_util::NonZeroByteCount {
+        restate_serde_util::NonZeroByteCount::new(NonZeroUsize::new(bytes).unwrap())
+    }
 
     #[restate_core::test]
     #[traced_test]
@@ -1285,6 +1293,156 @@ mod tests {
 
         // questionable.
         RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn test_append_record_too_large() -> googletest::Result<()> {
+        // Set up a configuration with a small record size limit.
+        // Note: The estimated_encode_size for a typed record (e.g., String) is ~2KB constant,
+        // plus overhead for Keys and NanosSinceEpoch. We set the limit to 1KB to ensure
+        // the check triggers.
+        let mut config = restate_types::config::Configuration::default();
+        config.networking.message_size_limit = small_byte_limit(1024); // 1KB limit
+        let config = config.apply_cascading_values();
+        set_current_config(config);
+
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+
+        // Get the configured record size limit
+        let record_size_limit = restate_types::config::Configuration::pinned()
+            .bifrost
+            .record_size_limit();
+        assert_eq!(record_size_limit.get(), 1024);
+
+        // Any record will have an estimated size of ~2KB+ due to the constant estimate
+        // for PolyBytes::Typed, which exceeds our 1KB limit
+        let payload = "test";
+
+        let appender = bifrost.create_appender(LogId::new(0), ErrorRecoveryStrategy::Wait)?;
+
+        // Verify the appender has the correct limit
+        assert_eq!(appender.record_size_limit().get(), 1024);
+
+        // Attempting to append should fail with RecordTooLarge
+        let mut appender = appender;
+        let result = appender.append(payload).await;
+
+        assert_that!(
+            result,
+            pat!(Err(pat!(Error::BatchTooLarge {
+                record_size: gt(1024),
+                limit: eq(record_size_limit),
+            })))
+        );
+
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn test_append_record_size_limit_with_custom_config() -> googletest::Result<()> {
+        // Set up a configuration with default values
+        let config = restate_types::config::Configuration::default().apply_cascading_values();
+        set_current_config(config);
+
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+
+        let appender = bifrost.create_appender(LogId::new(0), ErrorRecoveryStrategy::Wait)?;
+
+        // Verify the appender has the correct record size limit
+        let expected_limit = restate_types::config::Configuration::pinned()
+            .bifrost
+            .record_size_limit();
+        assert_eq!(expected_limit, appender.record_size_limit());
+
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn test_background_appender_record_too_large() -> googletest::Result<()> {
+        // Set up configuration with a small record size limit (100 bytes).
+        // Note: The estimated_encode_size for any typed record is ~2KB constant,
+        // so even "small" strings will exceed the 100 byte limit.
+        let mut config = restate_types::config::Configuration::default();
+        config.networking.message_size_limit = small_byte_limit(100);
+        // Apply cascading values to propagate the networking limit to bifrost
+        let config = config.apply_cascading_values();
+        set_current_config(config);
+
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+
+        let background_appender: crate::BackgroundAppender<String> = bifrost
+            .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, 10, 10)?;
+
+        let handle = background_appender.start("test-appender")?;
+        let sender = handle.sender();
+
+        // Any record will have an estimated size of ~2KB due to PolyBytes::Typed constant estimate
+        let payload = "test".to_string();
+
+        // try_enqueue should fail with RecordTooLarge
+        let result = sender.try_enqueue(payload.clone());
+        assert_that!(
+            result,
+            pat!(Err(pat!(EnqueueError::RecordTooLarge {
+                record_size: gt(100),
+                limit: eq(NonZeroUsize::new(100).unwrap()),
+            })))
+        );
+
+        // enqueue (async) should also fail with RecordTooLarge
+        let result = sender.enqueue(payload.clone()).await;
+        assert_that!(
+            result,
+            pat!(Err(pat!(EnqueueError::RecordTooLarge {
+                record_size: gt(100),
+                limit: eq(NonZeroUsize::new(100).unwrap()),
+            })))
+        );
+
+        // try_enqueue_with_notification should also fail
+        let result = sender.try_enqueue_with_notification(payload.clone());
+        assert!(matches!(
+            result,
+            Err(EnqueueError::RecordTooLarge {
+                record_size,
+                limit,
+            }) if record_size > 100 && limit.get() == 100
+        ));
+
+        // Drain the appender (nothing should have been enqueued)
+        handle.drain().await?;
+
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn test_background_appender_record_within_limit() -> googletest::Result<()> {
+        // Set up configuration with a large enough record size limit (10KB) to allow records
+        let mut config = restate_types::config::Configuration::default();
+        config.networking.message_size_limit = small_byte_limit(10 * 1024); // 10KB
+        let config = config.apply_cascading_values();
+        set_current_config(config);
+
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+
+        let background_appender: crate::BackgroundAppender<String> = bifrost
+            .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, 10, 10)?;
+
+        let handle = background_appender.start("test-appender")?;
+        let sender = handle.sender();
+
+        // With a 10KB limit, the ~2KB estimated record should succeed
+        let payload = "test".to_string();
+        sender.enqueue(payload).await?;
+
+        // Drain and wait for commit
+        handle.drain().await?;
+
         Ok(())
     }
 }

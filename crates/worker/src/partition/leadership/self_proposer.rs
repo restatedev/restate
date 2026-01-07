@@ -106,7 +106,7 @@ impl SelfProposer {
             .sender()
             .enqueue_many(envelopes)
             .await
-            .map_err(|_| Error::SelfProposer)?;
+            .map_err(|e| Error::SelfProposer(e.to_string()))?;
 
         // update the sequence number range for the next batch
         self.epoch_sequence_number = EpochSequenceNumber {
@@ -129,7 +129,7 @@ impl SelfProposer {
             .sender()
             .enqueue(Arc::new(envelope))
             .await
-            .map_err(|_| Error::SelfProposer)?;
+            .map_err(|e| Error::SelfProposer(e.to_string()))?;
 
         Ok(())
     }
@@ -146,7 +146,7 @@ impl SelfProposer {
             .sender()
             .enqueue_with_notification(Arc::new(envelope))
             .await
-            .map_err(|_| Error::SelfProposer)?;
+            .map_err(|e| Error::SelfProposer(e.to_string()))?;
 
         Ok(commit_token)
     }
@@ -166,7 +166,7 @@ impl SelfProposer {
         // sender
         //     .enqueue_many(records)
         //     .await
-        //     .map_err(|_| Error::SelfProposer)?;
+        //     .map_err(|e| Error::SelfProposer(e.to_string()))?;
         //
         // so instead we do this.
 
@@ -184,13 +184,13 @@ impl SelfProposer {
             sender
                 .enqueue(input)
                 .await
-                .map_err(|_| Error::SelfProposer)?;
+                .map_err(|e| Error::SelfProposer(e.to_string()))?;
         }
 
         sender
             .notify_committed()
             .await
-            .map_err(|_| Error::SelfProposer)
+            .map_err(|e| Error::SelfProposer(e.to_string()))
     }
 
     fn create_header(&mut self, partition_key: PartitionKey) -> Header {
