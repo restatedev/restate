@@ -8,11 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use moka::{
     ops::compute::Op,
     policy::EvictionPolicy,
     sync::{Cache, CacheBuilder},
 };
+
+use crate::storage::PolyBytes;
 
 use super::{LogletId, LogletOffset, Record, SequenceNumber};
 
@@ -64,14 +68,28 @@ impl RecordCache {
                 let Some(existing) = existing else {
                     return Op::Put(record.clone());
                 };
-                match (
-                    existing.value().body().is_encoded(),
-                    record.body().is_encoded(),
-                ) {
-                    // both are encoded, we don't want to replace the existing value.
-                    (true, true) | (false, false) | (false, true) => Op::Nop,
-                    // replace the existing value if the new one is deserialized.
-                    (true, false) => Op::Put(record.clone()),
+                match (existing.value().body(), record.body()) {
+                    (PolyBytes::Bytes(_), PolyBytes::Bytes(_)) => Op::Nop,
+                    (PolyBytes::Bytes(_), PolyBytes::Typed(_)) => Op::Put(record.clone()),
+                    (PolyBytes::Bytes(_), PolyBytes::Both(typed, _)) => {
+                        // we only need to cache the typed value, let's repackage it.
+                        Op::Put(Record::from_parts(
+                            record.created_at(),
+                            record.keys().clone(),
+                            PolyBytes::Typed(Arc::clone(typed)),
+                        ))
+                    }
+                    // Shouldn't happen (we only cache Typed or Bytes), but let's handle it anyway.
+                    (PolyBytes::Both(typed, _), _) =>
+                    // repackge the existing value into Typed only
+                    {
+                        Op::Put(Record::from_parts(
+                            existing.value().created_at(),
+                            existing.value().keys().clone(),
+                            PolyBytes::Typed(Arc::clone(typed)),
+                        ))
+                    }
+                    (PolyBytes::Typed(_), _) => Op::Nop,
                 }
             });
     }

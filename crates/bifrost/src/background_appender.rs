@@ -10,6 +10,7 @@
 
 use std::num::NonZeroUsize;
 
+use bytes::BytesMut;
 use futures::FutureExt;
 use pin_project::pin_project;
 use restate_types::logs::Record;
@@ -70,6 +71,7 @@ where
         Ok(AppenderHandle {
             inner_handle: Some(handle),
             sender: Some(LogSender {
+                arena: BytesMut::default(),
                 tx,
                 record_size_limit,
                 _phantom: std::marker::PhantomData,
@@ -213,8 +215,8 @@ impl<T> AppenderHandle<T> {
     }
 
     /// If you need an owned LogSender, clone this.
-    pub fn sender(&self) -> &LogSender<T> {
-        self.sender.as_ref().unwrap()
+    pub fn sender(&mut self) -> &mut LogSender<T> {
+        self.sender.as_mut().unwrap()
     }
 
     /// Waits for the underlying appender task to finish.
@@ -231,11 +233,22 @@ impl<T> AppenderHandle<T> {
     }
 }
 
-#[derive(Clone)]
 pub struct LogSender<T> {
+    arena: BytesMut,
     tx: tokio::sync::mpsc::Sender<AppendOperation>,
     record_size_limit: NonZeroUsize,
     _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T> Clone for LogSender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            arena: BytesMut::default(),
+            tx: self.tx.clone(),
+            record_size_limit: self.record_size_limit,
+            _phantom: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<T: StorageEncode> LogSender<T> {
@@ -252,7 +265,7 @@ impl<T: StorageEncode> LogSender<T> {
 
     /// Attempt to enqueue a record to the appender. Returns immediately if the
     /// appender is pushing back or if the appender is draining or drained.
-    pub fn try_enqueue<A>(&self, record: A) -> Result<(), EnqueueError<A>>
+    pub fn try_enqueue<A>(&mut self, record: A) -> Result<(), EnqueueError<A>>
     where
         A: Into<InputRecord<T>>,
     {
@@ -262,7 +275,7 @@ impl<T: StorageEncode> LogSender<T> {
             Err(mpsc::error::TrySendError::Closed(_)) => return Err(EnqueueError::Closed(record)),
         };
 
-        let record = record.into().into_record();
+        let record = record.into().into_record().ensure_encoded(&mut self.arena);
         self.check_record_size(&record)?;
         permit.send(AppendOperation::Enqueue(record));
         Ok(())
@@ -270,7 +283,7 @@ impl<T: StorageEncode> LogSender<T> {
 
     /// Enqueues an append and returns a commit token
     pub fn try_enqueue_with_notification<A>(
-        &self,
+        &mut self,
         record: A,
     ) -> Result<CommitToken, EnqueueError<A>>
     where
@@ -283,7 +296,7 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         let (tx, rx) = oneshot::channel();
-        let record = record.into().into_record();
+        let record = record.into().into_record().ensure_encoded(&mut self.arena);
         self.check_record_size(&record)?;
         permit.send(AppendOperation::EnqueueWithNotification(record, tx));
         Ok(CommitToken { rx })
@@ -291,14 +304,14 @@ impl<T: StorageEncode> LogSender<T> {
 
     /// Waits for capacity on the channel and returns an error if the appender is
     /// draining or drained.
-    pub async fn enqueue<A>(&self, record: A) -> Result<(), EnqueueError<A>>
+    pub async fn enqueue<A>(&mut self, record: A) -> Result<(), EnqueueError<A>>
     where
         A: Into<InputRecord<T>>,
     {
         let Ok(permit) = self.tx.reserve().await else {
             return Err(EnqueueError::Closed(record));
         };
-        let record = record.into().into_record();
+        let record = record.into().into_record().ensure_encoded(&mut self.arena);
         self.check_record_size(&record)?;
         permit.send(AppendOperation::Enqueue(record));
 
@@ -310,7 +323,7 @@ impl<T: StorageEncode> LogSender<T> {
     ///
     /// Attempts to enqueue all records in the iterator. This will immediately return if there is
     /// no capacity in the channel to enqueue _all_ records.
-    pub fn try_enqueue_many<I, A>(&self, records: I) -> Result<(), EnqueueError<I>>
+    pub fn try_enqueue_many<I, A>(&mut self, records: I) -> Result<(), EnqueueError<I>>
     where
         I: Iterator<Item = A> + ExactSizeIterator,
         A: Into<InputRecord<T>>,
@@ -322,7 +335,7 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            let record = record.into().into_record();
+            let record = record.into().into_record().ensure_encoded(&mut self.arena);
             self.check_record_size(&record)?;
             permit.send(AppendOperation::Enqueue(record));
         }
@@ -334,7 +347,7 @@ impl<T: StorageEncode> LogSender<T> {
     ///
     /// The method is cancel safe in the sense that if enqueue_many is used in a `tokio::select!`,
     /// no records are enqueued if another branch completed.
-    pub async fn enqueue_many<I, A>(&self, records: I) -> Result<(), EnqueueError<I>>
+    pub async fn enqueue_many<I, A>(&mut self, records: I) -> Result<(), EnqueueError<I>>
     where
         I: Iterator<Item = A> + ExactSizeIterator,
         A: Into<InputRecord<T>>,
@@ -344,7 +357,7 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            let record = record.into().into_record();
+            let record = record.into().into_record().ensure_encoded(&mut self.arena);
             self.check_record_size(&record)?;
             permit.send(AppendOperation::Enqueue(record));
         }
@@ -355,7 +368,7 @@ impl<T: StorageEncode> LogSender<T> {
     /// Enqueues a record and returns a [`CommitToken`] future that's resolved when the record is
     /// committed.
     pub async fn enqueue_with_notification<A>(
-        &self,
+        &mut self,
         record: A,
     ) -> Result<CommitToken, EnqueueError<A>>
     where
@@ -366,7 +379,7 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         let (tx, rx) = oneshot::channel();
-        let record = record.into().into_record();
+        let record = record.into().into_record().ensure_encoded(&mut self.arena);
         self.check_record_size(&record)?;
         permit.send(AppendOperation::EnqueueWithNotification(record, tx));
 

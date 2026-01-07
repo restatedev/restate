@@ -117,11 +117,18 @@ impl BifrostOptions {
 
     /// Returns the record size limit, defaulting to `networking.message-size-limit` if not set.
     pub fn record_size_limit(&self) -> NonZeroUsize {
-        self.record_size_limit
+        let limit = self
+            .record_size_limit
             .map(|v| v.as_non_zero_usize())
-            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT)
+            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT);
+
+        if cfg!(any(test, feature = "test-util")) {
+            // In tests, we don't want to leave overhead
+            limit
+        } else {
             // Add a bit of overhead to account for the overhead of the record envelope
-            .saturating_add(MESSAGE_SIZE_OVERHEAD.div_ceil(2))
+            limit.saturating_add(MESSAGE_SIZE_OVERHEAD.div_ceil(2))
+        }
     }
 
     pub fn apply_common(&mut self, common: &CommonOptions) {

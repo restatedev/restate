@@ -141,28 +141,6 @@ impl Bifrost {
             .await
     }
 
-    /// Appends a batch of records to a log. The log id must exist, otherwise the
-    /// operation fails with [`Error::UnknownLogId`]. The returned Lsn is the Lsn of the last
-    /// record in this batch. This will only return after all records have been stored.
-    #[instrument(
-        level="trace",
-        skip(self, batch),
-        fields(
-            otel.name = "Bifrost: append_batch",
-        )
-    )]
-    pub async fn append_batch<T: StorageEncode>(
-        &self,
-        log_id: LogId,
-        error_recovery_strategy: ErrorRecoveryStrategy,
-        batch: Vec<impl Into<InputRecord<T>>>,
-    ) -> Result<Lsn> {
-        self.inner.fail_if_shutting_down()?;
-        self.inner
-            .append_batch(log_id, error_recovery_strategy, batch)
-            .await
-    }
-
     /// Read the next record from the LSN provided. The `from` indicates the LSN where we will
     /// start reading from. This means that the record returned will have a LSN that is equal
     /// or greater than `from`. If no records are committed yet at this LSN, this read operation
@@ -340,17 +318,6 @@ impl BifrostInner {
     ) -> Result<Lsn> {
         Appender::new(log_id, error_recovery_strategy, Arc::clone(self))
             .append(record)
-            .await
-    }
-
-    pub async fn append_batch<T: StorageEncode>(
-        self: &Arc<Self>,
-        log_id: LogId,
-        error_recovery_strategy: ErrorRecoveryStrategy,
-        batch: Vec<impl Into<InputRecord<T>>>,
-    ) -> Result<Lsn> {
-        Appender::new(log_id, error_recovery_strategy, Arc::clone(self))
-            .append_batch(batch)
             .await
     }
 
@@ -1357,11 +1324,11 @@ mod tests {
         let background_appender: crate::BackgroundAppender<String> = bifrost
             .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, 10, 10)?;
 
-        let handle = background_appender.start("test-appender")?;
+        let mut handle = background_appender.start("test-appender")?;
         let sender = handle.sender();
 
-        // Any record will have an estimated size of ~2KB due to PolyBytes::Typed constant estimate
-        let payload = "test".to_string();
+        // A string with 100 bytes
+        let payload = String::from_utf8(vec!['t' as u8; 100]).unwrap();
 
         // try_enqueue should fail with RecordTooLarge
         let result = sender.try_enqueue(payload.clone());
@@ -1413,7 +1380,7 @@ mod tests {
         let background_appender: crate::BackgroundAppender<String> = bifrost
             .create_background_appender(LogId::new(0), ErrorRecoveryStrategy::Wait, 10, 10)?;
 
-        let handle = background_appender.start("test-appender")?;
+        let mut handle = background_appender.start("test-appender")?;
         let sender = handle.sender();
 
         // With a 10KB limit, the ~2KB estimated record should succeed
