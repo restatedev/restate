@@ -25,6 +25,7 @@ use super::{
 };
 use crate::config::IngestionOptions;
 use crate::identifiers::PartitionId;
+use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
 use crate::rate::Rate;
 use crate::retries::RetryPolicy;
 
@@ -353,9 +354,18 @@ impl InvokerOptions {
     }
 
     pub fn message_size_limit(&self) -> NonZeroUsize {
-        self.message_size_limit
+        let limit = self
+            .message_size_limit
             .map(|v| v.as_non_zero_usize())
-            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT)
+            .unwrap_or(DEFAULT_MESSAGE_SIZE_LIMIT);
+
+        if cfg!(any(test, feature = "test-util")) {
+            // In tests, we don't want to leave overhead
+            limit
+        } else {
+            // We only add 1/4 of the overhead to leave room for outer envelope/messages
+            limit.saturating_add(MESSAGE_SIZE_OVERHEAD.div_ceil(4))
+        }
     }
 
     pub(crate) fn merge(&mut self, opts: &NetworkingOptions) {
