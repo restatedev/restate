@@ -23,8 +23,6 @@ pub fn encode_serde<T: Serialize>(
     match codec {
         StorageCodecKind::FlexbuffersSerde => encode_serde_as_flexbuffers(value, buf)
             .map_err(|err| StorageEncodeError::EncodeValue(err.into())),
-        StorageCodecKind::BincodeSerde => encode_serde_as_bincode(value, buf)
-            .map_err(|err| StorageEncodeError::EncodeValue(err.into())),
         StorageCodecKind::Json => encode_serde_as_json(value, buf)
             .map_err(|err| StorageEncodeError::EncodeValue(err.into())),
         codec => Err(StorageEncodeError::EncodeValue(
@@ -47,25 +45,6 @@ fn encode_serde_as_flexbuffers<T: Serialize>(
     buf.put_u32_le(size_tag);
     // write the data
     buf.put_slice(&vec);
-    Ok(())
-}
-
-/// Utility method to encode a [`Serialize`] type as bincode using serde.
-fn encode_serde_as_bincode<T: Serialize>(
-    value: &T,
-    buf: &mut BytesMut,
-) -> Result<(), bincode::error::EncodeError> {
-    struct BytesWriter<'a>(&'a mut BytesMut);
-
-    impl bincode::enc::write::Writer for BytesWriter<'_> {
-        fn write(&mut self, bytes: &[u8]) -> Result<(), bincode::error::EncodeError> {
-            self.0.put_slice(bytes);
-            Ok(())
-        }
-    }
-    // write the data
-    bincode::serde::encode_into_writer(value, BytesWriter(buf), bincode::config::standard())?;
-
     Ok(())
 }
 

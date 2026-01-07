@@ -39,7 +39,6 @@ bitflags = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 bilrost = { workspace = true, features = ["bytestring"] }
-bincode = { workspace = true, default-features = false, features = ["std", "serde"] }
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["std", "derive", "env"], optional = true }
 codederror = { workspace = true }

@@ -52,8 +52,10 @@ pub enum StorageCodecKind {
     FlexbuffersSerde = 2,
     /// length-prefixed raw-bytes. length is u32
     LengthPrefixedRawBytes = 3,
-    /// bincode (with serde compatibility mode, no length prefix)
-    BincodeSerde = 4,
+    // Note: Discriminant 4 was previously `BincodeSerde`, which was added to prepare for future
+    // use but was never actually used for persistent storage. It has been removed because bincode
+    // is no longer maintained. The discriminant is intentionally skipped to prevent accidental
+    // reuse.
     /// Json (no length prefix)
     Json = 5,
     /// Bilrost (no length-prefixed)
