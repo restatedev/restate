@@ -93,7 +93,7 @@ pub async fn run(_common_args: &Arguments, args: &WriteToReadOpts, bifrost: Bifr
             let blob = BytesMut::zeroed(args.payload_size).freeze();
             async move {
                 let mut append_latency = Histogram::<u64>::new(3)?;
-                let appender_handle = bifrost
+                let mut appender_handle = bifrost
                     .create_background_appender(
                         LOG_ID,
                         ErrorRecoveryStrategy::ExtendChainPreferred,
