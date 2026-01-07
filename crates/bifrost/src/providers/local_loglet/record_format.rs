@@ -124,6 +124,7 @@ fn write_legacy_payload(record: &Record, serde_buffer: &mut BytesMut) -> BytesMu
     // encoding the user payload.
     let body = match record.body() {
         PolyBytes::Bytes(raw_bytes) => raw_bytes.clone(),
+        PolyBytes::Both(_, raw_bytes) => raw_bytes.clone(),
         PolyBytes::Typed(encodeable) => {
             StorageCodec::encode_and_split(encodeable.deref(), serde_buffer)
                 .expect("record serde is infallible")
@@ -183,6 +184,7 @@ fn write_record(record: &Record, buf: &mut BytesMut) -> BytesMut {
     // serialize payload
     match record.body() {
         PolyBytes::Bytes(raw_bytes) => buf.put_slice(raw_bytes),
+        PolyBytes::Both(_, raw_bytes) => buf.put_slice(raw_bytes),
         PolyBytes::Typed(encodeable) => {
             StorageCodec::encode(encodeable.deref(), buf).expect("record serde is infallible")
         }
