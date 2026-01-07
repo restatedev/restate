@@ -46,14 +46,15 @@ impl Record {
         size_of::<Keys>() + size_of::<NanosSinceEpoch>() + self.body.estimated_encode_size()
     }
 
-    pub fn to_encoded(&self, buf: &mut BytesMut) -> Self {
-        let keys = self.keys.clone();
+    pub fn ensure_encoded(self, buf: &mut BytesMut) -> Self {
+        let keys = self.keys;
         let created_at = self.created_at;
-        let body = match &self.body {
-            PolyBytes::Bytes(bytes) => PolyBytes::Bytes(bytes.clone()),
+        let body = match self.body {
+            PolyBytes::Bytes(bytes) => PolyBytes::Bytes(bytes),
+            PolyBytes::Both(v, bytes) => PolyBytes::Both(v, bytes),
             PolyBytes::Typed(typed) => {
-                StorageCodec::encode(&**typed, buf).expect("serde is infallible");
-                PolyBytes::Bytes(buf.split().freeze())
+                StorageCodec::encode(&*typed, buf).expect("serde is infallible");
+                PolyBytes::Both(typed, buf.split().freeze())
             }
         };
         Self {
@@ -83,7 +84,7 @@ impl Record {
                 let mut buf = std::io::Cursor::new(slice);
                 StorageCodec::decode(&mut buf)?
             }
-            PolyBytes::Typed(value) => {
+            PolyBytes::Both(value, _) | PolyBytes::Typed(value) => {
                 let target_arc: Arc<T> = value.downcast_arc().map_err(|_| {
                 StorageDecodeError::DecodeValue(
                     anyhow::anyhow!(
@@ -113,7 +114,7 @@ impl Record {
                 let mut buf = std::io::Cursor::new(slice);
                 Arc::new(StorageCodec::decode(&mut buf)?)
             }
-            PolyBytes::Typed(value) => {
+            PolyBytes::Typed(value) | PolyBytes::Both(value, _) => {
                 value.downcast_arc().map_err(|_| {
                 StorageDecodeError::DecodeValue(
                     anyhow::anyhow!(

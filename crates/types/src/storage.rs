@@ -204,6 +204,9 @@ pub enum PolyBytes {
     /// A cached deserialized value that can be downcasted to the original type
     #[debug("Typed")]
     Typed(Arc<dyn StorageEncode>),
+    /// A cached deserialized value along with the raw bytes of the serialized value
+    #[debug("Both({} bytes)", _1.len())]
+    Both(Arc<dyn StorageEncode>, bytes::Bytes),
 }
 
 /// Required by the BilrostAs type for
@@ -217,14 +220,10 @@ impl Default for PolyBytes {
 impl NetSerde for PolyBytes {}
 
 impl PolyBytes {
-    /// Returns true if we are holding raw encoded bytes
-    pub fn is_encoded(&self) -> bool {
-        matches!(self, PolyBytes::Bytes(_))
-    }
-
     pub fn estimated_encode_size(&self) -> usize {
         match self {
             PolyBytes::Bytes(bytes) => bytes.len(),
+            PolyBytes::Both(_, bytes) => bytes.len(),
             PolyBytes::Typed(_) => {
                 // constant, assumption based on base envelope size of ~600 bytes.
                 // todo: use StorageEncode trait to get an actual estimate based
@@ -238,6 +237,7 @@ impl PolyBytes {
     pub fn encode_to_bytes(&self, scratch: &mut BytesMut) -> Result<Bytes, StorageEncodeError> {
         match self {
             PolyBytes::Bytes(bytes) => Ok(bytes.clone()),
+            PolyBytes::Both(_, bytes) => Ok(bytes.clone()),
             PolyBytes::Typed(typed) => {
                 // note: this currently doesn't do a good job of estimating the size but it's better than
                 // nothing.
@@ -253,6 +253,7 @@ impl StorageEncode for PolyBytes {
     fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
         match self {
             PolyBytes::Bytes(bytes) => buf.put_slice(bytes.as_ref()),
+            PolyBytes::Both(_, bytes) => buf.put_slice(bytes.as_ref()),
             PolyBytes::Typed(typed) => {
                 StorageCodec::encode(&**typed, buf)?;
             }
@@ -261,6 +262,8 @@ impl StorageEncode for PolyBytes {
     }
 
     fn default_codec(&self) -> StorageCodecKind {
+        // Note that this means nothing since encoding PolyBytes is opaque, as in,
+        // the serialized value is always the raw bytes of the inner types.
         StorageCodecKind::FlexbuffersSerde
     }
 }
@@ -417,6 +420,7 @@ mod dto {
         fn from(value: &super::PolyBytes) -> Self {
             let inner = match value {
                 super::PolyBytes::Bytes(bytes) => bytes.clone(),
+                super::PolyBytes::Both(_, bytes) => bytes.clone(),
                 super::PolyBytes::Typed(typed) => {
                     let mut buf = BytesMut::new();
                     StorageCodec::encode(&**typed, &mut buf).expect("PolyBytes to serialize");
