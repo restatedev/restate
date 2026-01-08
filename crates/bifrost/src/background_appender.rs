@@ -29,7 +29,7 @@ use crate::{Appender, InputRecord, Result};
 /// possible to reduce round-trips to the loglet.
 #[pin_project]
 pub struct BackgroundAppender<T> {
-    appender: Appender,
+    appender: Appender<T>,
     /// The number of records that can be buffered in the append queue
     queue_capacity: usize,
     /// The number of records that can get batched together before appending to the log
@@ -38,21 +38,16 @@ pub struct BackgroundAppender<T> {
     current_batch: Batch,
     /// Reusable vector for callbacks of enqueue_with_notification calls
     notif_buffer: Vec<oneshot::Sender<()>>,
-    _phantom: std::marker::PhantomData<T>,
 }
 
-impl<T> BackgroundAppender<T>
-where
-    T: StorageEncode,
-{
-    pub fn new(appender: Appender, queue_capacity: usize, max_batch_size: usize) -> Self {
+impl<T: StorageEncode> BackgroundAppender<T> {
+    pub fn new(appender: Appender<T>, queue_capacity: usize, max_batch_size: usize) -> Self {
         Self {
             appender,
             queue_capacity,
             max_batch_size,
             current_batch: Batch::with_capacity(max_batch_size),
             notif_buffer: Vec::with_capacity(max_batch_size),
-            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -160,7 +155,7 @@ where
     }
 
     async fn process_appends(
-        appender: &mut Appender,
+        appender: &mut Appender<T>,
         buffered_records: &mut Batch,
         notif_buffer: &mut Vec<oneshot::Sender<()>>,
     ) -> Result<()> {
