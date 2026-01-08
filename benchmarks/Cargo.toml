@@ -49,3 +49,7 @@ harness = false
 [[bench]]
 name = "throughput_sequential"
 harness = false
+
+[[bench]]
+name = "channel_recv"
+harness = false
