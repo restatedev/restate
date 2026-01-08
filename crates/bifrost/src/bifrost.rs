@@ -191,11 +191,11 @@ impl Bifrost {
     /// The best way to write to Bifrost is to hold on to an [`Appender`] and reuse it across
     /// calls, this allows internal caching of recently accessed loglets and recycling write
     /// buffers.
-    pub fn create_appender(
+    pub fn create_appender<T: StorageEncode>(
         &self,
         log_id: LogId,
         error_recovery_strategy: ErrorRecoveryStrategy,
-    ) -> Result<Appender> {
+    ) -> Result<Appender<T>> {
         self.inner.fail_if_shutting_down()?;
         self.inner.check_log_id(log_id)?;
         Ok(Appender::new(
@@ -205,16 +205,13 @@ impl Bifrost {
         ))
     }
 
-    pub fn create_background_appender<T>(
+    pub fn create_background_appender<T: StorageEncode>(
         &self,
         log_id: LogId,
         error_recovery_strategy: ErrorRecoveryStrategy,
         queue_capacity: usize,
         max_batch_size: usize,
-    ) -> Result<BackgroundAppender<T>>
-    where
-        T: StorageEncode,
-    {
+    ) -> Result<BackgroundAppender<T>> {
         Ok(BackgroundAppender::new(
             self.create_appender(log_id, error_recovery_strategy)?,
             queue_capacity,
@@ -316,7 +313,7 @@ impl BifrostInner {
         error_recovery_strategy: ErrorRecoveryStrategy,
         record: impl Into<InputRecord<T>>,
     ) -> Result<Lsn> {
-        Appender::new(log_id, error_recovery_strategy, Arc::clone(self))
+        Appender::<T>::new(log_id, error_recovery_strategy, Arc::clone(self))
             .append(record)
             .await
     }
@@ -782,7 +779,7 @@ mod tests {
 
         // Append to a log that doesn't exist.
         let invalid_log = LogId::from(num_partitions + 1);
-        let resp = bifrost.create_appender(invalid_log, ErrorRecoveryStrategy::Wait);
+        let resp = bifrost.create_appender::<String>(invalid_log, ErrorRecoveryStrategy::Wait);
 
         assert_that!(resp, pat!(Err(pat!(Error::UnknownLogId(eq(invalid_log))))));
 

@@ -24,8 +24,6 @@ pub fn decode_serde<T: DeserializeOwned, B: Buf>(
     match codec {
         StorageCodecKind::FlexbuffersSerde => decode_serde_from_flexbuffers(buf)
             .map_err(|err| StorageDecodeError::DecodeValue(err.into())),
-        StorageCodecKind::BincodeSerde => decode_serde_from_bincode(buf)
-            .map_err(|err| StorageDecodeError::DecodeValue(err.into())),
         StorageCodecKind::Json => {
             decode_serde_from_json(buf).map_err(|err| StorageDecodeError::DecodeValue(err.into()))
         }
@@ -69,16 +67,6 @@ fn decode_serde_from_flexbuffers<T: DeserializeOwned, B: Buf>(
         })?;
         Ok(result)
     }
-}
-
-/// Utility method to decode a [`DeserializeOwned`] type from bincode using serde.
-fn decode_serde_from_bincode<T: DeserializeOwned, B: Buf>(
-    buf: &mut B,
-) -> Result<T, bincode::error::DecodeError> {
-    let (result, length) =
-        bincode::serde::decode_from_slice(buf.chunk(), bincode::config::standard())?;
-    buf.advance(length);
-    Ok(result)
 }
 
 /// Utility method to decode a [`DeserializeOwned`] type from Json using serde.

@@ -8230,7 +8230,6 @@ dependencies = [
  "base62",
  "base64 0.22.1",
  "bilrost",
- "bincode",
  "bitflags 2.10.0",
  "bytes",
  "bytestring",
