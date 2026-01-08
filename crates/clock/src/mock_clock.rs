@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use crate::time::MillisSinceEpoch;
 use crate::{Clock, RESTATE_EPOCH, WallClock};
@@ -47,6 +48,13 @@ impl MockClock {
 
     pub fn advance_ms(&self, ms: u64) {
         self.storage.fetch_add(ms, Ordering::SeqCst);
+    }
+
+    pub fn advance(&self, duration: Duration) {
+        self.storage.fetch_add(
+            u64::try_from(duration.as_millis()).expect("fits in u64"),
+            Ordering::SeqCst,
+        );
     }
 
     pub fn refresh_from_wall_clock(&self) {
