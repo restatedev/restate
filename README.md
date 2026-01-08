@@ -1,4 +1,4 @@
-[![Documentation](https://img.shields.io/badge/doc-reference-blue)](https://docs.restate.dev)
+[![Documentation](https://restate.dev/use-cases-light.png)](https://docs.restate.dev)
 [![Examples](https://img.shields.io/badge/view-examples-blue)](https://github.com/restatedev/examples)
 [![Discord](https://img.shields.io/discord/1128210118216007792?logo=discord)](https://discord.gg/skW3AZ6uGd)
 [![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack&logoColor=fff)](https://join.slack.com/t/restatecommunity/shared_invite/zt-2v9gl005c-WBpr167o5XJZI1l7HWKImA)
