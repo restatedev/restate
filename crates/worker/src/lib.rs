@@ -117,6 +117,7 @@ where
         ingestion_client: IngestionClient<T, Envelope>,
         router_builder: &mut MessageRouterBuilder,
         metadata_writer: MetadataWriter,
+        metadata_store_client: restate_metadata_server::MetadataStoreClient,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
         restate_vqueues::describe_metrics();
@@ -176,6 +177,7 @@ where
             SnapshotRepository::new_from_config(
                 snapshots_options,
                 config.worker.storage.snapshots_staging_dir(),
+                metadata_store_client,
             )
             .await
             .map_err(BuildError::SnapshotRepository)?,

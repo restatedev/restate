@@ -56,6 +56,7 @@ where
         bifrost: Bifrost,
         ingestion_client: IngestionClient<T, Envelope>,
         metadata_writer: MetadataWriter,
+        metadata_store_client: restate_metadata_server::MetadataStoreClient,
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::create(
             health_status,
@@ -66,6 +67,7 @@ where
             ingestion_client,
             router_builder,
             metadata_writer,
+            metadata_store_client,
         )
         .await?;
 
