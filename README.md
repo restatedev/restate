@@ -1,4 +1,4 @@
-[![Documentation](https://restate.dev/use-cases-light.png)](https://docs.restate.dev)
+[![Documentation](https://img.shields.io/badge/doc-reference-blue)](https://docs.restate.dev)
 [![Examples](https://img.shields.io/badge/view-examples-blue)](https://github.com/restatedev/examples)
 [![Discord](https://img.shields.io/discord/1128210118216007792?logo=discord)](https://discord.gg/skW3AZ6uGd)
 [![Slack](https://img.shields.io/badge/Slack-4A154B?logo=slack&logoColor=fff)](https://join.slack.com/t/restatecommunity/shared_invite/zt-2v9gl005c-WBpr167o5XJZI1l7HWKImA)
@@ -8,9 +8,9 @@
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://restate.dev/blog/announcing-restate-1.0-restate-cloud-and-our-seed-funding-round/title_figure_hudf3f5cd4c2c091de8198c7c4b273b831_2636815_6620x0_resize_q75_h2_box_3.webp">
-    <source media="(prefers-color-scheme: light)" srcset="https://restate.dev/blog/announcing-restate-1.0-restate-cloud-and-our-seed-funding-round/title_figure_hudf3f5cd4c2c091de8198c7c4b273b831_2636815_6620x0_resize_q75_h2_box_3.webp">
-    <img alt="Restate overview" src="https://restate.dev/blog/announcing-restate-1.0-restate-cloud-and-our-seed-funding-round/title_figure_hudf3f5cd4c2c091de8198c7c4b273b831_2636815_6620x0_resize_q75_h2_box_3.webp" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="https://restate.dev/use-cases-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="https://restate.dev/use-cases-light.png">
+    <img alt="Restate overview" src="https://restate.dev/use-cases-light.png" width="100%">
   </picture>
 </p>
 
