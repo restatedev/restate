@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -57,6 +58,11 @@ impl Appender {
         }
     }
 
+    /// Returns the record size limit for this appender.
+    pub fn record_size_limit(&self) -> NonZeroUsize {
+        self.config.pinned().bifrost.record_size_limit()
+    }
+
     /// Marks this node as a preferred writer for the underlying log
     pub fn mark_as_preferred(&mut self) {
         if self.preference_token.is_none() {
@@ -83,6 +89,16 @@ impl Appender {
         body: impl Into<InputRecord<T>>,
     ) -> Result<Lsn> {
         let body = body.into().into_record();
+        // Validate record sizes before attempting to append
+        let batch_size_bytes = body.estimated_encode_size();
+        let limit = self.record_size_limit();
+        if batch_size_bytes > limit.get() {
+            return Err(Error::BatchTooLarge {
+                batch_size_bytes,
+                limit,
+            });
+        }
+
         self.append_batch_erased(Arc::new([body])).await
     }
 
@@ -103,12 +119,23 @@ impl Appender {
         batch: Vec<impl Into<InputRecord<T>>>,
     ) -> Result<Lsn> {
         let batch: Arc<[_]> = batch.into_iter().map(|r| r.into().into_record()).collect();
+        let batch_size_bytes = batch.iter().map(|r| r.estimated_encode_size()).sum();
+        // Validate record sizes before attempting to append
+        let limit = self.record_size_limit();
+        if batch_size_bytes > limit.get() {
+            return Err(Error::BatchTooLarge {
+                batch_size_bytes,
+                limit,
+            });
+        }
         self.append_batch_erased(batch).await
     }
 
     pub(crate) async fn append_batch_erased(&mut self, batch: Arc<[Record]>) -> Result<Lsn> {
         self.bifrost_inner.fail_if_shutting_down()?;
+
         let retry_iter = self.config.live_load().bifrost.append_retry_policy();
+
         debug_assert!(retry_iter.max_attempts().is_none());
         let mut retry_iter = retry_iter.into_iter();
 
@@ -123,6 +150,7 @@ impl Appender {
                 .bifrost
                 .auto_recovery_interval
                 .into();
+
             let loglet = match self.loglet_cache.as_mut() {
                 None => self
                     .loglet_cache
