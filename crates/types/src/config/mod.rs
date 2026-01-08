@@ -195,6 +195,7 @@ impl Configuration {
             .set_derived_values(&config.networking)
             .unwrap();
         config.worker.set_derived_values(&config.networking);
+        config.bifrost.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
         config.ingress.set_derived_values(&config.common);
         config
@@ -208,6 +209,7 @@ impl Configuration {
             .set_derived_values(&config.networking)
             .unwrap();
         config.worker.set_derived_values(&config.networking);
+        config.bifrost.set_derived_values(&config.networking);
         config.admin.set_derived_values(&config.common);
         config.ingress.set_derived_values(&config.common);
         config
@@ -260,6 +262,7 @@ impl Configuration {
     pub fn apply_cascading_values(mut self) -> Self {
         self.worker.storage.apply_common(&self.common);
         self.bifrost.apply_common(&self.common);
+        self.bifrost.set_derived_values(&self.networking);
         self.metadata_server.apply_common(&self.common);
         self.log_server.apply_common(&self.common);
         self
