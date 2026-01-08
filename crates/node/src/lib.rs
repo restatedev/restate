@@ -286,6 +286,7 @@ impl Node {
                     bifrost_svc.handle(),
                     ingestion_client.clone(),
                     metadata_manager.writer(),
+                    metadata_store_client.clone(),
                 )
                 .await?,
             )

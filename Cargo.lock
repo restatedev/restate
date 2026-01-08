@@ -7834,6 +7834,7 @@ dependencies = [
  "restate-clock",
  "restate-core",
  "restate-errors",
+ "restate-metadata-server",
  "restate-object-store-util",
  "restate-rocksdb",
  "restate-serde-util",
@@ -7857,6 +7858,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "ulid",
  "url",
 ]
 
