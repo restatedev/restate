@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -29,7 +30,7 @@ use crate::loglet_wrapper::LogletWrapper;
 use crate::{BifrostAdmin, Error, InputRecord, Result};
 
 #[derive(Clone, derive_more::Debug)]
-pub struct Appender {
+pub struct Appender<T> {
     log_id: LogId,
     #[debug(skip)]
     pub(super) config: Live<Configuration>,
@@ -39,9 +40,10 @@ pub struct Appender {
     bifrost_inner: Arc<BifrostInner>,
     #[debug(skip)]
     preference_token: Option<PreferenceToken>,
+    _phantom: PhantomData<T>,
 }
 
-impl Appender {
+impl<T: StorageEncode> Appender<T> {
     pub(crate) fn new(
         log_id: LogId,
         error_recovery_strategy: ErrorRecoveryStrategy,
@@ -55,6 +57,7 @@ impl Appender {
             loglet_cache: Default::default(),
             bifrost_inner,
             preference_token: None,
+            _phantom: PhantomData,
         }
     }
 
@@ -84,10 +87,7 @@ impl Appender {
             log_id = %self.log_id,
         )
     )]
-    pub async fn append<T: StorageEncode>(
-        &mut self,
-        body: impl Into<InputRecord<T>>,
-    ) -> Result<Lsn> {
+    pub async fn append(&mut self, body: impl Into<InputRecord<T>>) -> Result<Lsn> {
         let body = body.into().into_record();
         // Validate record sizes before attempting to append
         let batch_size_bytes = body.estimated_encode_size();
@@ -114,10 +114,7 @@ impl Appender {
             log_id = %self.log_id,
         )
     )]
-    pub async fn append_batch<T: StorageEncode>(
-        &mut self,
-        batch: Vec<impl Into<InputRecord<T>>>,
-    ) -> Result<Lsn> {
+    pub async fn append_batch(&mut self, batch: Vec<impl Into<InputRecord<T>>>) -> Result<Lsn> {
         let batch: Arc<[_]> = batch.into_iter().map(|r| r.into().into_record()).collect();
         let batch_size_bytes = batch.iter().map(|r| r.estimated_encode_size()).sum();
         // Validate record sizes before attempting to append
