@@ -70,12 +70,13 @@ const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
 /// Maximum number of concurrent downloads when getting snapshots from the repository.
 const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 
-/// Maximum number of pending deletions before snapshot creation is suspended. Deleting old
-/// snapshots is handled asynchronously from snapshot uploads as a follow-up metadata update. As
-/// pending deletes are thus persisted, they can be resumed by another process if the cleanup task
-/// fails. If for some reason delete operations are repeatedly failing, we can accumulate up to this
-/// many snapshots before we'll stop producing new snapshots.
-const MAX_PENDING_DELETIONS: usize = 10;
+/// Maximum number of pending deletions tracked. Deleting old snapshots is handled asynchronously
+/// from snapshot uploads as a follow-up metadata update. We want to cap how many pending deletions
+/// we store before we leak them. We intentionally do not stop producing new snapshots as it's more
+/// important to keep log trimming unblocked than to clean up old snapshots in the object store.
+const PENDING_DELETIONS_MAX: usize = 100;
+
+const PENDING_DELETIONS_WARNING: usize = 10;
 
 /// Maximum number of failed CAS retries
 const OBJECT_STORE_CAS_RETRIES: usize = 3;
@@ -531,12 +532,21 @@ impl SnapshotRepository {
             .map(|l| l.pending_deletions.clone())
             .unwrap_or_default();
 
-        if original_pending_deletions.len() >= MAX_PENDING_DELETIONS {
+        let pending_count = original_pending_deletions.len();
+        if pending_count >= PENDING_DELETIONS_MAX {
             warn!(
-                pending_deletions = original_pending_deletions.len(),
-                threshold = MAX_PENDING_DELETIONS,
-                "Pending snapshot deletions exceed threshold. \
-                Check object store connectivity and permissions."
+                "Snapshot cleanup backlog ({} pending deletions) exceeds the tracking limit, \
+                and older snapshots are orphaned and will not be pruned. \
+                Please check object store access permissions.",
+                pending_count,
+            );
+        } else if pending_count >= PENDING_DELETIONS_WARNING {
+            warn!(
+                pending_deletions = pending_count,
+                hard_limit = PENDING_DELETIONS_MAX,
+                "Snapshot cleanup is falling behind. Please check object store access permissions. \
+                When the hard limit is reached, older snapshots will no longer be tracked, \
+                resulting in increased storage usage."
             );
         }
 
@@ -554,9 +564,11 @@ impl SnapshotRepository {
 
                 let newly_deleted = retained_snapshots
                     .split_off((retain_snapshots.get() as usize).min(retained_snapshots.len()));
-                let pending_deletions = original_pending_deletions
+
+                let pending_deletions = newly_deleted
                     .into_iter()
-                    .chain(newly_deleted)
+                    .chain(original_pending_deletions)
+                    .take(PENDING_DELETIONS_MAX)
                     .collect();
 
                 (retained_snapshots, pending_deletions)
