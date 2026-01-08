@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use restate_core::{ShutdownError, SyncError};
@@ -43,6 +44,11 @@ pub enum Error {
     AdminError(#[from] AdminError),
     #[error(transparent)]
     MetadataStoreError(#[from] Arc<ReadWriteError>),
+    #[error("record batch too large: {batch_size_bytes} bytes exceeds limit of {limit} bytes")]
+    BatchTooLarge {
+        batch_size_bytes: usize,
+        limit: NonZeroUsize,
+    },
     #[error("{0}")]
     Other(String),
 }
@@ -53,6 +59,11 @@ pub enum EnqueueError<T> {
     Full(T),
     #[error("appender is draining, closed, or crashed")]
     Closed(T),
+    #[error("record too large: {record_size} bytes exceeds limit of {limit} bytes")]
+    RecordTooLarge {
+        record_size: usize,
+        limit: NonZeroUsize,
+    },
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
