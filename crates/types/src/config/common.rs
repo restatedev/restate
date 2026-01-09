@@ -206,7 +206,6 @@ pub struct CommonOptions {
 
     /// # Node Location
     ///
-    /// [PREVIEW FEATURE]
     /// Setting the location allows Restate to form a tree-like cluster topology.
     /// The value is written in the format of "region[.zone]" to assign this node
     /// to a specific region, or to a zone within a region.
