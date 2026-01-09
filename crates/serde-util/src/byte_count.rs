@@ -34,7 +34,6 @@ impl schemars::JsonSchema for ByteCount<true> {
     fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
             "type": "string",
-            "format": "human-bytes",
             "pattern": r"^\d+(\.\d+)? ?[KMG]B$",
             "minLength": 1,
             "title": "Human-readable bytes",
@@ -57,7 +56,6 @@ impl schemars::JsonSchema for ByteCount<false> {
     fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
             "type": "string",
-            "format": "non-zero human-bytes",
             "pattern": r"^\d+(\.\d+)? ?[KMG]B$",
             "minLength": 1,
             "title": "Non-zero human-readable bytes",

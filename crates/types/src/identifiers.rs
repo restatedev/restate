@@ -779,7 +779,6 @@ impl schemars::JsonSchema for LambdaARN {
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
             "type": "string",
-            "format": "arn",
         })
     }
 }
@@ -788,7 +787,7 @@ impl schemars::JsonSchema for LambdaARN {
 mod utoipa_schema {
     use crate::identifiers::{InvocationId, LambdaARN};
     use std::borrow::Cow;
-    use utoipa::openapi::{Object, RefOr, Schema, SchemaFormat, Type};
+    use utoipa::openapi::{Object, RefOr, Schema, Type};
     use utoipa::{PartialSchema, ToSchema};
 
     impl ToSchema for LambdaARN {
@@ -799,13 +798,7 @@ mod utoipa_schema {
 
     impl PartialSchema for LambdaARN {
         fn schema() -> RefOr<Schema> {
-            Schema::Object(
-                Object::builder()
-                    .schema_type(Type::String)
-                    .format(Some(SchemaFormat::Custom("arn".to_owned())))
-                    .build(),
-            )
-            .into()
+            Schema::Object(Object::builder().schema_type(Type::String).build()).into()
         }
     }
 

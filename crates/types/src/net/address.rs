@@ -201,7 +201,6 @@ impl<P: ListenerPort> schemars::JsonSchema for BindAddress<P> {
     fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({
             "type": "string",
-            "format": "ip:port",
             "title": "Bind address",
             "description": format!(
             "The local network address to bind on for {}. This service uses default port {} and \
