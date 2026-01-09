@@ -17,7 +17,6 @@ use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use axum::{Extension, Json};
 use http::{Method, Uri};
-use okapi_operation::*;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
@@ -32,36 +31,30 @@ use restate_types::schema::registry::{
 use restate_types::schema::service::ServiceMetadata;
 use serde::Deserialize;
 
-/// Create deployment and return discovered services.
-#[openapi(
-    summary = "Create deployment",
-    description = "Create and register a new deployment. \
-    Restate will invoke the endpoint to gather additional information required for registration, such as the services exposed by the deployment. \
-    If the deployment is already registered, this method will return 200 and no changes will be made. \
-    If the deployment updates some already existing services, schema breaking changes checks will run. If you want to bypass them, use `breaking: true`. \
-    To overwrite an already existing deployment, use `force: true`",
+/// Register deployment
+///
+/// Registers a new deployment (HTTP or Lambda). Restate will invoke the endpoint to discover available services and handlers,
+/// and make them available for invocation. For more information, see the [deployment documentation](https://docs.restate.dev/services/versioning#registering-a-deployment).
+#[utoipa::path(
+    post,
+    path = "/deployments",
     operation_id = "create_deployment",
-    tags = "deployment",
-    external_docs(url = "https://docs.restate.dev/operate/registration"),
+    tag = "deployment",
+    request_body = RegisterDeploymentRequest,
     responses(
-        ignore_return_type = true,
-        response(
-            status = "200",
-            description = "Already exists. No change if force = false, overwritten if force = true",
-            content = "Json<RegisterDeploymentResponse>",
-        ),
-        response(
-            status = "201",
-            description = "Created",
-            content = "Json<RegisterDeploymentResponse>",
-        ),
-        from_type = "MetaApiError",
+        (status = 200, description = "Deployment already exists. No change if force = false, services overwritten if force = true", body = RegisterDeploymentResponse, headers(
+            ("Location" = String, description = "URI of the deployment")
+        )),
+        (status = 201, description = "Deployment created successfully and services discovered", body = RegisterDeploymentResponse, headers(
+            ("Location" = String, description = "URI of the created deployment")
+        )),
+        MetaApiError
     )
 )]
 pub async fn create_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Extension(version): Extension<AdminApiVersion>,
-    #[request_body(required = true)] Json(payload): Json<RegisterDeploymentRequest>,
+    Json(payload): Json<RegisterDeploymentRequest>,
 ) -> Result<impl IntoResponse, MetaApiError>
 where
     Metadata: MetadataService,
@@ -176,17 +169,21 @@ where
     ))
 }
 
-/// Return deployment
-#[openapi(
-    summary = "Get deployment",
-    description = "Get deployment metadata",
+/// Get deployment
+///
+/// Returns detailed information about a registered deployment, including deployment metadata and the services it exposes.
+#[utoipa::path(
+    get,
+    path = "/deployments/{deployment}",
     operation_id = "get_deployment",
-    tags = "deployment",
-    parameters(path(
-        name = "deployment",
-        description = "Deployment identifier",
-        schema = "std::string::String"
-    ))
+    tag = "deployment",
+    params(
+        ("deployment" = String, Path, description = "Deployment identifier"),
+    ),
+    responses(
+        (status = 200, description = "Deployment details including services and configuration", body = DetailedDeploymentResponse),
+        MetaApiError
+    )
 )]
 pub async fn get_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
@@ -204,11 +201,16 @@ where
 }
 
 /// List deployments
-#[openapi(
-    summary = "List deployments",
-    description = "List all registered deployments.",
+///
+/// Returns a list of all registered deployments, including their endpoints and associated services.
+#[utoipa::path(
+    get,
+    path = "/deployments",
     operation_id = "list_deployments",
-    tags = "deployment"
+    tag = "deployment",
+    responses(
+        (status = 200, description = "List of all registered deployments with their metadata", body = ListDeploymentsResponse)
+    )
 )]
 pub async fn list_deployments<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
@@ -226,45 +228,29 @@ where
     ListDeploymentsResponse { deployments }.into()
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct DeleteDeploymentParams {
+    /// If true, the deployment will be forcefully deleted. This might break in-flight invocations, use with caution.
     pub force: Option<bool>,
 }
 
-/// Discover endpoint and return discovered endpoints.
-#[openapi(
-    summary = "Delete deployment",
-    description = "Delete deployment. Currently it's supported to remove a deployment only using the force flag",
+/// Delete deployment
+///
+/// Delete a deployment. Currently, only forced deletions are supported.
+/// **Use with caution**: forcing a deployment deletion can break in-flight invocations.
+#[utoipa::path(
+    delete,
+    path = "/deployments/{deployment}",
     operation_id = "delete_deployment",
-    tags = "deployment",
-    parameters(
-        path(
-            name = "deployment",
-            description = "Deployment identifier",
-            schema = "std::string::String"
-        ),
-        query(
-            name = "force",
-            description = "If true, the deployment will be forcefully deleted. This might break in-flight invocations, use with caution.",
-            required = false,
-            style = "simple",
-            allow_empty_value = false,
-            schema = "bool",
-        )
+    tag = "deployment",
+    params(
+        ("deployment" = String, Path, description = "Deployment identifier"),
+        DeleteDeploymentParams
     ),
     responses(
-        ignore_return_type = true,
-        response(
-            status = "202",
-            description = "Accepted",
-            content = "okapi_operation::Empty",
-        ),
-        response(
-            status = "501",
-            description = "Not implemented. Only using the force flag is supported at the moment.",
-            content = "okapi_operation::Empty",
-        ),
-        from_type = "MetaApiError",
+        (status = 202, description = "Deployment deletion accepted and will be processed asynchronously"),
+        (status = 501, description = "Not implemented. Graceful deployment deletion (force=false) is not yet supported.", body = ErrorDescriptionResponse),
+        MetaApiError
     )
 )]
 pub async fn delete_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
@@ -287,27 +273,29 @@ where
     }
 }
 
-/// Update a deployment
-#[openapi(
-    summary = "Update deployment",
-    description = "Update an already existing deployment. \
-    This lets you update the address and options when invoking the deployment, such as the additional headers for HTTP or the assume role for Lambda. \
-    The registered services and handlers won't be overwritten, unless `overwrite: true`.",
+/// Update deployment
+///
+/// Updates an existing deployment configuration, such as the endpoint address or invocation headers.
+/// By default, service schemas are not re-discovered. Set `overwrite: true` to trigger re-discovery.
+#[utoipa::path(
+    patch,
+    path = "/deployments/{deployment}",
     operation_id = "update_deployment",
-    tags = "deployment",
-    external_docs(url = "https://docs.restate.dev/operate/versioning"),
-    parameters(path(
-        name = "deployment",
-        description = "Deployment identifier",
-        schema = "std::string::String"
-    ))
+    tag = "deployment",
+    params(
+        ("deployment" = String, Path, description = "Deployment identifier"),
+    ),
+    responses(
+        (status = 200, description = "Deployment updated successfully. Address and invocation options are updated. Service schemas are only updated if overwrite was set to true.", body = DetailedDeploymentResponse),
+        MetaApiError
+    )
 )]
 pub async fn update_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Extension(version): Extension<AdminApiVersion>,
     method: Method,
     Path(deployment_id): Path<DeploymentId>,
-    #[request_body(required = true)] Json(payload): Json<UpdateDeploymentRequest>,
+    Json(payload): Json<UpdateDeploymentRequest>,
 ) -> Result<Json<DetailedDeploymentResponse>, MetaApiError>
 where
     Metadata: MetadataService,

@@ -264,6 +264,8 @@ typify = { version = "0.5.0" }
 ulid = { version = "1.2.1" }
 url = { version = "2.5" }
 urlencoding = { version = "2.1" }
+utoipa = { version = "5.4" }
+utoipa-axum = "0.2"
 uuid = { version = "1.19.0", features = ["v7", "serde"] }
 vergen = { version = "8.0.0", default-features = false }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }

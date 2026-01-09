@@ -52,7 +52,8 @@ impl AdminApiVersion {
     }
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+/// Admin API version information
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VersionInformation {
     /// # Admin server version

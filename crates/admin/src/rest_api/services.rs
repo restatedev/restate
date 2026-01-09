@@ -14,7 +14,6 @@ use axum::Json;
 use axum::extract::{Path, State};
 use bytes::Bytes;
 use http::StatusCode;
-use okapi_operation::*;
 
 use restate_admin_rest_model::services::ListServicesResponse;
 use restate_admin_rest_model::services::*;
@@ -34,11 +33,17 @@ use super::error::*;
 use crate::state::AdminServiceState;
 
 /// List services
-#[openapi(
-    summary = "List services",
-    description = "List all registered services.",
+///
+/// Returns a list of all registered services, including their metadata and configuration.
+#[utoipa::path(
+    get,
+    path = "/services",
     operation_id = "list_services",
-    tags = "service"
+    tag = "service",
+    responses(
+        (status = 200, description = "List of all registered services with their metadata", body = ListServicesResponse),
+        MetaApiError
+    )
 )]
 pub async fn list_services<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
@@ -51,17 +56,21 @@ where
     Ok(ListServicesResponse { services }.into())
 }
 
-/// Get a service
-#[openapi(
-    summary = "Get service",
-    description = "Get a registered service.",
+/// Get service
+///
+/// Returns detailed metadata about a specific service, including its type, handlers, and configuration settings.
+#[utoipa::path(
+    get,
+    path = "/services/{service}",
     operation_id = "get_service",
-    tags = "service",
-    parameters(path(
-        name = "service",
-        description = "Fully qualified service name.",
-        schema = "std::string::String"
-    ))
+    tag = "service",
+    params(
+        ("service" = String, Path, description = "Fully qualified service name."),
+    ),
+    responses(
+        (status = 200, description = "Service metadata including type, revision, handlers, and configuration", body = ServiceMetadata),
+        MetaApiError
+    )
 )]
 pub async fn get_service<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
@@ -78,24 +87,19 @@ where
 }
 
 /// Get service OpenAPI definition
-#[openapi(
-    summary = "Get service OpenAPI",
-    description = "Get the service OpenAPI 3.1 contract.",
+///
+/// Returns the OpenAPI 3.1 specification for the service, describing all handlers and their request/response schemas.
+#[utoipa::path(
+    get,
+    path = "/services/{service}/openapi",
     operation_id = "get_service_openapi",
-    tags = "service",
-    parameters(path(
-        name = "service",
-        description = "Fully qualified service name.",
-        schema = "std::string::String"
-    )),
+    tag = "service",
+    params(
+        ("service" = String, Path, description = "Fully qualified service name."),
+    ),
     responses(
-        ignore_return_type = true,
-        response(
-            status = "200",
-            description = "OpenAPI 3.1 of the service",
-            content = "Json<serde_json::Value>",
-        ),
-        from_type = "MetaApiError",
+        (status = 200, description = "OpenAPI 3.1 specification document describing the service's API", body = serde_json::Value),
+        MetaApiError
     )
 )]
 pub async fn get_service_openapi<Metadata, Discovery, Telemetry, Invocations, Transport>(
@@ -119,22 +123,27 @@ where
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
 }
 
-/// Modify a service
-#[openapi(
-    summary = "Modify a service",
-    description = "Modify a registered service configuration. NOTE: Service re-discovery will update the settings based on the service endpoint configuration.",
+/// Modify service configuration
+///
+/// Updates the configuration of a registered service, such as public visibility, retention policies, and timeout settings.
+/// Note: Service re-discovery will update these settings based on the service endpoint configuration.
+#[utoipa::path(
+    patch,
+    path = "/services/{service}",
     operation_id = "modify_service",
-    tags = "service",
-    parameters(path(
-        name = "service",
-        description = "Fully qualified service name.",
-        schema = "std::string::String"
-    ))
+    tag = "service",
+    params(
+        ("service" = String, Path, description = "Fully qualified service name."),
+    ),
+    responses(
+        (status = 200, description = "Service configuration updated successfully", body = ServiceMetadata),
+        MetaApiError
+    )
 )]
 pub async fn modify_service<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(service_name): Path<String>,
-    #[request_body(required = true)] Json(ModifyServiceRequest {
+    Json(ModifyServiceRequest {
         public,
         idempotency_retention,
         workflow_completion_retention,
@@ -175,31 +184,26 @@ where
     Ok(response.into())
 }
 
-/// Modify a service state
-#[openapi(
-    summary = "Modify a service state",
-    description = "Modify service state",
+/// Modify service state
+///
+/// Modifies the K/V state of a Virtual Object. For a detailed description of this API and how to use it, see the [state documentation](https://docs.restate.dev/operate/invocation#modifying-service-state).
+#[utoipa::path(
+    post,
+    path = "/services/{service}/state",
     operation_id = "modify_service_state",
-    tags = "service",
-    parameters(path(
-        name = "service",
-        description = "Fully qualified service name.",
-        schema = "std::string::String"
-    )),
+    tag = "service",
+    params(
+        ("service" = String, Path, description = "Fully qualified service name."),
+    ),
     responses(
-        ignore_return_type = true,
-        response(
-            status = "202",
-            description = "Accepted",
-            content = "okapi_operation::Empty",
-        ),
-        from_type = "MetaApiError",
+        (status = 202, description = "State modification request accepted and will be applied asynchronously"),
+        MetaApiError
     )
 )]
 pub async fn modify_service_state<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(service_name): Path<String>,
-    #[request_body(required = true)] Json(ModifyServiceStateRequest {
+    Json(ModifyServiceStateRequest {
         version,
         object_key,
         new_state,

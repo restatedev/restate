@@ -11,7 +11,6 @@ publish = false
 default = ["serve-web-ui"]
 options_schema = ["restate-service-client/options_schema", "restate-types/schemars"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
-storage-query = []
 metadata-api = []
 restate-web-ui = ["dep:restate-web-ui"]
 all-metadata-providers = [
@@ -58,11 +57,9 @@ hyper-util = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
 mime_guess = { version = "2.0.5", optional = true }
-okapi-operation = { version = "0.3.0", features = ["axum-integration"] }
 parking_lot = { workspace = true }
 prost-dto = { workspace = true }
 rand = { workspace = true }
-schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
@@ -73,6 +70,8 @@ tower = { workspace = true, features = ["load-shed", "limit"] }
 tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
 urlencoding = { workspace = true }
+utoipa = { workspace = true, features = ["axum_extras"] }
+utoipa-axum = { workspace = true }
 
 [dev-dependencies]
 restate-bifrost = { workspace = true, features = ["test-util"] }

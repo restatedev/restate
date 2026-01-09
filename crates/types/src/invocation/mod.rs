@@ -37,6 +37,7 @@ pub use opentelemetry::trace::TraceId;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum ServiceType {
     Service,
     VirtualObject,

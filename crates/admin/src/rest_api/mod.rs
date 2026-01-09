@@ -16,13 +16,14 @@ mod error;
 mod handlers;
 mod health;
 mod invocations;
+mod query;
 mod services;
 mod subscriptions;
 mod version;
 
-use okapi_operation::axum_integration::{delete, get, patch, post};
-use okapi_operation::okapi::openapi3::{ExternalDocs, Tag};
-use okapi_operation::*;
+use utoipa::OpenApi;
+use utoipa_axum::{router::OpenApiRouter, routes};
+
 use restate_core::network::TransportConnect;
 use restate_types::identifiers::PartitionKey;
 use restate_types::invocation::client::InvocationClient;
@@ -32,6 +33,40 @@ use restate_wal_protocol::{Destination, Header, Source};
 use crate::state::AdminServiceState;
 
 pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Admin API",
+        version = env!("CARGO_PKG_VERSION"),
+        description = "This API exposes the admin operations of a Restate cluster, such as registering new service deployments, interacting with running invocations, register Kafka subscriptions, retrieve service metadata. For an overview, check out the [Operate documentation](https://docs.restate.dev/operate/). If you're looking for how to call your services, check out the [Ingress HTTP API](https://docs.restate.dev/invoke/http) instead.",
+        license(
+            name = "MIT",
+            url = "https://opensource.org/license/mit"
+        ),
+    ),
+    external_docs(url = "https://docs.restate.dev/operate/", description = "Restate operations documentation"),
+    tags(
+        (name = "deployment", description = "Service Deployment management"),
+        (name = "invocation", description = "Invocation management",
+         external_docs(url = "https://docs.restate.dev/operate/invocation", description = "Invocations documentation")),
+        (name = "subscription", description = "Subscription management",
+         external_docs(url = "https://docs.restate.dev/operate/invocation#managing-kafka-subscriptions", description = "Kafka subscriptions documentation")),
+        (name = "service", description = "Service management"),
+        (name = "service_handler", description = "Service handlers metadata"),
+        (name = "cluster_health", description = "Cluster health"),
+        (name = "health", description = "Admin API health"),
+        (name = "version", description = "API Version"),
+        (name = "introspection", description = "System introspection"),
+    ),
+    components(responses(
+        error::meta_api_error::BadRequest,
+        error::meta_api_error::NotFound,
+        error::meta_api_error::MethodNotAllowed,
+        error::meta_api_error::Conflict,
+        error::meta_api_error::InternalServerError))
+)]
+struct AdminApiDoc;
 
 pub fn create_router<Metadata, Discovery, Telemetry, Invocations, Transport>(
     state: AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>,
@@ -43,168 +78,58 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
     Transport: TransportConnect,
 {
-    let mut router = axum_integration::Router::new()
-        .route(
-            "/deployments",
-            get(openapi_handler!(deployments::list_deployments)),
-        )
-        .route(
-            "/deployments",
-            post(openapi_handler!(deployments::create_deployment)),
-        )
-        .route(
-            "/deployments/{deployment}",
-            get(openapi_handler!(deployments::get_deployment)),
-        )
-        .route(
-            "/deployments/{deployment}",
-            delete(openapi_handler!(deployments::delete_deployment)),
-        )
-        .route(
-            "/deployments/{deployment}",
-            patch(openapi_handler!(deployments::update_deployment)),
-        )
+    let router = {
+        #[allow(deprecated)]
+        OpenApiRouter::with_openapi(AdminApiDoc::openapi())
+            .routes(routes!(health::health))
+            .routes(routes!(version::version))
+            .routes(routes!(cluster_health::cluster_health))
+            // Deployment endpoints
+            .routes(routes!(deployments::list_deployments))
+            .routes(routes!(deployments::create_deployment))
+            .routes(routes!(deployments::get_deployment))
+            .routes(routes!(deployments::delete_deployment))
+            .routes(routes!(deployments::update_deployment))
+            // Service endpoints
+            .routes(routes!(services::list_services))
+            .routes(routes!(services::get_service))
+            .routes(routes!(services::get_service_openapi))
+            .routes(routes!(services::modify_service))
+            .routes(routes!(services::modify_service_state))
+            // Handler endpoints
+            .routes(routes!(handlers::list_service_handlers))
+            .routes(routes!(handlers::get_service_handler))
+            // Invocation endpoints
+            .routes(routes!(invocations::kill_invocation))
+            .routes(routes!(invocations::cancel_invocation))
+            .routes(routes!(invocations::purge_invocation))
+            .routes(routes!(invocations::purge_journal))
+            .routes(routes!(invocations::restart_as_new_invocation))
+            .routes(routes!(invocations::resume_invocation))
+            .routes(routes!(invocations::pause_invocation))
+            // Subscription endpoints
+            .routes(routes!(subscriptions::create_subscription))
+            .routes(routes!(subscriptions::list_subscriptions))
+            .routes(routes!(subscriptions::get_subscription))
+            .routes(routes!(subscriptions::delete_subscription))
+            // Query endpoint
+            .routes(routes!(query::query))
+    };
+
+    let (router, api) = router.split_for_parts();
+
+    // The PUT route is deprecated and intentionally not documented in OpenAPI
+    // Only PATCH has #[utoipa::path], PUT is kept for backward compatibility only
+    axum::Router::new()
+        .merge(router)
         .route(
             "/deployments/{deployment}",
             axum::routing::put(deployments::update_deployment),
         )
-        .route("/services", get(openapi_handler!(services::list_services)))
         .route(
-            "/services/{service}",
-            get(openapi_handler!(services::get_service)),
+            "/openapi",
+            axum::routing::get(|| async move { axum::Json(api) }),
         )
-        .route(
-            "/services/{service}/openapi",
-            get(openapi_handler!(services::get_service_openapi)),
-        )
-        .route(
-            "/services/{service}",
-            patch(openapi_handler!(services::modify_service)),
-        )
-        .route(
-            "/services/{service}/state",
-            post(openapi_handler!(services::modify_service_state)),
-        )
-        .route(
-            "/services/{service}/handlers",
-            get(openapi_handler!(handlers::list_service_handlers)),
-        )
-        .route(
-            "/services/{service}/handlers/{handler}",
-            get(openapi_handler!(handlers::get_service_handler)),
-        )
-        .route(
-            "/invocations/{invocation_id}/kill",
-            patch(openapi_handler!(invocations::kill_invocation)),
-        )
-        .route(
-            "/invocations/{invocation_id}/cancel",
-            patch(openapi_handler!(invocations::cancel_invocation)),
-        )
-        .route(
-            "/invocations/{invocation_id}/purge",
-            patch(openapi_handler!(invocations::purge_invocation)),
-        )
-        .route(
-            "/invocations/{invocation_id}/purge-journal",
-            patch(openapi_handler!(invocations::purge_journal)),
-        )
-        .route(
-            "/invocations/{invocation_id}/restart-as-new",
-            patch(openapi_handler!(invocations::restart_as_new_invocation)),
-        )
-        .route(
-            "/invocations/{invocation_id}/resume",
-            patch(openapi_handler!(invocations::resume_invocation)),
-        )
-        .route(
-            "/invocations/{invocation_id}/pause",
-            patch(openapi_handler!(invocations::pause_invocation)),
-        )
-        .route(
-            "/subscriptions",
-            post(openapi_handler!(subscriptions::create_subscription)),
-        )
-        .route(
-            "/subscriptions",
-            get(openapi_handler!(subscriptions::list_subscriptions)),
-        )
-        .route(
-            "/subscriptions/{subscription}",
-            get(openapi_handler!(subscriptions::get_subscription)),
-        )
-        .route(
-            "/subscriptions/{subscription}",
-            delete(openapi_handler!(subscriptions::delete_subscription)),
-        )
-        .route("/health", get(openapi_handler!(health::health)))
-        .route("/version", get(openapi_handler!(version::version)))
-        // The cluster_health endpoint is deprecated in the OpenAPI spec in preparation for removing it
-        .route(
-            "/cluster-health",
-            get(openapi_handler!(cluster_health::cluster_health)),
-        );
-
-    // Add some additional OpenAPI metadata
-    router.openapi_builder_template_mut()
-        .description("This API exposes the admin operations of a Restate cluster, such as registering new service deployments, interacting with running invocations, register Kafka subscriptions, retrieve service metadata. For an overview, check out the [Operate documentation](https://docs.restate.dev/operate/). If you're looking for how to call your services, check out the [Ingress HTTP API](https://docs.restate.dev/invoke/http) instead.")
-        .external_docs(ExternalDocs {
-            url: "https://docs.restate.dev/operate/".to_string(),
-            ..Default::default()
-        })
-        .tag(Tag {
-            name: "deployment".to_string(),
-            description: Some("Service Deployment management".to_string()),
-            ..Default::default()
-        })
-        .tag(Tag {
-            name: "invocation".to_string(),
-            description: Some("Invocation management".to_string()),
-            external_docs: Some(ExternalDocs {
-                url: "https://docs.restate.dev/operate/invocation".to_string(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        })
-        .tag(Tag {
-            name: "subscription".to_string(),
-            description: Some("Subscription management".to_string()),
-            external_docs: Some(ExternalDocs {
-                url: "https://docs.restate.dev/operate/invocation#managing-kafka-subscriptions".to_string(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        })
-        .tag(Tag {
-            name: "service".to_string(),
-            description: Some("Service management".to_string()),
-            ..Default::default()
-        })
-        .tag(Tag {
-            name: "service_handler".to_string(),
-            description: Some("Service handlers metadata".to_string()),
-            ..Default::default()
-        })
-        .tag(Tag {
-            name: "cluster_health".to_string(),
-            description: Some("Cluster health".to_string()),
-            ..Default::default()
-        })
-        .tag(Tag {
-            name: "health".to_string(),
-            description: Some("Admin API health".to_string()),
-            ..Default::default()
-        })
-        .tag(Tag {
-            name: "version".to_string(),
-            description: Some("API Version".to_string()),
-            ..Default::default()
-        });
-
-    // Finish router
-    router
-        .finish_openapi("/openapi", "Admin API", env!("CARGO_PKG_VERSION"))
-        .expect("Error when building the OpenAPI specification")
         .with_state(state)
 }
 

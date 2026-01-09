@@ -45,7 +45,6 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     ingestion_client: IngestionClient<Transport, Envelope>,
     schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
     invocation_client: Invocations,
-    #[cfg(feature = "storage-query")]
     query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
     #[cfg(feature = "metadata-api")]
     metadata_writer: MetadataWriter,
@@ -76,12 +75,10 @@ where
                 TelemetryClient(telemetry_http_client),
             ),
             invocation_client,
-            #[cfg(feature = "storage-query")]
             query_context: None,
         }
     }
 
-    #[cfg(feature = "storage-query")]
     pub fn with_query_context(
         self,
         query_context: restate_storage_query_datafusion::context::QueryContext,
@@ -102,16 +99,10 @@ where
             self.schema_registry,
             self.invocation_client,
             self.ingestion_client,
+            self.query_context,
         );
 
         let router = axum::Router::new();
-
-        #[cfg(feature = "storage-query")]
-        let router = if let Some(query_context) = self.query_context {
-            router.merge(crate::storage_query::router(query_context))
-        } else {
-            router
-        };
 
         #[cfg(feature = "metadata-api")]
         let router = router.merge(crate::metadata_api::router(

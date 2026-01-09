@@ -21,23 +21,18 @@ use std::collections::HashMap;
 
 // This enum could be a struct with a nested enum to avoid repeating some fields, but serde(flatten) unfortunately breaks the openapi code generation
 #[serde_as]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RegisterDeploymentRequest {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            title = "RegisterHttpDeploymentRequest",
-            description = "Register HTTP deployment request"
-        )
-    )]
+    /// Register HTTP deployment request
+    #[cfg_attr(feature = "schema", schema(title = "RegisterHttpDeploymentRequest"))]
     Http {
         /// # Uri
         ///
         /// Uri to use to discover/invoke the http deployment.
         #[serde_as(as = "serde_with::DisplayFromStr")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schema", schema(value_type = String, format = "uri"))]
         uri: Uri,
 
         /// # Additional headers
@@ -80,10 +75,7 @@ pub enum RegisterDeploymentRequest {
         /// When set to `true`, it implies `breaking = true`.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
-        #[cfg_attr(
-            feature = "schema",
-            schemars(default = "restate_serde_util::default::bool::<true>")
-        )]
+        #[cfg_attr(feature = "schema", schema(default = true))]
         force: Option<bool>,
 
         /// # Dry-run mode
@@ -94,13 +86,8 @@ pub enum RegisterDeploymentRequest {
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            title = "RegisterLambdaDeploymentRequest",
-            description = "Register Lambda deployment request"
-        )
-    )]
+    /// Register Lambda deployment request
+    #[cfg_attr(feature = "schema", schema(title = "RegisterLambdaDeploymentRequest"))]
     Lambda {
         /// # ARN
         ///
@@ -140,10 +127,7 @@ pub enum RegisterDeploymentRequest {
         /// This implies `breaking = true`.
         ///
         /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
-        #[cfg_attr(
-            feature = "schema",
-            schemars(default = "restate_serde_util::default::bool::<true>")
-        )]
+        #[cfg_attr(feature = "schema", schema(default = true))]
         force: Option<bool>,
 
         /// # Dry-run mode
@@ -156,14 +140,14 @@ pub enum RegisterDeploymentRequest {
     },
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ServiceNameRevPair {
     pub name: String,
     pub revision: ServiceRevision,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterDeploymentResponse {
     pub id: DeploymentId,
@@ -195,23 +179,19 @@ pub struct RegisterDeploymentResponse {
     pub info: Vec<Info>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+/// List of all registered deployments
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListDeploymentsResponse {
     pub deployments: Vec<DeploymentResponse>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DeploymentResponse {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            title = "HttpDeploymentResponse",
-            description = "Deployment response for HTTP deployments"
-        )
-    )]
+    /// Deployment response for HTTP deployments
+    #[cfg_attr(feature = "schema", schema(title = "HttpDeploymentResponse"))]
     Http {
         /// # Deployment ID
         id: DeploymentId,
@@ -220,7 +200,7 @@ pub enum DeploymentResponse {
         ///
         /// URI used to invoke this service deployment.
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schema", schema(value_type = String, format = "uri"))]
         uri: Uri,
 
         /// # Protocol Type
@@ -232,7 +212,7 @@ pub enum DeploymentResponse {
         ///
         /// HTTP Version used to invoke this service deployment.
         #[serde(with = "http_serde::version")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         http_version: Version,
 
         /// # Additional headers
@@ -249,7 +229,7 @@ pub enum DeploymentResponse {
         metadata: HashMap<String, String>,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         created_at: humantime::Timestamp,
 
         /// # Minimum Service Protocol version
@@ -280,13 +260,8 @@ pub enum DeploymentResponse {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         info: Vec<Info>,
     },
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            title = "LambdaDeploymentResponse",
-            description = "Deployment response for Lambda deployments"
-        )
-    )]
+    /// Deployment response for Lambda deployments
+    #[cfg_attr(feature = "schema", schema(title = "LambdaDeploymentResponse"))]
     Lambda {
         /// # Deployment ID
         id: DeploymentId,
@@ -321,7 +296,7 @@ pub enum DeploymentResponse {
         metadata: HashMap<String, String>,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         created_at: humantime::Timestamp,
 
         /// # Minimum Service Protocol version
@@ -362,17 +337,13 @@ impl DeploymentResponse {
     }
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+/// Detailed information about Restate deployments
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DetailedDeploymentResponse {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            title = "HttpDetailedDeploymentResponse",
-            description = "Detailed deployment response for HTTP deployments"
-        )
-    )]
+    /// Detailed deployment response for HTTP deployments
+    #[cfg_attr(feature = "schema", schema(title = "HttpDetailedDeploymentResponse"))]
     Http {
         /// # Deployment ID
         id: DeploymentId,
@@ -381,7 +352,7 @@ pub enum DetailedDeploymentResponse {
         ///
         /// URI used to invoke this service deployment.
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schema", schema(value_type = String, format = "uri"))]
         uri: Uri,
 
         /// # Protocol Type
@@ -393,7 +364,7 @@ pub enum DetailedDeploymentResponse {
         ///
         /// HTTP Version used to invoke this service deployment.
         #[serde(with = "http_serde::version")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         http_version: Version,
 
         /// # Additional headers
@@ -409,7 +380,7 @@ pub enum DetailedDeploymentResponse {
         metadata: HashMap<String, String>,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         created_at: humantime::Timestamp,
 
         /// # Minimum Service Protocol version
@@ -439,13 +410,8 @@ pub enum DetailedDeploymentResponse {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         info: Vec<Info>,
     },
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            title = "LambdaDetailedDeploymentResponse",
-            description = "Detailed deployment response for Lambda deployments"
-        )
-    )]
+    /// Detailed deployment response for Lambda deployments
+    #[cfg_attr(feature = "schema", schema(title = "LambdaDetailedDeploymentResponse"))]
     Lambda {
         /// # Deployment ID
         id: DeploymentId,
@@ -480,7 +446,7 @@ pub enum DetailedDeploymentResponse {
         metadata: HashMap<String, String>,
 
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-        #[cfg_attr(feature = "schema", schemars(with = "String"))]
+        #[cfg_attr(feature = "schema", schema(value_type = String))]
         created_at: humantime::Timestamp,
 
         /// # Minimum Service Protocol version
@@ -522,17 +488,12 @@ impl DetailedDeploymentResponse {
     }
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum UpdateDeploymentRequest {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            title = "UpdateHttpDeploymentRequest",
-            description = "Update HTTP deployment request"
-        )
-    )]
+    /// Update HTTP deployment request
+    #[cfg_attr(feature = "schema", schema(title = "UpdateHttpDeploymentRequest"))]
     Http {
         /// # Uri
         ///
@@ -541,7 +502,7 @@ pub enum UpdateDeploymentRequest {
             with = "serde_with::As::<Option<serde_with::DisplayFromStr>>",
             skip_serializing_if = "Option::is_none"
         )]
-        #[cfg_attr(feature = "schema", schemars(with = "Option<String>"))]
+        #[cfg_attr(feature = "schema", schema(value_type = Option<String>, format = "uri"))]
         uri: Option<Uri>,
 
         /// # Additional headers
@@ -572,13 +533,8 @@ pub enum UpdateDeploymentRequest {
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         dry_run: bool,
     },
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            title = "UpdateLambdaDeploymentRequest",
-            description = "Update Lambda deployment request"
-        )
-    )]
+    /// Update Lambda deployment request
+    #[cfg_attr(feature = "schema", schema(title = "UpdateLambdaDeploymentRequest"))]
     Lambda {
         /// # ARN
         ///

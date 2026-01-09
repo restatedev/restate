@@ -17,13 +17,14 @@ use serde::{Deserialize, Serialize};
 use restate_time_util::FriendlyDuration;
 use restate_types::schema::service::ServiceMetadata;
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+/// List of all registered services.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ListServicesResponse {
     pub services: Vec<ServiceMetadata>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ModifyServiceRequest {
     /// # Public
@@ -39,7 +40,6 @@ pub struct ModifyServiceRequest {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub idempotency_retention: Option<Duration>,
 
     /// # Workflow completion retention
@@ -48,7 +48,6 @@ pub struct ModifyServiceRequest {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub workflow_completion_retention: Option<Duration>,
 
     /// # Journal retention
@@ -60,7 +59,6 @@ pub struct ModifyServiceRequest {
     ///
     /// Can be configured using the [`jiff::fmt::friendly`](https://docs.rs/jiff/latest/jiff/fmt/friendly/index.html) format or ISO8601, for example `5 hours`.
     #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub journal_retention: Option<Duration>,
 
     /// # Inactivity timeout
@@ -76,7 +74,6 @@ pub struct ModifyServiceRequest {
     ///
     /// This overrides the default inactivity timeout set in invoker options.
     #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub inactivity_timeout: Option<Duration>,
 
     /// # Abort timeout
@@ -93,11 +90,10 @@ pub struct ModifyServiceRequest {
     ///
     /// This overrides the default abort timeout set in invoker options.
     #[serde(default, with = "serde_with::As::<Option<FriendlyDuration>>")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<String>" /* TODO(slinkydeveloper) https://github.com/restatedev/restate/issues/3766 */))]
     pub abort_timeout: Option<Duration>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ModifyServiceStateRequest {
     /// # Version
@@ -114,5 +110,6 @@ pub struct ModifyServiceStateRequest {
     /// # New State
     ///
     /// The new state to replace the previous state with
+    #[cfg_attr(feature = "schema", schema(value_type = HashMap<String, Vec<u8>>))]
     pub new_state: HashMap<String, Bytes>,
 }

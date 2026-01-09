@@ -12,11 +12,11 @@ use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use super::error::GenericRestError;
 use crate::query_utils::{RecordBatchWriter, WriteRecordBatchStream};
-
-use super::QueryServiceState;
-use super::error::StorageQueryError;
+use crate::state::AdminServiceState;
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, http};
 use bytes::Bytes;
@@ -29,41 +29,58 @@ use futures::{StreamExt, TryStreamExt};
 use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
-use okapi_operation::*;
 use parking_lot::Mutex;
-use schemars::JsonSchema;
-use serde::Deserialize;
-use serde_with::serde_as;
+use restate_admin_rest_model::query::QueryRequest;
+use restate_core::network::TransportConnect;
+use restate_types::invocation::client::InvocationClient;
+use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
 
-#[serde_as]
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct QueryRequest {
-    /// # Query
-    ///
-    /// SQL query to run against the storage
-    #[serde_as(as = "serde_with::DisplayFromStr")]
-    #[schemars(with = "String")]
-    pub query: String,
-}
-
-/// Query storage
-#[openapi(
-    summary = "Query storage",
-    description = "Query the storage API",
+/// Query the system and service state by using SQL.
+#[utoipa::path(
+    post,
+    path = "/query",
     operation_id = "query",
-    tags = "storage",
-    responses(ignore_return_type = true, from_type = "StorageQueryError")
+    tag = "introspection",
+    responses(
+        (status = 200, description = "Query results",
+            content (
+                ("application/vnd.apache.arrow.stream"),
+                ("application/json", example = json!({"rows": []}))
+            )),
+        (status = 500, description = "Internal Datafusion error"),
+        (status = 503, description = "Query service not available"),
+    )
 )]
-pub async fn query(
-    State(state): State<Arc<QueryServiceState>>,
+pub(crate) async fn query<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     headers: HeaderMap,
-    #[request_body(required = true)] Json(payload): Json<QueryRequest>,
-) -> Result<impl IntoResponse, StorageQueryError> {
-    let record_batch_stream = state.query_context.execute(&payload.query).await?;
+    Json(payload): Json<QueryRequest>,
+) -> Result<impl IntoResponse, GenericRestError>
+where
+    Metadata: MetadataService + Send + Sync + Clone + 'static,
+    Discovery: DiscoveryClient + Send + Sync + Clone + 'static,
+    Telemetry: TelemetryClient + Send + Sync + Clone + 'static,
+    Invocations: InvocationClient + Send + Sync + Clone + 'static,
+    Transport: TransportConnect,
+{
+    let Some(query_context) = state.query_context.as_ref() else {
+        return Err(GenericRestError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Query service not available",
+        ));
+    };
+
+    let record_batch_stream = query_context
+        .execute(&payload.query)
+        .await
+        .map_err(|e| GenericRestError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
-            WriteRecordBatchStream::<JsonWriter>::new(record_batch_stream, payload.query)?
+            WriteRecordBatchStream::<JsonWriter>::new(record_batch_stream, payload.query)
+                .map_err(|e| {
+                    GenericRestError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+                })?
                 .map_ok(Frame::data)
                 .left_stream(),
             "application/json",
@@ -72,7 +89,8 @@ pub async fn query(
             WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
                 record_batch_stream,
                 payload.query,
-            )?
+            )
+            .map_err(|e| GenericRestError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .map_ok(Frame::data)
             .right_stream(),
             "application/vnd.apache.arrow.stream",
@@ -84,7 +102,10 @@ pub async fn query(
     // return an error (instead of just closing the stream) if there is a error getting the first record batch (eg, out of memory)
     if let Some(Err(_)) = futures::stream::Peekable::peek(Pin::new(&mut result_stream)).await {
         let err = result_stream.next().await.unwrap().unwrap_err();
-        return Err(StorageQueryError::DataFusion(err));
+        return Err(GenericRestError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            err.to_string(),
+        ));
     }
 
     Ok(Response::builder()
@@ -120,7 +141,7 @@ impl Write for LockWriter {
     }
 }
 
-pub struct JsonWriter {
+pub(crate) struct JsonWriter {
     json_writer: datafusion::arrow::json::Writer<LockWriter, JsonArray>,
     lock_writer: LockWriter,
     finished: bool,

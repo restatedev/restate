@@ -8,20 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod cluster_controller;
-mod error;
-#[cfg(feature = "metadata-api")]
-mod metadata_api;
-mod metric_definitions;
-mod query_utils;
-mod rest_api;
-pub mod schema_registry_integration;
-pub mod service;
-mod state;
-mod storage_accounting;
-#[cfg(feature = "serve-web-ui")]
-mod web_ui;
+use serde::Deserialize;
+use serde_with::serde_as;
 
-pub use crate::storage_accounting::StorageAccountingTask;
-
-pub use error::Error;
+#[serde_as]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct QueryRequest {
+    /// SQL query to run against the storage
+    pub query: String,
+}

@@ -33,8 +33,7 @@ aws-smithy-http-client = { version = "1", default-features = false, features = [
 aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "default-https-client", "rt-tokio", "tls-rustls"] }
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
-axum = { version = "0.8", features = ["http2"] }
-axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
 bilrost = { version = "0.1014", features = ["bytestring", "smallvec"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
@@ -112,7 +111,6 @@ ring = { version = "0.17", features = ["std"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "prefer-post-quantum", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
@@ -129,7 +127,7 @@ tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt", "ti
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
-tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
+tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "retry", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
@@ -137,6 +135,7 @@ tracing-log = { version = "0.2" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parking_lot"] }
 typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
+utoipa = { version = "5", features = ["axum_extras", "time"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
 xxhash-rust = { version = "0.8", default-features = false, features = ["std", "xxh3"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
@@ -163,8 +162,7 @@ aws-smithy-http-client = { version = "1", default-features = false, features = [
 aws-smithy-runtime = { version = "1", default-features = false, features = ["client", "default-https-client", "rt-tokio", "tls-rustls"] }
 aws-smithy-runtime-api = { version = "1", features = ["client", "http-02x", "http-auth", "test-util"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
-axum = { version = "0.8", features = ["http2"] }
-axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
 bilrost = { version = "0.1014", features = ["bytestring", "smallvec"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
@@ -244,7 +242,6 @@ ring = { version = "0.17", features = ["std"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "prefer-post-quantum", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-schemars = { version = "0.8", features = ["bytes", "enumset", "preserve_order"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
@@ -261,7 +258,7 @@ tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt", "ti
 toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
 toml_edit = { version = "0.22", features = ["serde"] }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
-tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "log", "retry", "timeout"] }
+tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "retry", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "follow-redirect", "map-response-body", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
@@ -269,6 +266,8 @@ tracing-log = { version = "0.2" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parking_lot"] }
 typenum = { version = "1", default-features = false, features = ["const-generics"] }
 ulid = { version = "1", features = ["serde"] }
+utoipa = { version = "5", features = ["axum_extras", "time"] }
+utoipa-gen = { version = "5", default-features = false, features = ["axum_extras", "time"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
 xxhash-rust = { version = "0.8", default-features = false, features = ["std", "xxh3"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
