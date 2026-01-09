@@ -363,7 +363,10 @@ where
     async fn run_inner(&mut self) -> Result<(), ProcessorError> {
         let mut partition_store = self.partition_store.clone();
 
-        // Run migrations
+        // Important to note: This only runs the migration for the given partition store. In a setup,
+        // where not every node runs every partition, it can happen that partition data remains
+        // untouched when going from one version to the next.
+        // todo https://github.com/restatedev/restate/issues/4175.
         partition_store.verify_and_run_migrations().await?;
 
         let last_applied_lsn = partition_store

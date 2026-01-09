@@ -20,23 +20,16 @@ use std::time::Duration;
 
 use bytestring::ByteString;
 
-use restate_rocksdb::RocksDbManager;
-use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, InvocationStatusV1, JournalMetadata,
-    ReadInvocationStatusTable, StatusTimestamps, WriteInvocationStatusTable,
+    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, ReadInvocationStatusTable,
+    StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_types::RestateVersion;
-use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
 };
 use restate_types::time::MillisSinceEpoch;
-
-use crate::fsm_table::get_storage_version;
-use crate::invocation_status_table::{InvocationStatusKey, InvocationStatusKeyV1};
-use crate::migrations::{LATEST_VERSION, SchemaVersion};
-use crate::partition_store::StorageAccess;
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
     name: ByteString::from_static("abc"),
@@ -184,92 +177,4 @@ async fn test_invocation_status() {
             .expect("should not fail"),
         invoked_status(INVOCATION_TARGET_2.clone())
     );
-}
-
-#[allow(unreachable_code)]
-#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_migration() {
-    let mut rocksdb = storage_test_environment().await;
-
-    // Generate 2001 invocations
-    let mut mocked_invocations = Vec::new();
-    for _ in 0..2001 {
-        let invocation_id = InvocationId::mock_random();
-        let in_flight_invocation_status = InFlightInvocationMetadata {
-            // Old data structure doesn't support created_using_restate_version
-            created_using_restate_version: RestateVersion::unknown(),
-            ..InFlightInvocationMetadata::mock()
-        };
-        let status = InvocationStatus::Invoked(in_flight_invocation_status);
-        mocked_invocations.push((invocation_id, status));
-    }
-
-    // Let's mock the old invocation statuses
-    let mut txn = rocksdb.transaction();
-    for (invocation_id, status) in &mocked_invocations {
-        txn.put_kv_proto(
-            InvocationStatusKeyV1 {
-                partition_key: invocation_id.partition_key(),
-                invocation_uuid: invocation_id.invocation_uuid(),
-            },
-            &InvocationStatusV1(status.clone()),
-        )
-        .unwrap();
-    }
-    txn.commit().await.unwrap();
-
-    // Now run the migrations
-    rocksdb.verify_and_run_migrations().await.unwrap();
-    let partition_id = rocksdb.partition_id();
-    assert_eq!(
-        SchemaVersion::from(
-            get_storage_version(&mut rocksdb, partition_id)
-                .await
-                .unwrap()
-        ),
-        LATEST_VERSION
-    );
-
-    // --- From now on all the statuses should be migrated
-
-    for (invocation_id, expected_status) in &mocked_invocations {
-        assert_eq!(
-            *expected_status,
-            rocksdb.get_invocation_status(invocation_id).await.unwrap()
-        );
-
-        let mut txn = rocksdb.transaction();
-        assert_eq!(
-            *expected_status,
-            txn.get_invocation_status(invocation_id).await.unwrap()
-        );
-        txn.commit().await.unwrap();
-
-        // Let's check nothing is left in the old key space
-        assert!(
-            rocksdb
-                .get_kv_raw(
-                    InvocationStatusKeyV1 {
-                        partition_key: invocation_id.partition_key(),
-                        invocation_uuid: invocation_id.invocation_uuid()
-                    },
-                    |_, v| Ok(v.is_none())
-                )
-                .unwrap()
-        );
-        // But invocation status is only in the new key space
-        assert!(
-            rocksdb
-                .get_kv_raw(
-                    InvocationStatusKey {
-                        partition_key: invocation_id.partition_key(),
-                        invocation_uuid: invocation_id.invocation_uuid()
-                    },
-                    |_, v| Ok(v.is_some())
-                )
-                .unwrap()
-        );
-    }
-
-    RocksDbManager::get().shutdown().await;
 }

@@ -146,7 +146,7 @@ impl TableKind {
     pub const fn key_kinds(self) -> &'static [KeyKind] {
         match self {
             Self::State => &[KeyKind::State],
-            Self::InvocationStatus => &[KeyKind::InvocationStatusV1, KeyKind::InvocationStatus],
+            Self::InvocationStatus => &[KeyKind::InvocationStatus],
             Self::ServiceStatus => &[KeyKind::ServiceStatus],
             Self::Idempotency => &[KeyKind::Idempotency],
             Self::Inbox => &[KeyKind::Inbox],
@@ -688,6 +688,15 @@ impl PartitionStore {
     }
 
     pub async fn verify_and_run_migrations(&mut self) -> Result<()> {
+        // We assume the partition store to be empty if it does not contain any applied lsn. The
+        // reason is that we always commit changes to the partition store via a transaction which
+        // also updates the applied lsn field.
+        let is_empty = self.get_applied_lsn().await?.is_none();
+        if is_empty {
+            put_storage_version(self, self.partition_id(), LATEST_VERSION as u16).await?;
+            return Ok(());
+        }
+
         let mut schema_version: SchemaVersion =
             get_storage_version(self, self.partition_id()).await?.into();
         if schema_version != LATEST_VERSION {
