@@ -117,9 +117,6 @@ skip = [
     # Clash with criterion
     { name = "itertools" },
 
-    # clash between rdkafka and many other libraries
-    { name = "indexmap" },
-
     # clash between prost and otel libraries
     { name = "prost" },
     { name = "prost-derive" },
