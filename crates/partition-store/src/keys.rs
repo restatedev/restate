@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// Allow deprecated KeyKind variants - needed because derive macros (EnumIter, VariantArray)
+// generate code that references all variants including deprecated ones.
+#![allow(deprecated)]
+
 use std::mem;
 
 use anyhow::anyhow;
@@ -34,6 +38,8 @@ pub enum KeyKind {
     Fsm,
     Idempotency,
     Inbox,
+    /// Retired in 1.6 - kept to reserve the `b"is"` byte encoding.
+    #[deprecated(note = "InvocationStatusV1 was retired in 1.6 and should not be used")]
     InvocationStatusV1,
     InvocationStatus,
     Journal,

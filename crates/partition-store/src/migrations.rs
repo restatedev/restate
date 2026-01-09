@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use strum::EnumCount;
-
-use crate::invocation_status_table::run_invocation_status_v1_migration;
 use crate::{PartitionStore, Result};
+use restate_storage_api::StorageError;
+use strum::EnumCount;
 
 // NOTE: The representation numbers here must be strictly monotonically increasing.
 #[derive(Debug, Eq, PartialEq, strum::FromRepr, strum::EnumCount)]
@@ -47,10 +46,16 @@ impl SchemaVersion {
     }
 
     // Add migrations here!
-    async fn do_migration(&self, storage: &mut PartitionStore) -> Result<()> {
+    async fn do_migration(&self, _storage: &mut PartitionStore) -> Result<()> {
         match self {
             SchemaVersion::None => {
-                run_invocation_status_v1_migration(storage).await?;
+                // Version 1.6+ does not support upgrading from pre-1.5
+                // The InvocationStatusV1 migration was removed in 1.6
+                return Err(StorageError::Generic(anyhow::anyhow!(
+                    "Cannot upgrade from version <1.5 directly to 1.6 or later. \
+                     Please upgrade to version 1.5 first, which will migrate your data, \
+                     and then upgrade to 1.6+"
+                )));
             }
             SchemaVersion::V1_5 => {}
         }

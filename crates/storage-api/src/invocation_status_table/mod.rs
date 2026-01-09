@@ -952,11 +952,3 @@ pub struct InvocationLite {
 impl PartitionStoreProtobufValue for InvocationLite {
     type ProtobufType = crate::protobuf_types::v1::InvocationV2Lite;
 }
-
-// TODO remove this once we remove the old InvocationStatus
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct InvocationStatusV1(pub InvocationStatus);
-
-impl PartitionStoreProtobufValue for InvocationStatusV1 {
-    type ProtobufType = crate::protobuf_types::v1::InvocationStatus;
-}

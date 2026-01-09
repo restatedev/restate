@@ -28,7 +28,7 @@ const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
 /// This information needs to be updated whenever we release a version that changes the
 /// compatible versions boundaries.
 static COMPATIBILITY_INFORMATION: CompatibilityInformation =
-    CompatibilityInformation::new(Version::new(1, 4, 0), Version::new(1, 0, 0));
+    CompatibilityInformation::new(Version::new(1, 4, 0), Version::new(1, 5, 0));
 
 /// Compatibility information defining the minimum Restate version that can read data written by
 /// this version. Additionally, it specifies the minimum with which this version is backwards
@@ -82,7 +82,7 @@ pub enum ClusterValidationError {
         min_version: Version,
     },
     #[error(
-        "Restate version '{this_version}' is backward incompatible with data directory created by Restate version '{data_version}'"
+        "Restate version '{this_version}' is backward incompatible with data directory created by Restate version '{data_version}'. Upgrade from '{data_version}' to '{this_version}' by going through all minor versions in sequence."
     )]
     BackwardIncompatibility {
         this_version: Version,
@@ -513,13 +513,13 @@ mod tests {
     fn backward_incompatible_version() -> anyhow::Result<()> {
         let dir = tempdir().unwrap();
         let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
-        let max_version = Version::new(0, 9, 2);
+        let max_version = Version::new(1, 4, 2);
         let this_version = Version::new(2, 1, 1);
         write_cluster_marker(
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
                 max_version.clone(),
-                Version::new(0, 9, 0),
+                Version::new(1, 4, 0),
                 true,
             ),
             &file,
