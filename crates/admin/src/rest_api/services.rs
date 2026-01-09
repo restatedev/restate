@@ -201,7 +201,9 @@ where
     )
 )]
 pub async fn modify_service_state<Metadata, Discovery, Telemetry, Invocations, Transport>(
-    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    State(mut state): State<
+        AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>,
+    >,
     Path(service_name): Path<String>,
     Json(ModifyServiceStateRequest {
         version,

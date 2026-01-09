@@ -10,6 +10,7 @@
 
 use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, task::Poll};
 
+use bytes::BytesMut;
 use futures::{FutureExt, future::BoxFuture, ready};
 use tokio::sync::{AcquireError, OwnedSemaphorePermit, Semaphore};
 
@@ -23,7 +24,7 @@ use restate_types::{
     logs::{HasRecordKeys, Keys},
     net::ingest::IngestRecord,
     partitions::{FindPartition, PartitionTable, PartitionTableError},
-    storage::StorageEncode,
+    storage::{StorageCodec, StorageEncode},
 };
 
 use crate::{
@@ -43,14 +44,30 @@ pub enum IngestionError {
 /// High-level ingestion entry point that allocates permits and hands out session handles per partition.
 /// [`IngestionClient`] can be cloned and shared across different routines. All users will share the same budget
 /// and underlying partition sessions.
-#[derive(Clone)]
 pub struct IngestionClient<T, V> {
     manager: SessionManager<T>,
     partition_table: Live<PartitionTable>,
     // memory budget for inflight invocations.
     permits: Arc<Semaphore>,
     memory_budget: NonZeroUsize,
+    arena: BytesMut,
     _phantom: PhantomData<V>,
+}
+
+impl<T, V> Clone for IngestionClient<T, V>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            manager: self.manager.clone(),
+            partition_table: self.partition_table.clone(),
+            permits: Arc::clone(&self.permits),
+            memory_budget: self.memory_budget,
+            arena: BytesMut::default(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<T, V> IngestionClient<T, V> {
@@ -68,6 +85,7 @@ impl<T, V> IngestionClient<T, V> {
             partition_table,
             permits: Arc::new(Semaphore::new(memory_budget.get())),
             memory_budget,
+            arena: BytesMut::default(),
             _phantom: PhantomData,
         }
     }
@@ -93,11 +111,11 @@ where
     /// Ingest a record with `partition_key`.
     #[must_use]
     pub fn ingest(
-        &self,
+        &mut self,
         partition_key: PartitionKey,
         record: impl Into<InputRecord<V>>,
     ) -> IngestFuture {
-        let record = record.into().into_record();
+        let record = record.into().into_record(&mut self.arena);
 
         let budget = record.estimate_size().min(self.memory_budget.get());
 
@@ -215,8 +233,10 @@ impl<T> InputRecord<T>
 where
     T: StorageEncode,
 {
-    fn into_record(self) -> IngestRecord {
-        IngestRecord::from_parts(self.keys, self.record)
+    fn into_record(self, buf: &mut BytesMut) -> IngestRecord {
+        StorageCodec::encode(&self.record, buf).expect("encode to pass");
+
+        IngestRecord::new(self.keys, buf.split().freeze())
     }
 }
 
@@ -246,6 +266,7 @@ impl InputRecord<String> {
 mod test {
     use std::{num::NonZeroUsize, time::Duration};
 
+    use bytes::BytesMut;
     use futures::{FutureExt, StreamExt};
     use googletest::prelude::*;
     use test_log::test;
@@ -335,7 +356,8 @@ mod test {
 
     #[test(restate_core::test)]
     async fn test_client_single_record() {
-        let (mut incoming, client) = init_env(10).await;
+        let (mut incoming, mut client) = init_env(10).await;
+        let mut buf = BytesMut::new();
 
         let commit = client
             .ingest(0, InputRecord::from_str("hello world"))
@@ -348,7 +370,9 @@ mod test {
             body.records,
             all!(
                 len(eq(1)),
-                contains(eq(InputRecord::from_str("hello world").into_record()))
+                contains(eq(
+                    InputRecord::from_str("hello world").into_record(&mut buf)
+                ))
             )
         );
 
@@ -359,7 +383,8 @@ mod test {
 
     #[test(restate_core::test)]
     async fn test_client_single_record_retry() {
-        let (mut incoming, client) = init_env(10).await;
+        let (mut incoming, mut client) = init_env(10).await;
+        let mut buf = BytesMut::new();
 
         let mut commit = client
             .ingest(0, InputRecord::from_str("hello world"))
@@ -379,7 +404,9 @@ mod test {
             body.records,
             all!(
                 len(eq(1)),
-                contains(eq(InputRecord::from_str("hello world").into_record()))
+                contains(eq(
+                    InputRecord::from_str("hello world").into_record(&mut buf)
+                ))
             )
         );
         // lets acknowledge it this time
@@ -390,7 +417,7 @@ mod test {
 
     #[test(restate_core::test)]
     async fn test_client_close() {
-        let (_, client) = init_env(10).await;
+        let (_, mut client) = init_env(10).await;
 
         let commit = client
             .ingest(0, InputRecord::from_str("hello world"))
@@ -404,7 +431,7 @@ mod test {
 
     #[test(restate_core::test(start_paused = true))]
     async fn test_client_dispatch() {
-        let (mut incoming, client) = init_env(10).await;
+        let (mut incoming, mut client) = init_env(10).await;
 
         let pt = Metadata::with_current(|p| p.partition_table_snapshot());
 
