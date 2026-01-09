@@ -23,9 +23,12 @@ use restate_types::vqueue::VQueueId;
 
 use super::*;
 
+pub use state_machine_id::StateMachineId;
+
 /// Component encapsulating the business logic of the invocation state machine
 #[derive(Debug)]
 pub(super) struct InvocationStateMachine {
+    pub(super) state_machine_id: StateMachineId,
     #[allow(dead_code)]
     pub(super) qid: Option<VQueueId>,
     #[allow(dead_code)]
@@ -186,6 +189,7 @@ impl InvocationStateMachine {
         on_max_attempts: OnMaxAttempts,
     ) -> InvocationStateMachine {
         Self {
+            state_machine_id: StateMachineId::new(),
             qid,
             _permit: permit,
             invocation_target,
@@ -481,6 +485,10 @@ impl InvocationStateMachine {
         }
     }
 
+    pub(crate) fn is_waiting_retry(&self) -> bool {
+        matches!(self.invocation_state, AttemptState::WaitingRetry { .. })
+    }
+
     pub(super) fn attempt_deployment_id(&self) -> AttemptDeploymentId {
         AttemptDeploymentId(match &self.invocation_state {
             AttemptState::InFlight {
@@ -555,6 +563,21 @@ impl fmt::Display for AttemptDeploymentId {
     }
 }
 
+mod state_machine_id {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, derive_more::Into, derive_more::Display)]
+    pub struct StateMachineId(u64);
+
+    impl StateMachineId {
+        pub fn new() -> Self {
+            Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,12 +593,6 @@ mod tests {
     use restate_test_util::{assert, check, let_assert};
     use restate_types::journal_v2::{CompletionType, NotificationType};
     use restate_types::retries::RetryPolicy;
-
-    impl InvocationStateMachine {
-        pub(crate) fn is_waiting_retry(&self) -> bool {
-            matches!(self.invocation_state, AttemptState::WaitingRetry { .. })
-        }
-    }
 
     #[test]
     fn handle_error_when_waiting_for_retry() {
@@ -789,5 +806,10 @@ mod tests {
 
         // Ready to retry
         assert!(invocation_state_machine.is_ready_to_retry());
+    }
+
+    #[test]
+    fn test_state_machine_id_smoke() {
+        assert_ne!(StateMachineId::new(), StateMachineId::new());
     }
 }
