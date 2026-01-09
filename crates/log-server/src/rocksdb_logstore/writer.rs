@@ -31,7 +31,7 @@ use restate_types::net::log_server::{Seal, Store, Trim};
 use restate_types::protobuf::common::LogServerStatus;
 
 use super::keys::{DataRecordKey, KeyPrefixKind, MetadataKey};
-use super::record_format::DataRecordEncoder;
+use super::record_format::{DataRecordEncoder, RecordFormat};
 use super::{DATA_CF, METADATA_CF};
 use crate::logstore::AsyncToken;
 use crate::metric_definitions::LOG_SERVER_WRITE_BATCH_SIZE_BYTES;
@@ -185,7 +185,7 @@ impl LogStoreWriter {
             let key_bytes =
                 DataRecordKey::new(store_message.header.loglet_id, offset).to_binary_array();
             let encoder = DataRecordEncoder::from(payload);
-            let value_bytes = encoder.encode_to_disk_format(buffer);
+            let value_bytes = encoder.encode_to_disk_format(RecordFormat::default(), buffer);
             // Shortcut: we know that the chain is 2 slices wide, todo is to introduce an
             // IoBufQueue that can be used in ropes of owned byte slices like this case.
             let dst = [
