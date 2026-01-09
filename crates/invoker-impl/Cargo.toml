@@ -23,7 +23,6 @@ restate-service-client = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["message", "codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }
 restate-time-util = { workspace = true }
-restate-timer-queue = { workspace = true }
 restate-types = { workspace = true }
 
 anyhow = { workspace = true }
@@ -46,7 +45,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
-tokio-util = { workspace = true, features = ["rt"] }
+tokio-util = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]

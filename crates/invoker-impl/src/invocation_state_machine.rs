@@ -23,16 +23,27 @@ use restate_types::vqueue::VQueueId;
 
 use super::*;
 
-/// Component encapsulating the business logic of the invocation state machine
+/// Trait alias for types that can be used as retry timer keys.
+/// This allows tests to use a simple mock key type instead of requiring a real `DelayQueue`.
+pub(super) trait TimerKey: Copy + PartialEq + Eq + fmt::Debug + Send + 'static {}
+
+// Blanket implementation for any type that satisfies the bounds
+impl<T: Copy + PartialEq + Eq + fmt::Debug + Send + 'static> TimerKey for T {}
+
+/// Component encapsulating the business logic of the invocation state machine.
+///
+/// The type parameter `K` represents the timer key type used for retry timers.
+/// In production, this is `tokio_util::time::delay_queue::Key`.
+/// In tests, this can be a simple mock type to avoid needing a real `DelayQueue`.
 #[derive(Debug)]
-pub(super) struct InvocationStateMachine {
+pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_queue::Key> {
     #[allow(dead_code)]
     pub(super) qid: Option<VQueueId>,
     #[allow(dead_code)]
     pub(super) _permit: Permit,
     pub(super) invocation_target: InvocationTarget,
     pub(super) last_transient_error_event: Option<TransientErrorEvent>,
-    invocation_state: AttemptState,
+    invocation_state: AttemptState<K>,
     retry_policy_state: RetryPolicyState,
     /// This retry count is passed in the StartMessage.
     /// For more details of when we bump it, see [`InvokerError::should_bump_start_message_retry_count_since_last_stored_entry`].
@@ -112,7 +123,7 @@ impl JournalTracker {
     }
 }
 
-enum AttemptState {
+enum AttemptState<K: TimerKey> {
     New,
 
     InFlight {
@@ -134,10 +145,12 @@ enum AttemptState {
     WaitingRetry {
         timer_fired: bool,
         journal_tracker: JournalTracker,
+        // used to guard against orphaned retry timers
+        retry_timer_key: K,
     },
 }
 
-impl fmt::Debug for AttemptState {
+impl<K: TimerKey> fmt::Debug for AttemptState<K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AttemptState::New => f.write_str("New"),
@@ -161,10 +174,12 @@ impl fmt::Debug for AttemptState {
             AttemptState::WaitingRetry {
                 journal_tracker,
                 timer_fired,
+                retry_timer_key,
             } => f
                 .debug_struct("WaitingRetry")
                 .field("journal_tracker", journal_tracker)
                 .field("timer_fired", timer_fired)
+                .field("retry_timer_key", retry_timer_key)
                 .finish(),
         }
     }
@@ -177,14 +192,14 @@ struct RetryPolicyState {
     on_max_attempts: OnMaxAttempts,
 }
 
-impl InvocationStateMachine {
+impl<K: TimerKey> InvocationStateMachine<K> {
     pub(super) fn create(
         qid: Option<VQueueId>,
         permit: Permit,
         invocation_target: InvocationTarget,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
-    ) -> InvocationStateMachine {
+    ) -> InvocationStateMachine<K> {
         Self {
             qid,
             _permit: permit,
@@ -409,14 +424,33 @@ impl InvocationStateMachine {
         });
     }
 
-    pub(super) fn notify_retry_timer_fired(&mut self) {
-        debug_assert!(matches!(
-            &self.invocation_state,
-            AttemptState::WaitingRetry { .. }
-        ));
+    /// Notifies that a retry timer has fired.
+    /// Only reacts if the fired timer's key matches the key stored in WaitingRetry state.
+    /// This provides defense-in-depth against stale timers.
+    pub(super) fn notify_retry_timer_fired(&mut self, fired_key: K) {
+        if let AttemptState::WaitingRetry {
+            timer_fired,
+            retry_timer_key,
+            ..
+        } = &mut self.invocation_state
+        {
+            // Only react if the fired timer matches our current timer
+            if *retry_timer_key == fired_key {
+                *timer_fired = true;
+            }
+            // Otherwise ignore - it's a stale timer from a previous state
+        }
+        // If not in WaitingRetry state, ignore the timer
+    }
 
-        if let AttemptState::WaitingRetry { timer_fired, .. } = &mut self.invocation_state {
-            *timer_fired = true;
+    /// Takes the retry timer key if in WaitingRetry state.
+    /// Returns None if not in WaitingRetry state.
+    pub(super) fn take_retry_timer_key(&self) -> Option<K> {
+        match &self.invocation_state {
+            AttemptState::WaitingRetry {
+                retry_timer_key, ..
+            } => Some(*retry_timer_key),
+            _ => None,
         }
     }
 
@@ -425,6 +459,7 @@ impl InvocationStateMachine {
         error_is_transient: bool,
         next_retry_interval_override: Option<Duration>,
         should_bump_start_message_retry_count_since_last_stored_command: bool,
+        register_timer: impl FnOnce(Duration) -> K,
     ) -> OnTaskError {
         let journal_tracker = match &self.invocation_state {
             AttemptState::InFlight {
@@ -434,10 +469,11 @@ impl InvocationStateMachine {
             AttemptState::WaitingRetry {
                 journal_tracker,
                 timer_fired,
+                ..
             } => {
                 // TODO: https://github.com/restatedev/restate/issues/538
                 assert!(
-                    timer_fired,
+                    *timer_fired,
                     "Restate does not support multiple retry timers yet. This would require \
                         deduplicating timers by some mean (e.g. fencing them off, overwriting \
                         old timers, not registering a new timer if an old timer has not fired yet, etc.)"
@@ -458,11 +494,13 @@ impl InvocationStateMachine {
             if should_bump_start_message_retry_count_since_last_stored_command {
                 self.start_message_retry_count_since_last_stored_command += 1;
             }
+            let retry_timer_key = register_timer(next_timer);
             self.invocation_state = AttemptState::WaitingRetry {
                 timer_fired: false,
                 journal_tracker,
+                retry_timer_key,
             };
-            OnTaskError::ScheduleRetry(next_timer)
+            OnTaskError::Retrying(next_timer)
         } else {
             match self.retry_policy_state.on_max_attempts {
                 OnMaxAttempts::Pause => OnTaskError::Pause,
@@ -476,6 +514,7 @@ impl InvocationStateMachine {
             AttemptState::WaitingRetry {
                 timer_fired,
                 journal_tracker,
+                ..
             } => *timer_fired && journal_tracker.can_retry(),
             _ => false,
         }
@@ -539,7 +578,7 @@ impl InvocationStateMachine {
 
 #[derive(Debug)]
 pub(super) enum OnTaskError {
-    ScheduleRetry(Duration),
+    Retrying(Duration),
     Pause,
     Kill,
 }
@@ -571,107 +610,39 @@ mod tests {
     use restate_types::journal_v2::{CompletionType, NotificationType};
     use restate_types::retries::RetryPolicy;
 
-    impl InvocationStateMachine {
-        pub(crate) fn is_waiting_retry(&self) -> bool {
-            matches!(self.invocation_state, AttemptState::WaitingRetry { .. })
-        }
+    fn create_test_invocation_state_machine() -> InvocationStateMachine<u64> {
+        InvocationStateMachine::create(
+            None,
+            Permit::new_empty(),
+            InvocationTarget::mock_virtual_object(),
+            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
+            OnMaxAttempts::Kill,
+        )
     }
 
     #[test]
     fn handle_error_when_waiting_for_retry() {
-        let mut invocation_state_machine = InvocationStateMachine::create(
-            None,
-            Permit::new_empty(),
-            InvocationTarget::mock_virtual_object(),
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
-            OnMaxAttempts::Kill,
-        );
+        let mut invocation_state_machine = create_test_invocation_state_machine();
 
         let_assert!(
-            OnTaskError::ScheduleRetry(_) =
-                invocation_state_machine.handle_task_error(true, None, true)
+            OnTaskError::Retrying(_) =
+                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
-        invocation_state_machine.notify_retry_timer_fired();
+        invocation_state_machine.notify_retry_timer_fired(0);
 
         // We stay in `WaitingForRetry`
         let_assert!(
-            OnTaskError::ScheduleRetry(_) =
-                invocation_state_machine.handle_task_error(true, None, true)
+            OnTaskError::Retrying(_) =
+                invocation_state_machine.handle_task_error(true, None, true, |_| 1)
         );
         check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
-    }
-
-    #[test(tokio::test)]
-    async fn handle_error_counts_attempts_on_same_entry() {
-        let mut invocation_state_machine = InvocationStateMachine::create(
-            None,
-            Permit::new_empty(),
-            InvocationTarget::mock_virtual_object(),
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
-            OnMaxAttempts::Kill,
-        );
-
-        // Start invocation
-        invocation_state_machine.start(
-            tokio::spawn(async {}).abort_handle(),
-            mpsc::unbounded_channel().0,
-        );
-
-        // Notify error
-        let_assert!(
-            OnTaskError::ScheduleRetry(_) =
-                invocation_state_machine.handle_task_error(true, None, true)
-        );
-        assert_eq!(
-            invocation_state_machine.start_message_retry_count_since_last_stored_command,
-            1
-        );
-
-        // Try to start again
-        invocation_state_machine.start(
-            tokio::spawn(async {}).abort_handle(),
-            mpsc::unbounded_channel().0,
-        );
-
-        // Get error again
-        let_assert!(
-            OnTaskError::ScheduleRetry(_) =
-                invocation_state_machine.handle_task_error(true, None, true)
-        );
-        assert_eq!(
-            invocation_state_machine.start_message_retry_count_since_last_stored_command,
-            2
-        );
-
-        // Try to start again
-        invocation_state_machine.start(
-            tokio::spawn(async {}).abort_handle(),
-            mpsc::unbounded_channel().0,
-        );
-        assert_eq!(
-            invocation_state_machine.start_message_retry_count_since_last_stored_command,
-            2
-        );
-
-        // Now complete the entry
-        invocation_state_machine.notify_new_command(1, false);
-        assert_eq!(
-            invocation_state_machine.start_message_retry_count_since_last_stored_command,
-            0
-        );
     }
 
     #[test(tokio::test)]
     async fn handle_requires_ack() {
-        let mut invocation_state_machine = InvocationStateMachine::create(
-            None,
-            Permit::new_empty(),
-            InvocationTarget::mock_virtual_object(),
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
-            OnMaxAttempts::Kill,
-        );
+        let mut invocation_state_machine = create_test_invocation_state_machine();
 
         let abort_handle = tokio::spawn(async {}).abort_handle();
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -697,14 +668,62 @@ mod tests {
     }
 
     #[test(tokio::test)]
-    async fn journal_tracker_correctly_tracks_commands() {
-        let mut invocation_state_machine = InvocationStateMachine::create(
-            None,
-            Permit::new_empty(),
-            InvocationTarget::mock_service(),
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
-            OnMaxAttempts::Kill,
+    async fn handle_error_counts_attempts_on_same_entry() {
+        let mut invocation_state_machine = create_test_invocation_state_machine();
+
+        // Start invocation
+        invocation_state_machine.start(
+            tokio::spawn(async {}).abort_handle(),
+            mpsc::unbounded_channel().0,
         );
+
+        // Notify error
+        let_assert!(
+            OnTaskError::Retrying(_) =
+                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+        );
+        assert_eq!(
+            invocation_state_machine.start_message_retry_count_since_last_stored_command,
+            1
+        );
+
+        // Try to start again
+        invocation_state_machine.start(
+            tokio::spawn(async {}).abort_handle(),
+            mpsc::unbounded_channel().0,
+        );
+
+        // Get error again
+        let_assert!(
+            OnTaskError::Retrying(_) =
+                invocation_state_machine.handle_task_error(true, None, true, |_| 1)
+        );
+        assert_eq!(
+            invocation_state_machine.start_message_retry_count_since_last_stored_command,
+            2
+        );
+
+        // Try to start again
+        invocation_state_machine.start(
+            tokio::spawn(async {}).abort_handle(),
+            mpsc::unbounded_channel().0,
+        );
+        assert_eq!(
+            invocation_state_machine.start_message_retry_count_since_last_stored_command,
+            2
+        );
+
+        // Now complete the entry
+        invocation_state_machine.notify_new_command(1, false);
+        assert_eq!(
+            invocation_state_machine.start_message_retry_count_since_last_stored_command,
+            0
+        );
+    }
+
+    #[test(tokio::test)]
+    async fn journal_tracker_correctly_tracks_commands() {
+        let mut invocation_state_machine = create_test_invocation_state_machine();
 
         let abort_handle = tokio::spawn(async {}).abort_handle();
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -714,8 +733,8 @@ mod tests {
         // Invoker generates entry 1
         invocation_state_machine.notify_new_command(1, false);
         let_assert!(
-            OnTaskError::ScheduleRetry(_) =
-                invocation_state_machine.handle_task_error(true, None, true)
+            OnTaskError::Retrying(_) =
+                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
         );
 
         // PP sends ack for command 1
@@ -726,19 +745,13 @@ mod tests {
         assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // After the retry timer fires, we're ready to retry
-        invocation_state_machine.notify_retry_timer_fired();
+        invocation_state_machine.notify_retry_timer_fired(0);
         assert!(invocation_state_machine.is_ready_to_retry());
     }
 
     #[test(tokio::test)]
     async fn journal_tracker_correctly_tracks_notification_proposals() {
-        let mut invocation_state_machine = InvocationStateMachine::create(
-            None,
-            Permit::new_empty(),
-            InvocationTarget::mock_service(),
-            RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
-            OnMaxAttempts::Kill,
-        );
+        let mut invocation_state_machine = create_test_invocation_state_machine();
 
         let abort_handle = tokio::spawn(async {}).abort_handle();
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -747,8 +760,8 @@ mod tests {
         invocation_state_machine.notify_new_notification_proposal(NotificationId::SignalIndex(18));
         invocation_state_machine.notify_new_notification_proposal(NotificationId::CompletionId(1));
         let_assert!(
-            OnTaskError::ScheduleRetry(_) =
-                invocation_state_machine.handle_task_error(true, None, true)
+            OnTaskError::Retrying(_) =
+                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
         );
 
         // Waiting notifications acks and retry timer fired
@@ -763,7 +776,7 @@ mod tests {
         )));
 
         // Retry timer fired
-        invocation_state_machine.notify_retry_timer_fired();
+        invocation_state_machine.notify_retry_timer_fired(0);
 
         // Waiting notifications acks
         assert!(!invocation_state_machine.is_ready_to_retry());
@@ -789,5 +802,35 @@ mod tests {
 
         // Ready to retry
         assert!(invocation_state_machine.is_ready_to_retry());
+    }
+
+    #[test]
+    fn stale_timer_key_is_ignored() {
+        let mut invocation_state_machine = create_test_invocation_state_machine();
+
+        // Put the ISM in WaitingRetry state with timer key 0
+        let_assert!(
+            OnTaskError::Retrying(_) =
+                invocation_state_machine.handle_task_error(true, None, true, |_| 0)
+        );
+        check!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+
+        // Fire with a WRONG timer key (1 instead of 0) - should be ignored
+        invocation_state_machine.notify_retry_timer_fired(1);
+
+        // Should NOT be ready to retry because the wrong key was used
+        assert!(
+            !invocation_state_machine.is_ready_to_retry(),
+            "stale timer key should be ignored"
+        );
+
+        // Now fire with the CORRECT timer key (0)
+        invocation_state_machine.notify_retry_timer_fired(0);
+
+        // Now it should be ready to retry
+        assert!(
+            invocation_state_machine.is_ready_to_retry(),
+            "correct timer key should mark timer as fired"
+        );
     }
 }
