@@ -13,6 +13,7 @@ restate-core = { workspace = true }
 restate-types = { workspace = true }
 restate-workspace-hack = { workspace = true }
 
+bytes = { workspace = true }
 dashmap = { workspace = true }
 futures = { workspace = true }
 pin-project = { workspace = true }
