@@ -453,8 +453,24 @@ impl SnapshotRepository {
             info!(
                 repository_latest_lsn = ?latest_stored.min_applied_lsn,
                 new_snapshot_lsn = ?snapshot.min_applied_lsn,
-                "The newly uploaded snapshot is no newer than the already-stored latest snapshot, will not update latest pointer"
+                "The newly uploaded snapshot is no newer than the already-stored latest snapshot, \
+                will not update latest pointer"
             );
+
+            let snapshot_ref = SnapshotReference::from_metadata(snapshot);
+            let partition_id = snapshot.partition_id;
+            let repository = self.clone();
+            let _ = restate_core::TaskCenter::spawn_unmanaged_child(
+                restate_core::TaskKind::Disposable,
+                "snapshot-cleanup-superseded",
+                async move {
+                    let _ = repository
+                        .delete_snapshot_files(partition_id, &snapshot_ref)
+                        .await;
+                    Ok::<(), anyhow::Error>(())
+                },
+            );
+
             return Ok(PartitionSnapshotStatus::from(latest_stored));
         }
 
