@@ -7448,7 +7448,6 @@ dependencies = [
  "restate-service-protocol-v4",
  "restate-test-util",
  "restate-time-util",
- "restate-timer-queue",
  "restate-types",
  "restate-workspace-hack",
  "schemars 1.2.0",
