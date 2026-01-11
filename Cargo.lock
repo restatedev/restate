@@ -8327,8 +8327,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.1.22"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.22#55ac98b139c5dd022e4d7ab338dbe5daa4789542"
+version = "0.1.23"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.23#9c5ab65c0068048f9ceceb30b840fc57d3f8aaf0"
 dependencies = [
  "anyhow",
  "include_dir",
