@@ -10,8 +10,10 @@
 
 use std::ops::Deref;
 
+use bitflags::bitflags;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+use restate_clock::UniqueTimestamp;
 use restate_types::flexbuffers_storage_encode_decode;
 use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery, Record};
 use restate_types::storage::{PolyBytes, StorageCodec, StorageCodecKind, StorageDecodeError};
@@ -40,7 +42,19 @@ static_assertions::const_assert!(
 pub(super) enum RecordDecodeError {
     UnsupportedFormatVersion(u8),
     UnsupportedKeyStyle(u8),
+    InvalidRecordTimestamp(#[from] restate_clock::Error),
     DecodeError(#[from] StorageDecodeError),
+}
+
+#[derive(Debug, Clone, Default)]
+#[repr(transparent)]
+pub struct RecordFlags(u16);
+bitflags! {
+    impl RecordFlags: u16 {
+        /// Record timestamp is in HLC format (UniqueTimestamp)
+        /// If unset, the timestamp is in NanosSinceEpoch format.
+        const HlcTimestamp = 0b00000000_00000001;
+    }
 }
 
 /// Deprecated. This is the header for format-version 0x02.
@@ -152,7 +166,7 @@ fn write_legacy_payload(record: &Record, serde_buffer: &mut BytesMut) -> BytesMu
 ///    [1 byte]        KeyStyle (see `KeyStyle` enum)
 ///      * [8 bytes]   First Key (if KeyStyle is != 0)
 ///      * [8 bytes]   Second Key (if KeyStyle is > 1)
-///    [2 bytes]       Flags (reserved for future use)
+///    [2 bytes]       Flags (see `RecordFlags` enum)
 ///    [8 bytes]       `created_at` timestamp
 ///    [remaining]     Serialized Payload
 fn write_record(record: &Record, buf: &mut BytesMut) -> BytesMut {
@@ -176,8 +190,9 @@ fn write_record(record: &Record, buf: &mut BytesMut) -> BytesMut {
             buf.put_u64_le(*range.end());
         }
     }
-    // flags (unused)
-    buf.put_u16_le(0);
+    // flags
+    let flags = RecordFlags::default();
+    buf.put_u16_le(flags.bits());
     // created_at
     buf.put_u64_le(record.created_at().as_u64());
 
@@ -200,14 +215,20 @@ fn decode_custom_encoded_record(
     read_format(&mut buffer)?;
     // read keys
     let keys = read_keys(&mut buffer)?;
-    // unused flags
-    let _flags = read_flags(&mut buffer);
+    // flags
+    let flags = RecordFlags::from_bits_retain(buffer.get_u16_le());
+
+    let timestamp = buffer.get_u64_le();
+    let created_at = if flags.contains(RecordFlags::HlcTimestamp) {
+        NanosSinceEpoch::from(UniqueTimestamp::try_from(timestamp)?)
+    } else {
+        NanosSinceEpoch::from(timestamp)
+    };
 
     if !keys.matches_key_query(filter) {
         return Ok(None);
     }
 
-    let created_at = NanosSinceEpoch::from(read_created_at(&mut buffer));
     let body = PolyBytes::Bytes(Bytes::copy_from_slice(buffer.chunk()));
 
     Ok(Some(Record::from_parts(created_at, keys, body)))
@@ -246,14 +267,6 @@ fn read_format<B: Buf>(buf: &mut B) -> Result<RecordFormat, RecordDecodeError> {
 fn peek_format(raw_value: u8) -> Result<RecordFormat, RecordDecodeError> {
     RecordFormat::try_from(raw_value)
         .map_err(|_| RecordDecodeError::UnsupportedFormatVersion(raw_value))
-}
-
-fn read_flags<B: Buf>(buf: &mut B) -> u16 {
-    buf.get_u16_le()
-}
-
-fn read_created_at<B: Buf>(buf: &mut B) -> u64 {
-    buf.get_u64_le()
 }
 
 #[cfg(test)]

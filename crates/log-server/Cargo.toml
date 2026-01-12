@@ -16,6 +16,7 @@ test-util = []
 restate-workspace-hack = { workspace = true }
 
 restate-bifrost = { workspace = true }
+restate-clock = { workspace = true }
 restate-core = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
@@ -25,6 +26,7 @@ restate-types = { workspace = true }
 ahash = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bitflags = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 codederror = { workspace = true }

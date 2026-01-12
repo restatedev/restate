@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use bitflags::bitflags;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+use restate_clock::UniqueTimestamp;
 use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery, Record};
 use restate_types::storage::PolyBytes;
 use restate_types::time::NanosSinceEpoch;
@@ -21,10 +23,22 @@ pub(super) enum RecordFormat {
     CustomV1 = 0x01,
 }
 
+#[derive(Debug, Clone, Default)]
+#[repr(transparent)]
+pub struct RecordFlags(u16);
+bitflags! {
+    impl RecordFlags: u16 {
+        /// Record timestamp is in HLC format (UniqueTimestamp)
+        /// If unset, the timestamp is in NanosSinceEpoch format.
+        const HlcTimestamp = 0b00000000_00000001;
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("Record decode error: {0}")]
 pub enum RecordDecodeError {
     UnsupportedFormatVersion(u8),
+    InvalidRecordTimestamp(#[from] restate_clock::Error),
     UnsupportedKeyStyle(u8),
 }
 
@@ -64,10 +78,16 @@ impl<'a> DataRecordDecoder<'a> {
     }
 
     pub fn decode(mut self) -> Result<Record, RecordDecodeError> {
-        // unused flags
-        let _flags = read_flags(&mut self.buffer);
+        // record flags
+        let flags = RecordFlags::from_bits_retain(self.buffer.get_u16_le());
 
-        let created_at = NanosSinceEpoch::from(read_created_at(&mut self.buffer));
+        let timestamp = self.buffer.get_u64_le();
+        let created_at = if flags.contains(RecordFlags::HlcTimestamp) {
+            NanosSinceEpoch::from(UniqueTimestamp::try_from(timestamp)?)
+        } else {
+            NanosSinceEpoch::from(timestamp)
+        };
+
         let body = PolyBytes::Bytes(Bytes::copy_from_slice(self.buffer.chunk()));
 
         Ok(Record::from_parts(created_at, self.keys, body))
@@ -86,7 +106,7 @@ impl DataRecordEncoder<'_> {
     ///    [1 byte]        KeyStyle (see `KeyStyle` enum)
     ///      * [8 bytes]   First Key (if KeyStyle is != 0)
     ///      * [8 bytes]   Second Key (if KeyStyle is > 1)
-    ///    [2 bytes]       Flags (reserved for future use)
+    ///    [2 bytes]       Flags (see `RecordFlags` enum)
     ///    [8 bytes]       `created_at` timestamp
     ///    [remaining]     Serialized Payload
     #[tracing::instrument(skip_all)]
@@ -115,8 +135,10 @@ impl DataRecordEncoder<'_> {
                 scratch.put_u64_le(*range.end());
             }
         }
-        // flags (unused)
-        scratch.put_u16_le(0);
+        // flags
+        let flags = RecordFlags::default();
+        scratch.put_u16_le(flags.bits());
+
         // created_at
         scratch.put_u64_le(created_at.as_u64());
         let header_bytes = scratch.split().freeze();
@@ -178,12 +200,4 @@ fn read_keys<B: Buf>(buf: &mut B) -> Result<Keys, RecordDecodeError> {
 fn read_format<B: Buf>(buf: &mut B) -> Result<RecordFormat, RecordDecodeError> {
     let format = buf.get_u8();
     RecordFormat::try_from(format).map_err(|_| RecordDecodeError::UnsupportedFormatVersion(format))
-}
-
-fn read_flags<B: Buf>(buf: &mut B) -> u16 {
-    buf.get_u16_le()
-}
-
-fn read_created_at<B: Buf>(buf: &mut B) -> u64 {
-    buf.get_u64_le()
 }
