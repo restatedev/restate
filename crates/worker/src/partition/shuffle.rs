@@ -14,7 +14,7 @@ use async_channel::{TryRecvError, TrySendError};
 use metrics::{counter, histogram};
 use restate_types::config::Configuration;
 use tokio::sync::mpsc;
-use tracing::{debug, info};
+use tracing::debug;
 
 use restate_bifrost::Bifrost;
 use restate_core::cancellation_token;
@@ -188,7 +188,7 @@ where
             .experimental_shuffler_batch_ingestion;
 
         let inner = if batch_ingestion {
-            info!("Using Shuffler experimental batch ingestion mechanism");
+            debug!("Using Shuffler experimental batch ingestion mechanism");
             ShuffleInner::IngestionClient(IngestionClientShuffleInner::new(
                 metadata,
                 outbox_reader,
@@ -197,7 +197,7 @@ where
                 ingestion_client,
             ))
         } else {
-            info!("Using Shuffler legacy ingestion mechanism");
+            debug!("Using Shuffler legacy ingestion mechanism");
             ShuffleInner::Legacy(LegacyShuffleInner::new(
                 metadata,
                 outbox_reader,

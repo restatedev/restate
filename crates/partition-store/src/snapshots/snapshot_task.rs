@@ -10,10 +10,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use tracing::{debug, info, instrument, warn};
 
+use restate_clock::WallClock;
+use restate_clock::time::MillisSinceEpoch;
 use restate_core::cancellation_token;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
@@ -78,7 +79,7 @@ impl SnapshotPartitionTask {
             )
             .await?;
 
-        let metadata = self.metadata(&snapshot, SystemTime::now());
+        let metadata = self.metadata(&snapshot, WallClock::recent_ms());
 
         self.snapshot_repository
             .put(&metadata, snapshot.base_dir)
@@ -101,7 +102,7 @@ impl SnapshotPartitionTask {
     fn metadata(
         &self,
         snapshot: &LocalPartitionSnapshot,
-        created_at: SystemTime,
+        created_at: MillisSinceEpoch,
     ) -> PartitionSnapshotMetadata {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
@@ -109,7 +110,7 @@ impl SnapshotPartitionTask {
             cluster_fingerprint: Some(self.cluster_fingerprint),
             node_name: self.node_name.clone(),
             partition_id: self.partition_id,
-            created_at: humantime::Timestamp::from(created_at),
+            created_at: created_at.into_timestamp(),
             snapshot_id: self.snapshot_id,
             key_range: snapshot.key_range.clone(),
             log_id: snapshot.log_id,

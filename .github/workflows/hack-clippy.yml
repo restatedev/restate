@@ -9,6 +9,7 @@ on:
 
 jobs:
   hack-clippy:
+    if: github.repository == 'restatedev/restate'
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     permissions:

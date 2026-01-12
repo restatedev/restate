@@ -126,6 +126,35 @@ where
             "/deployments/{deployment}",
             axum::routing::put(deployments::update_deployment),
         )
+        // Internal batch operation routes (for UI only, not documented in OpenAPI)
+        .route(
+            "/internal/invocations_batch_operations/kill",
+            axum::routing::post(invocations::batch_kill_invocations),
+        )
+        .route(
+            "/internal/invocations_batch_operations/cancel",
+            axum::routing::post(invocations::batch_cancel_invocations),
+        )
+        .route(
+            "/internal/invocations_batch_operations/purge",
+            axum::routing::post(invocations::batch_purge_invocations),
+        )
+        .route(
+            "/internal/invocations_batch_operations/purge-journal",
+            axum::routing::post(invocations::batch_purge_journal),
+        )
+        .route(
+            "/internal/invocations_batch_operations/restart-as-new",
+            axum::routing::post(invocations::batch_restart_as_new_invocations),
+        )
+        .route(
+            "/internal/invocations_batch_operations/resume",
+            axum::routing::post(invocations::batch_resume_invocations),
+        )
+        .route(
+            "/internal/invocations_batch_operations/pause",
+            axum::routing::post(invocations::batch_pause_invocations),
+        )
         .route(
             "/openapi",
             axum::routing::get(|| async move { axum::Json(api) }),

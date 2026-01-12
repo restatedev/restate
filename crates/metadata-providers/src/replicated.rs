@@ -410,27 +410,20 @@ impl MetadataStore for GrpcMetadataServerClient {
 struct NoKnownMetadataServer;
 
 fn map_status_to_read_error(address: AdvertisedAddress<FabricPort>, status: Status) -> ReadError {
-    match &status.code() {
-        // Transport errors manifest as unknown statuses, hence mark them as retryable
-        // Killing a remote server that is connected via UDS sometimes results into a cancelled statuses, hence mark them as retryable
-        Code::Unavailable | Code::Unknown | Code::Cancelled => {
-            ReadError::retryable(StatusError::new(address, status))
-        }
-        _ => ReadError::terminal(StatusError::new(address, status)),
+    if is_retryable_status(&status) {
+        ReadError::retryable(StatusError::new(address, status))
+    } else {
+        ReadError::terminal(StatusError::new(address, status))
     }
 }
 
 fn map_status_to_write_error(address: AdvertisedAddress<FabricPort>, status: Status) -> WriteError {
-    match &status.code() {
-        // Transport errors manifest as unknown statuses, hence mark them as retryable
-        // Killing a remote server that is connected via UDS sometimes results into a cancelled statuses, hence mark them as retryable
-        Code::Unavailable | Code::Unknown | Code::Cancelled => {
-            WriteError::retryable(StatusError::new(address, status))
-        }
-        Code::FailedPrecondition => {
-            WriteError::FailedPrecondition(format!("[{address}] {}", status.message()))
-        }
-        _ => WriteError::terminal(StatusError::new(address, status)),
+    if is_retryable_status(&status) {
+        WriteError::retryable(StatusError::new(address, status))
+    } else if status.code() == Code::FailedPrecondition {
+        WriteError::FailedPrecondition(format!("[{address}] {}", status.message()))
+    } else {
+        WriteError::terminal(StatusError::new(address, status))
     }
 }
 
@@ -438,13 +431,29 @@ fn map_status_to_provision_error(
     address: AdvertisedAddress<FabricPort>,
     status: Status,
 ) -> ProvisionError {
-    match &status.code() {
-        // Transport errors manifest as unknown statuses, hence mark them as retryable
-        // Killing a remote server that is connected via UDS sometimes results into a cancelled statuses, hence mark them as retryable
-        Code::Unavailable | Code::Unknown | Code::Cancelled => {
-            ProvisionError::retryable(StatusError::new(address, status))
+    if is_retryable_status(&status) {
+        ProvisionError::retryable(StatusError::new(address, status))
+    } else {
+        ProvisionError::terminal(StatusError::new(address, status))
+    }
+}
+
+/// Check if a gRPC status represents a retryable error.
+///
+/// Transport errors can manifest in different ways:
+/// - `Unknown`: General transport errors
+/// - `Unavailable`: Server is not reachable
+/// - `Cancelled`: Connection was terminated (common with UDS when server is killed)
+/// - `Internal` with h2 errors: HTTP/2 protocol errors (e.g., connection reset, stream errors)
+fn is_retryable_status(status: &Status) -> bool {
+    match status.code() {
+        Code::Unavailable | Code::Unknown | Code::Cancelled => true,
+        // h2 protocol errors surface as Internal errors but are transport-related and retryable
+        Code::Internal => {
+            let message = status.message();
+            message.contains("h2 protocol error") || message.contains("http2 error")
         }
-        _ => ProvisionError::terminal(StatusError::new(address, status)),
+        _ => false,
     }
 }
 

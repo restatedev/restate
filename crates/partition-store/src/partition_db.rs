@@ -282,7 +282,7 @@ impl PartitionCell {
 
         let mut import_metadata = ExportImportFilesMetaData::default();
         import_metadata.set_db_comparator_name(snapshot.db_comparator_name.as_str());
-        import_metadata.set_files(&snapshot.files);
+        import_metadata.set_files(&snapshot.files)?;
 
         info!(
             snapshot_applied_lsn = %snapshot.min_applied_lsn,

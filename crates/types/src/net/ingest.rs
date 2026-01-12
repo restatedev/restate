@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use metrics::Key;
 
 use restate_encoding::{ArcedSlice, RestateEncoding};
@@ -20,7 +20,6 @@ use crate::logs::{HasRecordKeys, Keys};
 use crate::message::MessageIndex;
 use crate::net::partition_processor::PartitionLeaderService;
 use crate::net::{RpcRequest, bilrost_wire_codec, define_rpc};
-use crate::storage::{StorageCodec, StorageEncode};
 
 #[derive(Debug, Eq, PartialEq, Clone, bilrost::Message)]
 pub struct IngestRecord {
@@ -31,21 +30,12 @@ pub struct IngestRecord {
 }
 
 impl IngestRecord {
-    pub fn estimate_size(&self) -> usize {
-        size_of::<Key>() + self.record.len()
+    pub fn new(keys: Keys, record: Bytes) -> Self {
+        Self { keys, record }
     }
 
-    pub fn from_parts<T>(keys: Keys, record: T) -> Self
-    where
-        T: StorageEncode,
-    {
-        let mut buf = BytesMut::new();
-        StorageCodec::encode(&record, &mut buf).expect("encode to pass");
-
-        Self {
-            keys,
-            record: buf.freeze(),
-        }
+    pub fn estimate_size(&self) -> usize {
+        size_of::<Key>() + self.record.len()
     }
 }
 

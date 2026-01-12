@@ -13,6 +13,7 @@ default = []
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-clock = { workspace = true }
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-object-store-util = { workspace = true }
@@ -31,7 +32,7 @@ derive_more = { workspace = true }
 enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-humantime = { workspace = true }
+jiff = { workspace = true }
 object_store = { workspace = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }

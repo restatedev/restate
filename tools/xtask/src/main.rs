@@ -16,14 +16,13 @@ use std::{env, io};
 
 use anyhow::bail;
 use reqwest::header::ACCEPT;
-use restate_core::partitions::PartitionRouting;
-use restate_ingestion_client::IngestionClient;
-use restate_types::partitions::state::PartitionReplicaSetStates;
-use schemars::r#gen::SchemaSettings;
+use schemars::generate::SchemaSettings;
 
 use restate_admin::service::AdminService;
+use restate_core::partitions::PartitionRouting;
 use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
 use restate_core::{TaskCenterFutureExt, TaskKind};
+use restate_ingestion_client::IngestionClient;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::table_docs;
@@ -41,6 +40,7 @@ use restate_types::invocation::{
 use restate_types::journal_v2::{EntryIndex, Signal};
 use restate_types::live::Constant;
 use restate_types::net::listener::Listeners;
+use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::Subscription;
 use restate_types::state_mut::ExternalStateMutation;
@@ -49,7 +49,7 @@ use restate_worker::WorkerHandle;
 use restate_worker::WorkerHandleError;
 
 fn generate_config_schema() -> anyhow::Result<()> {
-    let schema = SchemaSettings::draft2019_09()
+    let schema = SchemaSettings::draft2020_12()
         .into_generator()
         .into_root_schema_for::<Configuration>();
     println!("{}", serde_json::to_string_pretty(&schema)?);

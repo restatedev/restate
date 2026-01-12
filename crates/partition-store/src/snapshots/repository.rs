@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
@@ -19,7 +19,6 @@ use object_store::path::Path as ObjectPath;
 use object_store::{
     MultipartUpload, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
 };
-use restate_core::Metadata;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tempfile::TempDir;
@@ -31,11 +30,14 @@ use tokio_util::io::StreamReader;
 use tracing::{Instrument, Span, debug, info, instrument, warn};
 use url::Url;
 
+use restate_clock::WallClock;
+use restate_core::Metadata;
 use restate_object_store_util::create_object_store_client;
 use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::nodes_config::ClusterFingerprint;
+use restate_types::time::MillisSinceEpoch;
 
 use super::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
 
@@ -88,7 +90,7 @@ pub struct LatestSnapshot {
 
     /// Local node time when the snapshot was created.
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    pub created_at: humantime::Timestamp,
+    pub created_at: jiff::Timestamp,
 
     /// Unique snapshot id.
     pub snapshot_id: SnapshotId,
@@ -151,7 +153,7 @@ pub enum ArchivedLsn {
     Snapshot {
         // Ordering is intentional: LSN takes priority over elapsed wall clock time for comparisons
         min_applied_lsn: Lsn,
-        created_at: SystemTime,
+        created_at: MillisSinceEpoch,
     },
 }
 
@@ -168,9 +170,9 @@ impl ArchivedLsn {
     pub fn get_age(&self) -> Duration {
         match self {
             ArchivedLsn::None => Duration::MAX,
-            ArchivedLsn::Snapshot { created_at, .. } => SystemTime::now()
-                .duration_since(*created_at)
-                .unwrap_or_default(), // zero if created-at is earlier than current system time
+            ArchivedLsn::Snapshot { created_at, .. } => {
+                WallClock::recent_ms().duration_since(*created_at)
+            }
         }
     }
 }
@@ -1025,7 +1027,7 @@ mod tests {
             })),
             node_name: "node".to_string(),
             partition_id: PartitionId::MIN,
-            created_at: humantime::Timestamp::from(SystemTime::now()),
+            created_at: jiff::Timestamp::now(),
             snapshot_id: SnapshotId::new(),
             key_range: PartitionKey::MIN..=PartitionKey::MAX,
             log_id: LogId::MIN,

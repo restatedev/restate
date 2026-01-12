@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
-use tracing::{debug, info, instrument, trace};
+use tracing::{debug, instrument, trace};
 
 use restate_core::my_node_id;
 use restate_core::network::{Networking, TransportConnect};
@@ -374,7 +374,7 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
         TrimTask::new(&self.my_params, self.known_global_tail.clone())
             .run(trim_point, self.networking.clone())
             .await?;
-        info!(
+        debug!(
             loglet_id=%self.my_params.loglet_id,
             ?trim_point,
             "Loglet has been trimmed successfully"

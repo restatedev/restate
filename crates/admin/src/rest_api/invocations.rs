@@ -11,8 +11,13 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
+use restate_admin_rest_model::invocations::{
+    BATCH_OPERATION_MAX_SIZE, BatchInvocationRequest, BatchOperationResult,
+    BatchRestartAsNewRequest, BatchRestartAsNewResult, BatchResumeRequest,
+    FailedInvocationOperation, PatchDeploymentId, RestartAsNewInvocationResponse,
+    RestartedInvocation,
+};
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
     PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
@@ -23,6 +28,7 @@ use serde::Deserialize;
 use super::error::*;
 use crate::generate_meta_api_error;
 use crate::state::AdminServiceState;
+use futures::future;
 
 generate_meta_api_error!(KillInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, InvocationWasAlreadyCompletedError]);
 
@@ -218,31 +224,6 @@ where
     Ok(())
 }
 
-#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
-pub enum PatchDeploymentId {
-    #[default]
-    #[serde(alias = "keep")]
-    Keep,
-    #[serde(alias = "latest")]
-    Latest,
-    #[serde(untagged)]
-    Id(String),
-}
-
-impl PatchDeploymentId {
-    pub fn into_client(self) -> Result<client::PatchDeploymentId, InvalidFieldError> {
-        Ok(match self {
-            PatchDeploymentId::Keep => client::PatchDeploymentId::KeepPinned,
-            PatchDeploymentId::Latest => client::PatchDeploymentId::PinToLatest,
-            PatchDeploymentId::Id(dp_id) => client::PatchDeploymentId::PinTo {
-                id: dp_id
-                    .parse::<DeploymentId>()
-                    .map_err(|e| InvalidFieldError("deployment_id", e.to_string()))?,
-            },
-        })
-    }
-}
-
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct RestartAsNewInvocationQueryParams {
     /// From which entry index the invocation should restart from.
@@ -263,6 +244,7 @@ generate_meta_api_error!(RestartInvocationError: [
     InvocationNotFoundError,
     InvocationClientError,
     InvalidFieldError,
+    InvalidQueryParameterError,
     RestartAsNewInvocationStillRunningError,
     RestartAsNewInvocationUnsupportedError,
     RestartAsNewInvocationMissingInputError,
@@ -314,7 +296,8 @@ where
             from.unwrap_or_default(),
             deployment
                 .unwrap_or(PatchDeploymentId::Latest)
-                .into_client()?,
+                .into_client()
+                .map_err(|err| InvalidQueryParameterError("deployment", err))?,
         )
         .await
         .map_err(InvocationClientError)?
@@ -377,6 +360,7 @@ generate_meta_api_error!(ResumeInvocationError: [
     InvocationNotFoundError,
     InvocationClientError,
     InvalidFieldError,
+    InvalidQueryParameterError,
     ResumeInvocationNotStartedError,
     ResumeInvocationCompletedError,
     ResumeInvocationCannotChangeDeploymentIdError,
@@ -419,7 +403,10 @@ where
         .resume_invocation(
             PartitionProcessorRpcRequestId::new(),
             invocation_id,
-            deployment.unwrap_or_default().into_client()?,
+            deployment
+                .unwrap_or_default()
+                .into_client()
+                .map_err(|err| InvalidQueryParameterError("deployment", err))?,
         )
         .await
         .map_err(InvocationClientError)?
@@ -505,4 +492,571 @@ where
     };
 
     Ok(StatusCode::ACCEPTED)
+}
+
+// --- Batch operation handlers (internal, not documented in OpenAPI) ---
+
+generate_meta_api_error!(BatchKillInvocationsError: [BatchTooLargeError, InvocationClientError]);
+
+/// Kill multiple invocations in batch (internal endpoint, not in OpenAPI)
+pub async fn batch_kill_invocations<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    Json(request): Json<BatchInvocationRequest>,
+) -> Result<Json<BatchOperationResult>, BatchKillInvocationsError>
+where
+    Invocations: InvocationClient + Clone,
+{
+    if request.invocation_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(
+            BatchTooLargeError(request.invocation_ids.len(), BATCH_OPERATION_MAX_SIZE).into(),
+        );
+    }
+
+    let futures = request.invocation_ids.into_iter().map(|invocation_id| {
+        let client = state.invocation_client.clone();
+        async move {
+            let result = client
+                .kill_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+                .await;
+            (invocation_id, result)
+        }
+    });
+
+    let results = future::join_all(futures).await;
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for (invocation_id, result) in results {
+        match result {
+            Ok(KillInvocationResponse::Ok) => succeeded.push(invocation_id),
+            Ok(KillInvocationResponse::NotFound) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' not found", invocation_id),
+                });
+            }
+            Ok(KillInvocationResponse::AlreadyCompleted) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' was already completed", invocation_id),
+                });
+            }
+            Err(e) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(BatchOperationResult { succeeded, failed }))
+}
+
+generate_meta_api_error!(BatchCancelInvocationsError: [BatchTooLargeError, InvocationClientError]);
+
+/// Cancel multiple invocations in batch (internal endpoint, not in OpenAPI)
+pub async fn batch_cancel_invocations<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    Json(request): Json<BatchInvocationRequest>,
+) -> Result<Json<BatchOperationResult>, BatchCancelInvocationsError>
+where
+    Invocations: InvocationClient + Clone,
+{
+    if request.invocation_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(
+            BatchTooLargeError(request.invocation_ids.len(), BATCH_OPERATION_MAX_SIZE).into(),
+        );
+    }
+
+    let futures = request.invocation_ids.into_iter().map(|invocation_id| {
+        let client = state.invocation_client.clone();
+        async move {
+            let result = client
+                .cancel_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+                .await;
+            (invocation_id, result)
+        }
+    });
+
+    let results = future::join_all(futures).await;
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for (invocation_id, result) in results {
+        match result {
+            Ok(CancelInvocationResponse::Done | CancelInvocationResponse::Appended) => {
+                succeeded.push(invocation_id)
+            }
+            Ok(CancelInvocationResponse::NotFound) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' not found", invocation_id),
+                });
+            }
+            Ok(CancelInvocationResponse::AlreadyCompleted) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' was already completed", invocation_id),
+                });
+            }
+            Err(e) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(BatchOperationResult { succeeded, failed }))
+}
+
+generate_meta_api_error!(BatchPurgeInvocationsError: [BatchTooLargeError, InvocationClientError]);
+
+/// Purge multiple invocations in batch (internal endpoint, not in OpenAPI)
+pub async fn batch_purge_invocations<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    Json(request): Json<BatchInvocationRequest>,
+) -> Result<Json<BatchOperationResult>, BatchPurgeInvocationsError>
+where
+    Invocations: InvocationClient + Clone,
+{
+    if request.invocation_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(
+            BatchTooLargeError(request.invocation_ids.len(), BATCH_OPERATION_MAX_SIZE).into(),
+        );
+    }
+
+    let futures = request.invocation_ids.into_iter().map(|invocation_id| {
+        let client = state.invocation_client.clone();
+        async move {
+            let result = client
+                .purge_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+                .await;
+            (invocation_id, result)
+        }
+    });
+
+    let results = future::join_all(futures).await;
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for (invocation_id, result) in results {
+        match result {
+            Ok(PurgeInvocationResponse::Ok) => succeeded.push(invocation_id),
+            Ok(PurgeInvocationResponse::NotFound) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' not found", invocation_id),
+                });
+            }
+            Ok(PurgeInvocationResponse::NotCompleted) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' is not yet completed", invocation_id),
+                });
+            }
+            Err(e) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(BatchOperationResult { succeeded, failed }))
+}
+
+generate_meta_api_error!(BatchPurgeJournalError: [BatchTooLargeError, InvocationClientError]);
+
+/// Purge journals for multiple invocations in batch (internal endpoint, not in OpenAPI)
+pub async fn batch_purge_journal<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    Json(request): Json<BatchInvocationRequest>,
+) -> Result<Json<BatchOperationResult>, BatchPurgeJournalError>
+where
+    Invocations: InvocationClient + Clone,
+{
+    if request.invocation_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(
+            BatchTooLargeError(request.invocation_ids.len(), BATCH_OPERATION_MAX_SIZE).into(),
+        );
+    }
+
+    let futures = request.invocation_ids.into_iter().map(|invocation_id| {
+        let client = state.invocation_client.clone();
+        async move {
+            let result = client
+                .purge_journal(PartitionProcessorRpcRequestId::new(), invocation_id)
+                .await;
+            (invocation_id, result)
+        }
+    });
+
+    let results = future::join_all(futures).await;
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for (invocation_id, result) in results {
+        match result {
+            Ok(PurgeInvocationResponse::Ok) => succeeded.push(invocation_id),
+            Ok(PurgeInvocationResponse::NotFound) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' not found", invocation_id),
+                });
+            }
+            Ok(PurgeInvocationResponse::NotCompleted) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' is not yet completed", invocation_id),
+                });
+            }
+            Err(e) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(BatchOperationResult { succeeded, failed }))
+}
+
+generate_meta_api_error!(BatchRestartAsNewError: [BatchTooLargeError, InvocationClientError, InvalidFieldError]);
+
+/// Restart multiple invocations as new in batch (internal endpoint, not in OpenAPI)
+pub async fn batch_restart_as_new_invocations<
+    Metadata,
+    Discovery,
+    Telemetry,
+    Invocations,
+    Transport,
+>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    Json(request): Json<BatchRestartAsNewRequest>,
+) -> Result<Json<BatchRestartAsNewResult>, BatchRestartAsNewError>
+where
+    Invocations: InvocationClient + Clone,
+{
+    if request.invocation_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(
+            BatchTooLargeError(request.invocation_ids.len(), BATCH_OPERATION_MAX_SIZE).into(),
+        );
+    }
+
+    // Parse the deployment option once (applies to all invocations)
+    let deployment = request
+        .deployment
+        .unwrap_or(PatchDeploymentId::Latest)
+        .into_client()
+        .map_err(|e| InvalidFieldError("deployment", e))?;
+
+    let futures = request.invocation_ids.into_iter().map(|invocation_id| {
+        let client = state.invocation_client.clone();
+        let deployment = deployment.clone();
+        async move {
+            let result = client
+                .restart_as_new_invocation(
+                    PartitionProcessorRpcRequestId::new(),
+                    invocation_id,
+                    EntryIndex::default(), // Always restart from the beginning
+                    deployment,
+                )
+                .await;
+            (invocation_id, result)
+        }
+    });
+
+    let results = future::join_all(futures).await;
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for (invocation_id, result) in results {
+        match result {
+            Ok(client::RestartAsNewInvocationResponse::Ok { new_invocation_id }) => {
+                succeeded.push(RestartedInvocation {
+                    old_invocation_id: invocation_id,
+                    new_invocation_id,
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::NotFound) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' not found", invocation_id),
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::StillRunning) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' is still running", invocation_id),
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::Unsupported) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Restarting invocation '{}' is not supported", invocation_id),
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::MissingInput) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Invocation '{}' cannot be restarted because the input is not available",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::NotStarted) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Invocation '{}' cannot be restarted because it's not running yet",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::JournalIndexOutOfRange) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Journal index out of range for invocation '{}'",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::JournalCopyRangeInvalid) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Journal copy range invalid for invocation '{}'",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::CannotPatchDeploymentId) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Cannot change deployment ID for invocation '{}'",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::DeploymentNotFound) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Deployment not found when restarting invocation '{}'",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(client::RestartAsNewInvocationResponse::IncompatibleDeploymentId {
+                pinned_protocol_version,
+                deployment_id,
+                supported_protocol_versions,
+            }) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Invocation '{}' is running on protocol version '{}', while the chosen deployment '{}' supports the range {:?}",
+                        invocation_id, pinned_protocol_version, deployment_id, supported_protocol_versions
+                    ),
+                });
+            }
+            Err(e) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(BatchRestartAsNewResult { succeeded, failed }))
+}
+
+generate_meta_api_error!(BatchResumeInvocationsError: [BatchTooLargeError, InvocationClientError, InvalidFieldError]);
+
+/// Resume multiple invocations in batch (internal endpoint, not in OpenAPI)
+pub async fn batch_resume_invocations<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    Json(request): Json<BatchResumeRequest>,
+) -> Result<Json<BatchOperationResult>, BatchResumeInvocationsError>
+where
+    Invocations: InvocationClient + Clone,
+{
+    if request.invocation_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(
+            BatchTooLargeError(request.invocation_ids.len(), BATCH_OPERATION_MAX_SIZE).into(),
+        );
+    }
+
+    // Parse the deployment option once (applies to all invocations)
+    let deployment = request
+        .deployment
+        .unwrap_or_default()
+        .into_client()
+        .map_err(|e| InvalidFieldError("deployment", e))?;
+
+    let futures = request.invocation_ids.into_iter().map(|invocation_id| {
+        let client = state.invocation_client.clone();
+        let deployment = deployment.clone();
+        async move {
+            let result = client
+                .resume_invocation(
+                    PartitionProcessorRpcRequestId::new(),
+                    invocation_id,
+                    deployment,
+                )
+                .await;
+            (invocation_id, result)
+        }
+    });
+
+    let results = future::join_all(futures).await;
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for (invocation_id, result) in results {
+        match result {
+            Ok(ResumeInvocationResponse::Ok) => succeeded.push(invocation_id),
+            Ok(ResumeInvocationResponse::NotFound) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' not found", invocation_id),
+                });
+            }
+            Ok(ResumeInvocationResponse::NotStarted) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Invocation '{}' is either inboxed or scheduled, cannot be resumed",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(ResumeInvocationResponse::Completed) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Invocation '{}' is completed, cannot be resumed",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(ResumeInvocationResponse::CannotChangeDeploymentId) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Cannot change deployment ID for invocation '{}'",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(ResumeInvocationResponse::DeploymentNotFound) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Deployment not found when resuming invocation '{}'",
+                        invocation_id
+                    ),
+                });
+            }
+            Ok(ResumeInvocationResponse::IncompatibleDeploymentId {
+                pinned_protocol_version,
+                deployment_id,
+                supported_protocol_versions,
+            }) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Invocation '{}' is running on protocol version '{}', while the chosen deployment '{}' supports the range {:?}",
+                        invocation_id, pinned_protocol_version, deployment_id, supported_protocol_versions
+                    ),
+                });
+            }
+            Err(e) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(BatchOperationResult { succeeded, failed }))
+}
+
+generate_meta_api_error!(BatchPauseInvocationsError: [BatchTooLargeError, InvocationClientError]);
+
+/// Pause multiple invocations in batch (internal endpoint, not in OpenAPI)
+pub async fn batch_pause_invocations<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    Json(request): Json<BatchInvocationRequest>,
+) -> Result<Json<BatchOperationResult>, BatchPauseInvocationsError>
+where
+    Invocations: InvocationClient + Clone,
+{
+    if request.invocation_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(
+            BatchTooLargeError(request.invocation_ids.len(), BATCH_OPERATION_MAX_SIZE).into(),
+        );
+    }
+
+    let futures = request.invocation_ids.into_iter().map(|invocation_id| {
+        let client = state.invocation_client.clone();
+        async move {
+            let result = client
+                .pause_invocation(PartitionProcessorRpcRequestId::new(), invocation_id)
+                .await;
+            (invocation_id, result)
+        }
+    });
+
+    let results = future::join_all(futures).await;
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+
+    for (invocation_id, result) in results {
+        match result {
+            Ok(PauseInvocationResponse::Accepted | PauseInvocationResponse::AlreadyPaused) => {
+                succeeded.push(invocation_id)
+            }
+            Ok(PauseInvocationResponse::NotFound) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!("Invocation '{}' not found", invocation_id),
+                });
+            }
+            Ok(PauseInvocationResponse::NotRunning) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: format!(
+                        "Invocation '{}' is not running, cannot be paused",
+                        invocation_id
+                    ),
+                });
+            }
+            Err(e) => {
+                failed.push(FailedInvocationOperation {
+                    invocation_id,
+                    error: e.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(BatchOperationResult { succeeded, failed }))
 }

@@ -23,32 +23,28 @@ pub type NonZeroByteCount = ByteCount<false>;
 
 #[cfg(feature = "schema")]
 impl schemars::JsonSchema for ByteCount<true> {
-    fn schema_name() -> String {
-        "HumanBytes".to_owned()
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "HumanBytes".into()
     }
 
     fn schema_id() -> std::borrow::Cow<'static, str> {
         std::borrow::Cow::Owned(std::concat!(std::module_path!(), "::", "HumanBytes").to_owned())
     }
 
-    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema: schemars::schema::SchemaObject = generator.subschema_for::<String>().into();
-        schema.format = Some("human-bytes".to_owned());
-        let validation = schema.string();
-        validation.pattern = Some(r"^\d+(\.\d+)? ?[KMG]B$".to_string());
-        validation.min_length = Some(1);
-        let validation = schema.number();
-        validation.minimum = Some(1.0);
-        let metadata = schema.metadata();
-        metadata.title = Some("Human-readable bytes".to_owned());
-        metadata.description = Some("Human-readable bytes".to_owned());
-        schema.into()
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": r"^\d+(\.\d+)? ?[KMG]B$",
+            "minLength": 1,
+            "title": "Human-readable bytes",
+            "description": "Human-readable bytes",
+        })
     }
 }
 #[cfg(feature = "schema")]
 impl schemars::JsonSchema for ByteCount<false> {
-    fn schema_name() -> String {
-        "NonZeroHumanBytes".to_owned()
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "NonZeroHumanBytes".into()
     }
 
     fn schema_id() -> std::borrow::Cow<'static, str> {
@@ -57,18 +53,14 @@ impl schemars::JsonSchema for ByteCount<false> {
         )
     }
 
-    fn json_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-        let mut schema: schemars::schema::SchemaObject = generator.subschema_for::<String>().into();
-        schema.format = Some("non-zero human-bytes".to_owned());
-        let validation = schema.string();
-        validation.pattern = Some(r"^\d+(\.\d+)? ?[KMG]B$".to_string());
-        validation.min_length = Some(1);
-        let validation = schema.number();
-        validation.minimum = Some(1.0);
-        let metadata = schema.metadata();
-        metadata.title = Some("Non-zero human-readable bytes".to_owned());
-        metadata.description = Some("Non-zero human-readable bytes".to_owned());
-        schema.into()
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "pattern": r"^\d+(\.\d+)? ?[KMG]B$",
+            "minLength": 1,
+            "title": "Non-zero human-readable bytes",
+            "description": "Non-zero human-readable bytes",
+        })
     }
 }
 

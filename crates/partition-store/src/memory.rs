@@ -213,7 +213,7 @@ async fn rebalance_memory(
         let new_partition_budget = total_budget / collected.num_open_partitions;
         // budget has changed since last time we checked
         if new_partition_budget != current_per_partition_budget {
-            if !DEBUG_MEMORY_REPORTING {
+            if DEBUG_MEMORY_REPORTING {
                 report_memory_usage(&collected, total_budget);
             }
             memory_budget.set_per_partition_budget(new_partition_budget);

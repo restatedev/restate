@@ -174,7 +174,7 @@ jsonptr = "0.7.1"
 jsonschema = { version = "0.38.1", default-features = false }
 jsonwebtoken = { version = "10.2.0", features = ["aws_lc_rs"] }
 metrics = { version = "0.24" }
-metrics-exporter-prometheus = { version = "0.17", default-features = false, features = [
+metrics-exporter-prometheus = { version = "0.18.1", default-features = false, features = [
     "async-runtime",
 ] }
 metrics-util = { version = "0.20.1" }
@@ -185,7 +185,6 @@ object_store = { version = "0.13.0", features = ["aws", "azure", "gcp"] }
 octocrab = { version = "0.44.1" }
 opentelemetry = { version = "0.31" }
 opentelemetry-contrib = { version = "0.23" }
-opentelemetry-http = { version = "0.31" }
 opentelemetry-otlp = { version = "0.31" }
 opentelemetry-semantic-conventions = { version = "0.31" }
 opentelemetry_sdk = { version = "0.31" }
@@ -201,7 +200,6 @@ prost-dto = { version = "0.0.4" }
 prost-types = { version = "0.14.1" }
 quote = "1"
 rand = "0.9.2"
-rangemap = "1.7.1"
 regex = { version = "1.12" }
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
@@ -209,13 +207,13 @@ reqwest = { version = "0.12", default-features = false, features = [
     "stream",
 ] }
 rlimit = { version = "0.10.2" }
-rocksdb = { version = "0.43.0", package = "rust-rocksdb", features = [
+rocksdb = { version = "0.44.3", package = "rust-rocksdb", features = [
     "multi-threaded-cf",
     "jemalloc",
-], git = "https://github.com/restatedev/rust-rocksdb", rev = "de8911652d398e9bfbb6bbc42a7b4f7296f6d101" }
+], git = "https://github.com/restatedev/rust-rocksdb", rev = "060a890466468930638f0056fe5e284865c99702" }
 rstest = "0.26.1"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
-schemars = { version = "0.8", features = ["bytes", "enumset"] }
+schemars = { version = "1.2", features = ["bytes1"] }
 semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
