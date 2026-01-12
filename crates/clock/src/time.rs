@@ -218,6 +218,17 @@ impl From<SystemTime> for MillisSinceEpoch {
     }
 }
 
+#[cfg(feature = "jiff")]
+/// # Panics
+/// If timestamp is out of range (e.g. older than UNIX_EPOCH) this conversion will panic.
+impl From<jiff::Timestamp> for MillisSinceEpoch {
+    fn from(value: jiff::Timestamp) -> Self {
+        let unix =
+            u64::try_from(value.as_millisecond()).expect("only positive unix timestamps are legal");
+        Self::from(unix)
+    }
+}
+
 #[cfg(feature = "prost-types")]
 /// # Panics
 /// If timestamp is out of range (e.g. older than UNIX_EPOCH) this conversion will panic.
