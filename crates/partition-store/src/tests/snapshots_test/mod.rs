@@ -10,7 +10,6 @@
 
 use std::ops::RangeInclusive;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use tempfile::tempdir;
 
@@ -46,7 +45,7 @@ pub(crate) async fn run_tests(
         cluster_fingerprint: None,
         partition_id,
         node_name: "node".to_string(),
-        created_at: humantime::Timestamp::from(SystemTime::from(MillisSinceEpoch::new(0))),
+        created_at: MillisSinceEpoch::new(0).into_timestamp(),
         snapshot_id: SnapshotId::from_parts(0, 0),
         key_range: key_range.clone(),
         log_id: LogId::from(partition_id),
