@@ -52,7 +52,7 @@ pub struct PartitionSnapshotMetadata {
 
     /// Local node time when the snapshot was created.
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    pub created_at: humantime::Timestamp,
+    pub created_at: jiff::Timestamp,
 
     /// Snapshot id.
     pub snapshot_id: SnapshotId,
@@ -115,7 +115,7 @@ struct PartitionSnapshotMetadataShadow {
     pub partition_id: PartitionId,
     pub node_name: String,
     #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
-    pub created_at: humantime::Timestamp,
+    pub created_at: jiff::Timestamp,
     pub snapshot_id: SnapshotId,
     pub key_range: RangeInclusive<PartitionKey>,
     pub log_id: Option<LogId>,
