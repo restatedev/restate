@@ -13,7 +13,7 @@ use std::num::NonZeroU64;
 use std::time::SystemTime;
 
 use crate::RESTATE_EPOCH;
-use crate::time::MillisSinceEpoch;
+use crate::time::{MillisSinceEpoch, NanosSinceEpoch};
 
 /// Number of bits to represent physical time in millis since restate epoch.
 const PHY_TIME_BITS: u8 = 42;
@@ -205,6 +205,7 @@ impl Debug for UniqueTimestamp {
 }
 
 impl From<SystemTime> for UniqueTimestamp {
+    #[inline]
     fn from(value: SystemTime) -> Self {
         // The assumption is that SystemTime will always be > RESTATE_EPOCH
         UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::from(value))
@@ -214,14 +215,32 @@ impl From<SystemTime> for UniqueTimestamp {
 impl TryFrom<MillisSinceEpoch> for UniqueTimestamp {
     type Error = Error;
 
+    #[inline]
     fn try_from(value: MillisSinceEpoch) -> Result<Self, Self::Error> {
         Self::try_from_unix_millis(value)
+    }
+}
+
+impl TryFrom<NanosSinceEpoch> for UniqueTimestamp {
+    type Error = Error;
+
+    #[inline]
+    fn try_from(value: NanosSinceEpoch) -> Result<Self, Self::Error> {
+        Self::try_from_unix_millis(MillisSinceEpoch::from(value))
+    }
+}
+
+impl From<UniqueTimestamp> for NanosSinceEpoch {
+    #[inline]
+    fn from(value: UniqueTimestamp) -> Self {
+        value.to_unix_millis().into()
     }
 }
 
 impl TryFrom<u64> for UniqueTimestamp {
     type Error = Error;
 
+    #[inline]
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         let pt = (value >> LC_BITS) & PHY_TIME_MAX;
         let lc = value & LC_MAX;
