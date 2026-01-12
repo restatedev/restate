@@ -8,17 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod v1;
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use restate_types::logs::{KeyFilter, Keys, MatchKeyQuery, Record};
-use restate_types::storage::PolyBytes;
-use restate_types::time::NanosSinceEpoch;
+use restate_types::logs::{KeyFilter, Record};
 
-#[derive(Debug, derive_more::TryFrom, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Default, derive_more::TryFrom, Eq, PartialEq, Ord, PartialOrd)]
 #[try_from(repr)]
 #[repr(u8)]
 pub(super) enum RecordFormat {
-    CustomV1 = 0x01,
+    // The default is what we select for new writes
+    #[default]
+    V1 = 0x01,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -38,39 +40,44 @@ enum KeyStyle {
     RangeInclusive = 3,
 }
 
-/// Helpers to encode/decode the record payload as rocksdb value
-pub(super) struct DataRecordDecoder<'a> {
-    keys: Keys,
-    buffer: &'a [u8],
+enum Decoder<B> {
+    V1(v1::DataRecordDecoder<B>),
 }
 
-impl<'a> DataRecordDecoder<'a> {
-    pub fn new(mut buffer: &'a [u8]) -> Result<Self, RecordDecodeError> {
-        debug_assert!(buffer.len() > 1);
-        // read format byte
-        let record_format = read_format(&mut buffer)?;
-        debug_assert_eq!(RecordFormat::CustomV1, record_format);
-        // read keys
-        let keys = read_keys(&mut buffer)?;
-        Ok(Self { keys, buffer })
+/// Helpers to encode/decode the record payload as rocksdb value
+pub(super) struct DataRecordDecoder<B> {
+    inner: Decoder<B>,
+}
+
+impl<B: Buf> DataRecordDecoder<B> {
+    pub fn new(mut buffer: B) -> Result<Self, RecordDecodeError> {
+        let format = buffer.get_u8();
+        let format = RecordFormat::try_from(format)
+            .map_err(|_| RecordDecodeError::UnsupportedFormatVersion(format))?;
+
+        let inner = match format {
+            RecordFormat::V1 => Decoder::V1(v1::DataRecordDecoder::new(buffer)?),
+        };
+
+        Ok(Self { inner })
     }
 
     pub fn matches_key_query(&self, filter: &KeyFilter) -> bool {
-        self.keys.matches_key_query(filter)
+        match self.inner {
+            Decoder::V1(ref inner) => inner.matches_key_query(filter),
+        }
     }
 
     pub fn size(&self) -> usize {
-        self.buffer.len()
+        match self.inner {
+            Decoder::V1(ref inner) => inner.size(),
+        }
     }
 
-    pub fn decode(mut self) -> Result<Record, RecordDecodeError> {
-        // unused flags
-        let _flags = read_flags(&mut self.buffer);
-
-        let created_at = NanosSinceEpoch::from(read_created_at(&mut self.buffer));
-        let body = PolyBytes::Bytes(Bytes::copy_from_slice(self.buffer.chunk()));
-
-        Ok(Record::from_parts(created_at, self.keys, body))
+    pub fn decode(self) -> Result<Record, RecordDecodeError> {
+        match self.inner {
+            Decoder::V1(inner) => inner.decode(),
+        }
     }
 }
 
@@ -83,107 +90,14 @@ impl DataRecordEncoder<'_> {
     ///
     /// The record layout follow this structure:
     ///    [1 byte]        Format version.
-    ///    [1 byte]        KeyStyle (see `KeyStyle` enum)
-    ///      * [8 bytes]   First Key (if KeyStyle is != 0)
-    ///      * [8 bytes]   Second Key (if KeyStyle is > 1)
-    ///    [2 bytes]       Flags (reserved for future use)
-    ///    [8 bytes]       `created_at` timestamp
-    ///    [remaining]     Serialized Payload
-    #[tracing::instrument(skip_all)]
-    pub fn encode_to_disk_format(self, scratch: &mut BytesMut) -> bytes::buf::Chain<Bytes, Bytes> {
-        // header is 1 + 1 + 8 + 8 + 2 + 8 = 28 bytes at most
-        scratch.reserve(self.header_size());
-        let (created_at, body, keys) = (self.0.created_at(), self.0.body(), self.0.keys());
-
-        // Write the format version
-        scratch.put_u8(RecordFormat::CustomV1 as u8);
-        // key style and keys
-        match keys {
-            Keys::None => scratch.put_u8(KeyStyle::None as u8),
-            Keys::Single(key) => {
-                scratch.put_u8(KeyStyle::Single as u8);
-                scratch.put_u64_le(*key);
-            }
-            Keys::Pair(key1, key2) => {
-                scratch.put_u8(KeyStyle::Pair as u8);
-                scratch.put_u64_le(*key1);
-                scratch.put_u64_le(*key2);
-            }
-            Keys::RangeInclusive(range) => {
-                scratch.put_u8(KeyStyle::RangeInclusive as u8);
-                scratch.put_u64_le(*range.start());
-                scratch.put_u64_le(*range.end());
-            }
-        }
-        // flags (unused)
-        scratch.put_u16_le(0);
-        // created_at
-        scratch.put_u64_le(created_at.as_u64());
-        let header_bytes = scratch.split().freeze();
-        // body
-        let body_bytes = body
-            .encode_to_bytes(scratch)
-            .expect("Encoding is infallible");
-
-        header_bytes.chain(body_bytes)
-    }
-
-    pub const fn header_size(&self) -> usize {
-        let keys = self.0.keys();
-
-        // key style and keys
-        let keys_size = match keys {
-            Keys::None => size_of::<u8>(),
-            Keys::Single(_) => size_of::<u8>() + size_of::<u64>(),
-            Keys::Pair(..) => size_of::<u8>() + size_of::<u64>() + size_of::<u64>(),
-            Keys::RangeInclusive(_) => size_of::<u8>() + size_of::<u64>() + size_of::<u64>(),
-        };
-
-        // version
-        size_of::<u8>() +
-        // key style and keys
-        keys_size +
-        // flags
-        size_of::<u16>() +
-        // created_at
-        size_of::<u64>()
-    }
-}
-
-// Reads KeyStyle and extract the keys from the buffer
-fn read_keys<B: Buf>(buf: &mut B) -> Result<Keys, RecordDecodeError> {
-    let key_style = buf.get_u8();
-    let key_style = KeyStyle::try_from(key_style)
-        .map_err(|_| RecordDecodeError::UnsupportedKeyStyle(key_style))?;
-    match key_style {
-        KeyStyle::None => Ok(Keys::None),
-        KeyStyle::Single => {
-            let key = buf.get_u64_le();
-            Ok(Keys::Single(key))
-        }
-        KeyStyle::Pair => {
-            let key1 = buf.get_u64_le();
-            let key2 = buf.get_u64_le();
-            Ok(Keys::Pair(key1, key2))
-        }
-        KeyStyle::RangeInclusive => {
-            let key1 = buf.get_u64_le();
-            let key2 = buf.get_u64_le();
-            Ok(Keys::RangeInclusive(key1..=key2))
+    ///    ...             Depending on the format version
+    pub fn encode_to_disk_format(
+        self,
+        format_version: RecordFormat,
+        scratch: &mut BytesMut,
+    ) -> bytes::buf::Chain<Bytes, Bytes> {
+        match format_version {
+            RecordFormat::V1 => v1::DataRecordEncoder::from(self.0).encode(scratch),
         }
     }
-}
-
-// also validates that record's format version is supported
-fn read_format<B: Buf>(buf: &mut B) -> Result<RecordFormat, RecordDecodeError> {
-    let format = buf.get_u8();
-    RecordFormat::try_from(format).map_err(|_| RecordDecodeError::UnsupportedFormatVersion(format))
-}
-
-fn read_flags<B: Buf>(buf: &mut B) -> u16 {
-    buf.get_u16_le()
-}
-
-fn read_created_at<B: Buf>(buf: &mut B) -> u64 {
-    buf.get_u64_le()
 }
