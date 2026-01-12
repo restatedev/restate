@@ -38,7 +38,7 @@ use restate_types::retries::RetryPolicy;
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink};
 use restate_wal_protocol::Envelope;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, instrument, trace, warn};
 
 use crate::Error;
 use crate::builder::EnvelopeBuilder;
@@ -231,7 +231,7 @@ where
             Rebalance::Assign(partitions) if partitions.count() > 0 => {
                 for partition in partitions.elements() {
                     let partition: TopicPartition = partition.into();
-                    info!(
+                    debug!(
                         subscription = %self.builder.subscription().id(),
                         topic = %partition.0,
                         partition = %partition.1,
@@ -282,7 +282,7 @@ where
             Rebalance::Revoke(partitions) if partitions.count() > 0 => {
                 for partition in partitions.elements() {
                     let partition: TopicPartition = partition.into();
-                    info!(
+                    debug!(
                         subscription = %self.builder.subscription().id(),
                         topic = %partition.0,
                         partition = %partition.1,

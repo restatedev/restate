@@ -28,7 +28,7 @@ use restate_types::{
     schema::{Schema, subscriptions::Subscription},
 };
 use restate_wal_protocol::Envelope;
-use tracing::info;
+use tracing::debug;
 
 #[derive(Debug)]
 pub enum Command {
@@ -96,10 +96,10 @@ where
             .experimental_kafka_batch_ingestion;
 
         let inner = if batch_ingestion {
-            info!("Using kafka experimental batch ingestion mechanism");
+            debug!("Using kafka experimental batch ingestion mechanism");
             ServiceInner::IngestionClient(subscription_controller::Service::new(ingestion, schema))
         } else {
-            info!("Using kafka legacy ingestion mechanism");
+            debug!("Using kafka legacy ingestion mechanism");
             ServiceInner::Legacy(legacy::Service::new(
                 ingestion.networking().clone(),
                 ingestion.partition_routing().clone(),
