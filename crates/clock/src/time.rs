@@ -495,8 +495,16 @@ impl From<prost_types::Timestamp> for NanosSinceEpoch {
 }
 
 impl From<NanosSinceEpoch> for MillisSinceEpoch {
+    #[inline]
     fn from(value: NanosSinceEpoch) -> Self {
         Self::new(value.as_u64() / 1_000_000)
+    }
+}
+
+impl From<MillisSinceEpoch> for NanosSinceEpoch {
+    #[inline]
+    fn from(value: MillisSinceEpoch) -> Self {
+        Self::new(value.as_u64() * 1_000_000)
     }
 }
 

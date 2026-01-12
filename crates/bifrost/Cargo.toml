@@ -17,6 +17,7 @@ test-util = ["memory-loglet", "dep:googletest", "dep:restate-test-util", "restat
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-clock = { workspace = true }
 restate-core = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-metadata-store = { workspace = true }
@@ -27,6 +28,7 @@ restate-types = { workspace = true }
 ahash = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bitflags = { workspace = true }
 bytes = { workspace = true }
 crossbeam-utils = { version = "0.8" }
 dashmap = { workspace = true }
