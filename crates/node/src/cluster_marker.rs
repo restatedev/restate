@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::config::node_filepath;
-use semver::Version;
 use std::cmp::Ordering;
 use std::fs::{File, OpenOptions};
 use std::path::Path;
+
 use tracing::debug;
+
+use restate_types::SemanticRestateVersion;
+use restate_types::config::node_filepath;
 
 const CLUSTER_MARKER_FILE_NAME: &str = ".cluster-marker";
 const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
@@ -27,8 +29,10 @@ const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
 /// # Important
 /// This information needs to be updated whenever we release a version that changes the
 /// compatible versions boundaries.
-static COMPATIBILITY_INFORMATION: CompatibilityInformation =
-    CompatibilityInformation::new(Version::new(1, 4, 0), Version::new(1, 5, 0));
+const COMPATIBILITY_INFORMATION: CompatibilityInformation = CompatibilityInformation::new(
+    SemanticRestateVersion::new(1, 4, 0),
+    SemanticRestateVersion::new(1, 5, 0),
+);
 
 /// Compatibility information defining the minimum Restate version that can read data written by
 /// this version. Additionally, it specifies the minimum with which this version is backwards
@@ -36,15 +40,15 @@ static COMPATIBILITY_INFORMATION: CompatibilityInformation =
 #[derive(Debug, Clone)]
 struct CompatibilityInformation {
     /// Minimum version required to read data written by this version.
-    min_forward_compatible_version: Version,
+    min_forward_compatible_version: SemanticRestateVersion,
     /// Minimum version from which this version can read data.
-    min_backward_compatible_version: Version,
+    min_backward_compatible_version: SemanticRestateVersion,
 }
 
 impl CompatibilityInformation {
     const fn new(
-        min_forward_compatible_version: Version,
-        min_backward_compatible_version: Version,
+        min_forward_compatible_version: SemanticRestateVersion,
+        min_backward_compatible_version: SemanticRestateVersion,
     ) -> Self {
         Self {
             min_forward_compatible_version,
@@ -55,8 +59,6 @@ impl CompatibilityInformation {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClusterValidationError {
-    #[error("failed parsing restate version: {0}")]
-    ParsingVersion(#[from] semver::Error),
     #[error("failed creating cluster marker file: {0}")]
     CreateFile(std::io::Error),
     #[error("failed syncing the cluster marker file: {0}")]
@@ -78,15 +80,15 @@ pub enum ClusterValidationError {
         "Restate version '{this_version}' is forward incompatible with data directory. Requiring Restate version >= '{min_version}'"
     )]
     ForwardIncompatibility {
-        this_version: Version,
-        min_version: Version,
+        this_version: SemanticRestateVersion,
+        min_version: SemanticRestateVersion,
     },
     #[error(
         "Restate version '{this_version}' is backward incompatible with data directory created by Restate version '{data_version}'. Upgrade from '{data_version}' to '{this_version}' by going through all minor versions in sequence."
     )]
     BackwardIncompatibility {
-        this_version: Version,
-        data_version: Version,
+        this_version: SemanticRestateVersion,
+        data_version: SemanticRestateVersion,
     },
 }
 
@@ -96,12 +98,12 @@ pub enum ClusterValidationError {
 pub struct ClusterMarker {
     cluster_name: String,
     /// The highest version that has operated on the data directory.
-    max_version: Version,
+    max_version: SemanticRestateVersion,
     /// The most recent version to operate on the data directory.
-    current_version: Version,
+    current_version: SemanticRestateVersion,
     /// Minimum required version to read data. Optional since it was introduced after 0.9.
     /// This field should only be updated when updating the `max_version` field.
-    min_forward_compatible_version: Option<Version>,
+    min_forward_compatible_version: Option<SemanticRestateVersion>,
     /// True if the cluster is known to be provisioned. Versions < 1.2 don't have this field stored.
     is_provisioned: Option<bool>,
 }
@@ -109,8 +111,8 @@ pub struct ClusterMarker {
 impl ClusterMarker {
     fn new(
         cluster_name: String,
-        current_version: Version,
-        min_forward_compatible_version: Version,
+        current_version: SemanticRestateVersion,
+        min_forward_compatible_version: SemanticRestateVersion,
         is_provisioned: bool,
     ) -> Self {
         Self {
@@ -128,7 +130,8 @@ impl ClusterMarker {
 pub fn validate_and_update_cluster_marker(
     cluster_name: &str,
 ) -> Result<bool, ClusterValidationError> {
-    let this_version = Version::parse(env!("CARGO_PKG_VERSION"))?;
+    let this_version = SemanticRestateVersion::current();
+
     let cluster_marker_filepath = node_filepath(CLUSTER_MARKER_FILE_NAME);
 
     validate_and_update_cluster_marker_inner(
@@ -141,7 +144,7 @@ pub fn validate_and_update_cluster_marker(
 
 fn validate_and_update_cluster_marker_inner(
     cluster_name: &str,
-    this_version: Version,
+    this_version: &SemanticRestateVersion,
     cluster_marker_filepath: &Path,
     compatibility_information: &CompatibilityInformation,
 ) -> Result<bool, ClusterValidationError> {
@@ -180,7 +183,7 @@ fn validate_and_update_cluster_marker_inner(
     // Asserts that: this_version >= cluster_marker.min_forward_compatible_version
     if this_version.cmp_precedence(&min_forward_compatible_version) == Ordering::Less {
         return Err(ClusterValidationError::ForwardIncompatibility {
-            this_version,
+            this_version: this_version.clone(),
             min_version: min_forward_compatible_version,
         });
     }
@@ -193,7 +196,7 @@ fn validate_and_update_cluster_marker_inner(
         == Ordering::Less
     {
         return Err(ClusterValidationError::BackwardIncompatibility {
-            this_version,
+            this_version: this_version.clone(),
             data_version: cluster_marker.current_version,
         });
     }
@@ -202,7 +205,7 @@ fn validate_and_update_cluster_marker_inner(
     cluster_marker.current_version = this_version.clone();
 
     if this_version.cmp_precedence(&cluster_marker.max_version) == Ordering::Greater {
-        cluster_marker.max_version = this_version;
+        cluster_marker.max_version = this_version.clone();
         cluster_marker.min_forward_compatible_version = Some(
             compatibility_information
                 .min_forward_compatible_version
@@ -296,7 +299,7 @@ mod tests {
         CompatibilityInformation, mark_cluster_as_provisioned_inner,
         validate_and_update_cluster_marker_inner,
     };
-    use semver::Version;
+    use restate_types::SemanticRestateVersion;
     use std::fs;
     use std::fs::OpenOptions;
     use std::path::Path;
@@ -322,18 +325,21 @@ mod tests {
 
     const CLUSTER_NAME: &str = "test";
 
-    static TESTING_COMPATIBILITY_INFORMATION: CompatibilityInformation =
-        CompatibilityInformation::new(Version::new(2, 0, 0), Version::new(1, 0, 0));
+    const TESTING_COMPATIBILITY_INFORMATION: CompatibilityInformation =
+        CompatibilityInformation::new(
+            SemanticRestateVersion::new(2, 0, 0),
+            SemanticRestateVersion::new(1, 0, 0),
+        );
 
     #[test]
     fn cluster_marker_is_created() {
         let dir = tempdir().unwrap();
         let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
-        let current_version = Version::new(2, 2, 3);
+        let current_version = SemanticRestateVersion::new(2, 2, 3);
 
         validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
-            current_version.clone(),
+            &current_version,
             file.as_path(),
             &TESTING_COMPATIBILITY_INFORMATION,
         )
@@ -361,8 +367,8 @@ mod tests {
     fn cluster_marker_is_updated() -> anyhow::Result<()> {
         let dir = tempdir().unwrap();
         let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
-        let previous_version = Version::new(1, 1, 6);
-        let current_version = Version::new(2, 2, 3);
+        let previous_version = SemanticRestateVersion::new(1, 1, 6);
+        let current_version = SemanticRestateVersion::new(2, 2, 3);
 
         write_cluster_marker(
             &ClusterMarker::new(
@@ -378,7 +384,7 @@ mod tests {
 
         validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
-            current_version.clone(),
+            &current_version,
             &file,
             &TESTING_COMPATIBILITY_INFORMATION,
         )?;
@@ -406,8 +412,8 @@ mod tests {
     fn max_version_is_maintained() -> anyhow::Result<()> {
         let dir = tempdir().unwrap();
         let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
-        let max_version = Version::new(2, 2, 6);
-        let current_version = Version::new(2, 1, 3);
+        let max_version = SemanticRestateVersion::new(2, 2, 6);
+        let current_version = SemanticRestateVersion::new(2, 1, 3);
 
         write_cluster_marker(
             &ClusterMarker::new(
@@ -423,7 +429,7 @@ mod tests {
 
         validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
-            current_version.clone(),
+            &current_version,
             &file,
             &TESTING_COMPATIBILITY_INFORMATION,
         )?;
@@ -451,8 +457,8 @@ mod tests {
     fn incompatible_cluster_name() -> anyhow::Result<()> {
         let dir = tempdir().unwrap();
         let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
-        let max_version = Version::new(2, 2, 6);
-        let current_version = Version::new(2, 1, 3);
+        let max_version = SemanticRestateVersion::new(2, 2, 6);
+        let current_version = SemanticRestateVersion::new(2, 1, 3);
 
         write_cluster_marker(
             &ClusterMarker::new(
@@ -468,7 +474,7 @@ mod tests {
 
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
-            current_version.clone(),
+            &current_version,
             &file,
             &TESTING_COMPATIBILITY_INFORMATION,
         );
@@ -483,14 +489,14 @@ mod tests {
     fn forward_incompatible_version() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
-        let max_version = Version::new(2, 2, 6);
-        let this_version = Version::new(1, 0, 3);
+        let max_version = SemanticRestateVersion::new(2, 2, 6);
+        let this_version = SemanticRestateVersion::new(1, 0, 3);
 
         write_cluster_marker(
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
                 max_version.clone(),
-                Version::new(2, 0, 0),
+                SemanticRestateVersion::new(2, 0, 0),
                 true,
             ),
             &file,
@@ -498,7 +504,7 @@ mod tests {
 
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
-            this_version.clone(),
+            &this_version,
             &file,
             &COMPATIBILITY_INFORMATION,
         );
@@ -513,13 +519,13 @@ mod tests {
     fn backward_incompatible_version() -> anyhow::Result<()> {
         let dir = tempdir().unwrap();
         let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
-        let max_version = Version::new(1, 4, 2);
-        let this_version = Version::new(2, 1, 1);
+        let max_version = SemanticRestateVersion::new(1, 4, 2);
+        let this_version = SemanticRestateVersion::new(2, 1, 1);
         write_cluster_marker(
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
                 max_version.clone(),
-                Version::new(1, 4, 0),
+                SemanticRestateVersion::new(1, 4, 0),
                 true,
             ),
             &file,
@@ -527,7 +533,7 @@ mod tests {
 
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
-            this_version.clone(),
+            &this_version,
             &file,
             &COMPATIBILITY_INFORMATION,
         );
@@ -543,8 +549,8 @@ mod tests {
     fn compatible_version() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
-        let max_version = Version::new(2, 0, 2);
-        let this_version = Version::new(2, 3, 1);
+        let max_version = SemanticRestateVersion::new(2, 0, 2);
+        let this_version = SemanticRestateVersion::new(2, 3, 1);
         write_cluster_marker(
             &ClusterMarker::new(
                 CLUSTER_NAME.to_owned(),
@@ -559,7 +565,7 @@ mod tests {
 
         let result = validate_and_update_cluster_marker_inner(
             CLUSTER_NAME,
-            this_version.clone(),
+            &this_version,
             &file,
             &TESTING_COMPATIBILITY_INFORMATION,
         );
@@ -572,7 +578,7 @@ mod tests {
     fn mark_cluster_marker_as_provisioned() -> anyhow::Result<()> {
         let dir = tempdir()?;
         let file = dir.path().join(CLUSTER_MARKER_FILE_NAME);
-        let version = Version::new(2, 2, 6);
+        let version = SemanticRestateVersion::new(2, 2, 6);
 
         write_cluster_marker(
             &ClusterMarker::new(
