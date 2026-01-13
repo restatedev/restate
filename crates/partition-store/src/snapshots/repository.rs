@@ -14,10 +14,12 @@ use std::sync::Arc;
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
+use itertools::Itertools;
 use object_store::path::Path as ObjectPath;
 use object_store::{
     MultipartUpload, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
 };
+use restate_types::SemanticRestateVersion;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tempfile::TempDir;
@@ -26,7 +28,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::io::StreamReader;
-use tracing::{Instrument, Span, debug, info, instrument, warn};
+use tracing::{Instrument, Span, debug, error, info, instrument, warn};
 use url::Url;
 
 use restate_clock::WallClock;
@@ -60,7 +62,7 @@ pub struct SnapshotRepository {
     destination: Url,
     prefix: ObjectPath,
     staging_dir: PathBuf,
-    retain_snapshots: Option<std::num::NonZeroU8>,
+    num_retained: Option<std::num::NonZeroU8>,
 }
 
 /// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
@@ -85,8 +87,7 @@ const OBJECT_STORE_CAS_RETRIES: usize = 3;
 pub enum LatestSnapshotVersion {
     #[default]
     V1,
-    /// V2 adds support for a fixed number of retained snapshots
-    // todo(v1.7): make this the default
+    /// V2 adds support for retained snapshots
     V2,
 }
 
@@ -170,7 +171,7 @@ impl LatestSnapshot {
         }
     }
 
-    fn get_effective_retained_snapshots(&self) -> Vec<SnapshotReference> {
+    fn effective_retained_snapshots(&self) -> Vec<SnapshotReference> {
         if self.retained_snapshots.is_empty() {
             // upgrade path from V1 - implicitly the "latest" snapshot is always retained
             vec![SnapshotReference {
@@ -338,7 +339,7 @@ impl SnapshotRepository {
             destination,
             prefix: ObjectPath::from(prefix),
             staging_dir,
-            retain_snapshots: snapshots_options.experimental_retain_snapshots,
+            num_retained: snapshots_options.experimental_num_retained,
         }))
     }
 
@@ -519,9 +520,13 @@ impl SnapshotRepository {
         Ok(PartitionSnapshotStatus::from(&new_latest))
     }
 
-    // todo(v1.7): make V2 format the default
     fn determine_format_version(&self, current: Option<&LatestSnapshot>) -> LatestSnapshotVersion {
-        if self.retain_snapshots.is_some() {
+        // V2 is the default from 1.7.0, including pre-releases
+        const GATE_VERSION: SemanticRestateVersion = SemanticRestateVersion::new(1, 6, u64::MAX);
+
+        if SemanticRestateVersion::current().is_equal_or_newer_than(&GATE_VERSION)
+            || self.num_retained.is_some()
+        {
             if let Some(latest) = current
                 && latest.version == LatestSnapshotVersion::V1
             {
@@ -544,48 +549,42 @@ impl SnapshotRepository {
         snapshot: &PartitionSnapshotMetadata,
         current: Option<&LatestSnapshot>,
     ) -> anyhow::Result<LatestSnapshot> {
-        let original_pending_deletions = current
-            .map(|l| l.pending_deletions.clone())
-            .unwrap_or_default();
-
-        let pending_count = original_pending_deletions.len();
-        if pending_count >= PENDING_DELETIONS_MAX {
-            warn!(
-                "Snapshot cleanup backlog ({} pending deletions) exceeds the tracking limit, \
-                and older snapshots are orphaned and will not be pruned. \
-                Please check object store access permissions.",
-                pending_count,
-            );
-        } else if pending_count >= PENDING_DELETIONS_WARNING {
-            warn!(
-                pending_deletions = pending_count,
-                hard_limit = PENDING_DELETIONS_MAX,
-                "Snapshot cleanup is falling behind. Please check object store access permissions. \
-                When the hard limit is reached, older snapshots will no longer be tracked, \
-                resulting in increased storage usage."
-            );
-        }
-
         let new_snapshot_ref = SnapshotReference::from_metadata(snapshot);
 
-        let (retained_snapshots, pending_deletions) = match self.retain_snapshots {
-            // if retain-snapshots is unset, we revert to the V1 behavior: keep everything
-            None => (vec![], vec![]),
-            Some(retain_snapshots) => {
+        let (retained_snapshots, pending_deletions) = match self.num_retained {
+            None => (vec![], vec![]), // tracking is only enabled if num-retained is set
+            Some(num_retained) => {
                 let mut retained_snapshots = current
-                    .map(|l| l.get_effective_retained_snapshots())
+                    .map(|l| l.effective_retained_snapshots())
                     .unwrap_or_default();
                 retained_snapshots.insert(0, new_snapshot_ref.clone());
                 retained_snapshots.sort_by_key(|s| std::cmp::Reverse(s.min_applied_lsn)); // just in case
 
-                let newly_deleted = retained_snapshots
-                    .split_off((retain_snapshots.get() as usize).min(retained_snapshots.len()));
+                let mut pending_deletions = retained_snapshots
+                    .split_off((num_retained.get() as usize).min(retained_snapshots.len()));
+                pending_deletions.extend(
+                    current
+                        .map(|l| l.pending_deletions.clone())
+                        .unwrap_or_default(),
+                );
 
-                let pending_deletions = newly_deleted
-                    .into_iter()
-                    .chain(original_pending_deletions)
-                    .take(PENDING_DELETIONS_MAX)
-                    .collect();
+                if pending_deletions.len() > PENDING_DELETIONS_MAX {
+                    let orphaned = pending_deletions.split_off(PENDING_DELETIONS_MAX);
+                    warn!(
+                        orphaned_ids = %orphaned.iter().map(|s| &s.snapshot_id).join(", "),
+                        "Snapshot cleanup backlog exceeds the tracking limit ({}), \
+                        older snapshots will be orphaned. Please check object store access permissions.",
+                        PENDING_DELETIONS_MAX,
+                    );
+                } else if pending_deletions.len() >= PENDING_DELETIONS_WARNING {
+                    warn!(
+                        pending_deletions = pending_deletions.len(),
+                        hard_limit = PENDING_DELETIONS_MAX,
+                        "Snapshot cleanup is falling behind. Please check object store access permissions. \
+                        When the hard limit is reached, older snapshots will no longer be tracked, \
+                        resulting in increased storage usage."
+                    );
+                }
 
                 (retained_snapshots, pending_deletions)
             }
@@ -686,7 +685,7 @@ impl SnapshotRepository {
             if let Err(err) = self.object_store.delete(&path).await
                 && !matches!(err, object_store::Error::NotFound { .. })
             {
-                debug!(%path, "Failed deleting snapshot object: {err}");
+                warn!(%path, "Failed deleting snapshot object: {err}");
                 failed_deletes.push(err);
             }
         }
@@ -694,12 +693,15 @@ impl SnapshotRepository {
         if failed_deletes.is_empty() {
             Ok(())
         } else {
-            info!(
+            warn!(
                 %partition_id,
                 snapshot_id = %snapshot_ref.snapshot_id,
                 "Failed to clean up old snapshot; repeated failures will impact the ability to create new snapshots"
             );
-            Err(anyhow!("Could not fully delete snapshot"))
+            Err(anyhow!(
+                "Could not fully delete snapshot {}",
+                snapshot_ref.snapshot_id
+            ))
         }
     }
 
@@ -721,10 +723,10 @@ impl SnapshotRepository {
                         Ok(bytes) => match serde_json::from_slice::<LatestSnapshot>(&bytes) {
                             Ok(latest) => Some((latest, version)),
                             Err(e) => {
-                                debug!(
+                                error!(
                                     %partition_id,
                                     error = %e,
-                                    "Failed to deserialize latest snapshot metadata during cleanup"
+                                    "Failed to deserialize latest snapshot metadata during cleanup! Treating as non-existent."
                                 );
                                 None
                             }
@@ -1226,7 +1228,7 @@ mod tests {
     use super::{LatestSnapshot, SnapshotReference, SnapshotRepository, UniqueSnapshotKey};
     use super::{PartitionSnapshotMetadata, SnapshotFormatVersion};
 
-    #[test_log::test(restate_core::test)]
+    #[restate_core::test]
     async fn test_overwrite_unparsable_latest() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
@@ -1273,7 +1275,7 @@ mod tests {
         Ok(())
     }
 
-    #[test_log::test(restate_core::test)]
+    #[restate_core::test]
     async fn test_put_snapshot_local_filesystem() -> anyhow::Result<()> {
         let snapshots_destination = TempDir::new()?;
         test_put_snapshot(
@@ -1285,7 +1287,7 @@ mod tests {
     }
 
     /// For this test to run, set RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME to a writable S3 bucket name
-    #[test_log::test(restate_core::test)]
+    #[restate_core::test]
     async fn test_put_snapshot_s3() -> anyhow::Result<()> {
         let Ok(bucket_name) = std::env::var("RESTATE_S3_INTEGRATION_TEST_BUCKET_NAME") else {
             return Ok(());
@@ -1469,7 +1471,7 @@ mod tests {
 
         let opts = SnapshotsOptions {
             destination: Some(destination.clone()),
-            experimental_retain_snapshots: Some(std::num::NonZeroU8::new(3).unwrap()),
+            experimental_num_retained: Some(std::num::NonZeroU8::new(3).unwrap()),
             ..SnapshotsOptions::default()
         };
 
@@ -1532,7 +1534,7 @@ mod tests {
 
         let opts_v1 = SnapshotsOptions {
             destination: Some(destination.clone()),
-            experimental_retain_snapshots: None,
+            experimental_num_retained: None,
             ..SnapshotsOptions::default()
         };
 
@@ -1574,7 +1576,7 @@ mod tests {
 
         let opts_v2 = SnapshotsOptions {
             destination: Some(destination.clone()),
-            experimental_retain_snapshots: Some(std::num::NonZeroU8::new(2).unwrap()),
+            experimental_num_retained: Some(std::num::NonZeroU8::new(2).unwrap()),
             ..SnapshotsOptions::default()
         };
 
@@ -1618,7 +1620,7 @@ mod tests {
 
         let opts = SnapshotsOptions {
             destination: Some(destination.clone()),
-            experimental_retain_snapshots: Some(std::num::NonZeroU8::new(3).unwrap()),
+            experimental_num_retained: Some(std::num::NonZeroU8::new(3).unwrap()),
             ..SnapshotsOptions::default()
         };
 
@@ -1669,7 +1671,7 @@ mod tests {
 
         let mut opts = SnapshotsOptions {
             destination: Some(destination.clone()),
-            experimental_retain_snapshots: Some(std::num::NonZeroU8::new(3).unwrap()),
+            experimental_num_retained: Some(std::num::NonZeroU8::new(3).unwrap()),
             enable_cleanup: false,
             ..SnapshotsOptions::default()
         };

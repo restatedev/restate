@@ -549,18 +549,22 @@ pub struct SnapshotsOptions {
     /// # Experimental: Snapshot retention count
     ///
     /// EXPERIMENTAL (v1.6): Number of most recent snapshots to retain. Older snapshots will be
-    /// deleted automatically. If you enable this for the first time, historic snapshots created
-    /// before this setting was used will not be deleted.
+    /// deleted automatically. Only snapshots created after this setting is enabled will
+    /// be considered for pruning.
+    ///
+    /// Retaining multiple snapshots causes the partition archived LSN to be reported as that of the
+    /// oldest retained snapshot. Therefore, retaining multiple snapshots will cause increased disk
+    /// usage on log-server nodes.
     ///
     /// WARNING: Enabling this feature upgrades the snapshot tracking format. Only enable if all
     /// cluster nodes run a compatible version. Downgrading will forget the tracked snapshots and
     /// revert to v1.5.x behavior.
     ///
     /// Default: `None` (unlimited retention, uses V1 format)
-    // todo(v1.7): Rename to `retain_snapshots` and mark stable
+    // todo(v1.7): Drop the experimental prefix
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub experimental_retain_snapshots: Option<NonZeroU8>,
+    pub experimental_num_retained: Option<NonZeroU8>,
 
     #[cfg(any(test, feature = "test-util"))]
     pub enable_cleanup: bool,
@@ -574,7 +578,7 @@ impl Default for SnapshotsOptions {
             snapshot_interval_num_records: None,
             object_store: Default::default(),
             object_store_retry_policy: Self::default_retry_policy(),
-            experimental_retain_snapshots: None,
+            experimental_num_retained: None,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
         }
