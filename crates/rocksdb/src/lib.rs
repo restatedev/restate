@@ -14,6 +14,7 @@ mod db_manager;
 mod db_spec;
 mod error;
 mod iterator;
+mod logging;
 mod metric_definitions;
 mod perf;
 mod rock_access;

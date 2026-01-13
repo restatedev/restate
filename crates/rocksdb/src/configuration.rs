@@ -12,14 +12,15 @@ use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
 
 use restate_types::config::{RocksDbLogLevel, RocksDbOptions, StatisticsLevel};
 
-use crate::RocksAccess;
+use crate::logging::LoggingEventListener;
+use crate::{DbName, RocksAccess};
 
 /// A trait for customizing database options when it's being opened and enables live reaction to
 /// configuration changes.
 pub trait DbConfigurator {
     fn get_db_options(
         &self,
-        db_name: &str,
+        db_name: &DbName,
         env: &rocksdb::Env,
         write_buffer_manager: &rocksdb::WriteBufferManager,
     ) -> rocksdb::Options;
@@ -61,6 +62,7 @@ pub trait DbConfigurator {
 
 pub fn create_default_db_options(
     env: &rocksdb::Env,
+    db_name: &DbName,
     create_db_if_missing: bool,
     write_buffer_manager: &rocksdb::WriteBufferManager,
 ) -> rocksdb::Options {
@@ -94,6 +96,8 @@ pub fn create_default_db_options(
     // the following two options has to be both 0 to disable WAL log archive.
     db_options.set_wal_size_limit_mb(0);
     db_options.set_wal_ttl_seconds(0);
+
+    db_options.add_event_listener(LoggingEventListener::new(db_name.clone()));
 
     db_options
 }
@@ -142,7 +146,7 @@ pub fn create_default_cf_options(
 pub trait CfConfigurator {
     fn get_cf_options(
         &self,
-        db_name: &str,
+        db_name: &DbName,
         cf_name: &str,
         global_cache: &Cache,
         write_buffer_manager: &rocksdb::WriteBufferManager,
