@@ -516,8 +516,9 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         let mut cf_options =
             restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
 
+        let config = &Configuration::pinned().worker.storage.rocksdb;
         let block_options = restate_rocksdb::configuration::create_default_block_options(
-            &Configuration::pinned().worker.storage.rocksdb,
+            config,
             // use global block cache
             Some(global_cache),
         );
@@ -528,6 +529,8 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             KeyKind::partial_merge,
         );
         cf_options.set_max_successive_merges(100);
+
+        cf_options.set_disable_auto_compactions(config.rocksdb_disable_auto_compactions());
 
         // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
         // in the C API nor the rust binding. That's okay and we can change it later.

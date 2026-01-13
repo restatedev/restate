@@ -181,6 +181,8 @@ impl restate_rocksdb::configuration::CfConfigurator for RocksConfigurator {
             Some(global_cache),
         );
 
+        cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
+
         if cf_name == DATA_CF {
             cf_data_options(&mut cf_options, &block_options, config);
         } else if cf_name == METADATA_CF {
@@ -267,6 +269,7 @@ fn cf_metadata_options(
         DBCompressionType::None,
         DBCompressionType::Zstd,
     ]);
+
     opts.set_memtable_whole_key_filtering(true);
     opts.set_max_write_buffer_number(4);
     opts.set_max_successive_merges(10);
