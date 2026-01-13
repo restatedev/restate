@@ -22,7 +22,7 @@ use tracing::{debug, info, instrument, warn};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
-use restate_rocksdb::{RocksDb, RocksError};
+use restate_rocksdb::{DbName, RocksDb, RocksError};
 use restate_serde_util::ByteCount;
 use restate_types::config::Configuration;
 use restate_types::logs::Lsn;
@@ -482,12 +482,13 @@ pub struct AllDataCf;
 impl DbConfigurator for RocksConfigurator<AllDataCf> {
     fn get_db_options(
         &self,
-        _db_name: &str,
+        db_name: &DbName,
         env: &rocksdb::Env,
         write_buffer_manager: &rocksdb::WriteBufferManager,
     ) -> rocksdb::Options {
         let mut db_options = restate_rocksdb::configuration::create_default_db_options(
             env,
+            db_name,
             true, /* create_db_if_missing */
             write_buffer_manager,
         );
@@ -507,7 +508,7 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
 impl CfConfigurator for RocksConfigurator<AllDataCf> {
     fn get_cf_options(
         &self,
-        db_name: &str,
+        db_name: &DbName,
         cf_name: &str,
         global_cache: &rocksdb::Cache,
         write_buffer_manager: &rocksdb::WriteBufferManager,
