@@ -238,6 +238,11 @@ impl FriendlyDuration {
         Self(StdDuration::from_secs(secs))
     }
 
+    /// Creates a new [`FriendlyDuration`] from the given number of microseconds.
+    pub const fn from_micros(micros: u64) -> Self {
+        Self(StdDuration::from_micros(micros))
+    }
+
     /// Converts a duration into None if the duration is zero.
     pub const fn to_non_zero_std(self) -> Option<StdDuration> {
         if self.0.is_zero() { None } else { Some(self.0) }
