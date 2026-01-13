@@ -933,7 +933,7 @@ where
     ) {
         match self.latest_snapshots.entry(partition_id) {
             Entry::Occupied(mut e) => {
-                if snapshot_status >= *e.get() {
+                if snapshot_status.archived_lsn >= e.get().archived_lsn {
                     e.insert(snapshot_status);
                 } else {
                     // TODO: This shouldn't ever happen; if it does that means that the CAS update against the repository is broken

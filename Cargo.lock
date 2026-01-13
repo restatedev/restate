@@ -7792,6 +7792,7 @@ dependencies = [
  "futures",
  "futures-util",
  "googletest",
+ "itertools 0.14.0",
  "jiff",
  "num-bigint",
  "object_store 0.13.0",
