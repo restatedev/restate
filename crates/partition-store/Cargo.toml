@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+test-util = ["restate-object-store-util/test-util"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
