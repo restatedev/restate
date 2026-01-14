@@ -183,14 +183,16 @@ impl PartitionStoreManager {
         self.snapshots.is_repository_configured()
     }
 
-    pub async fn refresh_latest_archived_lsn(
+    pub async fn refresh_latest_partition_snapshot_status(
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<PartitionSnapshotStatus>> {
         let Some(db) = self.get_partition_db(partition_id).await else {
             return Ok(None);
         };
-        self.snapshots.refresh_latest_archived_lsn(db).await
+        self.snapshots
+            .refresh_latest_partition_snapshot_status(db)
+            .await
     }
 
     /// Returns a partition db that's already open by a running partition processor

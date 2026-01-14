@@ -85,7 +85,7 @@ impl Snapshots {
             })
     }
 
-    pub async fn refresh_latest_archived_lsn(
+    pub async fn refresh_latest_partition_snapshot_status(
         &self,
         db: PartitionDb,
     ) -> anyhow::Result<Option<PartitionSnapshotStatus>> {
@@ -96,7 +96,10 @@ impl Snapshots {
         let partition_id = db.partition().partition_id;
         let log_id = db.partition().log_id();
 
-        let status = match repository.get_latest_snapshot_status(partition_id).await? {
+        let status = match repository
+            .get_latest_partition_snapshot_status(partition_id)
+            .await?
+        {
             Some(status) => status,
             None => PartitionSnapshotStatus::none(log_id),
         };

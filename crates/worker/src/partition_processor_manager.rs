@@ -330,7 +330,7 @@ where
                 Some(command) = self.rx.recv() => {
                     self.on_command(command);
                 }
-                _ = snapshot_check_interval.tick() => {
+                _ = snapshot_check_interval.tick(), if self.snapshot_repository.is_some() => {
                     self.trigger_periodic_partition_snapshots();
                 }
                 _ = update_target_tail_lsns.tick() => {
@@ -672,7 +672,7 @@ where
             }
             EventKind::SnapshotStatusUpdateSkipped => {
                 self.pending_snapshot_status_refreshes.remove(&partition_id);
-                // No-op: repository not configured or error fetching status (already logged)
+                // No-op: no snapshot found or error fetching status (logged upstream)
             }
         }
     }
@@ -775,6 +775,7 @@ where
                     },
                 );
 
+                // todo: PartitionProcessorStatus struct is shared across PP and PPM, consider splitting it
                 status.last_archived_log_lsn = self
                     .latest_snapshots
                     .get(partition_id)
@@ -789,8 +790,7 @@ where
 
                 match target_tail_lsn {
                     None => {
-                        // current tail lsn is unknown.
-                        // This might indicate an issue, so we set the metric to infinity
+                        // unknown might indicate an issue, so we set the metric to infinity
                         gauge!(PARTITION_APPLIED_LSN_LAG, &labels).set(f64::INFINITY);
                     }
                     Some(target_tail_lsn) => {
@@ -1056,7 +1056,7 @@ where
                             debug!(
                                 ?min_target_lsn,
                                 snapshot_id = ?snapshot.latest_snapshot_id,
-                                latest_snapshot_min_applied_lsn = ?snapshot.archived_lsn,
+                                archived_lsn = ?snapshot.archived_lsn,
                                 "New snapshot was not created because the target LSN was already covered by existing snapshot. \
                                 However, we failed to notify the request sender: {:?}",
                                 err
@@ -1158,13 +1158,16 @@ where
             .name(&format!("update-archived-lsn-{partition_id}"))
             .spawn(
                 async move {
-                    match psm.refresh_latest_archived_lsn(partition_id).await {
+                    match psm
+                        .refresh_latest_partition_snapshot_status(partition_id)
+                        .await
+                    {
                         Ok(Some(snapshot_status)) => AsynchronousEvent {
                             partition_id,
                             inner: EventKind::SnapshotStatusUpdated { snapshot_status },
                         },
                         Ok(None) => {
-                            // Repository not configured or partition not found, this is expected
+                            // Partition snapshot not found in repository
                             AsynchronousEvent {
                                 partition_id,
                                 inner: EventKind::SnapshotStatusUpdateSkipped,
