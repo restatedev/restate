@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use cling::prelude::*;
 use convert_case::{Case, Casing};
 use futures::StreamExt;
@@ -40,40 +40,62 @@ pub struct Examples {
 }
 
 pub async fn run_examples(example_opts: &Examples) -> Result<()> {
-    // Get latest release of the examples repo
     let octocrab = octocrab::instance();
     let examples_repo = octocrab.repos("restatedev", "examples");
-    let latest_release = examples_repo
-        .releases()
-        .get_latest()
-        .await
-        .context("Can't access the examples releases. Check if your machine can access the Github repository https://github.com/restatedev/examples")?;
+    let ai_examples_repo = octocrab.repos("restatedev", "ai-examples");
 
-    let example_asset = if let Some(example) = &example_opts.name {
-        // Check if the example exists
+    // Fetch latest releases from both repos in parallel
+    let examples_releases = examples_repo.releases();
+    let ai_examples_releases = ai_examples_repo.releases();
+    let (examples_release, ai_examples_release) = tokio::join!(
+        examples_releases.get_latest(),
+        ai_examples_releases.get_latest()
+    );
+
+    let examples_assets = examples_release
+        .context("Can't access the examples releases. Check if your machine can access the Github repository https://github.com/restatedev/examples")?
+        .assets;
+
+    // ai-examples repo might not have releases yet, treat as empty
+    let ai_examples_assets = ai_examples_release
+        .map(|r| r.assets)
+        .unwrap_or_default();
+
+    let (selected_example, selected_repo) = if let Some(example) = &example_opts.name {
+        // Check if the example exists, prefer examples repo if found in both
         let example_lowercase = example.to_lowercase();
-        latest_release
-            .assets
-            .into_iter()
-            .find(|a| a.name.trim_end_matches(".zip") == example_lowercase)
-            .ok_or(anyhow!(
-                "Unknown example {}. Use `restate example` to navigate the list of examples.",
-                example_lowercase
-            ))?
+
+        let from_examples = examples_assets
+            .iter()
+            .find(|a| a.name.trim_end_matches(".zip") == example_lowercase);
+        let from_ai_examples = ai_examples_assets
+            .iter()
+            .find(|a| a.name.trim_end_matches(".zip") == example_lowercase);
+
+        match (from_examples, from_ai_examples) {
+            (Some(asset), _) => (asset.clone(), ExampleRepo::Examples),
+            (None, Some(asset)) => (asset.clone(), ExampleRepo::AiExamples),
+            (None, None) => {
+                bail!(
+                    "Unknown example {}. Use `restate example` to navigate the list of examples.",
+                    example_lowercase
+                );
+            }
+        }
     } else {
         // Ask the example to download among the available examples
-        let mut languages = parse_available_examples(latest_release.assets);
+        let mut languages = parse_available_examples(examples_assets, ai_examples_assets);
         let language_selection = choose("Choose the programming language", &languages)?;
         let example_selection = choose(
             "Choose the example",
             &languages[language_selection].examples,
         )?;
 
-        languages
+        let example = languages
             .remove(language_selection)
             .examples
-            .remove(example_selection)
-            .asset
+            .remove(example_selection);
+        (example.asset, example.repo)
     };
 
     let output_dir = if let Some(out_dir) = &example_opts.output_directory {
@@ -81,12 +103,17 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
     } else {
         input(
             "Output directory",
-            example_asset.name.trim_end_matches(".zip").to_owned(),
+            selected_example.name.trim_end_matches(".zip").to_owned(),
         )?
         .into()
     };
 
-    download_example(output_dir, examples_repo, example_asset).await
+    let repo_handler = match selected_repo {
+        ExampleRepo::Examples => examples_repo,
+        ExampleRepo::AiExamples => ai_examples_repo,
+    };
+
+    download_example(output_dir, repo_handler, selected_example).await
 }
 
 struct Language {
@@ -117,9 +144,16 @@ impl Language {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExampleRepo {
+    Examples,
+    AiExamples,
+}
+
 struct Example {
     display_name: String,
     asset: Asset,
+    repo: ExampleRepo,
 }
 
 impl fmt::Display for Example {
@@ -128,10 +162,22 @@ impl fmt::Display for Example {
     }
 }
 
-fn parse_available_examples(assets: Vec<Asset>) -> Vec<Language> {
+fn parse_available_examples(
+    examples_assets: Vec<Asset>,
+    ai_examples_assets: Vec<Asset>,
+) -> Vec<Language> {
     let mut languages_map = HashMap::new();
 
-    for asset in assets {
+    let tagged_assets = examples_assets
+        .into_iter()
+        .map(|a| (a, ExampleRepo::Examples))
+        .chain(
+            ai_examples_assets
+                .into_iter()
+                .map(|a| (a, ExampleRepo::AiExamples)),
+        );
+
+    for (asset, repo) in tagged_assets {
         // Zip names have the format [language]-[example_name].zip
 
         let asset_name = asset.name.clone();
@@ -166,6 +212,7 @@ fn parse_available_examples(assets: Vec<Asset>) -> Vec<Language> {
             .push(Example {
                 display_name: example_display_name,
                 asset,
+                repo,
             });
     }
 
