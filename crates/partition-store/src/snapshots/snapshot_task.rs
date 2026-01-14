@@ -47,34 +47,33 @@ impl SnapshotPartitionTask {
         fields(partition_id = %self.partition_id, snapshot_id = %self.snapshot_id)
     )]
     pub async fn run(self) -> Result<(PartitionId, PartitionSnapshotStatus), SnapshotError> {
-        debug!("Creating partition snapshot");
+        debug!("Requesting partition snapshot");
+        let partition_id = self.partition_id;
         if let Some(result) = cancellation_token()
             .run_until_cancelled(self.create_snapshot_inner())
             .await
         {
             result
-                .inspect(|(archived_lsn, metadata)| {
+                .inspect(|status| {
                     info!(
-                        snapshot_lsn = %metadata.min_applied_lsn,
-                        archived_lsn = %archived_lsn.archived_lsn,
-                        "Created partition snapshot"
+                        latest_snapshot_lsn = %status.latest_snapshot_lsn,
+                        archived_lsn = %status.archived_lsn,
+                        "Got partition snapshot"
                     );
                 })
                 .inspect_err(|err| {
                     warn!("Create snapshot failed: {}", err);
                 })
-                .map(|r| (r.1.partition_id, r.0))
+                .map(|status| (partition_id, status))
         } else {
             Err(SnapshotError {
-                partition_id: self.partition_id,
+                partition_id,
                 kind: SnapshotErrorKind::Shutdown(restate_core::ShutdownError),
             })
         }
     }
 
-    async fn create_snapshot_inner(
-        &self,
-    ) -> Result<(PartitionSnapshotStatus, PartitionSnapshotMetadata), SnapshotError> {
+    async fn create_snapshot_inner(&self) -> Result<PartitionSnapshotStatus, SnapshotError> {
         let snapshot = self
             .partition_store_manager
             .export_partition(
@@ -87,7 +86,7 @@ impl SnapshotPartitionTask {
 
         let metadata = self.metadata(&snapshot, WallClock::recent_ms());
 
-        let archived_lsn = self
+        let status = self
             .snapshot_repository
             .put(&metadata, snapshot.base_dir)
             .await
@@ -101,10 +100,10 @@ impl SnapshotPartitionTask {
             .get_partition_db(self.partition_id)
             .await
         {
-            db.note_archived_lsn(archived_lsn.archived_lsn);
+            db.note_archived_lsn(status.archived_lsn);
         }
 
-        Ok((archived_lsn, metadata))
+        Ok(status)
     }
 
     fn metadata(
