@@ -1011,6 +1011,17 @@ pub struct SnapshotsOptions {
     /// Since v1.7.0
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_interval: Option<FriendlyDuration>,
+
+    /// # Orphan cleanup
+    ///
+    /// Prune orphaned SST files and snapshot directories after each cleanup.
+    /// Orphans can accumulate from crashes, failed uploads, or interrupted cleanups.
+    ///
+    /// Default: `false`
+    ///
+    /// Since v1.7.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experimental_orphan_cleanup: Option<bool>,
 }
 
 fn default_num_retained() -> NonZero<u8> {
@@ -1031,6 +1042,7 @@ impl Default for SnapshotsOptions {
             enable_cleanup: true,
             experimental_snapshot_type: SnapshotType::default(),
             check_interval: None,
+            experimental_orphan_cleanup: None,
         }
     }
 }
