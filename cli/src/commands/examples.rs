@@ -57,9 +57,7 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
         .assets;
 
     // ai-examples repo might not have releases yet, treat as empty
-    let ai_examples_assets = ai_examples_release
-        .map(|r| r.assets)
-        .unwrap_or_default();
+    let ai_examples_assets = ai_examples_release.map(|r| r.assets).unwrap_or_default();
 
     let (selected_example, selected_repo) = if let Some(example) = &example_opts.name {
         // Check if the example exists, prefer examples repo if found in both
