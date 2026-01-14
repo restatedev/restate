@@ -23,6 +23,12 @@ pub(crate) const SNAPSHOT_UPLOAD_BYTES: &str =
     "restate.partition_store.snapshots.upload.bytes.total";
 pub(crate) const SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED: &str =
     "restate.partition_store.snapshots.upload.bytes.deduplicated.total";
+pub(crate) const SNAPSHOT_ORPHAN_SCAN_TOTAL: &str =
+    "restate.partition_store.snapshots.orphan_scan.total";
+pub(crate) const SNAPSHOT_ORPHAN_SCAN_FAILED: &str =
+    "restate.partition_store.snapshots.orphan_scan.failed.total";
+pub(crate) const SNAPSHOT_ORPHAN_FILES_DELETED: &str =
+    "restate.partition_store.snapshots.orphan_files_deleted.total";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -65,5 +71,23 @@ pub(crate) fn describe_metrics() {
         SNAPSHOT_DOWNLOAD_FAILED,
         Unit::Count,
         "Number of failed partition snapshot download operations"
+    );
+
+    describe_counter!(
+        SNAPSHOT_ORPHAN_SCAN_TOTAL,
+        Unit::Count,
+        "Number of orphan scan operations performed"
+    );
+
+    describe_counter!(
+        SNAPSHOT_ORPHAN_SCAN_FAILED,
+        Unit::Count,
+        "Number of orphan scan failures"
+    );
+
+    describe_counter!(
+        SNAPSHOT_ORPHAN_FILES_DELETED,
+        Unit::Count,
+        "Number of orphaned files deleted during cleanup"
     );
 }
