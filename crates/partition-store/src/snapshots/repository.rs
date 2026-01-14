@@ -68,6 +68,24 @@ impl LeaseProvider {
     }
 }
 
+async fn compute_content_hash(path: &Path) -> io::Result<u128> {
+    use xxhash_rust::xxh3::Xxh3;
+
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Xxh3::new();
+    let mut buf = vec![0u8; 256 * 1024]; // 256KB chunks
+
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+
+    Ok(hasher.digest128())
+}
+
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
 /// The repository wraps access to an object store "bucket" that contains snapshot metadata and data
@@ -531,47 +549,38 @@ impl SnapshotRepository {
         let mut files_uploaded = 0usize;
         let mut files_skipped = 0usize;
 
-        // Get node_id once outside the loop
-        let node_id = Metadata::with_current(|m| m.my_node_id().as_plain());
-
         for file in &snapshot.files {
             let filename = file.name.trim_start_matches("/");
+            let local_path = local_snapshot_path.join(filename);
             total_size += file.size;
 
-            let (repository_key, should_upload) = match self.snapshot_kind {
+            let (repository_key, relative_key, should_upload) = match self.snapshot_kind {
                 SnapshotType::Full => {
                     // Full mode: upload to snapshot-specific prefix (legacy behavior)
                     let key = self.snapshot_file_path(snapshot, filename);
-                    (key, true)
+                    (key, None, true)
                 }
                 SnapshotType::Incremental => {
-                    // Incremental mode: upload to shared ssts/ directory with deduplication
-                    let sst_key = format!("{}_{}", node_id, filename);
+                    // Incremental mode: content-addressed SSTs in shared ssts/ directory.
+                    // Key format: {xxh3-128 hash}.sst - content-addressed means existence = match.
+                    let content_hash = compute_content_hash(&local_path).await?;
+                    let sst_key = format!("{:032x}.sst", content_hash);
                     let full_key = self
                         .partition_snapshots_prefix(snapshot.partition_id)
                         .child("ssts")
                         .child(sst_key.as_str());
 
-                    // Check if SST already exists
+                    // Content-addressed: existence implies identical content
                     let should_upload = match self.object_store.head(&full_key).await {
-                        Ok(meta) => {
-                            if meta.size == file.size as u64 {
-                                debug!(
-                                    sst = %filename,
-                                    size = file.size,
-                                    "SST already exists in repository, skipping upload"
-                                );
-                                files_skipped += 1;
-                                false
-                            } else {
-                                warn!(
-                                    sst = %filename,
-                                    local_size = file.size,
-                                    remote_size = meta.size,
-                                    "SST size mismatch, re-uploading"
-                                );
-                                true
-                            }
+                        Ok(_) => {
+                            debug!(
+                                sst = %filename,
+                                hash = %format!("{:032x}", content_hash),
+                                size = file.size,
+                                "SST already exists in repository (content-addressed), skipping"
+                            );
+                            files_skipped += 1;
+                            false
                         }
                         Err(object_store::Error::NotFound { .. }) => true,
                         Err(e) => {
@@ -584,12 +593,12 @@ impl SnapshotRepository {
                         }
                     };
 
-                    (full_key, should_upload)
+                    let relative_key = format!("ssts/{}", sst_key);
+                    (full_key, Some(relative_key), should_upload)
                 }
             };
 
             if should_upload {
-                let local_path = local_snapshot_path.join(filename);
                 put_snapshot_object(&local_path, &repository_key, &self.object_store, buf).await?;
 
                 debug!(
@@ -604,10 +613,9 @@ impl SnapshotRepository {
                 progress.push(file.name.clone());
             }
 
-            // Store the relative key (for incremental) or empty (for full, backward compat)
-            if matches!(self.snapshot_kind, SnapshotType::Incremental) {
-                let relative_key = format!("ssts/{}_{}", node_id, filename);
-                file_keys.insert(file.name.clone(), relative_key);
+            // Store the relative key for incremental snapshots
+            if let Some(rel_key) = relative_key {
+                file_keys.insert(file.name.clone(), rel_key);
             }
         }
 
@@ -1068,7 +1076,8 @@ impl SnapshotRepository {
         for file in &metadata.files {
             let filename = strip_leading_slash(&file.name);
             let path = if let Some(relative_key) = metadata.file_keys.get(&file.name) {
-                // Incremental snapshot: SST is in shared directory (e.g., "ssts/N1_001.sst")
+                // Incremental snapshot: SST is in shared ssts/ directory
+                // Format: "ssts/{hash}.sst" (content-addressed) or legacy "ssts/{node_id}_{filename}"
                 let parts: Vec<&str> = relative_key.split('/').collect();
                 if parts.len() == 2 {
                     self.prefix
@@ -1316,7 +1325,7 @@ impl SnapshotRepository {
             let expected_size = file.size;
             let key = if let Some(relative_key) = snapshot_metadata.file_keys.get(&file.name) {
                 // Incremental snapshot: parse the relative key and build proper path
-                // Expected format: "ssts/{node_id}_{filename}"
+                // Format: "ssts/{hash}.sst" (content-addressed) or legacy "ssts/{node_id}_{filename}"
                 let parts: Vec<&str> = relative_key.split('/').collect();
                 if parts.len() == 2 {
                     self.prefix

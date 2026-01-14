@@ -7829,6 +7829,7 @@ dependencies = [
  "tracing-subscriber",
  "ulid",
  "url",
+ "xxhash-rust",
 ]
 
 [[package]]
