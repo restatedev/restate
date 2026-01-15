@@ -8,6 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Global CLI configuration context.
+//!
+//! The [`CliContext`] manages global settings that affect CLI behavior:
+//! - Color detection and enforcement
+//! - Table styling preferences
+//! - Time format preferences
+//! - Auto-confirmation mode
+//! - Network timeouts
+//!
+//! # Initialization
+//!
+//! Initialize the context once at CLI startup:
+//!
+//! ```ignore
+//! use restate_cli_util::{CliContext, CommonOpts};
+//!
+//! fn main() {
+//!     let opts = CommonOpts::parse();
+//!     CliContext::new(opts).set_as_global();
+//!     
+//!     // Now all cli-util functions will use these settings
+//! }
+//! ```
+//!
+//! # Color Detection
+//!
+//! Colors are automatically detected based on:
+//! 1. `NO_COLOR` environment variable (any value except "0" disables colors)
+//! 2. `TERM` environment variable (colors disabled if "dumb")
+//! 3. TTY detection (colors disabled if stdout is not a terminal)
+//! 4. `CLICOLOR_FORCE` environment variable (overrides all above if set)
+
 use std::env;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -24,6 +56,13 @@ use crate::os_env::OsEnv;
 
 static GLOBAL_CLI_CONTEXT: OnceLock<ArcSwap<CliContext>> = OnceLock::new();
 
+/// Global configuration for CLI behavior.
+///
+/// This struct holds all the settings that affect how the CLI operates:
+/// output styling, time formatting, confirmations, and network settings.
+///
+/// Access the global instance via [`CliContext::get()`]. Initialize it
+/// once at startup with [`CliContext::new()`] followed by [`set_as_global()`].
 pub struct CliContext {
     confirm_mode: ConfirmMode,
     ui: UiOpts,
@@ -45,12 +84,18 @@ impl Default for CliContext {
 }
 
 impl CliContext {
+    /// Create a new CLI context from command-line options.
+    ///
+    /// This initializes color detection, logging, and loads `.env` files.
+    /// Call [`set_as_global()`] after creation to make it the global context.
     pub fn new(opts: CommonOpts) -> Self {
         let os_env = OsEnv::default();
         Self::with_env(&os_env, opts)
     }
 
-    /// Loading CliEnv with a custom OsEnv. OsEnv can be customised in cfg(test)
+    /// Create a CLI context with a custom environment (for testing).
+    ///
+    /// In tests, use this to inject mock environment variables.
     pub fn with_env(os_env: &OsEnv, opts: CommonOpts) -> Self {
         // Load .env file. Best effort.
         let maybe_dotenv = dotenv();
@@ -124,46 +169,73 @@ impl CliContext {
         }
     }
 
+    /// Get a reference to the global CLI context.
+    ///
+    /// Returns a default context if none has been set. In production code,
+    /// always call [`set_as_global()`] before using this.
     pub fn get() -> arc_swap::Guard<Arc<CliContext>> {
         GLOBAL_CLI_CONTEXT.get_or_init(Default::default).load()
     }
 
-    /// Sets the global context to the given value. In general, this should be called once on CLI
-    /// initialization.
+    /// Set this context as the global instance.
+    ///
+    /// This should be called once at CLI startup, after parsing options.
+    /// Subsequent calls will update the global context.
     pub fn set_as_global(self) {
         GLOBAL_CLI_CONTEXT
             .get_or_init(Default::default)
             .store(Arc::new(self));
     }
 
+    /// Whether confirmations should be automatically accepted.
+    ///
+    /// Returns `true` if:
+    /// - `--yes` / `-y` flag was passed
+    /// - `CI` environment variable is set
     pub fn auto_confirm(&self) -> bool {
         self.confirm_mode.yes || env::var("CI").is_ok()
     }
 
+    /// Get the user's preferred table style.
+    ///
+    /// - `Compact`: No borders, condensed layout (default)
+    /// - `Borders`: UTF-8 borders, good for multiline content
     pub fn table_style(&self) -> TableStyle {
         self.ui.table_style
     }
 
+    /// Get the user's preferred time format.
+    ///
+    /// - `Human`: "5 minutes ago" (default)
+    /// - `Iso8601`: "2024-01-15T10:30:00Z"
+    /// - `Rfc2822`: "Mon, 15 Jan 2024 10:30:00 +0000"
     pub fn time_format(&self) -> TimeFormat {
         self.ui.time_format
     }
 
+    /// Whether colors and styling should be used in output.
+    ///
+    /// This is determined by color detection at context creation time.
     pub fn colors_enabled(&self) -> bool {
         self.colors_enabled
     }
 
+    /// Get the connection timeout for network requests.
     pub fn connect_timeout(&self) -> std::time::Duration {
         Duration::from_millis(self.network.connect_timeout)
     }
 
+    /// Get the overall request timeout for network requests.
     pub fn request_timeout(&self) -> std::time::Duration {
         Duration::from_millis(self.network.request_timeout)
     }
 
+    /// Whether TLS certificate verification should be skipped.
     pub fn insecure_skip_tls_verify(&self) -> bool {
         self.network.insecure_skip_tls_verify
     }
 
+    /// Get the path to the loaded `.env` file, if any.
     pub fn loaded_dotenv(&self) -> Option<&Path> {
         self.loaded_dotenv.as_deref()
     }
