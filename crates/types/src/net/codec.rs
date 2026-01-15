@@ -51,28 +51,6 @@ pub trait WireDecode {
         Self: Sized;
 }
 
-impl<T> WireEncode for Box<T>
-where
-    T: WireEncode,
-{
-    fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Result<Bytes, EncodeError> {
-        self.as_ref().encode_to_bytes(protocol_version)
-    }
-}
-
-impl<T> WireDecode for Box<T>
-where
-    T: WireDecode,
-{
-    type Error = T::Error;
-    fn try_decode(buf: impl Buf, protocol_version: ProtocolVersion) -> Result<Self, Self::Error>
-    where
-        Self: Sized,
-    {
-        Ok(Box::new(T::try_decode(buf, protocol_version)?))
-    }
-}
-
 impl<T> WireDecode for Arc<T>
 where
     T: WireDecode,
@@ -128,4 +106,48 @@ pub fn decode_as_bilrost<T: OwnedMessage>(
     );
 
     T::decode(buf).context("failed decoding (bilrost) network message")
+}
+
+/// Trait for types that need to support migration from flexbuffers to bilrost encoding
+/// based on protocol version. Implement this trait for message types that are transitioning
+/// from flexbuffers to bilrost serialization.
+///
+/// - If the protocol version is **less than or equal to** `BILROST_VERSION`, the type will be
+///   encoded/decoded using flexbuffers (via serde).
+/// - If the protocol version is **greater than** `BILROST_VERSION`, the type will be
+///   encoded/decoded using bilrost.
+///
+/// Types implementing this trait must be serializable and deserializable with both serde and bilrost.
+pub trait MigrationCodec:
+    Serialize + DeserializeOwned + bilrost::Message + bilrost::OwnedMessage
+{
+    /// The protocol version at which bilrost encoding becomes active.
+    const BILROST_VERSION: ProtocolVersion;
+}
+
+impl<T> WireEncode for T
+where
+    T: MigrationCodec,
+{
+    fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Result<Bytes, EncodeError> {
+        if protocol_version <= T::BILROST_VERSION {
+            Ok(Bytes::from(encode_as_flexbuffers(self)))
+        } else {
+            Ok(encode_as_bilrost(self))
+        }
+    }
+}
+
+impl<T> WireDecode for T
+where
+    T: MigrationCodec,
+{
+    type Error = anyhow::Error;
+    fn try_decode(buf: impl Buf, protocol_version: ProtocolVersion) -> Result<Self, Self::Error> {
+        if protocol_version <= T::BILROST_VERSION {
+            Ok(decode_as_flexbuffers(buf, protocol_version)?)
+        } else {
+            Ok(decode_as_bilrost(buf, protocol_version)?)
+        }
+    }
 }
