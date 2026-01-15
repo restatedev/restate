@@ -13,6 +13,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::BytesMut;
 use tracing::{debug, info, instrument};
 
 use restate_core::{Metadata, MetadataKind, TaskCenter};
@@ -29,7 +30,7 @@ use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::{BifrostAdmin, Error, InputRecord, Result};
 
-#[derive(Clone, derive_more::Debug)]
+#[derive(derive_more::Debug)]
 pub struct Appender<T> {
     log_id: LogId,
     #[debug(skip)]
@@ -40,7 +41,23 @@ pub struct Appender<T> {
     bifrost_inner: Arc<BifrostInner>,
     #[debug(skip)]
     preference_token: Option<PreferenceToken>,
+    arena: BytesMut,
     _phantom: PhantomData<T>,
+}
+
+impl<T> Clone for Appender<T> {
+    fn clone(&self) -> Self {
+        Self {
+            log_id: self.log_id,
+            config: self.config.clone(),
+            error_recovery_strategy: self.error_recovery_strategy,
+            loglet_cache: self.loglet_cache.clone(),
+            bifrost_inner: self.bifrost_inner.clone(),
+            preference_token: self.preference_token.clone(),
+            arena: BytesMut::default(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<T: StorageEncode> Appender<T> {
@@ -57,6 +74,7 @@ impl<T: StorageEncode> Appender<T> {
             loglet_cache: Default::default(),
             bifrost_inner,
             preference_token: None,
+            arena: BytesMut::default(),
             _phantom: PhantomData,
         }
     }
@@ -88,7 +106,7 @@ impl<T: StorageEncode> Appender<T> {
         )
     )]
     pub async fn append(&mut self, body: impl Into<InputRecord<T>>) -> Result<Lsn> {
-        let body = body.into().into_record();
+        let body = body.into().into_record().ensure_encoded(&mut self.arena);
         // Validate record sizes before attempting to append
         let batch_size_bytes = body.estimated_encode_size();
         let limit = self.record_size_limit();
@@ -114,8 +132,16 @@ impl<T: StorageEncode> Appender<T> {
             log_id = %self.log_id,
         )
     )]
+    #[cfg(test)]
     pub async fn append_batch(&mut self, batch: Vec<impl Into<InputRecord<T>>>) -> Result<Lsn> {
-        let batch: Arc<[_]> = batch.into_iter().map(|r| r.into().into_record()).collect();
+        // todo(azmy): Make sure to do a single arena.reserve() for the entire batch
+        // if this method is going to be used in production code. Right now it's okay
+        // since it's only used by tests.
+        let batch: Arc<[_]> = batch
+            .into_iter()
+            .map(|r| r.into().into_record().ensure_encoded(&mut self.arena))
+            .collect();
+
         let batch_size_bytes = batch.iter().map(|r| r.estimated_encode_size()).sum();
         // Validate record sizes before attempting to append
         let limit = self.record_size_limit();
