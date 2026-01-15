@@ -1263,11 +1263,8 @@ mod tests {
     #[restate_core::test]
     async fn test_append_record_too_large() -> googletest::Result<()> {
         // Set up a configuration with a small record size limit.
-        // Note: The estimated_encode_size for a typed record (e.g., String) is ~2KB constant,
-        // plus overhead for Keys and NanosSinceEpoch. We set the limit to 1KB to ensure
-        // the check triggers.
         let mut config = restate_types::config::Configuration::default();
-        config.networking.message_size_limit = small_byte_limit(1024); // 1KB limit
+        config.networking.message_size_limit = small_byte_limit(5); // 5 bytes limit
         let config = config.apply_cascading_values();
         set_current_config(config);
 
@@ -1278,16 +1275,16 @@ mod tests {
         let record_size_limit = restate_types::config::Configuration::pinned()
             .bifrost
             .record_size_limit();
-        assert_eq!(record_size_limit.get(), 1024);
+        assert_eq!(record_size_limit.get(), 5);
 
         // Any record will have an estimated size of ~2KB+ due to the constant estimate
         // for PolyBytes::Typed, which exceeds our 1KB limit
-        let payload = "test";
+        let payload = "hello world";
 
         let appender = bifrost.create_appender(LogId::new(0), ErrorRecoveryStrategy::Wait)?;
 
         // Verify the appender has the correct limit
-        assert_eq!(appender.record_size_limit().get(), 1024);
+        assert_eq!(appender.record_size_limit().get(), 5);
 
         // Attempting to append should fail with RecordTooLarge
         let mut appender = appender;
@@ -1296,7 +1293,7 @@ mod tests {
         assert_that!(
             result,
             pat!(Err(pat!(Error::BatchTooLarge {
-                batch_size_bytes: gt(1024),
+                batch_size_bytes: gt(5),
                 limit: eq(record_size_limit),
             })))
         );

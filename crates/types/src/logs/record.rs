@@ -17,11 +17,15 @@ use crate::storage::{PolyBytes, StorageCodec, StorageDecode, StorageDecodeError,
 use crate::time::NanosSinceEpoch;
 
 use super::{KeyFilter, Keys, MatchKeyQuery};
+pub use record_encoding::CustomRecordEncoding;
 
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Record {
+    #[bilrost(tag(1))]
     created_at: NanosSinceEpoch,
+    #[bilrost(tag(2))]
     body: PolyBytes,
+    #[bilrost(tag(3))]
     keys: Keys,
 }
 
@@ -162,5 +166,120 @@ impl From<(&str, Keys)> for Record {
             keys,
             PolyBytes::Typed(Arc::new(value.to_owned())),
         )
+    }
+}
+
+mod record_encoding {
+    use bilrost::encoding::Proxiable;
+    use bytes::{Bytes, BytesMut};
+
+    use restate_clock::time::NanosSinceEpoch;
+
+    use super::Record;
+    use crate::{
+        logs::Keys,
+        storage::{PolyBytes, StorageCodec},
+    };
+
+    pub struct CustomRecordEncoding;
+
+    bilrost::encoding_implemented_via_value_encoding!(CustomRecordEncoding);
+
+    bilrost::encoding_uses_base_empty_state!(CustomRecordEncoding);
+
+    struct RecordTag;
+
+    #[derive(Debug, Clone, bilrost::Message)]
+    struct EncodedRecord {
+        #[bilrost(tag(1))]
+        created_at: NanosSinceEpoch,
+        #[bilrost(tag(2))]
+        keys: Keys,
+        #[bilrost(tag(3))]
+        body: Bytes,
+    }
+
+    impl Proxiable<RecordTag> for Record {
+        type Proxy = EncodedRecord;
+
+        fn decode_proxy(&mut self, proxy: Self::Proxy) -> Result<(), bilrost::DecodeErrorKind> {
+            *self = Self {
+                created_at: proxy.created_at,
+                keys: proxy.keys,
+                body: PolyBytes::Bytes(proxy.body),
+            };
+
+            Ok(())
+        }
+
+        fn encode_proxy(&self) -> Self::Proxy {
+            let body = match self.body() {
+                PolyBytes::Bytes(bytes) => bytes.clone(),
+                PolyBytes::Both(_, bytes) => bytes.clone(),
+                PolyBytes::Typed(typed) => {
+                    // It's recommended to call ensure_encoding ahead so we
+                    // avoid buffer allocations here.
+
+                    let mut buf = BytesMut::new();
+                    StorageCodec::encode(typed.as_ref(), &mut buf).expect("serde is infallible");
+                    buf.freeze()
+                }
+            };
+
+            EncodedRecord {
+                created_at: self.created_at,
+                keys: self.keys.clone(),
+                body: body.clone(),
+            }
+        }
+    }
+
+    bilrost::delegate_proxied_encoding!(
+        use encoding (bilrost::encoding::General)
+        to encode proxied type (Record) using proxy tag (RecordTag)
+        with encoding (CustomRecordEncoding)
+    );
+
+    #[cfg(test)]
+    mod test {
+        use bilrost::{Message, OwnedMessage};
+        use restate_clock::time::NanosSinceEpoch;
+
+        use super::CustomRecordEncoding;
+        use crate::{
+            logs::{Keys, Record, record::record_encoding::EncodedRecord},
+            storage::PolyBytes,
+        };
+
+        #[derive(bilrost::Message)]
+        struct ContainerWithCustomEncoder {
+            #[bilrost(tag(1), encoding(CustomRecordEncoding))]
+            inner: Record,
+        }
+
+        #[derive(bilrost::Message)]
+        struct ContainerEncodedRecord {
+            #[bilrost(tag(1))]
+            inner: EncodedRecord,
+        }
+
+        #[test]
+        fn wire_compatibility_smoke_test() {
+            let inner = Record::from_parts(
+                NanosSinceEpoch::now(),
+                Keys::None,
+                PolyBytes::Bytes("hello world".into()),
+            );
+
+            let container = ContainerWithCustomEncoder { inner };
+
+            let data = container.encode_to_bytes();
+
+            let decoded = ContainerEncodedRecord::decode(data).unwrap();
+
+            assert!(
+                matches!(container.inner.body(), PolyBytes::Bytes(bytes) if bytes == &decoded.inner.body)
+            );
+        }
     }
 }
