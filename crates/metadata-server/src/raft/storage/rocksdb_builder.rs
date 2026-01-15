@@ -49,12 +49,13 @@ struct RocksConfigurator;
 impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
     fn get_db_options(
         &self,
-        _db_name: &str,
+        db_name: &DbName,
         env: &rocksdb::Env,
         write_buffer_manager: &rocksdb::WriteBufferManager,
     ) -> rocksdb::Options {
         let mut db_options = restate_rocksdb::configuration::create_default_db_options(
             env,
+            db_name,
             true, /* create_db_if_missing */
             write_buffer_manager,
         );
@@ -89,7 +90,7 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
 impl restate_rocksdb::configuration::CfConfigurator for RocksConfigurator {
     fn get_cf_options(
         &self,
-        _db_name: &str,
+        _db_name: &DbName,
         cf_name: &str,
         global_cache: &Cache,
         write_buffer_manager: &rocksdb::WriteBufferManager,
