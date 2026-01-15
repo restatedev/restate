@@ -318,10 +318,6 @@ impl RocksAccess {
         Ok(self.db.property_int_value_cf(&handle, property)?)
     }
 
-    pub fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder) {
-        builder.add_db(&self.db)
-    }
-
     pub fn cfs(&self) -> Vec<CfName> {
         self.db.cf_names().into_iter().map(CfName::from).collect()
     }

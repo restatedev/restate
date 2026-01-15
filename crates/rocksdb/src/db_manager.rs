@@ -185,6 +185,9 @@ impl RocksDbManager {
         &self,
         filter: &[DbName],
     ) -> Result<rocksdb::perf::MemoryUsage, RocksError> {
+        // for safety.
+        // keep databases alive while we are aggregating memory usage
+        let mut pinned = vec![];
         let mut builder = rocksdb::perf::MemoryUsageBuilder::new()?;
         builder.add_cache(&self.cache);
 
@@ -193,7 +196,7 @@ impl RocksDbManager {
                 let Some(db) = db.upgrade() else {
                     continue;
                 };
-                db.inner().record_memory_stats(&mut builder);
+                pinned.push(db);
             }
         } else {
             for key in filter {
@@ -201,9 +204,13 @@ impl RocksDbManager {
                     let Some(db) = db.upgrade() else {
                         continue;
                     };
-                    db.inner().record_memory_stats(&mut builder);
+                    pinned.push(db);
                 }
             }
+        }
+
+        for db in &pinned {
+            builder.add_db(db.inner().as_raw_db());
         }
 
         Ok(builder.build()?)
