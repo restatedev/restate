@@ -12,7 +12,6 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rocksdb::perf::MemoryUsageBuilder;
 use rocksdb::{
     BlockBasedOptions, Cache, ColumnFamilyDescriptor, ImportColumnFamilyOptions, WriteBufferManager,
 };
@@ -316,10 +315,6 @@ impl RocksAccess {
             return Err(RocksError::UnknownColumnFamily(cf.into()));
         };
         Ok(self.db.property_int_value_cf(&handle, property)?)
-    }
-
-    pub fn record_memory_stats(&self, builder: &mut MemoryUsageBuilder) {
-        builder.add_db(&self.db)
     }
 
     pub fn cfs(&self) -> Vec<CfName> {
