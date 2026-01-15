@@ -18,6 +18,10 @@ enum ProtocolVersion {
   // V1 = 1;
   // [Native RPC] Released in >= v1.3.3
   V2 = 2;
+
+  // Release in v1.6. Support custom `Record`
+  // encoding that uses Bytes instead of PolyBytes
+  V3 = 3;
 }
 
 message NodeId {

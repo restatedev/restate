@@ -18,9 +18,14 @@ use restate_encoding::{ArcedSlice, BilrostNewType, NetSerde};
 
 use super::{RpcResponse, ServiceTag};
 use crate::GenerationalNodeId;
-use crate::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
-use crate::net::define_service;
+use crate::logs::{
+    CustomRecordEncoding, KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState,
+};
+use crate::net::codec::{WireDecode, WireEncode, encode_as_bilrost};
+use crate::net::{ProtocolVersion, define_service};
 use crate::time::MillisSinceEpoch;
+
+pub use compat::Payloads as CompatibilityPayloads;
 
 pub struct LogServerDataService;
 define_service! {
@@ -56,13 +61,27 @@ macro_rules! define_logserver_rpc {
         @response = $response:ty $(as $as_response:ty)?,
         @service = $service:ty,
     ) => {
+        crate::net::bilrost_wire_codec!($request $(as $as_request)?);
+        crate::net::bilrost_wire_codec!($response $(as $as_response)?);
+
+        define_logserver_rpc!(
+            @common,
+            @request = $request $(as $as_request)?,
+            @response = $response $(as $as_response)?,
+            @service = $service,
+        );
+    };
+    (
+        @common,
+        @request = $request:ty $(as $as_request:ty)?,
+        @response = $response:ty $(as $as_response:ty)?,
+        @service = $service:ty,
+    ) => {
         crate::net::define_rpc! {
             @request = $request,
             @response = $response,
             @service = $service,
         }
-        crate::net::bilrost_wire_codec!($request $(as $as_request)?);
-        crate::net::bilrost_wire_codec!($response $(as $as_response)?);
 
         impl LogServerMessage for $request {
             fn header(&self) -> &LogServerRequestHeader {
@@ -150,6 +169,7 @@ pub enum Status {
 
 // Store
 define_logserver_rpc! {
+    @common,
     @request = Store,
     @response = Stored,
     @service = LogServerDataService,
@@ -270,6 +290,8 @@ bitflags! {
     }
 }
 
+// Used with WireProtocol V3
+// *Since v1.6.0*
 #[derive(
     bilrost::Message,
     derive_more::Into,
@@ -280,7 +302,7 @@ bitflags! {
     Default,
     NetSerde,
 )]
-pub struct Payloads(#[bilrost(encoding(ArcedSlice<unpacked>))] Arc<[Record]>);
+pub struct Payloads(#[bilrost(encoding(ArcedSlice<packed<CustomRecordEncoding>>))] Arc<[Record]>);
 
 impl From<Vec<Record>> for Payloads {
     fn from(value: Vec<Record>) -> Self {
@@ -309,7 +331,6 @@ pub struct Store {
     /// Denotes the last record that has been safely uploaded to an archiving data store.
     #[bilrost(6)]
     pub known_archived: LogletOffset,
-    // todo (asoli) serialize efficiently
     #[bilrost(7)]
     pub payloads: Payloads,
 }
@@ -335,12 +356,62 @@ impl Store {
     }
 }
 
+impl WireEncode for Store {
+    fn encode_to_bytes(
+        &self,
+        protocol_version: super::ProtocolVersion,
+    ) -> Result<bytes::Bytes, super::codec::EncodeError> {
+        match protocol_version {
+            ProtocolVersion::Unknown => Err(crate::net::codec::EncodeError::IncompatibleVersion {
+                type_tag: stringify!($message),
+                min_required: ProtocolVersion::V2,
+                actual: protocol_version,
+            }),
+            ProtocolVersion::V2 => {
+                // note: cloning the store message is cheap, but not free.
+                // hopefully this code path will be short lived until all
+                // nodes has been upgraded to protocol-version: V3
+                let msg: compat::Store = self.clone().into();
+                Ok(encode_as_bilrost(&msg))
+            }
+            ProtocolVersion::V3 => Ok(encode_as_bilrost(self)),
+        }
+    }
+}
+
+impl WireDecode for Store {
+    type Error = anyhow::Error;
+
+    fn try_decode(
+        buf: impl bytes::Buf,
+        protocol_version: super::ProtocolVersion,
+    ) -> Result<Self, Self::Error>
+    where
+        Self: Sized,
+    {
+        match protocol_version {
+            ProtocolVersion::Unknown => Err(anyhow::anyhow!(
+                "Store requires at least protocol version V2, got {:?}",
+                protocol_version
+            )),
+            ProtocolVersion::V2 => {
+                let msg: compat::Store =
+                    crate::net::codec::decode_as_bilrost(buf, protocol_version)?;
+                Ok(msg.into())
+            }
+            ProtocolVersion::V3 => crate::net::codec::decode_as_bilrost(buf, protocol_version),
+        }
+    }
+}
+
 /// Response to a `Store` request
 #[derive(Debug, Clone, bilrost::Message, NetSerde)]
 pub struct Stored {
     #[bilrost(1)]
     pub header: LogServerResponseHeader,
 }
+
+super::bilrost_wire_codec!(Stored);
 
 impl Deref for Stored {
     type Target = LogServerResponseHeader;
@@ -842,5 +913,157 @@ impl Digest {
     pub fn with_status(mut self, status: Status) -> Self {
         self.header.status = status;
         self
+    }
+}
+
+mod compat {
+    use std::sync::Arc;
+
+    use restate_clock::time::MillisSinceEpoch;
+    use restate_encoding::{ArcedSlice, NetSerde};
+
+    use crate::{
+        GenerationalNodeId,
+        logs::{LogletOffset, Record},
+        net::log_server::{LogServerRequestHeader, StoreFlags},
+    };
+
+    /// A backward compatible Payloads that uses PolyBytes encoding directly.
+    /// Unlike the newer [`super::Payloads`] which uses custom encoding to generate
+    /// a [`Bytes`] compatible wire encoding
+    ///
+    /// Used only with wire-protocol V2.
+    #[derive(
+        bilrost::Message,
+        derive_more::Into,
+        derive_more::From,
+        derive_more::Deref,
+        Debug,
+        Clone,
+        Default,
+        NetSerde,
+    )]
+    pub struct Payloads(#[bilrost(encoding(ArcedSlice<unpacked>))] Arc<[Record]>);
+
+    impl From<super::Payloads> for Payloads {
+        fn from(value: super::Payloads) -> Self {
+            Self(value.0)
+        }
+    }
+
+    impl From<Payloads> for super::Payloads {
+        fn from(value: Payloads) -> Self {
+            Self(value.0)
+        }
+    }
+
+    /// Store one or more records on a log-server
+    #[derive(Debug, Clone, bilrost::Message, NetSerde)]
+    pub struct Store {
+        #[bilrost(1)]
+        pub header: LogServerRequestHeader,
+        #[bilrost(2)]
+        pub timeout_at: Option<MillisSinceEpoch>,
+        #[bilrost(3)]
+        pub flags: StoreFlags,
+        #[bilrost(4)]
+        pub first_offset: LogletOffset,
+        #[bilrost(5)]
+        pub sequencer: GenerationalNodeId,
+        #[bilrost(6)]
+        pub known_archived: LogletOffset,
+        #[bilrost(7)]
+        pub payloads: Payloads,
+    }
+
+    impl From<super::Store> for Store {
+        fn from(value: super::Store) -> Self {
+            let super::Store {
+                header,
+                timeout_at,
+                flags,
+                first_offset,
+                sequencer,
+                known_archived,
+                payloads,
+            } = value;
+
+            Self {
+                header,
+                timeout_at,
+                flags,
+                first_offset,
+                sequencer,
+                known_archived,
+                payloads: payloads.into(),
+            }
+        }
+    }
+
+    impl From<Store> for super::Store {
+        fn from(value: Store) -> Self {
+            let Store {
+                header,
+                timeout_at,
+                flags,
+                first_offset,
+                sequencer,
+                known_archived,
+                payloads,
+            } = value;
+
+            Self {
+                header,
+                timeout_at,
+                flags,
+                first_offset,
+                sequencer,
+                known_archived,
+                payloads: payloads.into(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+
+    use bilrost::{Message, OwnedMessage};
+    use bytes::Bytes;
+
+    use restate_clock::time::NanosSinceEpoch;
+    use restate_encoding::ArcedSlice;
+
+    use crate::{
+        logs::{Keys, Record},
+        storage::PolyBytes,
+    };
+
+    #[derive(bilrost::Message)]
+    struct TestRecord {
+        #[bilrost(tag(3))]
+        body: Bytes,
+    }
+
+    #[derive(bilrost::Message)]
+    struct TestPayloads(#[bilrost(encoding(ArcedSlice<packed>))] Arc<[TestRecord]>);
+
+    #[test]
+    fn payloads_is_wire_compatible_with_encoded_record() {
+        let body = Bytes::from("hello world");
+        let record = Record::from_parts(
+            NanosSinceEpoch::now(),
+            Keys::None,
+            PolyBytes::Bytes(body.clone()),
+        );
+
+        let payloads = super::Payloads::from(vec![record]);
+
+        let bytes = payloads.encode_to_bytes();
+
+        let decoded = TestPayloads::decode(bytes).unwrap();
+        assert_eq!(decoded.0.len(), 1);
+        assert_eq!(decoded.0[0].body, body);
     }
 }
