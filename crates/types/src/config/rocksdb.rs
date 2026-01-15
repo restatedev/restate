@@ -68,6 +68,14 @@ pub struct RocksDbOptions {
     #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
     rocksdb_compaction_readahead_size: Option<NonZeroUsize>,
 
+    /// # RocksDB disable auto compactions
+    ///
+    /// Disables rocksdb automatic compactions. This can be useful in performance tuning
+    /// tests but should not be used in production to avoid write stall.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_disable_auto_compactions: Option<bool>,
+
     /// # RocksDB statistics level
     ///
     /// StatsLevel can be used to reduce statistics overhead by skipping certain
@@ -152,6 +160,9 @@ impl RocksDbOptions {
             self.rocksdb_compaction_readahead_size =
                 Some(common.rocksdb_compaction_readahead_size());
         }
+        if self.rocksdb_disable_auto_compactions.is_none() {
+            self.rocksdb_disable_auto_compactions = Some(common.rocksdb_disable_auto_compactions());
+        }
         if self.rocksdb_statistics_level.is_none() {
             self.rocksdb_statistics_level = Some(common.rocksdb_statistics_level());
         }
@@ -198,6 +209,10 @@ impl RocksDbOptions {
     pub fn rocksdb_compaction_readahead_size(&self) -> NonZeroUsize {
         self.rocksdb_compaction_readahead_size
             .unwrap_or(NonZeroUsize::new(2_000_000).unwrap())
+    }
+
+    pub fn rocksdb_disable_auto_compactions(&self) -> bool {
+        self.rocksdb_disable_auto_compactions.unwrap_or(false)
     }
 
     pub fn rocksdb_statistics_level(&self) -> StatisticsLevel {
