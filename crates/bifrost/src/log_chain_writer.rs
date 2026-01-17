@@ -237,7 +237,8 @@ impl LogChainWriter {
                 .read_modify_write(|logs: Option<Arc<Logs>>| {
                     let mut builder =
                         Arc::unwrap_or_clone(logs.ok_or(Error::LogsMetadataNotProvisioned)?)
-                            .into_builder();
+                            .try_into_builder()
+                            .map_err(|err| Error::Other(format!("LogsBuilder error: {err}")))?;
 
                     for cmd in &mut buffer {
                         match cmd.op {

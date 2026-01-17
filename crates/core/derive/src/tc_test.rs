@@ -456,6 +456,8 @@ fn parse_knobs(mut input: ItemFn, config: FinalConfig) -> TokenStream {
     let last_block = quote_spanned! {last_stmt_end_span=>
         #[allow(clippy::all)]
         {
+            restate_types::clock::ClockUpkeep::start().expect("clock upkeep to start");
+
             use restate_core::TaskCenterFutureExt as _;
             // Make sure that panics exits the process.
             let _orig_hook = std::panic::take_hook();

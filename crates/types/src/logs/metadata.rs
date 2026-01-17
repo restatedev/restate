@@ -18,14 +18,17 @@ use ahash::{HashMap, HashMapExt};
 use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
-use restate_encoding::BilrostNewType;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use smallvec::SmallVec;
 
+use restate_clock::UniqueTimestamp;
+use restate_encoding::BilrostNewType;
+
 use super::LogletId;
 use super::builder::LogsBuilder;
 use crate::config::Configuration;
+use crate::logs::builder::BuilderError;
 use crate::logs::{LogId, Lsn, SequenceNumber};
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
@@ -337,6 +340,8 @@ pub struct Logs {
     #[debug(skip)]
     pub(super) lookup_index: LookupIndex,
     pub(super) config: LogsConfiguration,
+    // The last modification time.
+    pub(super) modified_at: UniqueTimestamp,
 }
 
 impl Default for Logs {
@@ -346,6 +351,7 @@ impl Default for Logs {
             logs: Default::default(),
             lookup_index: Default::default(),
             config: LogsConfiguration::default(),
+            modified_at: UniqueTimestamp::MIN,
         }
     }
 }
@@ -366,6 +372,7 @@ impl From<Logs> for LogsSerde {
             version: value.version,
             logs: value.logs.into_iter().collect(),
             config: Some(value.config),
+            modified_at: Some(value.modified_at),
         }
     }
 }
@@ -410,6 +417,7 @@ impl TryFrom<LogsSerde> for Logs {
             logs,
             lookup_index,
             config: config.unwrap_or_default(),
+            modified_at: value.modified_at.unwrap_or(UniqueTimestamp::MIN),
         })
     }
 }
@@ -424,6 +432,7 @@ struct LogsSerde {
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     logs: Vec<(LogId, Chain)>,
     config: Option<LogsConfiguration>,
+    modified_at: Option<UniqueTimestamp>,
 }
 
 /// Seal metadata is json-serialized and stored as loglet params of the seal marker segment.
@@ -528,6 +537,12 @@ pub struct LogletConfig {
     // loglet chains already.
     #[serde(default)]
     index: SegmentIndex,
+    #[serde(default = "default_unique_timestamp")]
+    pub(super) created_at: UniqueTimestamp,
+}
+
+fn default_unique_timestamp() -> UniqueTimestamp {
+    UniqueTimestamp::MIN
 }
 
 impl LogletConfig {
@@ -537,7 +552,12 @@ impl LogletConfig {
             kind: InternalKind::InMemory,
             params: LogletParams(ByteString::default()),
             index: 0.into(),
+            created_at: UniqueTimestamp::MIN,
         }
+    }
+
+    pub fn created_at(&self) -> UniqueTimestamp {
+        self.created_at
     }
 }
 
@@ -686,22 +706,30 @@ impl FromStr for ProviderKind {
 }
 
 impl LogletConfig {
-    pub(crate) fn new(index: SegmentIndex, kind: ProviderKind, params: LogletParams) -> Self {
+    pub(crate) fn new(
+        index: SegmentIndex,
+        kind: ProviderKind,
+        params: LogletParams,
+        created_at: UniqueTimestamp,
+    ) -> Self {
         Self {
             kind: InternalKind::from(kind),
             params,
             index,
+            created_at,
         }
     }
 
     pub(crate) fn new_sealed(
         index: SegmentIndex,
         metadata: &SealMetadata,
+        created_at: UniqueTimestamp,
     ) -> Result<Self, serde_json::Error> {
         Ok(Self {
             kind: InternalKind::Sealed,
             params: LogletParams::try_from(metadata)?,
             index,
+            created_at,
         })
     }
 
@@ -730,6 +758,10 @@ impl Logs {
         Default::default()
     }
 
+    pub fn modified_at(&self) -> UniqueTimestamp {
+        self.modified_at
+    }
+
     pub fn num_logs(&self) -> usize {
         self.logs.len()
     }
@@ -742,8 +774,8 @@ impl Logs {
         self.logs.get(log_id)
     }
 
-    pub fn into_builder(self) -> LogsBuilder {
-        self.into()
+    pub fn try_into_builder(self) -> Result<LogsBuilder, BuilderError> {
+        self.try_into()
     }
 
     pub fn configuration(&self) -> &LogsConfiguration {
@@ -800,7 +832,7 @@ impl Chain {
         let mut chain = BTreeMap::new();
         chain.insert(
             base_lsn,
-            LogletConfig::new(SegmentIndex::default(), kind, config),
+            LogletConfig::new(SegmentIndex::default(), kind, config, UniqueTimestamp::MIN),
         );
         Self { chain }
     }

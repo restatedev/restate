@@ -8,8 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::ops::Deref;
+
+use restate_clock::{
+    Clock, Error as ClockError, HlcClock, LocalStorage, UniqueTimestamp, WallClock,
+};
 
 use super::metadata::{
     Chain, LogletConfig, LogletParams, Logs, LogsConfiguration, LookupIndex, MaybeSegment,
@@ -19,10 +23,20 @@ use super::{LogId, Lsn};
 use crate::Version;
 use crate::replicated_loglet::ReplicatedLogletParams;
 
-#[derive(Debug, Default, Clone)]
-pub struct LogsBuilder {
+pub type LogsHlcClock<C> = HlcClock<C, LocalStorage>;
+
+#[derive(derive_more::Debug)]
+pub struct LogsBuilder<C: Clock = WallClock> {
     inner: Logs,
     modified: bool,
+    #[debug(skip)]
+    hlc: HlcClock<C, LocalStorage>,
+}
+
+impl Default for LogsBuilder<WallClock> {
+    fn default() -> Self {
+        Self::new(WallClock)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -35,19 +49,36 @@ pub enum BuilderError {
     ParamsSerde(#[from] serde_json::Error),
     #[error("Segment conflicts with existing (base_lsn={0})")]
     SegmentConflict(Lsn),
+    #[error(transparent)]
+    HlcClock(#[from] ClockError),
 }
 
-impl LogsBuilder {
+impl<C: Clock> LogsBuilder<C> {
+    fn new(clock: C) -> Self {
+        Self {
+            inner: Logs::default(),
+            modified: false,
+            hlc: new_hlc_clock(clock),
+        }
+    }
+
     /// Fails if the log already exists.
     pub fn add_log(
         &mut self,
         log_id: LogId,
-        chain: Chain,
-    ) -> Result<ChainBuilder<'_>, BuilderError> {
+        mut chain: Chain,
+    ) -> Result<ChainBuilder<'_, C>, BuilderError> {
         if self.inner.logs.contains_key(&log_id) {
             return Err(BuilderError::LogAlreadyExists(log_id));
         }
-        for loglet_config in chain.chain.values() {
+        for loglet_config in chain.chain.values_mut() {
+            if loglet_config.created_at == UniqueTimestamp::MIN {
+                // The check that created_at == MIN is only to make sure
+                // new Logs metadata created from a cloned chains keep
+                // their original timestamp.s
+                loglet_config.created_at = self.hlc.next();
+            }
+
             if ProviderKind::Replicated == loglet_config.kind {
                 let params =
                     ReplicatedLogletParams::deserialize_from(loglet_config.params.as_bytes())?;
@@ -64,13 +95,14 @@ impl LogsBuilder {
         Ok(self.chain(log_id).unwrap())
     }
 
-    pub fn chain(&mut self, log_id: LogId) -> Option<ChainBuilder<'_>> {
+    pub fn chain(&mut self, log_id: LogId) -> Option<ChainBuilder<'_, C>> {
         let chain = self.inner.logs.get_mut(&log_id)?;
         Some(ChainBuilder {
             log_id,
             inner: chain,
             lookup_index: &mut self.inner.lookup_index,
             modified: &mut self.modified,
+            hlc: &self.hlc,
         })
     }
 
@@ -81,6 +113,7 @@ impl LogsBuilder {
             logs: self.inner.logs,
             lookup_index: self.inner.lookup_index,
             config: self.inner.config,
+            modified_at: self.hlc.next(),
         }
     }
 
@@ -109,6 +142,7 @@ impl LogsBuilder {
                 logs: self.inner.logs,
                 lookup_index: self.inner.lookup_index,
                 config: self.inner.config,
+                modified_at: self.hlc.next(),
             })
         } else {
             None
@@ -122,24 +156,32 @@ impl AsRef<Logs> for LogsBuilder {
     }
 }
 
-impl From<Logs> for LogsBuilder {
-    fn from(value: Logs) -> LogsBuilder {
-        LogsBuilder {
+impl TryFrom<Logs> for LogsBuilder<WallClock> {
+    type Error = BuilderError;
+
+    fn try_from(value: Logs) -> Result<Self, Self::Error> {
+        let hlc = new_hlc_clock(WallClock);
+        hlc.try_update(value.modified_at)?;
+
+        Ok(LogsBuilder {
             inner: value,
             modified: false,
-        }
+            hlc,
+        })
     }
 }
 
-#[derive(Debug)]
-pub struct ChainBuilder<'a> {
+#[derive(derive_more::Debug)]
+pub struct ChainBuilder<'a, C: Clock> {
     log_id: LogId,
     inner: &'a mut Chain,
     lookup_index: &'a mut LookupIndex,
     modified: &'a mut bool,
+    #[debug(skip)]
+    hlc: &'a LogsHlcClock<C>,
 }
 
-impl ChainBuilder<'_> {
+impl<C: Clock> ChainBuilder<'_, C> {
     /// Removes and returns whole segments before `until_base_lsn`.
     /// if `until_base_lsn` falls inside a segment, the segment is kept but all previous
     /// segments will be dropped.
@@ -214,9 +256,10 @@ impl ChainBuilder<'_> {
                     self.lookup_index
                         .add_replicated_loglet(self.log_id, new_index, params);
                 }
-                self.inner
-                    .chain
-                    .insert(base_lsn, LogletConfig::new(new_index, provider, params));
+                self.inner.chain.insert(
+                    base_lsn,
+                    LogletConfig::new(new_index, provider, params, self.hlc.next()),
+                );
                 *self.modified = true;
                 Ok(new_index)
             }
@@ -242,7 +285,12 @@ impl ChainBuilder<'_> {
                     self.lookup_index
                         .add_replicated_loglet(self.log_id, new_index, params);
                 }
-                last_entry.insert(LogletConfig::new(new_index, provider, params));
+                last_entry.insert(LogletConfig::new(
+                    new_index,
+                    provider,
+                    params,
+                    self.hlc.next(),
+                ));
                 *self.modified = true;
                 Ok(new_index)
             }
@@ -278,9 +326,10 @@ impl ChainBuilder<'_> {
                 // and still passing the check of segment_index equality in the case of conditional
                 // sealing.
                 let new_index = SegmentIndex(last_entry.get().index().0);
-                self.inner
-                    .chain
-                    .insert(tail_lsn, LogletConfig::new_sealed(new_index, metadata)?);
+                self.inner.chain.insert(
+                    tail_lsn,
+                    LogletConfig::new_sealed(new_index, metadata, self.hlc.next())?,
+                );
                 *self.modified = true;
                 Ok(tail_lsn)
             }
@@ -301,7 +350,11 @@ impl ChainBuilder<'_> {
                 }
                 // we inherit the index from the previous segment
                 let new_index = SegmentIndex(last_entry.get().index().0);
-                last_entry.insert(LogletConfig::new_sealed(new_index, metadata)?);
+                last_entry.insert(LogletConfig::new_sealed(
+                    new_index,
+                    metadata,
+                    self.hlc.next(),
+                )?);
                 *self.modified = true;
                 Ok(tail_lsn)
             }
@@ -313,11 +366,23 @@ impl ChainBuilder<'_> {
     }
 }
 
-impl Deref for ChainBuilder<'_> {
+impl<C: Clock> Deref for ChainBuilder<'_, C> {
     type Target = Chain;
     fn deref(&self) -> &Chain {
         self.inner
     }
+}
+
+/// Creates a new HLC clock to be used by the builder.
+/// Right now it's hardcoded with a max drift of 5 seconds
+fn new_hlc_clock<C: Clock>(clock: C) -> LogsHlcClock<C> {
+    // todo(azmy): Configurable max drift?
+    HlcClock::new(
+        Some(NonZeroUsize::new(5000).expect("non zero")),
+        clock,
+        LocalStorage::default(),
+    )
+    .expect("failed to create HLC clock")
 }
 
 #[cfg(test)]
@@ -328,17 +393,18 @@ mod tests {
     use crate::logs::metadata::{LogletParams, MaybeSegment, ProviderKind, Segment};
     use crate::{Version, Versioned};
     use googletest::prelude::*;
+    use restate_clock::MockClock;
 
     use super::*;
 
     #[test]
     fn test_default_builder() -> googletest::Result<()> {
-        let builder = LogsBuilder::default();
+        let builder = LogsBuilder::new(MockClock::new());
         let logs = builder.build();
         assert_eq!(Version::MIN, logs.version());
 
         // a builder with 2 logs
-        let mut builder = LogsBuilder::default();
+        let mut builder = LogsBuilder::new(MockClock::new());
         let chain = builder.add_log(
             LogId::new(1),
             Chain::new(ProviderKind::InMemory, LogletParams::from("test1")),
@@ -403,7 +469,7 @@ mod tests {
     #[test]
     fn test_add_segments() -> googletest::Result<()> {
         let log_id = LogId::new(1);
-        let mut builder = LogsBuilder::default();
+        let mut builder = LogsBuilder::new(MockClock::new());
         let mut chain = builder.add_log(
             log_id,
             Chain::new(ProviderKind::InMemory, LogletParams::from("test1")),
@@ -505,7 +571,7 @@ mod tests {
     #[test]
     fn test_find_segments() -> googletest::Result<()> {
         let log_id = LogId::new(1);
-        let mut builder = LogsBuilder::default();
+        let mut builder = LogsBuilder::new(MockClock::new());
         let mut chain = builder.add_log(
             log_id,
             Chain::with_base_lsn(
@@ -606,7 +672,7 @@ mod tests {
     #[test]
     fn test_trim_log_single_segment() -> googletest::Result<()> {
         let log_id = LogId::new(1);
-        let mut builder = LogsBuilder::default();
+        let mut builder = LogsBuilder::new(MockClock::new());
         builder.add_log(
             log_id,
             Chain::new(
@@ -635,7 +701,7 @@ mod tests {
     #[test]
     fn test_trim_log_multi_segment() -> googletest::Result<()> {
         let log_id = LogId::new(1);
-        let mut builder = LogsBuilder::default();
+        let mut builder = LogsBuilder::new(MockClock::new());
         let mut chain = builder.add_log(
             log_id,
             Chain::with_base_lsn(
@@ -786,7 +852,7 @@ mod tests {
         use crate::replicated_loglet::ReplicatedLogletParams;
         use crate::replication::{NodeSet, ReplicationProperty};
 
-        let mut builder = LogsBuilder::default();
+        let mut builder = LogsBuilder::new(MockClock::new());
 
         let loglet1 = ReplicatedLogletParams {
             loglet_id: LogletId::from(1),
