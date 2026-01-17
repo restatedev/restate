@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 use restate_serde_util::NonZeroByteCount;
+use restate_time_util::FriendlyDuration;
 
 #[serde_as]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
@@ -75,6 +76,17 @@ pub struct RocksDbOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_disable_auto_compactions: Option<bool>,
+
+    /// # RocksDB periodic compaction seconds
+    ///
+    /// Sets a period (in seconds) after which data must go through at least one compaction operation.
+    ///
+    /// Setting to 0 disables periodic compactions.
+    ///
+    /// Default: unset (automatic)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub(super) rocksdb_periodic_compaction: Option<FriendlyDuration>,
 
     /// # RocksDB statistics level
     ///
@@ -163,6 +175,9 @@ impl RocksDbOptions {
         if self.rocksdb_disable_auto_compactions.is_none() {
             self.rocksdb_disable_auto_compactions = Some(common.rocksdb_disable_auto_compactions());
         }
+        if self.rocksdb_periodic_compaction.is_none() {
+            self.rocksdb_periodic_compaction = common.rocksdb_periodic_compaction;
+        }
         if self.rocksdb_statistics_level.is_none() {
             self.rocksdb_statistics_level = Some(common.rocksdb_statistics_level());
         }
@@ -213,6 +228,10 @@ impl RocksDbOptions {
 
     pub fn rocksdb_disable_auto_compactions(&self) -> bool {
         self.rocksdb_disable_auto_compactions.unwrap_or(false)
+    }
+
+    pub fn rocksdb_periodic_compaction_seconds(&self) -> Option<u64> {
+        self.rocksdb_periodic_compaction.map(|v| v.as_secs())
     }
 
     pub fn rocksdb_statistics_level(&self) -> StatisticsLevel {

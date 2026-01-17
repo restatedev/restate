@@ -531,6 +531,9 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.set_max_successive_merges(100);
 
         cf_options.set_disable_auto_compactions(config.rocksdb_disable_auto_compactions());
+        if let Some(compaction_period) = config.rocksdb_periodic_compaction_seconds() {
+            cf_options.set_periodic_compaction_seconds(compaction_period);
+        }
 
         // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
         // in the C API nor the rust binding. That's okay and we can change it later.
