@@ -61,7 +61,7 @@ use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::SnapshotId;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -75,7 +75,7 @@ use restate_types::net::{RpcRequest as _, UnaryMessage};
 use restate_types::nodes_config::{NodesConfigError, NodesConfiguration, WorkerState};
 use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::Partition;
-use restate_types::partitions::state::PartitionReplicaSetStates;
+use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString};
@@ -86,7 +86,7 @@ use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
 use crate::metric_definitions::PARTITION_LABEL;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
-use crate::partition::ProcessorError;
+use crate::partition::{LeadershipInfo, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
@@ -645,11 +645,23 @@ where
                 leader_epoch_token,
                 result,
             } => {
+                let result = result.inspect(|info| {
+                    self.replica_set_states.note_observed_membership(
+                        partition_id,
+                        LeadershipState {
+                            current_leader: Metadata::current().my_node_id(),
+                            current_leader_epoch: info.leader_epoch,
+                        },
+                        &info.current_config.to_replica_set_state(),
+                        &info.next_config.as_ref().map(|c| c.to_replica_set_state()),
+                    );
+                });
+
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
                     match result {
-                        Ok(leader_epoch) => {
+                        Ok(leadership_info) => {
                             processor_state
-                                .on_leader_epoch_obtained(leader_epoch, leader_epoch_token);
+                                .on_leader_epoch_obtained(leadership_info, leader_epoch_token);
                         }
                         Err(err) => {
                             if processor_state.is_valid_leader_epoch_token(leader_epoch_token) {
@@ -1180,7 +1192,7 @@ where
         metadata_store_client: MetadataStoreClient,
         partition_id: PartitionId,
         node_id: GenerationalNodeId,
-    ) -> Result<LeaderEpoch, ReadModifyWriteError> {
+    ) -> Result<LeadershipInfo, ReadModifyWriteError> {
         let epoch: EpochMetadata = metadata_store_client
             .read_modify_write(partition_processor_epoch_key(partition_id), |epoch| {
                 let next_epoch = epoch
@@ -1190,7 +1202,12 @@ where
                 Ok(next_epoch)
             })
             .await?;
-        Ok(epoch.epoch())
+
+        Ok(LeadershipInfo {
+            leader_epoch: epoch.epoch(),
+            current_config: epoch.current().clone(),
+            next_config: epoch.next().cloned(),
+        })
     }
 
     fn handle_create_snapshot_request(&mut self, request: Incoming<Rpc<CreateSnapshotRequest>>) {
@@ -1452,7 +1469,7 @@ enum EventKind {
     Stopped(Result<(), ProcessorError>),
     NewLeaderEpoch {
         leader_epoch_token: LeaderEpochToken,
-        result: anyhow::Result<LeaderEpoch>,
+        result: anyhow::Result<LeadershipInfo>,
     },
     NewTargetTail {
         tail: Option<Lsn>,

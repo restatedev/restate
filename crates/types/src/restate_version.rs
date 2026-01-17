@@ -162,6 +162,13 @@ impl SemanticRestateVersion {
     pub fn is_equal_or_newer_than(&self, other: &Self) -> bool {
         self.cmp_precedence(other) != std::cmp::Ordering::Less
     }
+
+    /// True if this version is newer than the other version
+    ///
+    /// note that a released version is considered newer than the equivalent dev version
+    pub fn is_newer_than(&self, other: &Self) -> bool {
+        self.cmp_precedence(other) == std::cmp::Ordering::Greater
+    }
 }
 
 impl std::fmt::Display for SemanticRestateVersion {

@@ -391,10 +391,12 @@ impl LeaderState {
                         .await?;
                 }
                 ActionEffect::UpsertSchema(schema) => {
+                    // Check if the version is greater than `1.6.x` to enable for v1.7.0-dev and newer versions
+                    // Avoid using ::parse("v1.7.0-dev") since it's not a const function.
                     const GATE_VERSION: SemanticRestateVersion =
-                        SemanticRestateVersion::new(1, 7, 0);
+                        SemanticRestateVersion::new(1, 6, u64::MAX);
 
-                    if SemanticRestateVersion::current().is_equal_or_newer_than(&GATE_VERSION) {
+                    if SemanticRestateVersion::current().is_newer_than(&GATE_VERSION) {
                         self.self_proposer
                             .propose(
                                 *self.partition_key_range.start(),

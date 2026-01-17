@@ -12,13 +12,14 @@ use std::ops::RangeInclusive;
 
 use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
 use restate_types::logs::{Keys, Lsn};
+use restate_types::partitions::PartitionConfiguration;
 use restate_types::schema::Schema;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SemanticRestateVersion};
 
 /// Announcing a new leader. This message can be written by any component to make the specified
 /// partition processor the leader.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnnounceLeader {
     /// Sender of the announce leader message.
@@ -28,6 +29,16 @@ pub struct AnnounceLeader {
     pub node_id: GenerationalNodeId,
     pub leader_epoch: LeaderEpoch,
     pub partition_key_range: RangeInclusive<PartitionKey>,
+    /// Current partition configuration at the time of the announcement.
+    /// This field is optional for backward compatibility with older versions.
+    /// *Since v1.6*
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub current_config: Option<PartitionConfiguration>,
+    /// Next partition configuration (if a reconfiguration is in progress).
+    /// This field is optional for backward compatibility with older versions.
+    /// *Since v1.6*
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub next_config: Option<PartitionConfiguration>,
 }
 
 /// A version barrier to fence off state machine changes that require a certain minimum
