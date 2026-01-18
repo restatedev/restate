@@ -256,13 +256,18 @@ fn write_new_cluster_marker(
     .map_err(ClusterValidationError::RenameFile)?;
 
     // make sure the rename operation is persisted to disk by flushing the parent directory
-    let parent = cluster_marker_filepath
-        .parent()
-        .expect("cluster marker file to be not the root");
-    let parent_dir = File::open(parent).expect("to open parent directory");
-    parent_dir
-        .sync_all()
-        .map_err(ClusterValidationError::SyncFile)?;
+    // Note: On Windows, you cannot open a directory as a file to sync it, so we skip this step.
+    // Windows filesystem semantics handle rename durability differently.
+    #[cfg(unix)]
+    {
+        let parent = cluster_marker_filepath
+            .parent()
+            .expect("cluster marker file to be not the root");
+        let parent_dir = File::open(parent).expect("to open parent directory");
+        parent_dir
+            .sync_all()
+            .map_err(ClusterValidationError::SyncFile)?;
+    }
     Ok(())
 }
 

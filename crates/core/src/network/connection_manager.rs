@@ -428,11 +428,17 @@ impl ConnectionManager {
         use crate::network::{MockPeerConnection, PassthroughConnector};
 
         let transport = PassthroughConnector(self.clone());
+        // Use a platform-appropriate fake address for testing
+        #[cfg(unix)]
+        let fake_address =
+            restate_types::net::AdvertisedAddress::Uds("/tmp/fake".into());
+        #[cfg(windows)]
+        let fake_address =
+            restate_types::net::AdvertisedAddress::Http("http://127.0.0.1:19999".parse().unwrap());
+
         let (conn, task_id) = Connection::connect_inner_with_node_id(
             Some(node_id),
-            Destination::Address(restate_types::net::AdvertisedAddress::Uds(
-                "/tmp/fake".into(),
-            )),
+            Destination::Address(fake_address),
             swimlane,
             transport,
             direction,

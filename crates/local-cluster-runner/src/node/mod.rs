@@ -71,11 +71,24 @@ pub struct Node {
     #[builder(mutators(
             #[mutator(requires = [base_dir])]
             pub fn with_node_socket(self) {
-                let node_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("node.sock");
-                let tokio_console_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("tokio_console.sock");
-                self.base_config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
-                self.base_config.common.tokio_console_bind_address = Some(BindAddress::Uds(tokio_console_socket));
-                self.base_config.common.advertised_address = AdvertisedAddress::Uds(node_socket);
+                // On Unix, use Unix domain sockets
+                #[cfg(unix)]
+                {
+                    let node_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("node.sock");
+                    let tokio_console_socket: PathBuf = PathBuf::from(self.base_config.node_name()).join("tokio_console.sock");
+                    self.base_config.common.bind_address = Some(BindAddress::Uds(node_socket.clone()));
+                    self.base_config.common.tokio_console_bind_address = Some(BindAddress::Uds(tokio_console_socket));
+                    self.base_config.common.advertised_address = AdvertisedAddress::Uds(node_socket);
+                }
+                // On Windows, use random TCP ports instead
+                #[cfg(windows)]
+                {
+                    let node_addr = random_socket_address().expect("to find a random port for node");
+                    let console_addr = random_socket_address().expect("to find a random port for console");
+                    self.base_config.common.bind_address = Some(BindAddress::Socket(node_addr));
+                    self.base_config.common.tokio_console_bind_address = Some(BindAddress::Socket(console_addr));
+                    self.base_config.common.advertised_address = format!("http://{}", node_addr).parse().expect("valid http address");
+                }
             }
 
             pub fn with_random_ports(self) {
@@ -342,8 +355,14 @@ impl Node {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        .process_group(0) // avoid terminal control C being propagated
         .args(args);
+
+        // On Unix, set process group to avoid terminal Ctrl+C being propagated
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
 
         let mut child = cmd.spawn().map_err(NodeStartError::SpawnError)?;
         let pid = child.id().expect("child to have a pid");
@@ -504,7 +523,9 @@ impl TryInto<OsString> for BinarySource {
                     })
                     .ok_or(BinarySourceError::NotACargoRun)?;
 
-                let bin = test_bin_dir.join("restate-server");
+                // Use EXE_SUFFIX for cross-platform compatibility (.exe on Windows, empty on Unix)
+                let bin_name = format!("restate-server{}", std::env::consts::EXE_SUFFIX);
+                let bin = test_bin_dir.join(bin_name);
                 if !bin.exists() {
                     return Err(BinarySourceError::NotACargoRun);
                 }
@@ -522,7 +543,9 @@ impl TryInto<OsString> for BinarySource {
                     })
                     .ok_or(BinarySourceError::NotACargoTest)?;
 
-                let bin = test_bin_dir.join("restate-server");
+                // Use EXE_SUFFIX for cross-platform compatibility (.exe on Windows, empty on Unix)
+                let bin_name = format!("restate-server{}", std::env::consts::EXE_SUFFIX);
+                let bin = test_bin_dir.join(bin_name);
                 if !bin.exists() {
                     return Err(BinarySourceError::NotACargoTest);
                 }
@@ -579,19 +602,32 @@ impl StartedNode {
             StartedNodeStatus::Exited(status) => Ok(status),
             StartedNodeStatus::Failed(kind) => Err(kind.into()),
             StartedNodeStatus::Running { pid, .. } => {
-                info!("Sending SIGKILL to node {} (pid {})", self.node_name(), pid);
-                match nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
-                    nix::sys::signal::SIGKILL,
-                ) {
-                    Ok(()) => (&mut self.status).await,
-                    Err(errno) => match errno {
-                        nix::errno::Errno::ESRCH => {
-                            self.status = StartedNodeStatus::Exited(ExitStatus::default());
-                            Ok(ExitStatus::default())
-                        } // ignore "no such process"
-                        _ => Err(io::Error::from_raw_os_error(errno as i32)),
-                    },
+                info!("Killing node {} (pid {})", self.node_name(), pid);
+
+                #[cfg(unix)]
+                {
+                    match nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
+                        nix::sys::signal::SIGKILL,
+                    ) {
+                        Ok(()) => (&mut self.status).await,
+                        Err(errno) => match errno {
+                            nix::errno::Errno::ESRCH => {
+                                self.status = StartedNodeStatus::Exited(ExitStatus::default());
+                                Ok(ExitStatus::default())
+                            } // ignore "no such process"
+                            _ => Err(io::Error::from_raw_os_error(errno as i32)),
+                        },
+                    }
+                }
+
+                #[cfg(windows)]
+                {
+                    // On Windows, use taskkill /F for forceful termination
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/PID", &pid.to_string()])
+                        .output();
+                    (&mut self.status).await
                 }
             }
         }
@@ -603,21 +639,34 @@ impl StartedNode {
             StartedNodeStatus::Exited(_) => Ok(()),
             StartedNodeStatus::Failed(kind) => Err(kind.into()),
             StartedNodeStatus::Running { pid, .. } => {
-                info!("Sending SIGTERM to node {} (pid {})", self.node_name(), pid);
-                match nix::sys::signal::kill(
-                    nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
-                    nix::sys::signal::SIGTERM,
-                ) {
-                    Err(nix::errno::Errno::ESRCH) => {
-                        warn!(
-                            "Node {} server process (pid {}) did not exist when sending SIGTERM",
-                            self.node_name(),
-                            pid
-                        );
-                        Ok(())
+                info!("Terminating node {} (pid {})", self.node_name(), pid);
+
+                #[cfg(unix)]
+                {
+                    match nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
+                        nix::sys::signal::SIGTERM,
+                    ) {
+                        Err(nix::errno::Errno::ESRCH) => {
+                            warn!(
+                                "Node {} server process (pid {}) did not exist when sending SIGTERM",
+                                self.node_name(),
+                                pid
+                            );
+                            Ok(())
+                        }
+                        Err(errno) => Err(io::Error::from_raw_os_error(errno as i32)),
+                        _ => Ok(()),
                     }
-                    Err(errno) => Err(io::Error::from_raw_os_error(errno as i32)),
-                    _ => Ok(()),
+                }
+
+                #[cfg(windows)]
+                {
+                    // On Windows, use taskkill without /F for graceful termination
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/PID", &pid.to_string()])
+                        .output();
+                    Ok(())
                 }
             }
         }
@@ -956,17 +1005,37 @@ impl Drop for StartedNode {
                 self.config().node_name(),
                 pid,
             );
-            match nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
-                nix::sys::signal::SIGKILL,
-            ) {
-                Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-                err => error!(
-                    "Failed to send SIGKILL to running node {} (pid {}): {:?}",
-                    self.config().node_name(),
-                    pid,
-                    err,
-                ),
+
+            #[cfg(unix)]
+            {
+                match nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid.try_into().expect("pid_t = i32")),
+                    nix::sys::signal::SIGKILL,
+                ) {
+                    Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
+                    err => error!(
+                        "Failed to kill running node {} (pid {}): {:?}",
+                        self.config().node_name(),
+                        pid,
+                        err,
+                    ),
+                }
+            }
+
+            #[cfg(windows)]
+            {
+                // On Windows, use taskkill /F for forceful termination
+                if let Err(err) = std::process::Command::new("taskkill")
+                    .args(["/F", "/PID", &pid.to_string()])
+                    .output()
+                {
+                    error!(
+                        "Failed to kill running node {} (pid {}): {:?}",
+                        self.config().node_name(),
+                        pid,
+                        err,
+                    );
+                }
             }
         }
     }

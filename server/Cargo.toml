@@ -54,7 +54,6 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 octocrab = { version = "0.44.0", features = ["stream"] }
 regex = "1.10.4"
-rlimit = { workspace = true }
 rustls = { workspace = true, features = ["aws-lc-rs"] }
 schemars = { workspace = true, optional = true }
 tokio = { workspace = true }
@@ -94,6 +93,9 @@ url = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rlimit = { workspace = true }
 
 [build-dependencies]
 vergen = { version = "8.0.0", default-features = false, features = [

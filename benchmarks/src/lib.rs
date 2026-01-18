@@ -15,6 +15,7 @@ use anyhow::anyhow;
 use futures_util::{TryFutureExt, future};
 use http::Uri;
 use http::header::CONTENT_TYPE;
+#[cfg(unix)]
 use pprof::flamegraph::Options;
 use restate_core::{TaskCenter, TaskCenterBuilder, TaskKind, cancellation_token, task_center};
 use restate_node::Node;
@@ -94,6 +95,7 @@ pub fn discover_deployment(current_thread_rt: &Runtime, address: Uri) {
 }
 
 pub fn spawn_restate(config: Configuration) -> task_center::Handle {
+    #[cfg(unix)]
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }
@@ -146,6 +148,7 @@ pub fn spawn_mock_service_endpoint(task_center_handle: &task_center::Handle) {
     });
 }
 
+#[cfg(unix)]
 pub fn flamegraph_options<'a>() -> Options<'a> {
     #[allow(unused_mut)]
     let mut options = Options::default();

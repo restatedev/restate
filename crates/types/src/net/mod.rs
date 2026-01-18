@@ -57,14 +57,20 @@ impl FromStr for AdvertisedAddress {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim() {
             "" => Err(anyhow::anyhow!("Advertised address cannot be empty")),
+            #[cfg(unix)]
             address if address.starts_with("unix:") => {
                 parse_uds(&address[5..]).map(AdvertisedAddress::Uds)
+            }
+            #[cfg(windows)]
+            address if address.starts_with("unix:") => {
+                Err(anyhow::anyhow!("Unix domain sockets are not supported on Windows. Use HTTP addresses instead."))
             }
             address => parse_http(address),
         }
     }
 }
 
+#[cfg(unix)]
 fn parse_uds(s: &str) -> Result<PathBuf, Error> {
     s.parse::<PathBuf>()
         .with_context(|| format!("Failed to parse Unix domain socket path: '{s}'"))
@@ -171,7 +177,10 @@ impl FromStr for BindAddress {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.strip_prefix("unix:") {
+            #[cfg(unix)]
             Some(path) => parse_uds(path).map(BindAddress::Uds),
+            #[cfg(windows)]
+            Some(_) => Err(anyhow::anyhow!("Unix domain sockets are not supported on Windows. Use socket addresses instead.")),
             None => s
                 .parse::<SocketAddr>()
                 .map(BindAddress::Socket)

@@ -199,7 +199,6 @@ reqwest = { version = "0.12.5", default-features = false, features = [
 rlimit = { version = "0.10.1" }
 rocksdb = { version = "0.43.0", package = "rust-rocksdb", features = [
     "multi-threaded-cf",
-    "jemalloc",
 ], git = "https://github.com/restatedev/rust-rocksdb", rev = "de8911652d398e9bfbb6bbc42a7b4f7296f6d101" }
 rstest = "0.24.0"
 rustls = { version = "0.23.26", default-features = false, features = ["ring"] }

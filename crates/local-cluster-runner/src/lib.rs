@@ -17,7 +17,6 @@ use std::{
 };
 
 use rand::Rng;
-use tokio::signal::unix::SignalKind;
 use tracing::info;
 
 pub mod cluster;
@@ -31,7 +30,10 @@ const DEFAULTS_PORTS_POOL: &str = "restate_test_ports";
 const MAX_ALLOCATION_ATTEMPTS: u32 = 20;
 const RESTATE_TEST_PORTS_POOL_DIR: &str = "RESTATE_TEST_PORTS_POOL";
 
+#[cfg(unix)]
 pub fn shutdown() -> impl Future<Output = &'static str> {
+    use tokio::signal::unix::SignalKind;
+
     let mut interrupt = tokio::signal::unix::signal(SignalKind::interrupt())
         .expect("failed to register signal handler");
     let mut terminate = tokio::signal::unix::signal(SignalKind::terminate())
@@ -45,6 +47,17 @@ pub fn shutdown() -> impl Future<Output = &'static str> {
 
         info!(%signal, "Received signal, starting cluster shutdown.");
         signal
+    }
+}
+
+#[cfg(windows)]
+pub fn shutdown() -> impl Future<Output = &'static str> {
+    async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to listen for ctrl-c");
+        info!("Received Ctrl+C, starting cluster shutdown.");
+        "CTRL_C"
     }
 }
 

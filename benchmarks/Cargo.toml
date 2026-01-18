@@ -9,7 +9,6 @@ publish = false
 
 [features]
 default = ["no-trace-logging"]
-frame-pointer = ["pprof/frame-pointer"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 
 [dependencies]
@@ -25,9 +24,7 @@ restate-types = { workspace = true, features = ["clap"] }
 anyhow = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
-pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
 reqwest = { workspace = true }
-rlimit = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tracing = { workspace = true }
@@ -38,6 +35,10 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio"] }
 rand = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
+rlimit = { workspace = true }
 
 [build-dependencies]
 

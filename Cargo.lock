@@ -8032,7 +8032,6 @@ dependencies = [
  "object_store",
  "opentelemetry_sdk",
  "phf_shared",
- "pprof",
  "proc-macro2",
  "prost",
  "prost-types",

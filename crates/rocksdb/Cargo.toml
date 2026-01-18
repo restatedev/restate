@@ -37,7 +37,8 @@ tokio-util = { workspace = true, features = ["rt"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-# rocksdb = { workspace = true } brings this in implicitly, but we want to ensure it uses the workspace features
+# Enable jemalloc for rocksdb on Unix (not available on Windows MSVC)
+rocksdb = { workspace = true, features = ["jemalloc"] }
 tikv-jemalloc-sys = { workspace = true }
 
 [dev-dependencies]

@@ -16,6 +16,7 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use http::Uri;
 use http::header::CONTENT_TYPE;
+#[cfg(unix)]
 use pprof::criterion::{Output, PProfProfiler};
 use rand::distr::{Alphanumeric, SampleString};
 use restate_benchmarks::{BenchmarkSettings, parse_benchmark_settings};
@@ -114,9 +115,18 @@ async fn send_parallel_counter_requests(
     }
 }
 
+#[cfg(unix)]
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(997, Output::Flamegraph(Some(restate_benchmarks::flamegraph_options()))));
     targets = throughput_benchmark
 );
+
+#[cfg(not(unix))]
+criterion_group!(
+    name = benches;
+    config = Criterion::default();
+    targets = throughput_benchmark
+);
+
 criterion_main!(benches);

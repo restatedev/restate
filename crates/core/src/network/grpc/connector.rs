@@ -9,12 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use futures::Stream;
+#[cfg(unix)]
 use http::Uri;
+#[cfg(unix)]
 use hyper_util::rt::TokioIo;
+#[cfg(unix)]
 use tokio::io;
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio_stream::StreamExt;
 use tonic::codec::CompressionEncoding;
+#[cfg(unix)]
 use tonic::transport::Endpoint;
 use tonic::transport::channel::Channel;
 use tracing::debug;
@@ -51,6 +56,14 @@ impl TransportConnect for GrpcConnector {
             Destination::Address(address) => address.clone(),
         };
 
+        // Check for unsupported address types on Windows
+        #[cfg(windows)]
+        if matches!(address, AdvertisedAddress::Uds(_)) {
+            return Err(ConnectError::Transport(
+                "Unix domain sockets are not supported on Windows".to_string(),
+            ));
+        }
+
         debug!("Connecting to {} at {}", destination, address);
         let channel = create_channel(address, swimlane, &Configuration::pinned().networking);
 
@@ -80,10 +93,19 @@ fn create_channel(
     _swimlane: Swimlane,
     options: &NetworkingOptions,
 ) -> Channel {
+    #[cfg(unix)]
     let endpoint = match &address {
         AdvertisedAddress::Uds(_) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1").expect("/ should be a valid Uri")
+        }
+        AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
+    };
+
+    #[cfg(windows)]
+    let endpoint = match &address {
+        AdvertisedAddress::Uds(_) => {
+            unreachable!("UDS addresses should be rejected before reaching create_channel on Windows")
         }
         AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
     };
@@ -104,6 +126,7 @@ fn create_channel(
         // this true by default, but this is to guard against any change in defaults
         .tcp_nodelay(true);
 
+    #[cfg(unix)]
     match address {
         AdvertisedAddress::Uds(uds_path) => {
             endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
@@ -112,6 +135,14 @@ fn create_channel(
                     Ok::<_, io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
                 }
             }))
+        }
+        AdvertisedAddress::Http(_) => endpoint.connect_lazy()
+    }
+
+    #[cfg(windows)]
+    match address {
+        AdvertisedAddress::Uds(_) => {
+            unreachable!("UDS addresses should be rejected before reaching create_channel on Windows")
         }
         AdvertisedAddress::Http(_) => endpoint.connect_lazy()
     }

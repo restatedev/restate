@@ -15,12 +15,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(unix)]
 use http::Uri;
 use hyper::body::{Body, Incoming};
 use hyper_util::rt::TokioIo;
 use hyper_util::server::graceful::GracefulShutdown;
 use tokio::io;
-use tokio::net::{TcpListener, UnixListener, UnixStream};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tokio_util::net::Listener;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
@@ -36,6 +39,7 @@ pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Si
     address: AdvertisedAddress,
     options: &T,
 ) -> Channel {
+    #[cfg(unix)]
     let endpoint = match &address {
         AdvertisedAddress::Uds(_) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
@@ -44,8 +48,17 @@ pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Si
         AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()),
     };
 
+    #[cfg(windows)]
+    let endpoint = match &address {
+        AdvertisedAddress::Uds(_) => {
+            unreachable!("UDS addresses should not be created on Windows - check address parsing")
+        }
+        AdvertisedAddress::Http(uri) => Channel::builder(uri.clone()),
+    };
+
     let endpoint = apply_options(endpoint, options);
 
+    #[cfg(unix)]
     match address {
         AdvertisedAddress::Uds(uds_path) => {
             endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
@@ -54,6 +67,14 @@ pub fn create_tonic_channel<T: CommonClientConnectionOptions + Send + Sync + ?Si
                     Ok::<_, io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
                 }
             }))
+        }
+        AdvertisedAddress::Http(_) => endpoint.connect_lazy()
+    }
+
+    #[cfg(windows)]
+    match address {
+        AdvertisedAddress::Uds(_) => {
+            unreachable!("UDS addresses should not be created on Windows - check address parsing")
         }
         AdvertisedAddress::Http(_) => endpoint.connect_lazy()
     }
@@ -123,6 +144,7 @@ where
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     match bind_address {
+        #[cfg(unix)]
         BindAddress::Uds(uds_path) => {
             if uds_path.exists() {
                 // if this fails, the following bind will fail, so its safe to ignore this error
@@ -139,6 +161,13 @@ where
             on_bind();
 
             run_listener_loop(unix_listener, service, server_name).await?;
+        }
+        #[cfg(windows)]
+        BindAddress::Uds(uds_path) => {
+            return Err(Error::UdsBinding {
+                uds_path: uds_path.clone(),
+                source: io::Error::new(io::ErrorKind::Unsupported, "Unix domain sockets are not supported on Windows"),
+            });
         }
         BindAddress::Socket(socket_addr) => {
             let tcp_listener =
