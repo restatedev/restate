@@ -368,12 +368,29 @@ mod tests {
         Ok(())
     }
 
+    /// Returns a path that won't contain any config files (platform-appropriate)
+    fn empty_config_path() -> String {
+        // Use a non-existent path that works on both Unix and Windows
+        #[cfg(unix)]
+        {
+            "/dev/null".to_string()
+        }
+        #[cfg(windows)]
+        {
+            // Use a temp directory that won't have config files
+            std::env::temp_dir()
+                .join("restate-test-empty-config")
+                .display()
+                .to_string()
+        }
+    }
+
     #[test]
     fn test_base_url_override() -> Result<()> {
         // By default, we use the const value defined in this file.
         let mut os_env = OsEnv::default();
         // avoid using any files from the test runner
-        os_env.insert(CLI_CONFIG_HOME_ENV, "/dev/null".into());
+        os_env.insert(CLI_CONFIG_HOME_ENV, empty_config_path());
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default())?;
         assert_eq!(
             cli_env
@@ -448,7 +465,7 @@ mod tests {
     fn test_bearer_token_applied() {
         let mut os_env = OsEnv::default();
         // avoid using any files from the test runner
-        os_env.insert(CLI_CONFIG_HOME_ENV, "/dev/null".into());
+        os_env.insert(CLI_CONFIG_HOME_ENV, empty_config_path());
         let cli_env = CliEnv::load_from_env(&os_env, &GlobalOpts::default()).unwrap();
         assert_eq!(cli_env.config.bearer_token, None);
 

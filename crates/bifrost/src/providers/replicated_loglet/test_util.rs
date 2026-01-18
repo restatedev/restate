@@ -13,6 +13,19 @@ use restate_types::nodes_config::{
 };
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
+/// Generate a test address that works on the current platform
+fn test_address(id: PlainNodeId) -> String {
+    #[cfg(unix)]
+    {
+        format!("unix:/tmp/my_socket-{id}")
+    }
+    #[cfg(windows)]
+    {
+        // Use HTTP addresses on Windows since UDS is not supported
+        format!("http://127.0.0.1:{}", 10000 + u32::from(id))
+    }
+}
+
 pub fn generate_logserver_node(
     id: impl Into<PlainNodeId>,
     storage_state: StorageState,
@@ -22,7 +35,7 @@ pub fn generate_logserver_node(
         .name(format!("node-{id}"))
         .current_generation(GenerationalNodeId::new(id.into(), 1))
         .location(format!("region-{id}").parse().unwrap())
-        .address(format!("unix:/tmp/my_socket-{id}").parse().unwrap())
+        .address(test_address(id).parse().unwrap())
         .roles(Role::LogServer.into())
         .log_server_config(LogServerConfig { storage_state })
         .build()

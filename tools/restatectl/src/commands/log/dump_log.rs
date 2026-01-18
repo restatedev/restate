@@ -64,6 +64,7 @@ where
     };
 
     restate_types::config::set_current_config(config);
+    #[cfg(unix)]
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         warn!("Failed to increase the number of open file descriptors limit.");
     }

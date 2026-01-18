@@ -56,6 +56,7 @@ fn main() -> anyhow::Result<()> {
         reset_base_temp_dir()
     };
 
+    #[cfg(unix)]
     if rlimit::increase_nofile_limit(u64::MAX).is_err() {
         eprintln!("WARN: Failed to increase the number of open file descriptors limit.");
     }

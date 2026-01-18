@@ -69,7 +69,6 @@ bytestring = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
 paste = { workspace = true }
-pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 prost = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
@@ -77,6 +76,9 @@ tracing-test = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
+
+[target.'cfg(unix)'.dev-dependencies]
+pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 
 [[bench]]
 name = "replicated_loglet_serde"

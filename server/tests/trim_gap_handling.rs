@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// This test uses Unix domain sockets which are not available on Windows
+#![cfg(unix)]
+
 use std::net::SocketAddr;
 use std::time::Duration;
 

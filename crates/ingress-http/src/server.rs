@@ -18,7 +18,6 @@ use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_util::either::Either;
 use tower::{ServiceBuilder, ServiceExt};
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::cors::CorsLayer;
@@ -191,23 +190,8 @@ where
             tokio::select! {
                 res = listeners.accept() => {
                     let (stream, peer_addr) = res?;
-                    match stream {
-                        Either::Left(tcp_stream) => {
-                            Self::handle_connection(
-                                tcp_stream,
-                                peer_addr,
-                                service.clone()
-                            )?;
-                        }
-                        Either::Right(unix_stream) => {
-                            Self::handle_connection(
-                                unix_stream,
-                                peer_addr,
-                                service.clone()
-                            )?;
-                        }
-
-                    }
+                    // AcceptedStream implements AsyncRead + AsyncWrite
+                    Self::handle_connection(stream, peer_addr, service.clone())?;
                 }
                   _ = &mut shutdown => {
                     return Ok(());
@@ -299,6 +283,7 @@ mod tests {
     use hyper_util::rt::TokioExecutor;
     use restate_core::TestCoreEnv;
     use restate_core::{TaskCenter, TaskKind};
+    #[cfg(unix)]
     use restate_hyper_uds::UnixSocketConnector;
     use restate_test_util::assert_eq;
     use restate_types::health::Health;
@@ -321,9 +306,10 @@ mod tests {
         pub greeting: String,
     }
 
+    #[cfg(unix)]
     #[restate_core::test]
     #[traced_test]
-    async fn test_http_post() {
+    async fn test_http_post_unix() {
         let mut mock_dispatcher = MockRequestDispatcher::default();
         mock_dispatcher
             .expect_call()
@@ -356,7 +342,7 @@ mod tests {
 
         let socket_dir = tempfile::tempdir().unwrap();
         let socket_path = socket_dir.path().join("ingress.sock");
-        bootstrap_test(
+        let _ = bootstrap_test(
             Listeners::new_unix_listener(socket_path.clone()).unwrap(),
             mock_dispatcher,
         )
@@ -394,9 +380,11 @@ mod tests {
     async fn bootstrap_test(
         listeners: Listeners<HttpIngressPort>,
         mock_request_dispatcher: MockRequestDispatcher,
-    ) {
+    ) -> Option<std::net::SocketAddr> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let health = Health::default();
+
+        let tcp_addr = listeners.tcp_address();
 
         // Create the ingress and start it
         let ingress = HyperServerIngress::new(
@@ -407,5 +395,81 @@ mod tests {
             health.ingress_status(),
         );
         TaskCenter::spawn(TaskKind::SystemService, "ingress", ingress.run()).unwrap();
+
+        tcp_addr
+    }
+
+    fn mock_dispatcher_for_greet_test() -> MockRequestDispatcher {
+        let mut mock_dispatcher = MockRequestDispatcher::default();
+        mock_dispatcher
+            .expect_call()
+            .once()
+            .return_once(|invocation_request| {
+                assert_eq!(
+                    invocation_request.header.target.service_name(),
+                    "greeter.Greeter"
+                );
+                assert_eq!(invocation_request.header.target.handler_name(), "greet");
+
+                let greeting_req: GreetingRequest =
+                    serde_json::from_slice(&invocation_request.body).unwrap();
+                assert_eq!(&greeting_req.person, "Francesco");
+
+                Box::pin(ready(Ok(InvocationOutput {
+                    request_id: Default::default(),
+                    invocation_id: Some(invocation_request.invocation_id()),
+                    completion_expiry_time: None,
+                    response: InvocationOutputResponse::Success(
+                        InvocationTarget::service("greeter.Greeter", "greet"),
+                        serde_json::to_vec(&GreetingResponse {
+                            greeting: "Igal".to_string(),
+                        })
+                        .unwrap()
+                        .into(),
+                    ),
+                })))
+            });
+        mock_dispatcher
+    }
+
+    #[restate_core::test]
+    #[traced_test]
+    async fn test_http_post() {
+        let mock_dispatcher = mock_dispatcher_for_greet_test();
+
+        let addr = bootstrap_test(
+            Listeners::new_tcp_listener("127.0.0.1:0".parse().unwrap()).unwrap(),
+            mock_dispatcher,
+        )
+        .await
+        .expect("TCP listener should have an address");
+
+        // Send the request
+        let client = Client::builder(TokioExecutor::new())
+            .http2_only(true)
+            .build_http::<Full<Bytes>>();
+
+        let http_response = client
+            .request(
+                http::Request::post(format!("http://{}/greeter.Greeter/greet", addr))
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Full::new(
+                        serde_json::to_vec(&GreetingRequest {
+                            person: "Francesco".to_string(),
+                        })
+                        .unwrap()
+                        .into(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Read the http_response_future
+        assert_eq!(http_response.status(), http::StatusCode::OK);
+        let (_, response_body) = http_response.into_parts();
+        let response_bytes = response_body.collect().await.unwrap().to_bytes();
+        let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
+        restate_test_util::assert_eq!(response_value.greeting, "Igal");
     }
 }

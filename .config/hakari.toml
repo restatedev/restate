@@ -23,4 +23,7 @@ workspace-members = ["service-protocol-wireshark-dissector"]
 third-party = [
     # excluded to avoid pulling in feature="test-util" by default for non-test builds
     { name = "tokio" },
+    # excluded for Windows compatibility - rdkafka requires OpenSSL which doesn't build easily on Windows
+    { name = "rdkafka" },
+    { name = "rdkafka-sys" },
 ]
