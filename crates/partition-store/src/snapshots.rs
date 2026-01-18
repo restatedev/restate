@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod leases;
 mod metadata;
 mod repository;
 mod snapshot_task;
@@ -17,8 +18,14 @@ use std::sync::Arc;
 
 use crate::{PartitionDb, PartitionStore, SnapshotError, SnapshotErrorKind};
 
+#[cfg(any(test, feature = "test-util"))]
+pub use self::leases::NoOpLeaseManager;
+pub use self::leases::{
+    LEASE_DURATION_MS, LEASE_RENEWAL_INTERVAL_MS, LEASE_SAFETY_MARGIN_MS, LeaseError,
+    SnapshotLeaseGuard, SnapshotLeaseManager, SnapshotLeaseValue,
+};
 pub use self::metadata::*;
-pub use self::repository::{PartitionSnapshotStatus, SnapshotRepository};
+pub use self::repository::{LeaseProvider, PartitionSnapshotStatus, SnapshotRepository};
 pub use self::snapshot_task::*;
 
 use tokio::sync::Semaphore;
@@ -36,7 +43,30 @@ pub struct Snapshots {
 
 impl Snapshots {
     pub async fn create(config: &Configuration) -> anyhow::Result<Self> {
-        let repository = SnapshotRepository::new_from_config(
+        let repository = SnapshotRepository::new_read_only_from_config(
+            &config.worker.snapshots,
+            config.worker.storage.snapshots_staging_dir(),
+        )
+        .await?;
+
+        let concurrency_limit = Arc::new(Semaphore::new(
+            config
+                .worker
+                .storage
+                .rocksdb
+                .rocksdb_max_background_jobs()
+                .get() as usize,
+        ));
+
+        Ok(Self {
+            repository,
+            concurrency_limit,
+        })
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn create_with_stub_leases(config: &Configuration) -> anyhow::Result<Self> {
+        let repository = SnapshotRepository::new_from_config_with_stub_leases(
             &config.worker.snapshots,
             config.worker.storage.snapshots_staging_dir(),
         )
