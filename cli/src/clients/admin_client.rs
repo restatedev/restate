@@ -150,9 +150,14 @@ impl AdminClient {
             .danger_accept_invalid_certs(CliContext::get().insecure_skip_tls_verify());
 
         let (raw_client, base_url) = match advertised_address.into_address()? {
+            #[cfg(unix)]
             PeerNetAddress::Uds(path_buf) => {
                 let client = builder.unix_socket(path_buf).build()?;
                 (client, "http://localhost/".parse().unwrap())
+            }
+            #[cfg(not(unix))]
+            PeerNetAddress::Uds(_) => {
+                anyhow::bail!("Unix domain sockets are not supported on Windows");
             }
             PeerNetAddress::Http(uri) => {
                 let client = builder.build()?;

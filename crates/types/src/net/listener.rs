@@ -12,19 +12,75 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
+#[cfg(unix)]
 use futures::future::OptionFuture;
 use itertools::Itertools;
 use listenfd::ListenFd;
-use tokio::io;
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
-use tokio_util::either::Either;
+use tokio::io::{self, AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, info};
 
 use crate::config::{Configuration, ListenerOptions};
 use crate::nodes_config::Role;
 
 use super::address::{AdvertisedAddress, BindAddress, ListenerPort, SocketAddress};
+
+/// A stream accepted from a listener, abstracting over TCP and Unix sockets.
+/// On Windows, only TCP is supported.
+pub enum AcceptedStream {
+    Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(UnixStream),
+}
+
+impl AsyncRead for AcceptedStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            AcceptedStream::Tcp(s) => Pin::new(s).poll_read(cx, buf),
+            #[cfg(unix)]
+            AcceptedStream::Unix(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for AcceptedStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.get_mut() {
+            AcceptedStream::Tcp(s) => Pin::new(s).poll_write(cx, buf),
+            #[cfg(unix)]
+            AcceptedStream::Unix(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            AcceptedStream::Tcp(s) => Pin::new(s).poll_flush(cx),
+            #[cfg(unix)]
+            AcceptedStream::Unix(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.get_mut() {
+            AcceptedStream::Tcp(s) => Pin::new(s).poll_shutdown(cx),
+            #[cfg(unix)]
+            AcceptedStream::Unix(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum ListenError {
@@ -50,6 +106,7 @@ pub enum ListenError {
 }
 
 pub struct AddressBook {
+    #[allow(dead_code)] // Used only on Unix for UDS paths
     data_dir: PathBuf,
     bound_addr: HashMap<std::any::TypeId, AddressesErased, BuildHasherDefault<IdHasher>>,
     listeners: HashMap<std::any::TypeId, ListenersErased, BuildHasherDefault<IdHasher>>,
@@ -131,6 +188,7 @@ impl AddressBook {
                 self.bind_tcp(bind_address).await?;
             }
         }
+        #[cfg(unix)]
         if listener_options.listen_mode().is_uds_enabled() {
             if P::IS_ANONYMOUS_UDS_ALLOWED
                 && let Some((listener, fd)) = next_unix_listener(listenfd)?
@@ -185,6 +243,7 @@ impl AddressBook {
         self.bind_tcp_listener::<P>(listener)
     }
 
+    #[cfg(unix)]
     fn bind_unix_listener<P: ListenerPort + 'static>(
         &mut self,
         listener: UnixListener,
@@ -202,6 +261,7 @@ impl AddressBook {
         Ok(())
     }
 
+    #[cfg(unix)]
     async fn bind_uds<P: ListenerPort + 'static>(
         &mut self,
         uds_path: &PathBuf,
@@ -245,6 +305,7 @@ impl AddressBook {
     }
 
     pub fn take_listeners<P: ListenerPort + 'static>(&mut self) -> Listeners<P> {
+        #[allow(unused_mut)]
         let mut listeners = self
             .listeners
             .remove(&std::any::TypeId::of::<P>())
@@ -252,6 +313,7 @@ impl AddressBook {
 
         Listeners {
             tcp_listener: listeners.tcp_listener.take(),
+            #[cfg(unix)]
             unix_listener: listeners.unix_listener.take(),
             _phantom: std::marker::PhantomData,
         }
@@ -302,6 +364,7 @@ fn next_tcp_listener(listenfd: &mut ListenFd) -> Result<Option<(TcpListener, usi
     Ok(None)
 }
 
+#[cfg(unix)]
 fn next_unix_listener(
     listenfd: &mut ListenFd,
 ) -> Result<Option<(UnixListener, usize)>, ListenError> {
@@ -322,6 +385,7 @@ pub enum ListenerSocket {
         // bind address can be acquired from the listener
         listener: TcpListener,
     },
+    #[cfg(unix)]
     #[display("unix:{}", path.display())]
     Unix {
         // bind address and listener addresses are the same
@@ -334,12 +398,14 @@ impl ListenerSocket {
     pub fn into_tcp_listener(self) -> Result<TcpListener, std::io::Error> {
         match self {
             ListenerSocket::Tcp { listener, .. } => Ok(listener),
+            #[cfg(unix)]
             ListenerSocket::Unix { .. } => Err(std::io::Error::other(
                 "cannot convert a UnixListener to a TcpListener",
             )),
         }
     }
 
+    #[cfg(unix)]
     pub fn into_unix_listener(self) -> Result<UnixListener, std::io::Error> {
         match self {
             ListenerSocket::Tcp { .. } => Err(std::io::Error::other(
@@ -354,6 +420,7 @@ impl ListenerSocket {
             ListenerSocket::Tcp { listener, .. } => {
                 SocketAddress::Socket(listener.local_addr().unwrap())
             }
+            #[cfg(unix)]
             ListenerSocket::Unix { path, .. } => SocketAddress::Uds(path.clone()),
         }
     }
@@ -368,9 +435,11 @@ struct AddressesErased {
 #[derive(Default)]
 struct ListenersErased {
     tcp_listener: Option<TcpListener>,
+    #[cfg(unix)]
     unix_listener: Option<UnixListener>,
 }
 
+#[cfg(unix)]
 impl Drop for ListenersErased {
     fn drop(&mut self) {
         if let Some(listener) = self.unix_listener.take()
@@ -402,10 +471,12 @@ impl<P: ListenerPort + 'static> Addresses<P> {
 #[derive(Default)]
 pub struct Listeners<P: ListenerPort> {
     tcp_listener: Option<TcpListener>,
+    #[cfg(unix)]
     unix_listener: Option<UnixListener>,
     _phantom: std::marker::PhantomData<P>,
 }
 
+#[cfg(unix)]
 impl<P: ListenerPort> Listeners<P> {
     pub fn new_unix_listener(uds_path: PathBuf) -> Result<Self, anyhow::Error> {
         let unix_listener = UnixListener::bind(uds_path)?;
@@ -417,6 +488,7 @@ impl<P: ListenerPort> Listeners<P> {
     }
 }
 
+#[cfg(unix)]
 impl<P: ListenerPort> Drop for Listeners<P> {
     fn drop(&mut self) {
         if let Some(listener) = self.unix_listener.take()
@@ -430,6 +502,18 @@ impl<P: ListenerPort> Drop for Listeners<P> {
 }
 
 impl<P: ListenerPort> Listeners<P> {
+    pub fn new_tcp_listener(addr: SocketAddr) -> Result<Self, std::io::Error> {
+        let tcp_listener = std::net::TcpListener::bind(addr)?;
+        tcp_listener.set_nonblocking(true)?;
+        let tcp_listener = TcpListener::from_std(tcp_listener)?;
+        Ok(Self {
+            tcp_listener: Some(tcp_listener),
+            #[cfg(unix)]
+            unix_listener: None,
+            _phantom: std::marker::PhantomData,
+        })
+    }
+
     pub fn is_valid(&self) -> bool {
         self.tcp_enabled() || self.uds_enabled()
     }
@@ -438,10 +522,17 @@ impl<P: ListenerPort> Listeners<P> {
         self.tcp_listener.is_some()
     }
 
+    #[cfg(unix)]
     pub fn uds_enabled(&self) -> bool {
         self.unix_listener.is_some()
     }
 
+    #[cfg(not(unix))]
+    pub fn uds_enabled(&self) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
     pub fn uds_address(&self) -> Option<PathBuf> {
         self.unix_listener.as_ref().map(|listener| {
             listener
@@ -453,30 +544,46 @@ impl<P: ListenerPort> Listeners<P> {
         })
     }
 
+    #[cfg(not(unix))]
+    pub fn uds_address(&self) -> Option<PathBuf> {
+        None
+    }
+
     pub fn tcp_address(&self) -> Option<SocketAddr> {
         self.tcp_listener
             .as_ref()
             .map(|listener| listener.local_addr().unwrap())
     }
 
-    pub async fn accept(
-        &mut self,
-    ) -> Result<(Either<TcpStream, UnixStream>, SocketAddress), std::io::Error> {
-        let tcp = OptionFuture::from(self.tcp_listener.as_mut().map(|t| t.accept()));
-        let uds = OptionFuture::from(self.unix_listener.as_mut().map(|t| t.accept()));
+    pub async fn accept(&mut self) -> Result<(AcceptedStream, SocketAddress), std::io::Error> {
+        #[cfg(unix)]
+        {
+            let tcp = OptionFuture::from(self.tcp_listener.as_mut().map(|t| t.accept()));
+            let uds = OptionFuture::from(self.unix_listener.as_mut().map(|t| t.accept()));
 
-        tokio::select! {
-            Some(tcp_connection) = tcp => {
-                let (tcp_stream, tcp_addr) = tcp_connection?;
-                Ok((Either::Left(tcp_stream), SocketAddress::Socket(tcp_addr)))
-            },
-            Some(unix_connection) = uds => {
-                let (unix_stream, unix_addr) = unix_connection?;
-                Ok((Either::Right(unix_stream), SocketAddress::from_path(unix_addr.as_pathname())))
+            tokio::select! {
+                Some(tcp_connection) = tcp => {
+                    let (tcp_stream, tcp_addr) = tcp_connection?;
+                    Ok((AcceptedStream::Tcp(tcp_stream), SocketAddress::Socket(tcp_addr)))
+                },
+                Some(unix_connection) = uds => {
+                    let (unix_stream, unix_addr) = unix_connection?;
+                    Ok((AcceptedStream::Unix(unix_stream), SocketAddress::from_path(unix_addr.as_pathname())))
+                }
+                else =>  {
+                    panic!("No listeners are running")
+                }
             }
-            else =>  {
-                panic!("No listeners are running")
-            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            let tcp = self
+                .tcp_listener
+                .as_mut()
+                .expect("No TCP listener configured");
+            let (tcp_stream, tcp_addr) = tcp.accept().await?;
+            Ok((AcceptedStream::Tcp(tcp_stream), SocketAddress::Socket(tcp_addr)))
         }
     }
 }

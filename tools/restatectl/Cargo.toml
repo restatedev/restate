@@ -45,7 +45,6 @@ restate-metadata-server = { workspace = true, optional = true }
 restate-rocksdb = { workspace = true, optional = true }
 restate-wal-protocol = { workspace = true, optional = true }
 
-rlimit = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 anyhow = { workspace = true }
@@ -77,6 +76,9 @@ toml = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "zstd", "gzip"] }
 tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rlimit = { workspace = true, optional = true }
 
 [build-dependencies]
 vergen = { workspace = true, default-features = false, features = [

@@ -17,6 +17,7 @@ mod metric_definitions;
 mod partition;
 mod partition_processor_manager;
 mod subscription_controller;
+#[cfg(feature = "kafka")]
 mod subscription_integration;
 
 use std::sync::Arc;
@@ -28,7 +29,9 @@ use restate_wal_protocol::Envelope;
 use tracing::info;
 
 use restate_bifrost::Bifrost;
+#[cfg(feature = "kafka")]
 use restate_core::MetadataKind;
+#[cfg(feature = "kafka")]
 use restate_core::cancellation_watcher;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
@@ -38,6 +41,7 @@ use restate_core::worker_api::ProcessorsManagerHandle;
 use restate_core::{Metadata, TaskKind};
 use restate_core::{MetadataWriter, TaskCenter};
 use restate_ingestion_client::IngestionClient;
+#[cfg(feature = "kafka")]
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_partition_store::snapshots::SnapshotRepository;
@@ -48,12 +52,15 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
+#[cfg(feature = "kafka")]
 use restate_types::Version;
+#[cfg(feature = "kafka")]
 use restate_types::Versioned;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
+#[cfg(feature = "kafka")]
 use restate_types::schema::subscriptions::SubscriptionResolver;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -62,6 +69,7 @@ use crate::partition_processor_manager::PartitionProcessorManager;
 pub use self::error::*;
 pub use self::handle::*;
 pub use crate::subscription_controller::SubscriptionController;
+#[cfg(feature = "kafka")]
 pub use crate::subscription_integration::SubscriptionControllerHandle;
 
 type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
@@ -98,7 +106,9 @@ pub enum BuildError {
 pub struct Worker<T> {
     storage_query_context: QueryContext,
     datafusion_remote_scanner: RemoteQueryScannerServer,
+    #[cfg(feature = "kafka")]
     ingress_kafka: IngressKafkaService<T>,
+    #[cfg(feature = "kafka")]
     subscription_controller_handle: SubscriptionControllerHandle,
     partition_processor_manager: PartitionProcessorManager<T>,
 }
@@ -108,6 +118,7 @@ where
     T: TransportConnect,
 {
     #[allow(clippy::too_many_arguments)]
+    #[allow(unused_variables)] // ingestion_client unused without kafka feature
     pub async fn create(
         health_status: HealthStatus<WorkerStatus>,
         replica_set_states: PartitionReplicaSetStates,
@@ -131,9 +142,11 @@ where
         let schema = metadata.updateable_schema();
 
         // ingress_kafka
+        #[cfg(feature = "kafka")]
         let ingress_kafka =
             IngressKafkaService::new(bifrost.clone(), ingestion_client.clone(), schema.clone());
 
+        #[cfg(feature = "kafka")]
         let subscription_controller_handle =
             SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
 
@@ -202,7 +215,9 @@ where
         Ok(Self {
             storage_query_context,
             datafusion_remote_scanner,
+            #[cfg(feature = "kafka")]
             ingress_kafka,
+            #[cfg(feature = "kafka")]
             subscription_controller_handle,
             partition_processor_manager,
         })
@@ -217,6 +232,7 @@ where
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
+        #[cfg(feature = "kafka")]
         TaskCenter::spawn_child(
             TaskKind::MetadataBackgroundSync,
             "subscription_controller",
@@ -231,6 +247,7 @@ where
         )?;
 
         // Kafka Ingress
+        #[cfg(feature = "kafka")]
         TaskCenter::spawn_child(
             TaskKind::SystemService,
             "kafka-ingress",
@@ -244,6 +261,7 @@ where
         Ok(())
     }
 
+    #[cfg(feature = "kafka")]
     async fn watch_subscriptions<SC>(subscription_controller: SC) -> anyhow::Result<()>
     where
         SC: SubscriptionController + Clone + Send + Sync,

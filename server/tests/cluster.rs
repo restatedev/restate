@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+// This test uses Unix domain sockets which are not available on Windows
+#![cfg(unix)]
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::num::{NonZeroU8, NonZeroUsize};
