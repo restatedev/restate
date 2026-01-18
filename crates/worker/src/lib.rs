@@ -173,7 +173,7 @@ where
             replica_set_states,
             router_builder,
             bifrost,
-            SnapshotRepository::create_if_configured(
+            SnapshotRepository::new_from_config(
                 snapshots_options,
                 config.worker.storage.snapshots_staging_dir(),
             )

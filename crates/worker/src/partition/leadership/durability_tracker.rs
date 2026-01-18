@@ -13,7 +13,6 @@ use std::task::Poll;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
-use restate_partition_store::snapshots::ArchivedLsn;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_stream::wrappers::{IntervalStream, WatchStream};
@@ -30,8 +29,8 @@ use restate_wal_protocol::control::PartitionDurability;
 
 const WARN_PERIOD: Duration = Duration::from_secs(60);
 
-/// A stream that tracks the last reported durable Lsn, replica-set durable points, and
-/// last archived lsn and emits a [`PartitionDurability`] when the durable Lsn changes.
+/// A stream that tracks the last reported durable Lsn, replica-set durable points, and archived LSN
+/// (from snapshot repository), and emits a [`PartitionDurability`] when the durable LSN changes.
 ///
 /// The stream has an internal timer that is used to check regularly if the durable Lsn has
 /// changed in the replica-set, but it'll react immediately to changes in the archived Lsn
@@ -40,7 +39,7 @@ pub struct DurabilityTracker {
     partition_id: PartitionId,
     last_reported_durable_lsn: Lsn,
     replica_set_states: PartitionReplicaSetStates,
-    archived_lsn_watch: WatchStream<Option<ArchivedLsn>>,
+    archived_lsn_watch: WatchStream<Option<Lsn>>,
     check_timer: IntervalStream,
     last_warning_at: Instant,
     /// cache of the last archived_lsn
@@ -53,7 +52,7 @@ impl DurabilityTracker {
         partition_id: PartitionId,
         last_reported_durable_lsn: Option<Lsn>,
         replica_set_states: PartitionReplicaSetStates,
-        archived_lsn_watch: watch::Receiver<Option<ArchivedLsn>>,
+        archived_lsn_watch: watch::Receiver<Option<Lsn>>,
         check_interval: Duration,
     ) -> Self {
         let mut check_timer =
@@ -162,17 +161,17 @@ impl Stream for DurabilityTracker {
         let watch_tick = self.archived_lsn_watch.poll_next_unpin(cx);
         let timer_tick = self.check_timer.poll_next_unpin(cx);
 
-        self.last_archived = match (watch_tick, timer_tick) {
+        match (watch_tick, timer_tick) {
             (Poll::Ready(None), _) | (_, Poll::Ready(None)) => {
                 self.terminated = true;
                 return Poll::Ready(None);
             }
-            (Poll::Ready(Some(archived)), _) => archived
-                .map(|a| a.get_min_applied_lsn())
-                .unwrap_or(Lsn::INVALID),
-            (_, Poll::Ready(_)) => self.last_archived,
+            (Poll::Ready(Some(archived)), _) => {
+                self.last_archived = archived.unwrap_or(Lsn::INVALID);
+            }
+            (_, Poll::Ready(_)) => {}
             (Poll::Pending, Poll::Pending) => return Poll::Pending,
-        };
+        }
 
         let durability_mode =
             self.sanitize_durability_mode(Configuration::pinned().worker.durability_mode);

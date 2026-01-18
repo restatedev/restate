@@ -18,11 +18,11 @@ use std::sync::Arc;
 use crate::{PartitionDb, PartitionStore, SnapshotError, SnapshotErrorKind};
 
 pub use self::metadata::*;
-pub use self::repository::{ArchivedLsn, SnapshotRepository};
+pub use self::repository::{PartitionSnapshotStatus, SnapshotRepository};
 pub use self::snapshot_task::*;
 
 use tokio::sync::Semaphore;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument};
 
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, SnapshotId};
@@ -36,7 +36,7 @@ pub struct Snapshots {
 
 impl Snapshots {
     pub async fn create(config: &Configuration) -> anyhow::Result<Self> {
-        let repository = SnapshotRepository::create_if_configured(
+        let repository = SnapshotRepository::new_from_config(
             &config.worker.snapshots,
             config.worker.storage.snapshots_staging_dir(),
         )
@@ -85,20 +85,27 @@ impl Snapshots {
             })
     }
 
-    pub async fn refresh_latest_archived_lsn(&self, db: PartitionDb) -> Option<ArchivedLsn> {
+    pub async fn refresh_latest_partition_snapshot_status(
+        &self,
+        db: PartitionDb,
+    ) -> anyhow::Result<Option<PartitionSnapshotStatus>> {
         let Some(repository) = &self.repository else {
-            return None;
+            return Ok(None);
         };
 
         let partition_id = db.partition().partition_id;
-        let archived_lsn = repository
-            .get_latest_archived_lsn(partition_id)
-            .await
-            .inspect_err(|err| warn!(?partition_id, "Unable to get latest archived LSN: {}", err))
-            .ok()
-            .unwrap_or(ArchivedLsn::None);
-        db.note_archived_lsn(archived_lsn);
-        Some(archived_lsn)
+        let log_id = db.partition().log_id();
+
+        let status = match repository
+            .get_latest_partition_snapshot_status(partition_id)
+            .await?
+        {
+            Some(status) => status,
+            None => PartitionSnapshotStatus::none(log_id),
+        };
+
+        let _ = db.note_archived_lsn(status.archived_lsn);
+        Ok(Some(status))
     }
 
     #[instrument(level = "error", skip_all, fields(partition_id = %partition_id))]

@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+test-util = ["restate-partition-store/test-util"]
 options_schema = [
   "dep:schemars",
   "restate-ingress-http/options_schema",
