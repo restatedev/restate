@@ -16,6 +16,9 @@ mod reader;
 mod running_reader;
 mod waiting_reader;
 
+pub use entry::EntryStateKey;
+pub use inbox::{ActiveKey, InboxKey};
+pub use items::ItemsKey;
 pub use metadata::*;
 
 use anyhow::Context;
@@ -34,10 +37,8 @@ use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
 use restate_types::vqueue::{EffectivePriority, VQueueId, VQueueInstance, VQueueParent};
 
-use self::entry::{EntryStateHeader, EntryStateKey, OwnedEntryState, OwnedHeader};
-use self::inbox::{ActiveKey, InboxKey};
+use self::entry::{EntryStateHeader, OwnedEntryState, OwnedHeader};
 use crate::keys::{KeyCodec, KeyKind, TableKey};
-use crate::vqueue_table::items::ItemsKey;
 use crate::{PartitionDb, PartitionStoreTransaction, Result, StorageAccess};
 
 impl KeyCodec for VQueueParent {
