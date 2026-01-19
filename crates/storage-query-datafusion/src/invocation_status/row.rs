@@ -13,7 +13,6 @@ use restate_storage_api::protobuf_types::v1::source::Source;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{ServiceType, TraceId};
-use std::fmt;
 
 use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 
@@ -143,15 +142,23 @@ pub(crate) fn append_invocation_status_row<'a>(
             row.status("suspended");
 
             if row.is_suspended_waiting_for_completions_defined() {
-                row.fmt_suspended_waiting_for_completions(CSVDisplay(
-                    &invocation_status.inner.waiting_for_completions,
-                ));
+                row.suspended_waiting_for_completions(
+                    invocation_status
+                        .inner
+                        .waiting_for_completions
+                        .iter()
+                        .map(|c| Some(*c)),
+                );
             }
             if row.is_suspended_waiting_for_signals_defined() {
                 // TODO (slinkydeveloper) add support to read signal names, if any
-                row.fmt_suspended_waiting_for_signals(CSVDisplay(
-                    &invocation_status.inner.waiting_for_signal_indexes,
-                ));
+                row.suspended_waiting_for_signals(
+                    invocation_status
+                        .inner
+                        .waiting_for_signal_indexes
+                        .iter()
+                        .map(|c| Some(*c)),
+                );
             }
 
             fill_journal_metadata(&mut row, &invocation_status)?;
@@ -355,18 +362,4 @@ fn fill_journal_metadata(
     }
 
     Ok(())
-}
-
-struct CSVDisplay<'a, T>(&'a [T]);
-
-impl<'a, T: fmt::Display> fmt::Display for CSVDisplay<'a, T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for (i, item) in self.0.iter().enumerate() {
-            if i > 0 {
-                write!(f, ",")?;
-            }
-            write!(f, "{}", item)?;
-        }
-        Ok(())
-    }
 }

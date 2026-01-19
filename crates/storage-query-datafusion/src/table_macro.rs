@@ -43,6 +43,9 @@ macro_rules! define_builder {
     (DataType::Boolean) => {
         ::datafusion::arrow::array::BooleanBuilder
     };
+    (UInt32List) => {
+        ::datafusion::arrow::array::ListBuilder<::datafusion::arrow::array::UInt32Builder>
+    };
 }
 
 pub(crate) trait BuilderCapacity: datafusion::arrow::array::ArrayBuilder {
@@ -203,6 +206,27 @@ impl ::datafusion::arrow::array::ArrayBuilder for TimestampMillisecondUTCBuilder
     }
 }
 
+// --- Support for Lists
+
+impl BuilderCapacity
+    for ::datafusion::arrow::array::ListBuilder<::datafusion::arrow::array::UInt32Builder>
+{
+    type Size = usize;
+
+    fn len(&self) -> Self::Size {
+        // TODO is this correct?!
+        datafusion::arrow::array::ArrayBuilder::len(self)
+    }
+
+    fn with_capacity(capacity: Self::Size) -> Self {
+        // TODO is this correct?!
+        ::datafusion::arrow::array::ListBuilder::with_capacity(
+            ::datafusion::arrow::array::UInt32Builder::new(),
+            capacity / datafusion::arrow::datatypes::DataType::UInt32.size(),
+        )
+    }
+}
+
 macro_rules! define_primitive_trait {
     (DataType::Utf8) => {
         impl AsRef<str>
@@ -234,6 +258,9 @@ macro_rules! define_primitive_trait {
     (DataType::Boolean) => {
         bool
     };
+    (UInt32List) => {
+        impl IntoIterator<Item = Option<u32>>
+    }
 }
 
 pub static TIMEZONE_UTC: std::sync::LazyLock<std::sync::Arc<str>> =
@@ -273,6 +300,11 @@ macro_rules! define_data_type {
     (DataType::Boolean) => {
         DataType::Boolean
     };
+    (UInt32List) => {
+        DataType::List(::datafusion::common::arrow::datatypes::FieldRef::new(
+            ::datafusion::common::arrow::datatypes::Field::new("item", DataType::UInt32, true),
+        ))
+    };
 }
 
 #[cfg(feature = "table_docs")]
@@ -306,6 +338,9 @@ macro_rules! document_type {
     };
     (DataType::Boolean) => {
         "Boolean"
+    };
+    (UInt32List) => {
+        "UInt32 List"
     };
 }
 

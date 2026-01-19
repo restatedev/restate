@@ -10,13 +10,15 @@
 
 use std::time::{Duration, SystemTime};
 
-use datafusion::arrow::array::{LargeStringArray, TimestampMillisecondArray, UInt64Array};
-use datafusion::arrow::record_batch::RecordBatch;
-use futures::StreamExt;
-use googletest::prelude::{all, any, assert_that, eq};
-
 use crate::mocks::*;
 use crate::row;
+use datafusion::arrow::array::{
+    ArrayRef, LargeStringArray, ListArray, TimestampMillisecondArray, UInt32Array, UInt64Array,
+};
+use datafusion::arrow::record_batch::RecordBatch;
+use futures::StreamExt;
+use googletest::prelude::{all, assert_that, eq};
+use googletest::unordered_elements_are;
 use restate_invoker_api::status_handle::InvocationStatusReportInner;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport};
@@ -344,6 +346,7 @@ async fn query_sys_invocation_suspended_waiting() {
             },
             waiting_for_notifications: [
                 NotificationId::for_completion(1),
+                NotificationId::for_completion(2),
                 NotificationId::for_completion(3),
                 NotificationId::SignalIndex(10),
                 NotificationId::SignalIndex(20),
@@ -373,15 +376,43 @@ async fn query_sys_invocation_suspended_waiting() {
 
     assert_that!(
         records,
-        all!(row!(
-            0,
-            {
-                "id" => LargeStringArray: eq(invocation_id.to_string()),
-                "status" => LargeStringArray: eq("suspended"),
-                "suspended_waiting_for_completions" => LargeStringArray: any!(eq("1,3"), eq("3,1")),
-                "suspended_waiting_for_signals" => LargeStringArray: any!
-                (eq("10,20"), eq("20,10")),
-            }
-        ))
+        all!(
+            row!(0, {
+                    "id" => LargeStringArray: eq(invocation_id.to_string()),
+                    "status" => LargeStringArray: eq("suspended")
+            }),
+            row_column_matcher(
+                0,
+                "suspended_waiting_for_completions",
+                extract_uint32_list,
+                unordered_elements_are![eq(1), eq(2), eq(3)]
+            ),
+            row_column_matcher(
+                0,
+                "suspended_waiting_for_signals",
+                extract_uint32_list,
+                unordered_elements_are![eq(10), eq(20)]
+            )
+        )
     );
+}
+
+fn extract_uint32_list(column: &ArrayRef, row: usize) -> Option<Vec<u32>> {
+    use datafusion::arrow::array::Array;
+
+    let column = column
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .expect("Downcast ref to ListArray");
+    if column.len() <= row {
+        return None;
+    }
+
+    let row_value_ref = column.value(row);
+    let row_value_downcast = row_value_ref
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+        .expect("Downcast ref to UInt32Array");
+
+    Some(row_value_downcast.values().to_owned().into())
 }
