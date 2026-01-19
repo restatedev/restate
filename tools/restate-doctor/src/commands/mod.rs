@@ -10,3 +10,4 @@
 
 pub mod completions;
 pub mod id;
+pub mod partition_store;
