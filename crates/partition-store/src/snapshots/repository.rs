@@ -114,6 +114,7 @@ pub struct SnapshotRepository {
     orphan_cleanup: bool,
     /// When the orphan sweep last ran for each partition on this node.
     last_orphan_scan: Arc<parking_lot::Mutex<HashMap<PartitionId, std::time::Instant>>>,
+    orphan_min_age: Duration,
     lease_provider: Option<LeaseProvider>,
     #[cfg(any(test, feature = "test-util"))]
     enable_cleanup: bool,
@@ -132,8 +133,8 @@ const SAME_NODE_LEASE_POLL_INTERVAL: std::time::Duration = std::time::Duration::
 /// Maximum number of concurrent downloads when getting snapshots from the repository.
 const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 
-/// Minimum age for files to be considered orphan candidates during repository scan.
-const ORPHAN_MIN_AGE: Duration = Duration::from_hours(24);
+/// Default minimum age for files to be considered orphan candidates during repository scan.
+const DEFAULT_ORPHAN_MIN_AGE: Duration = Duration::from_hours(24);
 
 /// Minimum time between orphan sweeps of a partition. Each sweep LISTs the partition prefix.
 const ORPHAN_SCAN_INTERVAL: Duration = Duration::from_hours(24);
@@ -579,6 +580,9 @@ impl SnapshotRepository {
                 restate_types::config::SnapshotType::Incremental
             ),
             last_orphan_scan: Default::default(),
+            orphan_min_age: snapshots_options
+                .orphan_min_age()
+                .unwrap_or(DEFAULT_ORPHAN_MIN_AGE),
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
             lease_provider,
@@ -1367,7 +1371,7 @@ impl SnapshotRepository {
                 .find_orphaned_files(
                     partition_id,
                     &retained_snapshots,
-                    ORPHAN_MIN_AGE,
+                    self.orphan_min_age,
                     &referenced_sst_keys,
                 )
                 .await
