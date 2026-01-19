@@ -208,21 +208,26 @@ impl ::datafusion::arrow::array::ArrayBuilder for TimestampMillisecondUTCBuilder
 
 // --- Support for Lists
 
-impl BuilderCapacity
-    for ::datafusion::arrow::array::ListBuilder<::datafusion::arrow::array::UInt32Builder>
-{
-    type Size = usize;
+pub(crate) struct ListBuilderSize<T: BuilderCapacity> {
+    lists: usize,
+    items: T::Size,
+}
+
+impl<T: BuilderCapacity> BuilderCapacity for ::datafusion::arrow::array::ListBuilder<T> {
+    type Size = ListBuilderSize<T>;
 
     fn len(&self) -> Self::Size {
-        // TODO is this correct?!
-        datafusion::arrow::array::ArrayBuilder::len(self)
+        let lists = ::datafusion::arrow::array::ArrayBuilder::len(self);
+        let items =
+            BuilderCapacity::len(::datafusion::arrow::array::ListBuilder::values_ref(self));
+
+        ListBuilderSize { lists, items }
     }
 
     fn with_capacity(capacity: Self::Size) -> Self {
-        // TODO is this correct?!
         ::datafusion::arrow::array::ListBuilder::with_capacity(
-            ::datafusion::arrow::array::UInt32Builder::new(),
-            capacity / datafusion::arrow::datatypes::DataType::UInt32.size(),
+            T::with_capacity(capacity.items),
+            capacity.lists,
         )
     }
 }
