@@ -126,6 +126,7 @@ pub struct SnapshotRepository {
     num_retained: Option<std::num::NonZeroU8>,
     snapshot_type: restate_types::config::SnapshotType,
     orphan_cleanup: bool,
+    orphan_min_age: Duration,
     lease_provider: Option<LeaseProvider>,
     #[cfg(any(test, feature = "test-util"))]
     enable_cleanup: bool,
@@ -138,8 +139,8 @@ const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
 /// Maximum number of concurrent downloads when getting snapshots from the repository.
 const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 
-/// Minimum age for files to be considered orphan candidates during repository scan.
-const ORPHAN_MIN_AGE: Duration = Duration::from_hours(24);
+/// Default minimum age for files to be considered orphan candidates during repository scan.
+const DEFAULT_ORPHAN_MIN_AGE: Duration = Duration::from_hours(24);
 
 /// Object store keys eligible for sweeping. Files not matching any pattern are ignored.
 mod sweep_patterns {
@@ -487,6 +488,7 @@ impl SnapshotRepository {
             orphan_cleanup: snapshots_options
                 .experimental_orphan_cleanup
                 .unwrap_or(false),
+            orphan_min_age: DEFAULT_ORPHAN_MIN_AGE,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
             lease_provider,
@@ -526,6 +528,9 @@ impl SnapshotRepository {
             orphan_cleanup: snapshots_options
                 .experimental_orphan_cleanup
                 .unwrap_or(false),
+            orphan_min_age: snapshots_options
+                .orphan_min_age()
+                .unwrap_or(DEFAULT_ORPHAN_MIN_AGE),
             enable_cleanup: snapshots_options.enable_cleanup,
             lease_provider: Some(LeaseProvider::NoOp(NoOpLeaseManager::new())),
         }))
@@ -995,7 +1000,7 @@ impl SnapshotRepository {
                 .find_orphaned_files(
                     partition_id,
                     &retained_snapshots,
-                    ORPHAN_MIN_AGE,
+                    self.orphan_min_age,
                     &referenced_sst_keys,
                 )
                 .await
