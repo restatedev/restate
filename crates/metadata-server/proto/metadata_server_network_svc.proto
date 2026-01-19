@@ -28,6 +28,9 @@ message NetworkMessage {
 message JoinClusterRequest {
   uint32 node_id = 1;
   int64 created_at_millis = 2;
+  // Cluster fingerprint for validation. If set to 0, then this field is ignored (for backward compatibility).
+  // If provided and mismatched, the request will be rejected.
+  uint64 cluster_fingerprint = 3;
 }
 
 message JoinClusterResponse {

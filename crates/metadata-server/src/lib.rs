@@ -40,7 +40,8 @@ use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::nodes_config::{
-    MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration, Role,
+    ClusterFingerprint, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
+    Role,
 };
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
@@ -463,18 +464,29 @@ enum JoinClusterError {
     UnknownNode(PlainNodeId),
     #[error("node '{0}' does not have the 'metadata-server' role")]
     InvalidRole(PlainNodeId),
+    #[error(
+        "cluster fingerprint mismatch; rejecting join request because node seems to belong to a different cluster"
+    )]
+    ClusterFingerprintMismatch,
 }
 
 type JoinClusterResponseSender = oneshot::Sender<Result<Version, JoinClusterError>>;
 
 struct JoinClusterRequest {
     member_id: MemberId,
+    cluster_fingerprint: Option<ClusterFingerprint>,
     response_tx: JoinClusterResponseSender,
 }
 
 impl JoinClusterRequest {
-    fn into_inner(self) -> (oneshot::Sender<Result<Version, JoinClusterError>>, MemberId) {
-        (self.response_tx, self.member_id)
+    fn into_inner(
+        self,
+    ) -> (
+        JoinClusterResponseSender,
+        MemberId,
+        Option<ClusterFingerprint>,
+    ) {
+        (self.response_tx, self.member_id, self.cluster_fingerprint)
     }
 }
 
@@ -488,12 +500,17 @@ impl JoinClusterHandle {
         JoinClusterHandle { join_cluster_tx }
     }
 
-    pub async fn join_cluster(&self, member_id: MemberId) -> Result<Version, JoinClusterError> {
+    pub async fn join_cluster(
+        &self,
+        member_id: MemberId,
+        cluster_fingerprint: Option<ClusterFingerprint>,
+    ) -> Result<Version, JoinClusterError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.join_cluster_tx
             .send(JoinClusterRequest {
                 member_id,
+                cluster_fingerprint,
                 response_tx,
             })
             .await

@@ -267,6 +267,7 @@ impl Standby {
             .join_cluster(network::grpc_svc::JoinClusterRequest {
                 node_id: u32::from(member_id.node_id),
                 created_at_millis: member_id.created_at_millis,
+                cluster_fingerprint: nodes_config.cluster_fingerprint().to_u64(),
             })
             .await
         {

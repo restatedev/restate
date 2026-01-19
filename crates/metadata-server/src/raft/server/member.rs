@@ -592,7 +592,11 @@ impl Member {
         join_cluster_request: JoinClusterRequest,
         metadata_nodes_config: &NodesConfiguration,
     ) {
-        let (response_tx, joining_member_id) = join_cluster_request.into_inner();
+        let (response_tx, joining_member_id, cluster_fingerprint) =
+            join_cluster_request.into_inner();
+
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
 
         trace!("Handle join request from node '{}'", joining_member_id);
 
@@ -604,11 +608,22 @@ impl Member {
             return;
         }
 
+        // todo in v1.7 make this check mandatory and fail if cluster_fingerprint is None
+        // Validate cluster fingerprint if provided (before other sanity checks)
+        if let Some(incoming_fingerprint) = cluster_fingerprint {
+            let expected_fingerprint = nodes_config.cluster_fingerprint();
+
+            if incoming_fingerprint != expected_fingerprint {
+                let _ = response_tx.send(Err(JoinClusterError::ClusterFingerprintMismatch));
+                return;
+            }
+        }
+
         // sanity checks
 
         if !self.is_leader {
             let _ = response_tx.send(Err(JoinClusterError::NotLeader(
-                self.known_leader(metadata_nodes_config),
+                self.known_leader(nodes_config),
             )));
             return;
         }
@@ -626,9 +641,6 @@ impl Member {
             let _ = response_tx.send(Err(JoinClusterError::Internal(warning)));
             return;
         }
-
-        let nodes_config =
-            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
 
         let Ok(joining_node_config) = nodes_config.find_node_by_id(joining_member_id.node_id)
         else {

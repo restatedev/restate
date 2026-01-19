@@ -20,6 +20,7 @@ use tonic::{Request, Response, Status, Streaming};
 use restate_types::PlainNodeId;
 use restate_types::config::NetworkingOptions;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
+use restate_types::nodes_config::ClusterFingerprint;
 
 use super::MetadataServerNetworkSvcServer;
 use crate::raft::network::connection_manager::ConnectionError;
@@ -104,11 +105,19 @@ where
     ) -> Result<Response<JoinClusterResponse>, Status> {
         if let Some(join_handle) = self.join_cluster_handle.as_ref() {
             let request = request.into_inner();
+
+            // Convert the optional fingerprint, if it is 0 (invalid) then we treat it as None
+            let cluster_fingerprint =
+                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+
             let nodes_config_version = join_handle
-                .join_cluster(MemberId::new(
-                    PlainNodeId::from(request.node_id),
-                    request.created_at_millis,
-                ))
+                .join_cluster(
+                    MemberId::new(
+                        PlainNodeId::from(request.node_id),
+                        request.created_at_millis,
+                    ),
+                    cluster_fingerprint,
+                )
                 .await?;
 
             Ok(Response::new(JoinClusterResponse {
@@ -151,6 +160,9 @@ impl From<JoinClusterError> for Status {
             }
             JoinClusterError::UnknownNode(_) | JoinClusterError::InvalidRole(_) => {
                 Status::invalid_argument(err.to_string())
+            }
+            JoinClusterError::ClusterFingerprintMismatch => {
+                Status::permission_denied(err.to_string())
             }
         }
     }
