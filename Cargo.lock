@@ -7232,6 +7232,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-doctor"
+version = "1.6.0-dev"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "bytesize",
+ "clap",
+ "cling",
+ "comfy-table",
+ "crossterm",
+ "ctrlc",
+ "restate-cli-util",
+ "restate-partition-store",
+ "restate-rocksdb",
+ "restate-storage-api",
+ "restate-types",
+ "restate-workspace-hack",
+ "rlimit",
+ "rust-rocksdb",
+ "serde",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "ulid",
+ "vergen",
+]
+
+[[package]]
 name = "restate-encoding"
 version = "1.6.0-dev"
 dependencies = [
@@ -7448,7 +7479,6 @@ dependencies = [
  "restate-service-protocol-v4",
  "restate-test-util",
  "restate-time-util",
- "restate-timer-queue",
  "restate-types",
  "restate-workspace-hack",
  "schemars 1.2.0",
