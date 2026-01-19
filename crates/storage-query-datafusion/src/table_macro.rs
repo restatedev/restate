@@ -218,8 +218,7 @@ impl<T: BuilderCapacity> BuilderCapacity for ::datafusion::arrow::array::ListBui
 
     fn len(&self) -> Self::Size {
         let lists = ::datafusion::arrow::array::ArrayBuilder::len(self);
-        let items =
-            BuilderCapacity::len(::datafusion::arrow::array::ListBuilder::values_ref(self));
+        let items = BuilderCapacity::len(::datafusion::arrow::array::ListBuilder::values_ref(self));
 
         ListBuilderSize { lists, items }
     }
