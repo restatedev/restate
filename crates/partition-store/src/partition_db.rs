@@ -516,9 +516,9 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         let mut cf_options =
             restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
 
-        let config = &Configuration::pinned().worker.storage.rocksdb;
+        let config = &Configuration::pinned().worker.storage;
         let block_options = restate_rocksdb::configuration::create_default_block_options(
-            config,
+            &config.rocksdb,
             // use global block cache
             Some(global_cache),
         );
@@ -530,9 +530,20 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         );
         cf_options.set_max_successive_merges(100);
 
-        cf_options.set_disable_auto_compactions(config.rocksdb_disable_auto_compactions());
-        if let Some(compaction_period) = config.rocksdb_periodic_compaction_seconds() {
+        cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
+        if let Some(compaction_period) = config.rocksdb.rocksdb_periodic_compaction_seconds() {
             cf_options.set_periodic_compaction_seconds(compaction_period);
+        }
+
+        if !config.rocksdb_disable_compact_on_deletion {
+            cf_options.add_compact_on_deletion_collector_factory_min_file_size(
+                config.rocksdb_compact_on_deletions_window.get(),
+                config.rocksdb_compact_on_deletions_count.get(),
+                config.rocksdb_compact_on_deletions_ratio,
+                config
+                    .rocksdb_compact_on_deletions_min_sst_file_size
+                    .as_u64(),
+            );
         }
 
         // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
