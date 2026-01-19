@@ -26,7 +26,10 @@ use super::MetadataServerNetworkSvcServer;
 use crate::raft::network::connection_manager::ConnectionError;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
 use crate::raft::network::grpc_svc::{JoinClusterRequest, JoinClusterResponse};
-use crate::raft::network::{ConnectionManager, NetworkMessage, PEER_METADATA_KEY, grpc_svc};
+use crate::raft::network::{
+    CLUSTER_FINGERPRINT_METADATA_KEY, CLUSTER_NAME_METADATA_KEY, ConnectionManager, NetworkMessage,
+    PEER_METADATA_KEY, grpc_svc,
+};
 use crate::{ClusterIdentity, JoinClusterError, JoinClusterHandle, MemberId};
 
 #[derive(Debug)]
@@ -90,7 +93,39 @@ where
                     .map_err(|err| Status::invalid_argument(err.to_string()))?,
             )
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
-            let outgoing_rx = connection_manager.accept_connection(peer, request.into_inner())?;
+
+            // Extract optional cluster fingerprint from metadata
+            let cluster_fingerprint = request
+                .metadata()
+                .get(CLUSTER_FINGERPRINT_METADATA_KEY)
+                .map(|v| {
+                    v.to_str()
+                        .map_err(|err| Status::invalid_argument(err.to_string()))?
+                        .parse::<u64>()
+                        .map_err(|err| Status::invalid_argument(err.to_string()))
+                })
+                .transpose()?
+                .map(ClusterFingerprint::try_from)
+                .transpose()
+                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+            // Extract optional cluster name from metadata
+            let cluster_name: Option<String> = request
+                .metadata()
+                .get(CLUSTER_NAME_METADATA_KEY)
+                .map(|v| {
+                    v.to_str()
+                        .map(|s| s.to_owned())
+                        .map_err(|err| Status::invalid_argument(err.to_string()))
+                })
+                .transpose()?;
+
+            let outgoing_rx = connection_manager.accept_connection(
+                peer,
+                cluster_fingerprint,
+                cluster_name.as_deref(),
+                request.into_inner(),
+            )?;
             Ok(Response::new(outgoing_rx))
         } else {
             Err(Status::unavailable(
@@ -175,6 +210,9 @@ impl From<ConnectionError> for Status {
         match value {
             ConnectionError::Internal(err) => Status::internal(err),
             ConnectionError::Shutdown(err) => Status::aborted(err.to_string()),
+            ConnectionError::ClusterFingerprintMismatch | ConnectionError::ClusterNameMismatch => {
+                Status::permission_denied(value.to_string())
+            }
         }
     }
 }

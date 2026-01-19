@@ -113,20 +113,6 @@ impl Member {
         command_rx: MetadataCommandReceiver,
     ) -> Result<Self, Error> {
         let (raft_tx, raft_rx) = mpsc::channel(128);
-        let new_connection_manager = ConnectionManager::new(my_member_id.node_id, raft_tx);
-        let mut networking = Networking::new(new_connection_manager.clone());
-
-        networking.register_address(
-            my_member_id.node_id,
-            TaskCenter::with_current(|tc| {
-                Configuration::pinned()
-                    .common
-                    .advertised_address(tc.address_book())
-            }),
-        );
-
-        // todo remove additional indirection from Arc
-        connection_manager.store(Some(Arc::new(new_connection_manager)));
 
         let raft_options = &Configuration::pinned().metadata_server.raft_options;
 
@@ -180,6 +166,33 @@ impl Member {
         let mut tick_interval = time::interval(raft_options.raft_tick_interval.into());
         tick_interval.set_missed_tick_behavior(MissedTickBehavior::Burst);
         let status_update_interval = time::interval(raft_options.status_update_interval.into());
+
+        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let nodes_config = Self::latest_nodes_configuration(&kv_storage, &metadata_nodes_config);
+
+        let new_connection_manager = ConnectionManager::new(
+            my_member_id.node_id,
+            raft_tx,
+            // nodes config must be valid since we are a member which means one of the following:
+            // a) if we got provisioned then the provision call created a snapshot with a valid NodesConfiguration
+            // b) if we got added to a metadata cluster then we have stored a valid NodesConfiguration together with
+            //    the member state to disk which gets restored on Uninitialized::initialize()
+            nodes_config.cluster_fingerprint(),
+            nodes_config.cluster_name().to_owned(),
+        );
+        let mut networking = Networking::new(new_connection_manager.clone());
+
+        networking.register_address(
+            my_member_id.node_id,
+            TaskCenter::with_current(|tc| {
+                Configuration::pinned()
+                    .common
+                    .advertised_address(tc.address_book())
+            }),
+        );
+
+        // todo remove additional indirection from Arc
+        connection_manager.store(Some(Arc::new(new_connection_manager)));
 
         let member = Member {
             _logger: logger,

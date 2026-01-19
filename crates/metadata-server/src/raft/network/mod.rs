@@ -20,3 +20,5 @@ pub use handler::MetadataServerNetworkHandler;
 pub use networking::{NetworkMessage, Networking};
 
 const PEER_METADATA_KEY: &str = "x-restate-metadata-server-peer";
+const CLUSTER_FINGERPRINT_METADATA_KEY: &str = "x-restate-ms-cf";
+const CLUSTER_NAME_METADATA_KEY: &str = "x-restate-ms-cn";
