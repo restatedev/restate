@@ -135,7 +135,10 @@ impl RemoteQueryScannerServer {
         // do that again here. If we do, we might end up dead-locking the map because we are holding a
         // reference into it (scanner).
         if let Err(mpsc::error::SendError(request)) =
-            scanner.send(super::scanner_task::NextRequest { reciprocal })
+            scanner.send(super::scanner_task::NextRequest {
+                reciprocal,
+                next_predicate: req.next_predicate,
+            })
         {
             tracing::info!(
                 "No such scanner {}. This could be an expired scanner due to a slow scan with no activity.",
