@@ -10,14 +10,15 @@
 
 use std::time::{Duration, SystemTime};
 
-use datafusion::arrow::array::{LargeStringArray, TimestampMillisecondArray, UInt64Array};
-use datafusion::arrow::record_batch::RecordBatch;
-use futures::StreamExt;
-use googletest::all;
-use googletest::prelude::{assert_that, eq};
-
 use crate::mocks::*;
 use crate::row;
+use datafusion::arrow::array::{
+    ArrayRef, LargeStringArray, ListArray, TimestampMillisecondArray, UInt32Array, UInt64Array,
+};
+use datafusion::arrow::record_batch::RecordBatch;
+use futures::StreamExt;
+use googletest::prelude::{all, assert_that, eq};
+use googletest::unordered_elements_are;
 use restate_invoker_api::status_handle::InvocationStatusReportInner;
 use restate_invoker_api::status_handle::test_util::MockStatusHandle;
 use restate_invoker_api::{InvocationErrorReport, InvocationStatusReport};
@@ -31,6 +32,7 @@ use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::identifiers::{InvocationUuid, LeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
+use restate_types::journal_v2::NotificationId;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -326,4 +328,91 @@ async fn query_sys_invocation_status_completed() {
             ),
         )
     );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_suspended_waiting() {
+    let invocation_id = InvocationId::mock_random();
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &invocation_id,
+        &InvocationStatus::Suspended {
+            metadata: InFlightInvocationMetadata {
+                invocation_target: InvocationTarget::mock_service(),
+                ..InFlightInvocationMetadata::mock()
+            },
+            waiting_for_notifications: [
+                NotificationId::for_completion(1),
+                NotificationId::for_completion(2),
+                NotificationId::for_completion(3),
+                NotificationId::SignalIndex(10),
+                NotificationId::SignalIndex(20),
+            ]
+            .into(),
+        },
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                status,
+                suspended_waiting_for_completions,
+                suspended_waiting_for_signals
+            FROM sys_invocation
+            LIMIT 1",
+        )
+        .await
+        .unwrap()
+        .collect::<Vec<Result<RecordBatch, _>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(
+            row!(0, {
+                    "id" => LargeStringArray: eq(invocation_id.to_string()),
+                    "status" => LargeStringArray: eq("suspended")
+            }),
+            row_column_matcher(
+                0,
+                "suspended_waiting_for_completions",
+                extract_uint32_list,
+                unordered_elements_are![eq(1), eq(2), eq(3)]
+            ),
+            row_column_matcher(
+                0,
+                "suspended_waiting_for_signals",
+                extract_uint32_list,
+                unordered_elements_are![eq(10), eq(20)]
+            )
+        )
+    );
+}
+
+fn extract_uint32_list(column: &ArrayRef, row: usize) -> Option<Vec<u32>> {
+    use datafusion::arrow::array::Array;
+
+    let column = column
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .expect("Downcast ref to ListArray");
+    if column.len() <= row {
+        return None;
+    }
+
+    let row_value_ref = column.value(row);
+    let row_value_downcast = row_value_ref
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+        .expect("Downcast ref to UInt32Array");
+
+    Some(row_value_downcast.values().to_owned().into())
 }

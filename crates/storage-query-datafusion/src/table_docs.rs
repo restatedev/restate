@@ -185,6 +185,12 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
         sys_invocation_status
             .remove("journal_retention")
             .expect("journal_retention should exist"),
+        sys_invocation_status
+            .remove("suspended_waiting_for_completions")
+            .expect("suspended_waiting_for_completions should exist"),
+        sys_invocation_status
+            .remove("suspended_waiting_for_signals")
+            .expect("suspended_waiting_for_signals should exist"),
         sys_invocation_state
             .remove("retry_count")
             .expect("retry_count should exist"),

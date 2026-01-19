@@ -140,6 +140,27 @@ pub(crate) fn append_invocation_status_row<'a>(
         }
         Status::Suspended => {
             row.status("suspended");
+
+            if row.is_suspended_waiting_for_completions_defined() {
+                row.suspended_waiting_for_completions(
+                    invocation_status
+                        .inner
+                        .waiting_for_completions
+                        .iter()
+                        .map(|c| Some(*c)),
+                );
+            }
+            if row.is_suspended_waiting_for_signals_defined() {
+                // TODO (slinkydeveloper) add support to read signal names, if any
+                row.suspended_waiting_for_signals(
+                    invocation_status
+                        .inner
+                        .waiting_for_signal_indexes
+                        .iter()
+                        .map(|c| Some(*c)),
+                );
+            }
+
             fill_journal_metadata(&mut row, &invocation_status)?;
             fill_in_flight_invocation_metadata(&mut row, &invocation_status)?;
         }
