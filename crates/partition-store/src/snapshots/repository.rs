@@ -11,10 +11,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
+use ahash::{HashMap, HashMapExt};
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
-use itertools::Itertools;
 use object_store::path::Path as ObjectPath;
 use object_store::{
     MultipartUpload, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
@@ -27,7 +26,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::io::StreamReader;
-use tracing::{Instrument, Span, debug, error, info, instrument, warn};
+use tracing::{Instrument, Span, debug, info, instrument, warn};
 use url::Url;
 
 use restate_clock::WallClock;
@@ -38,7 +37,6 @@ use restate_types::config::SnapshotsOptions;
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
-use restate_types::retries::RetryPolicy;
 use restate_types::time::MillisSinceEpoch;
 
 use super::{LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotFormatVersion};
@@ -64,7 +62,6 @@ pub struct SnapshotRepository {
     prefix: ObjectPath,
     staging_dir: PathBuf,
     num_retained: Option<std::num::NonZeroU8>,
-    cas_retry_policy: RetryPolicy,
     #[cfg(any(test, feature = "test-util"))]
     enable_cleanup: bool,
 }
@@ -75,14 +72,6 @@ const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
 
 /// Maximum number of concurrent downloads when getting snapshots from the repository.
 const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
-
-/// Maximum number of pending deletions tracked. Deleting old snapshots is handled asynchronously
-/// from snapshot uploads as a follow-up metadata update. We want to cap how many pending deletions
-/// we store before we leak them. We intentionally do not stop producing new snapshots as it's more
-/// important to keep log trimming unblocked than to clean up old snapshots in the object store.
-const PENDING_DELETIONS_MAX: usize = 100;
-
-const PENDING_DELETIONS_WARNING: usize = 10;
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LatestSnapshotVersion {
@@ -128,10 +117,6 @@ pub struct LatestSnapshot {
     /// depends on correct ordering. Introduced in V2.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retained_snapshots: Vec<SnapshotReference>,
-
-    /// Snapshots marked for deletion but not yet deleted. Introduced in V2 format.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_deletions: Vec<SnapshotReference>,
 }
 
 #[serde_as]
@@ -169,7 +154,6 @@ impl LatestSnapshot {
             min_applied_lsn: snapshot.min_applied_lsn,
             path: UniqueSnapshotKey::from_metadata(snapshot).padded_key(),
             retained_snapshots: vec![],
-            pending_deletions: vec![],
         }
     }
 
@@ -346,7 +330,6 @@ impl SnapshotRepository {
             prefix: ObjectPath::from(prefix),
             staging_dir,
             num_retained: snapshots_options.experimental_num_retained,
-            cas_retry_policy: snapshots_options.object_store_retry_policy.clone(),
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
         }))
@@ -481,8 +464,8 @@ impl SnapshotRepository {
         }
 
         let format_version = self.determine_format_version(maybe_stored.as_ref().map(|(l, _)| l));
-        let new_latest = match format_version {
-            LatestSnapshotVersion::V1 => self.build_latest_v1(snapshot),
+        let (new_latest, evicted_snapshots) = match format_version {
+            LatestSnapshotVersion::V1 => (self.build_latest_v1(snapshot), vec![]),
             LatestSnapshotVersion::V2 => self
                 .build_latest_v2(snapshot, maybe_stored.as_ref().map(|(l, _)| l))
                 .map_err(|e| PutSnapshotError::from(e, progress.clone()))?,
@@ -513,8 +496,8 @@ impl SnapshotRepository {
         #[cfg(any(test, feature = "test-util"))]
         let enable_cleanup = self.enable_cleanup;
 
-        if !new_latest.pending_deletions.is_empty() && enable_cleanup {
-            self.spawn_cleanup_task(snapshot.partition_id, new_latest.pending_deletions.clone());
+        if !evicted_snapshots.is_empty() && enable_cleanup {
+            self.spawn_cleanup_task(snapshot.partition_id, evicted_snapshots);
         }
 
         Ok(PartitionSnapshotStatus::from(&new_latest))
@@ -542,14 +525,19 @@ impl SnapshotRepository {
         LatestSnapshot::from_snapshot(snapshot)
     }
 
+    /// Builds V2 latest snapshot metadata.
+    ///
+    /// Returns `(LatestSnapshot, Vec<SnapshotReference>)` where the second element contains
+    /// snapshots that no longer need to be retained following the metadata update.
+    /// If cleanup fails, these snapshots will be orphaned until cleaned up by the sweeper.
     fn build_latest_v2(
         &self,
         snapshot: &PartitionSnapshotMetadata,
         current: Option<&LatestSnapshot>,
-    ) -> anyhow::Result<LatestSnapshot> {
+    ) -> anyhow::Result<(LatestSnapshot, Vec<SnapshotReference>)> {
         let new_snapshot_ref = SnapshotReference::from_metadata(snapshot);
 
-        let (retained_snapshots, pending_deletions) = match self.num_retained {
+        let (retained_snapshots, evicted_snapshots) = match self.num_retained {
             None => (vec![], vec![]), // tracking is only enabled if num-retained is set
             Some(num_retained) => {
                 let mut retained_snapshots = current
@@ -559,37 +547,14 @@ impl SnapshotRepository {
                 // maintain descending LSN order: split_off below relies on it to keep last N
                 retained_snapshots.sort_by_key(|s| std::cmp::Reverse(s.min_applied_lsn));
 
-                let mut pending_deletions = retained_snapshots
+                let evicted_snapshots = retained_snapshots
                     .split_off((num_retained.get() as usize).min(retained_snapshots.len()));
-                pending_deletions.extend(
-                    current
-                        .map(|l| l.pending_deletions.clone())
-                        .unwrap_or_default(),
-                );
 
-                if pending_deletions.len() > PENDING_DELETIONS_MAX {
-                    let orphaned = pending_deletions.split_off(PENDING_DELETIONS_MAX);
-                    warn!(
-                        orphaned_ids = %orphaned.iter().map(|s| &s.snapshot_id).join(", "),
-                        "Snapshot cleanup backlog exceeds the tracking limit ({}), \
-                        older snapshots will be orphaned. Please check object store access permissions.",
-                        PENDING_DELETIONS_MAX,
-                    );
-                } else if pending_deletions.len() >= PENDING_DELETIONS_WARNING {
-                    warn!(
-                        pending_deletions = pending_deletions.len(),
-                        hard_limit = PENDING_DELETIONS_MAX,
-                        "Snapshot cleanup is falling behind. Please check object store access permissions. \
-                        When the hard limit is reached, older snapshots will no longer be tracked, \
-                        resulting in increased storage usage."
-                    );
-                }
-
-                (retained_snapshots, pending_deletions)
+                (retained_snapshots, evicted_snapshots)
             }
         };
 
-        Ok(LatestSnapshot {
+        let latest = LatestSnapshot {
             version: LatestSnapshotVersion::V2,
             partition_id: snapshot.partition_id,
             log_id: Some(snapshot.log_id),
@@ -601,8 +566,9 @@ impl SnapshotRepository {
             min_applied_lsn: snapshot.min_applied_lsn,
             path: new_snapshot_ref.path.clone(),
             retained_snapshots,
-            pending_deletions,
-        })
+        };
+
+        Ok((latest, evicted_snapshots))
     }
 
     fn spawn_cleanup_task(
@@ -630,21 +596,10 @@ impl SnapshotRepository {
         partition_id: PartitionId,
         cleanup_snapshots: Vec<SnapshotReference>,
     ) {
-        let mut successfully_deleted = HashSet::new();
-
         for snapshot_ref in &cleanup_snapshots {
-            if self
-                .delete_snapshot_files(partition_id, snapshot_ref)
-                .await
-                .is_ok()
-            {
-                successfully_deleted.insert(snapshot_ref.snapshot_id);
-            }
-        }
-
-        if !successfully_deleted.is_empty() {
-            self.update_latest_post_cleanup(partition_id, successfully_deleted)
-                .await;
+            // Errors are logged inside delete_snapshot_files; if cleanup fails,
+            // these snapshots become orphans to be cleaned by future scan-sweep.
+            let _ = self.delete_snapshot_files(partition_id, snapshot_ref).await;
         }
     }
 
@@ -712,97 +667,6 @@ impl SnapshotRepository {
                 "Could not fully delete snapshot {}",
                 snapshot_ref.snapshot_id
             ))
-        }
-    }
-
-    #[instrument(level = "error", skip_all, fields(%partition_id))]
-    pub(crate) async fn update_latest_post_cleanup(
-        &self,
-        partition_id: PartitionId,
-        successfully_deleted: HashSet<SnapshotId>,
-    ) {
-        let latest_path = self.latest_snapshot_pointer_path(partition_id);
-
-        let mut update_retries = self.cas_retry_policy.iter();
-        loop {
-            let maybe_stored = match self.object_store.get(&latest_path).await {
-                Ok(result) => {
-                    let version = UpdateVersion {
-                        e_tag: result.meta.e_tag.clone(),
-                        version: result.meta.version.clone(),
-                    };
-                    match result.bytes().await {
-                        Ok(bytes) => match serde_json::from_slice::<LatestSnapshot>(&bytes) {
-                            Ok(latest) => Some((latest, version)),
-                            Err(err) => {
-                                error!(
-                                    %err,
-                                    "Failed to deserialize latest snapshot metadata during cleanup! Treating as missing"
-                                );
-                                None
-                            }
-                        },
-                        Err(err) => {
-                            warn!(%err, "Failed to read bytes for latest snapshot metadata during cleanup");
-                            None
-                        }
-                    }
-                }
-                Err(err) => {
-                    warn!(%err, "Failed to fetch latest snapshot metadata during cleanup");
-                    None
-                }
-            };
-
-            let Some((mut latest, version)) = maybe_stored else {
-                return;
-            };
-
-            // We need V2 or newer format for tracking retained snapshots
-            if latest.version == LatestSnapshotVersion::V1 {
-                debug!("Skipping cleanup update for V1 format snapshot");
-                return;
-            }
-
-            latest
-                .pending_deletions
-                .retain(|pending| !successfully_deleted.contains(&pending.snapshot_id));
-
-            let latest_payload = PutPayload::from(
-                serde_json::to_string_pretty(&latest).expect("latest snapshot to serialize"),
-            );
-
-            let conditions = self.conditional_put_options(Some(&version));
-
-            match self
-                .object_store
-                .put_opts(&latest_path, latest_payload, conditions)
-                .await
-            {
-                Ok(_) => {
-                    debug!(
-                        removed_count = successfully_deleted.len(),
-                        "Successfully removed snapshots from pending deletions"
-                    );
-                    return;
-                }
-                Err(object_store::Error::Precondition { source, .. }) => {
-                    debug!(err = %source, "Conflict on updating latest snapshot metadata");
-                    // retry on conflict
-                }
-                Err(err) => {
-                    warn!(%err, "Failed to update pending deletions list");
-                    return;
-                }
-            }
-
-            let next_retry = update_retries.next();
-            if let Some(backoff) = next_retry {
-                tokio::time::sleep(backoff).await;
-            } else {
-                warn!("Failed to update latest snapshot metadata after CAS retries exhausted");
-                break;
-            }
         }
     }
 
@@ -1679,16 +1543,17 @@ mod tests {
     async fn test_cleanup() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
-        // Upload snapshots with cleanup disabled, to check pending_deletions
+        // Upload snapshots with cleanup enabled - evicted snapshots are cleaned up in-memory
+        // (no longer accumulated in pending_deletions)
         let snapshots_destination = TempDir::new()?;
         let destination = Url::from_file_path(snapshots_destination.path())
             .unwrap()
             .to_string();
 
-        let mut opts = SnapshotsOptions {
+        let opts = SnapshotsOptions {
             destination: Some(destination.clone()),
             experimental_num_retained: Some(std::num::NonZeroU8::new(3).unwrap()),
-            enable_cleanup: false,
+            enable_cleanup: true,
             ..SnapshotsOptions::default()
         };
 
@@ -1697,7 +1562,7 @@ mod tests {
             .unwrap();
 
         let mut all_snapshot_paths = Vec::new();
-        for i in 1..=4 {
+        for i in 1..=5 {
             let (snapshot, source_dir) =
                 mock_snapshot(format!("data-{}", i).as_bytes(), Lsn::new(100 * i)).await?;
             all_snapshot_paths.push(SnapshotReference::from_metadata(&snapshot).path);
@@ -1710,31 +1575,7 @@ mod tests {
         let latest_path = repository.latest_snapshot_pointer_path(PartitionId::MIN);
         let partition_prefix = repository.partition_snapshots_prefix(PartitionId::MIN);
         let result = repository.object_store.get(&latest_path).await?;
-        let mut latest: LatestSnapshot = serde_json::from_slice(&result.bytes().await?)?;
-        assert_eq!(latest.pending_deletions.len(), 1);
-        assert_eq!(latest.retained_snapshots.len(), 3);
-
-        // Enable cleanup, upload another snapshot to trigger spawning a cleanup task
-        opts.enable_cleanup = true;
-        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
-            .await?
-            .unwrap();
-
-        let (snapshot, source_dir) = mock_snapshot("data-5".as_bytes(), Lsn::new(500)).await?;
-        all_snapshot_paths.push(SnapshotReference::from_metadata(&snapshot).path);
-        repository.put(&snapshot, source_dir).await?;
-
-        // Allow the cleanup task to run, check that snapshots were cleared
-        for _ in 0..10 {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            let result = repository.object_store.get(&latest_path).await?;
-            latest = serde_json::from_slice(&result.bytes().await?)?;
-            if latest.pending_deletions.is_empty() {
-                break;
-            }
-        }
-
-        assert!(latest.pending_deletions.is_empty());
+        let latest: LatestSnapshot = serde_json::from_slice(&result.bytes().await?)?;
         assert_eq!(latest.retained_snapshots.len(), 3);
         assert_eq!(
             latest
@@ -1745,6 +1586,35 @@ mod tests {
             vec![Lsn::new(500), Lsn::new(400), Lsn::new(300)]
         );
 
+        // Wait for cleanup tasks to complete
+        let retained_snapshot_paths: HashSet<_> = latest
+            .retained_snapshots
+            .iter()
+            .map(|s| s.path.clone())
+            .collect();
+
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let full_list: Vec<_> = repository
+                .object_store
+                .list(Some(&partition_prefix))
+                .try_collect()
+                .await?;
+            let repository_snapshot_paths: HashSet<_> = full_list
+                .iter()
+                .filter_map(|obj| {
+                    let path_str = obj.location.as_ref();
+                    path_str.split('/').find(|s| s.starts_with("lsn_"))
+                })
+                .map(|s| s.to_string())
+                .collect();
+
+            if repository_snapshot_paths == retained_snapshot_paths {
+                break;
+            }
+        }
+
+        // Verify that only retained snapshots exist in the object store
         let full_list: Vec<_> = repository
             .object_store
             .list(Some(&partition_prefix))
@@ -1757,7 +1627,6 @@ mod tests {
                 let path_str = obj.location.as_ref();
                 path_str.split('/').find(|s| s.starts_with("lsn_"))
             })
-            .filter(|p| p.starts_with("lsn_"))
             .collect();
         let retained_snapshot_paths: HashSet<_> = latest
             .retained_snapshots
@@ -1816,7 +1685,6 @@ mod tests {
                     path: "snap2".to_string(),
                 },
             ],
-            pending_deletions: vec![],
         };
 
         let status = PartitionSnapshotStatus::from(&latest);
