@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
@@ -430,6 +430,75 @@ pub struct StorageOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub always_commit_in_background: bool,
+
+    /// # Disable compact-on-deletion collector
+    ///
+    /// When set to `true`, disables RocksDB's CompactOnDeletionCollector for partition stores.
+    /// The collector automatically triggers compaction when SST files accumulate a high density
+    /// of tombstones (deletion markers), helping reclaim disk space after bulk deletions.
+    ///
+    /// This helps control space amplification when invocation journal retention expires and
+    /// the cleaner purges completed invocations.
+    ///
+    /// Consider disabling this if you observe frequent unnecessary compactions triggered by
+    /// the collector causing performance issues.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub rocksdb_disable_compact_on_deletion: bool,
+
+    /// # Compact-on-deletion sliding window size
+    ///
+    /// The number of consecutive keys examined by the CompactOnDeletionCollector. If the window
+    /// contains at least `rocksdb-compact-on-deletions-count` tombstones, the SST file is marked
+    /// for compaction.
+    ///
+    /// Larger windows detect sparser deletion patterns but increase scanning overhead.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(
+        skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_window",
+        default = "serde_helpers::default_compact_on_deletions_window"
+    )]
+    pub rocksdb_compact_on_deletions_window: NonZeroUsize,
+
+    /// # Compact-on-deletion tombstone count trigger
+    ///
+    /// Minimum number of tombstones within the sliding window that triggers compaction.
+    /// With default values (window=1000, count=100), compaction triggers when at least 10%
+    /// of keys in any window are tombstones.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(
+        skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_count",
+        default = "serde_helpers::default_compact_on_deletions_count"
+    )]
+    pub rocksdb_compact_on_deletions_count: NonZeroUsize,
+
+    /// # Compact-on-deletion ratio trigger
+    ///
+    /// Overall deletion ratio threshold for the entire SST file. If the proportion of
+    /// tombstones to total entries exceeds this ratio, the file is marked for compaction
+    /// regardless of the sliding window check.
+    ///
+    /// Valid range is (0.0, 1.0]. Values outside this range disable ratio-based triggering,
+    /// relying solely on the sliding window.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(
+        skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_ratio",
+        default = "serde_helpers::default_compact_on_deletions_ratio"
+    )]
+    pub rocksdb_compact_on_deletions_ratio: f64,
+
+    /// # Compact-on-deletion minimum SST file size
+    ///
+    /// Minimum SST file size in bytes before the compact-on-deletion collector will consider
+    /// marking the file for compaction. Files smaller than this threshold are ignored even if
+    /// they exceed the deletion count or ratio triggers.
+    ///
+    /// Set to 0 to disable the minimum file size check (default).
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(
+        skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_min_sst_file_size",
+        default = "serde_helpers::default_compact_on_deletions_min_sst_file_size"
+    )]
+    pub rocksdb_compact_on_deletions_min_sst_file_size: ByteCount,
 }
 
 impl StorageOptions {
@@ -484,6 +553,13 @@ impl Default for StorageOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
             always_commit_in_background: false,
+            rocksdb_disable_compact_on_deletion: false,
+            rocksdb_compact_on_deletions_window: serde_helpers::default_compact_on_deletions_window(
+            ),
+            rocksdb_compact_on_deletions_count: serde_helpers::default_compact_on_deletions_count(),
+            rocksdb_compact_on_deletions_ratio: serde_helpers::default_compact_on_deletions_ratio(),
+            rocksdb_compact_on_deletions_min_sst_file_size:
+                serde_helpers::default_compact_on_deletions_min_sst_file_size(),
         }
     }
 }
@@ -616,5 +692,45 @@ impl From<ThrottlingOptions> for gardal::Limit {
         }
 
         limit
+    }
+}
+
+mod serde_helpers {
+    use std::num::NonZeroUsize;
+
+    use restate_serde_util::ByteCount;
+
+    pub const fn default_compact_on_deletions_window() -> NonZeroUsize {
+        // SAFETY: 1000 is non-zero
+        unsafe { NonZeroUsize::new_unchecked(1000) }
+    }
+
+    pub fn is_default_compact_on_deletions_window(v: &NonZeroUsize) -> bool {
+        *v == default_compact_on_deletions_window()
+    }
+
+    pub const fn default_compact_on_deletions_count() -> NonZeroUsize {
+        // SAFETY: 100 is non-zero
+        unsafe { NonZeroUsize::new_unchecked(100) }
+    }
+
+    pub fn is_default_compact_on_deletions_count(v: &NonZeroUsize) -> bool {
+        *v == default_compact_on_deletions_count()
+    }
+
+    pub const fn default_compact_on_deletions_ratio() -> f64 {
+        0.25
+    }
+
+    pub fn is_default_compact_on_deletions_ratio(v: &f64) -> bool {
+        *v == default_compact_on_deletions_ratio()
+    }
+
+    pub const fn default_compact_on_deletions_min_sst_file_size() -> ByteCount {
+        ByteCount::<true>::new(0)
+    }
+
+    pub fn is_default_compact_on_deletions_min_sst_file_size(v: &ByteCount) -> bool {
+        *v == default_compact_on_deletions_min_sst_file_size()
     }
 }
