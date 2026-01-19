@@ -241,6 +241,11 @@ message InvocationStatusV2Lazy {
   optional dev.restate.service.protocol.ServiceProtocolVersion
       service_protocol_version = 16;
 
+  // Suspended
+  repeated uint32 waiting_for_completions = 17;
+  repeated uint32 waiting_for_signal_indexes = 23;
+//  repeated string waiting_for_signal_names = 24;
+
   // Completed
   // optional bytes result_lazy = 18;
 }
