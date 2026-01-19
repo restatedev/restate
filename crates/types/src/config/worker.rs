@@ -430,6 +430,47 @@ pub struct StorageOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub always_commit_in_background: bool,
+
+    /// # Disable compact-on-deletion collector
+    ///
+    /// When set to `true`, disables RocksDB's CompactOnDeletionCollector for partition stores.
+    /// The collector automatically triggers compaction when SST files accumulate a high density
+    /// of tombstones (deletion markers), helping reclaim disk space after bulk deletions.
+    ///
+    /// This helps control space amplification when invocation journal retention expires and
+    /// the cleaner purges completed invocations.
+    ///
+    /// Consider disabling this if you observe frequent unnecessary compactions triggered by
+    /// the collector causing performance issues.
+    pub rocksdb_disable_compact_on_deletion: bool,
+
+    /// # Compact-on-deletion sliding window size
+    ///
+    /// The number of consecutive keys examined by the CompactOnDeletionCollector. If the window
+    /// contains at least `rocksdb-compact-on-deletions-count` tombstones, the SST file is marked
+    /// for compaction.
+    ///
+    /// Larger windows detect sparser deletion patterns but increase scanning overhead.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub rocksdb_compact_on_deletions_window: NonZeroUsize,
+
+    /// # Compact-on-deletion tombstone count trigger
+    ///
+    /// Minimum number of tombstones within the sliding window that triggers compaction.
+    /// With default values (window=1000, count=100), compaction triggers when at least 10%
+    /// of keys in any window are tombstones.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub rocksdb_compact_on_deletions_count: NonZeroUsize,
+
+    /// # Compact-on-deletion ratio trigger
+    ///
+    /// Overall deletion ratio threshold (0.0-1.0) for the entire SST file. If the proportion
+    /// of tombstones to total entries exceeds this ratio, the file is marked for compaction
+    /// regardless of the sliding window check.
+    ///
+    /// Set to 0.0 to disable ratio-based triggering and rely solely on the sliding window.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub rocksdb_compact_on_deletions_ratio: f64,
 }
 
 impl StorageOptions {
@@ -484,6 +525,10 @@ impl Default for StorageOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
             always_commit_in_background: false,
+            rocksdb_disable_compact_on_deletion: false,
+            rocksdb_compact_on_deletions_window: NonZeroUsize::new(1000).unwrap(),
+            rocksdb_compact_on_deletions_count: NonZeroUsize::new(100).unwrap(),
+            rocksdb_compact_on_deletions_ratio: 0.25,
         }
     }
 }
