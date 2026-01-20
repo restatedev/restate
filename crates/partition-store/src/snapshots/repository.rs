@@ -992,8 +992,7 @@ impl SnapshotRepository {
 
             // Errors are logged inside delete_snapshot_files; if cleanup fails,
             // these snapshots become orphans to be cleaned by future scan-sweep.
-            self
-                .delete_snapshot_files(partition_id, snapshot_ref, &referenced_sst_keys)
+            self.delete_snapshot_files(partition_id, snapshot_ref, &referenced_sst_keys)
                 .await;
         }
 
