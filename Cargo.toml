@@ -10,6 +10,7 @@ members = [
     "benchmarks",
     "tools/bifrost-benchpress",
     "tools/mock-service-endpoint",
+    "tools/restate-doctor",
     "tools/restatectl",
     "tools/service-protocol-wireshark-dissector",
     "tools/xtask",
@@ -21,6 +22,7 @@ default-members = [
     "crates/core/derive",
     "crates/codederror/derive",
     "server",
+    "tools/restate-doctor",
     "tools/restatectl",
 ]
 resolver = "2"
