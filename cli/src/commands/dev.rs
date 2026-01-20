@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::stylesheet;
-use restate_cli_util::{CliContext, c_indent_table, c_println};
+use restate_cli_util::{CliContext, c_indent_table, c_println, c_warn};
 use restate_lite::{AddressMeta, Options, Restate};
 use restate_types::art::render_restate_logo;
 use restate_types::net::address::{AdminPort, HttpIngressPort, ListenerPort};
@@ -118,6 +118,18 @@ pub async fn run(State(_env): State<CliEnv>, opts: &Dev) -> Result<()> {
 
     if let Err(_err) = open::that(&admin_url) {
         c_println!("Failed to open browser automatically. Please open {admin_url} manually.")
+    }
+
+    c_println!(
+        "{} Do NOT use this tool to run restate in production.\
+        This is a test/dev environment. For production, please use `restate-server` instead.",
+        stylesheet::TIP_ICON
+    );
+
+    if !opts.retain {
+        c_warn!(
+            "Data directory will be deleted after exit, use --retain to change this behaviour."
+        );
     }
 
     c_println!();
