@@ -32,7 +32,6 @@ use restate_types::retries::RetryPolicy;
 use crate::raft::network::ConnectionManager;
 use crate::raft::network::grpc_svc::new_metadata_server_network_client;
 use crate::raft::server::member::Member;
-use crate::raft::server::uninitialized::Uninitialized;
 use crate::raft::server::{Error, RaftServerComponents};
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{RaftServerState, network};
@@ -47,7 +46,7 @@ pub struct Standby {
     storage: RocksDbStorage,
     request_rx: RequestReceiver,
     join_cluster_rx: JoinClusterReceiver,
-    metadata_writer: Option<MetadataWriter>,
+    metadata_writer: MetadataWriter,
     status_tx: StatusSender,
     command_rx: MetadataCommandReceiver,
 }
@@ -58,7 +57,7 @@ impl Standby {
         connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
         request_rx: RequestReceiver,
         join_cluster_rx: JoinClusterReceiver,
-        metadata_writer: Option<MetadataWriter>,
+        metadata_writer: MetadataWriter,
         status_tx: StatusSender,
         command_rx: MetadataCommandReceiver,
     ) -> Self {
@@ -326,29 +325,6 @@ impl Standby {
                 node_id,
                 address: node_config.address.clone(),
             })
-    }
-}
-
-impl From<Uninitialized> for Standby {
-    fn from(value: Uninitialized) -> Self {
-        let RaftServerComponents {
-            storage,
-            connection_manager,
-            request_rx,
-            status_tx,
-            command_rx,
-            join_cluster_rx,
-            metadata_writer,
-        } = value.into_inner();
-        Standby::new(
-            storage,
-            connection_manager,
-            request_rx,
-            join_cluster_rx,
-            metadata_writer,
-            status_tx,
-            command_rx,
-        )
     }
 }
 

@@ -54,7 +54,6 @@ use crate::metric_definitions::{
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::network::{ConnectionManager, Networking};
 use crate::raft::server::standby::Standby;
-use crate::raft::server::uninitialized::Uninitialized;
 use crate::raft::server::{
     ConfChangeError, CreateSnapshotError, Error, RaftServerComponents, RestoreSnapshotError,
 };
@@ -92,7 +91,7 @@ pub struct Member {
     is_leaving: bool,
 
     connection_manager: Arc<ArcSwapOption<ConnectionManager<Message>>>,
-    metadata_writer: Option<MetadataWriter>,
+    metadata_writer: MetadataWriter,
 
     request_rx: RequestReceiver,
     join_cluster_rx: JoinClusterReceiver,
@@ -109,7 +108,7 @@ impl Member {
         storage: RocksDbStorage,
         request_rx: RequestReceiver,
         join_cluster_rx: JoinClusterReceiver,
-        metadata_writer: Option<MetadataWriter>,
+        metadata_writer: MetadataWriter,
         status_tx: StatusSender,
         command_rx: MetadataCommandReceiver,
     ) -> Result<Self, Error> {
@@ -153,7 +152,7 @@ impl Member {
         let drain = TracingSlogDrain;
         let logger = slog::Logger::root(drain, o!());
 
-        let mut kv_storage = KvMemoryStorage::new(metadata_writer.clone());
+        let mut kv_storage = KvMemoryStorage::new(Some(metadata_writer.clone()));
         let mut snapshot_summary = None;
         let mut configuration = MetadataServerConfiguration::default();
 
@@ -211,33 +210,6 @@ impl Member {
         member.validate_metadata_server_configuration();
 
         Ok(member)
-    }
-
-    pub fn try_from_uninitialized(
-        my_member_id: MemberId,
-        min_expected_nodes_config_version: Version,
-        unitialized: Uninitialized,
-    ) -> Result<Self, Error> {
-        let RaftServerComponents {
-            storage,
-            connection_manager,
-            request_rx,
-            status_tx,
-            command_rx,
-            join_cluster_rx,
-            metadata_writer,
-        } = unitialized.into_inner();
-        Self::create(
-            my_member_id,
-            min_expected_nodes_config_version,
-            connection_manager,
-            storage,
-            request_rx,
-            join_cluster_rx,
-            metadata_writer,
-            status_tx,
-            command_rx,
-        )
     }
 
     pub fn try_from_standby(

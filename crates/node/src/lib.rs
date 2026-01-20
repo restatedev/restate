@@ -405,7 +405,7 @@ impl Node {
             TaskCenter::spawn(
                 TaskKind::MetadataServer,
                 "metadata-server",
-                metadata_server.run(Some(metadata_writer.clone())),
+                metadata_server.run(metadata_writer.clone()),
             )?;
         }
 
