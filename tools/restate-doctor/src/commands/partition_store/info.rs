@@ -32,6 +32,8 @@ use super::PartitionStoreOpts;
 /// Shows database size on disk, LSM tree structure including level sizes,
 /// file counts, and SST file details. Useful for understanding storage
 /// distribution and diagnosing compaction issues.
+///
+/// Use `partition-store sst` for detailed SST file inspection with decoded keys.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_info")]
 pub struct Info {
@@ -316,6 +318,12 @@ fn print_cf_details(stats: &[CfStats], show_extra: bool) {
                         c_println!("    {line}");
                     }
                 }
+
+                c_println!();
+                c_println!(
+                    "  Tip: Use `partition-store sst --cf {} <file#>` for detailed file inspection",
+                    cf.name
+                );
             }
         }
     }
