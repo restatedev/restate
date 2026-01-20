@@ -27,6 +27,10 @@
   if: ${{ runner.os == 'macOS' }}
   run: echo MACOSX_DEPLOYMENT_TARGET="10.14.0" >> "$GITHUB_ENV"
 
+- name: Set up CODESIGN_OPTIONS for hardened runtime (macOS)
+  if: ${{ runner.os == 'macOS' }}
+  run: echo CODESIGN_OPTIONS="runtime" >> "$GITHUB_ENV"
+
 # cargo-dist isn't currently able to take these from .cargo/config.toml
 # https://github.com/axodotdev/cargo-dist/issues/1571
 - name: Set up RUSTFLAGS (macOS)

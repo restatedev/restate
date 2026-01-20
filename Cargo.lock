@@ -8363,8 +8363,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.1.29"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.29#c2f9fe2840d18e73ff7f184f99cec18ba4939b2e"
+version = "0.1.30"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.30#c5615ce482b193203ea6949716c9647b0189df38"
 dependencies = [
  "anyhow",
  "include_dir",
@@ -8705,7 +8705,7 @@ dependencies = [
 [[package]]
 name = "rust-librocksdb-sys"
 version = "0.41.0+10.9.1"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=40d19a6c4fa2eef9a8d60d570bd7c7ae1f983d13#40d19a6c4fa2eef9a8d60d570bd7c7ae1f983d13"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=baaa733a94e2b590e20761a4de371cb367eeda51#baaa733a94e2b590e20761a4de371cb367eeda51"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -8721,7 +8721,7 @@ dependencies = [
 [[package]]
 name = "rust-rocksdb"
 version = "0.45.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=40d19a6c4fa2eef9a8d60d570bd7c7ae1f983d13#40d19a6c4fa2eef9a8d60d570bd7c7ae1f983d13"
+source = "git+https://github.com/restatedev/rust-rocksdb?rev=baaa733a94e2b590e20761a4de371cb367eeda51#baaa733a94e2b590e20761a4de371cb367eeda51"
 dependencies = [
  "libc",
  "parking_lot",
