@@ -32,14 +32,15 @@ use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::kafka::{KafkaCluster, KafkaClusterName, KafkaClusterResolver};
 use crate::schema::metadata::updater;
 use crate::schema::metadata::updater::{
-    AllowOrphanSubscriptions, SchemaError, SchemaUpdater, ServiceError,
+    KafkaClusterError, SchemaError, SchemaUpdater, ServiceError,
 };
 use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
 
 use crate::schema::Redaction;
 pub use crate::schema::metadata::updater::{
-    AddDeploymentResult, AllowBreakingChanges, ModifyServiceRequest, Overwrite,
+    AddDeploymentResult, AllowBreakingChanges, AllowOrphanSubscriptions, ModifyServiceRequest,
+    Overwrite,
 };
 // -- Schema registry error and other types
 
@@ -61,10 +62,19 @@ impl SchemaRegistryError {
             SchemaRegistryErrorInner::Schema(schema_error) => match schema_error {
                 SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
                 SchemaError::Service(ServiceError::DifferentType { .. })
-                | SchemaError::Service(ServiceError::RemovedHandlers { .. }) => {
-                    StatusCode::CONFLICT
-                }
+                | SchemaError::Service(ServiceError::RemovedHandlers { .. })
+                | SchemaError::KafkaCluster(KafkaClusterError::AlreadyExists { .. })
+                | SchemaError::KafkaCluster(
+                    KafkaClusterError::RemovalLeadsToOrphanSubscription { .. },
+                )
+                | SchemaError::KafkaCluster(
+                    KafkaClusterError::CannotUpdateStaticClusterConfiguration { .. },
+                )
+                | SchemaError::KafkaCluster(KafkaClusterError::ConflictsWithStaticConfig {
+                    ..
+                }) => StatusCode::CONFLICT,
                 SchemaError::Service(_) => StatusCode::BAD_REQUEST,
+                SchemaError::KafkaCluster(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::BAD_REQUEST,
             },
             SchemaRegistryErrorInner::UpdateDeployment { .. } => StatusCode::BAD_REQUEST,
@@ -599,7 +609,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .get_kafka_cluster(cluster_name, Redaction::Yes)
     }
 
-    fn get_kafka_cluster_and_subscriptions(
+    pub fn get_kafka_cluster_and_subscriptions(
         &self,
         cluster_name: &str,
     ) -> Option<(KafkaCluster, Vec<Subscription>)> {
@@ -608,7 +618,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .get_kafka_cluster_and_subscriptions(cluster_name, Redaction::Yes)
     }
 
-    fn get_kafka_clusters(&self) -> Vec<KafkaCluster> {
+    pub fn get_kafka_clusters(&self) -> Vec<KafkaCluster> {
         self.metadata_service
             .get()
             .list_kafka_clusters(Redaction::Yes)

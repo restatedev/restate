@@ -16,6 +16,7 @@ mod error;
 mod handlers;
 mod health;
 mod invocations;
+mod kafka_clusters;
 mod query;
 mod services;
 mod subscriptions;
@@ -52,6 +53,7 @@ pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
          external_docs(url = "https://docs.restate.dev/operate/invocation", description = "Invocations documentation")),
         (name = "subscription", description = "Subscription management",
          external_docs(url = "https://docs.restate.dev/operate/invocation#managing-kafka-subscriptions", description = "Kafka subscriptions documentation")),
+        (name = "kafka_cluster", description = "Kafka cluster management"),
         (name = "service", description = "Service management"),
         (name = "service_handler", description = "Service handlers metadata"),
         (name = "cluster_health", description = "Cluster health"),
@@ -112,6 +114,12 @@ where
             .routes(routes!(subscriptions::list_subscriptions))
             .routes(routes!(subscriptions::get_subscription))
             .routes(routes!(subscriptions::delete_subscription))
+            // Kafka cluster endpoints
+            .routes(routes!(kafka_clusters::create_kafka_cluster))
+            .routes(routes!(kafka_clusters::list_kafka_clusters))
+            .routes(routes!(kafka_clusters::get_kafka_cluster))
+            .routes(routes!(kafka_clusters::update_kafka_cluster))
+            .routes(routes!(kafka_clusters::delete_kafka_cluster))
             // Query endpoint
             .routes(routes!(query::query))
     };

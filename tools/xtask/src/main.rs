@@ -27,7 +27,7 @@ use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol::discovery::ServiceDiscovery;
 use restate_storage_query_datafusion::table_docs;
 use restate_types::config::Configuration;
-use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, SubscriptionId};
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
     InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
@@ -42,6 +42,7 @@ use restate_types::live::Constant;
 use restate_types::net::listener::Listeners;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::RetryPolicy;
+use restate_types::schema::kafka::KafkaCluster;
 use restate_types::schema::subscriptions::Subscription;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_worker::SubscriptionController;
@@ -86,15 +87,11 @@ impl WorkerHandle for Mock {
 }
 
 impl SubscriptionController for Mock {
-    async fn start_subscription(&self, _: Subscription) -> Result<(), WorkerHandleError> {
-        Ok(())
-    }
-
-    async fn stop_subscription(&self, _: SubscriptionId) -> Result<(), WorkerHandleError> {
-        Ok(())
-    }
-
-    async fn update_subscriptions(&self, _: Vec<Subscription>) -> Result<(), WorkerHandleError> {
+    async fn update_subscriptions(
+        &self,
+        _: Vec<KafkaCluster>,
+        _: Vec<Subscription>,
+    ) -> Result<(), WorkerHandleError> {
         Ok(())
     }
 }
