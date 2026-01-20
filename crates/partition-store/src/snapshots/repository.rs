@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
@@ -21,6 +21,7 @@ use object_store::path::Path as ObjectPath;
 use object_store::{
     MultipartUpload, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tempfile::TempDir;
@@ -139,6 +140,39 @@ const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 
 /// Minimum age for files to be considered orphan candidates during repository scan.
 const ORPHAN_MIN_AGE: Duration = Duration::from_hours(24);
+
+/// Object store keys eligible for sweeping. Files not matching any pattern are ignored.
+mod sweep_patterns {
+    use super::*;
+
+    /// SST files from incremental snapshots: `ssts/{hex_hash}.sst`
+    pub static SHARED_SST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^ssts/[0-9a-f]+\.sst$").unwrap());
+
+    /// Snapshot prefix: `lsn_{20-digit}-snap_1{base62}`
+    pub static SNAPSHOT_PREFIX: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"lsn_\d{20}-snap_1[A-Za-z0-9]+").unwrap());
+
+    /// Snapshot metadata files: `lsn_{lsn}-snap_1{base62}/metadata.json`
+    pub static SNAPSHOT_METADATA: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^lsn_\d{20}-snap_1[A-Za-z0-9]+/metadata\.json$").unwrap());
+
+    /// SST files from full snapshots: `lsn_{lsn}-snap_1{base62}/{number}.sst`
+    pub static SNAPSHOT_SST: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^lsn_\d{20}-snap_1[A-Za-z0-9]+/\d+\.sst$").unwrap());
+
+    pub fn is_shared_sst(relative_path: &str) -> bool {
+        SHARED_SST.is_match(relative_path)
+    }
+
+    pub fn is_snapshot_file(relative_path: &str) -> bool {
+        SNAPSHOT_METADATA.is_match(relative_path) || SNAPSHOT_SST.is_match(relative_path)
+    }
+
+    pub fn extract_snapshot_prefix(path: &str) -> Option<&str> {
+        SNAPSHOT_PREFIX.find(path).map(|m| m.as_str())
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LatestSnapshotVersion {
@@ -761,7 +795,10 @@ impl SnapshotRepository {
         #[cfg(any(test, feature = "test-util"))]
         let enable_cleanup = self.enable_cleanup;
 
-        if !evicted_snapshots.is_empty() && enable_cleanup {
+        if enable_cleanup && (!evicted_snapshots.is_empty() || self.orphan_cleanup) {
+            // Cleanup task handles both evicted snapshot deletion and orphan sweep.
+            // We spawn it even when no snapshots are evicted so orphan sweep runs
+            // after every successful upload.
             self.spawn_cleanup_task(snapshot.partition_id, evicted_snapshots, lease_guard);
         }
 
@@ -1475,6 +1512,7 @@ impl SnapshotRepository {
         partition_id: PartitionId,
     ) -> anyhow::Result<SnapshotInventory> {
         let prefix = self.partition_snapshots_prefix(partition_id);
+        let prefix_str = format!("{}/", prefix.as_ref());
         let stream = self.object_store.list(Some(&prefix));
 
         let mut scan = SnapshotInventory::default();
@@ -1483,16 +1521,18 @@ impl SnapshotRepository {
         while let Some(meta) = stream.try_next().await? {
             let path_str = meta.location.as_ref();
 
-            // SST files in ssts/ directory (incremental snapshot storage)
-            if path_str.contains("/ssts/") && path_str.ends_with(".sst") {
+            let object_path = match path_str.strip_prefix(&prefix_str) {
+                Some(path) => path,
+                None => continue,
+            };
+
+            if sweep_patterns::is_shared_sst(object_path) {
                 scan.shared_sst_files
                     .insert(meta.location, meta.last_modified);
-                continue;
-            }
-
-            // Snapshot directories matching lsn_*-* pattern
-            if let Some(dir_name) = Self::extract_snapshot_prefix_from_path(path_str) {
-                let is_metadata = path_str.ends_with("/metadata.json");
+            } else if sweep_patterns::is_snapshot_file(object_path)
+                && let Some(dir_name) = Self::extract_snapshot_prefix_from_path(path_str)
+            {
+                let is_metadata = object_path.ends_with("/metadata.json");
                 scan.snapshot_prefixes
                     .entry(dir_name)
                     .and_modify(|(has_meta, newest)| {
@@ -1516,17 +1556,11 @@ impl SnapshotRepository {
         Ok(scan)
     }
 
+    /// Extracts the snapshot directory name from a path if it matches the production format.
+    ///
+    /// Only matches directories with format `lsn_{20-digit}-snap_1{base62}`.
     fn extract_snapshot_prefix_from_path(path: &str) -> Option<String> {
-        // Path format: {prefix}/{partition_id}/{lsn}_{snap_id}/...
-        // We want to extract the {lsn}_{snap_id} part
-        for segment in path.split('/') {
-            // Snapshot directories start with "lsn_" (padded format)
-            // Legacy format may use different patterns, but lsn_ is the current standard
-            if segment.starts_with("lsn_") && segment.contains('-') {
-                return Some(segment.to_string());
-            }
-        }
-        None
+        sweep_patterns::extract_snapshot_prefix(path).map(String::from)
     }
 
     /// Builds the set of SST keys referenced by the given retained snapshots.
@@ -2503,32 +2537,36 @@ mod tests {
     #[test]
     fn test_extract_snapshot_prefix_from_path() {
         assert_eq!(
-            SnapshotRepository::extract_snapshot_prefix_from_path(
-                "prefix/0/lsn_00000000000000001234-abc123/metadata.json"
+            super::sweep_patterns::extract_snapshot_prefix(
+                "prefix/0/lsn_00000000000000001234-snap_1abc123DEF456ghi789/file"
             ),
-            Some("lsn_00000000000000001234-abc123".to_string())
+            Some("lsn_00000000000000001234-snap_1abc123DEF456ghi789")
         );
-        assert_eq!(
-            SnapshotRepository::extract_snapshot_prefix_from_path(
-                "0/lsn_00000000000000000100-snap1/data.sst"
-            ),
-            Some("lsn_00000000000000000100-snap1".to_string())
-        );
+    }
 
-        assert_eq!(
-            SnapshotRepository::extract_snapshot_prefix_from_path("0/ssts/abc123.sst"),
-            None
-        );
+    #[test]
+    fn test_sweep_eligible_patterns() {
+        use super::sweep_patterns::*;
 
-        assert_eq!(
-            SnapshotRepository::extract_snapshot_prefix_from_path("0/latest.json"),
-            None
-        );
+        assert!(is_shared_sst("ssts/abc123def456789012345678901234.sst"));
+        assert!(is_shared_sst("ssts/0123456789abcdef0123456789abcdef.sst"));
 
-        assert_eq!(
-            SnapshotRepository::extract_snapshot_prefix_from_path("random/path/file.txt"),
-            None
-        );
+        assert!(!is_shared_sst("ssts/ignored.sst"));
+        assert!(!is_shared_sst("ssts/ABC123.sst")); // uppercase not allowed
+        assert!(!is_shared_sst("ssts/file with spaces.sst"));
+
+        assert!(is_snapshot_file(
+            "lsn_00000000000000001234-snap_1abc123DEF456ghi789/metadata.json"
+        ));
+        assert!(is_snapshot_file(
+            "lsn_00000000000000001234-snap_1abc123DEF456ghi789/123456.sst"
+        ));
+
+        assert!(!is_snapshot_file("data.json"));
+        assert!(!is_snapshot_file("something-else/metadata.json"));
+        assert!(!is_snapshot_file(
+            "lsn_00000000000000001234-snap1/metadata.json"
+        ));
     }
 
     #[restate_core::test]
@@ -2558,46 +2596,75 @@ mod tests {
             .join(partition_id.to_string())
             .join("ssts");
         tokio::fs::create_dir_all(&ssts_path).await?;
-        tokio::fs::write(ssts_path.join("abc123.sst"), b"sst1").await?;
-        tokio::fs::write(ssts_path.join("def456.sst"), b"sst2").await?;
+        tokio::fs::write(
+            ssts_path.join("abc123def456789012345678901234ab.sst"),
+            b"sst1",
+        )
+        .await?;
+        tokio::fs::write(
+            ssts_path.join("def456abc789012345678901234abcd.sst"),
+            b"sst2",
+        )
+        .await?;
+        tokio::fs::write(ssts_path.join("ignored.sst"), b"ignored").await?;
 
-        let snapshot_prefix = snapshots_destination
+        let snapshot_path = snapshots_destination
             .path()
             .join(partition_id.to_string())
-            .join("lsn_00000000000000000100-snap1");
-        tokio::fs::create_dir_all(&snapshot_prefix).await?;
-        tokio::fs::write(snapshot_prefix.join("metadata.json"), b"{}").await?;
-        tokio::fs::write(snapshot_prefix.join("data.sst"), b"data").await?;
+            .join("lsn_00000000000000000100-snap_1abc123DEF456ghi789");
+        tokio::fs::create_dir_all(&snapshot_path).await?;
+        tokio::fs::write(snapshot_path.join("metadata.json"), b"{}").await?;
+        tokio::fs::write(snapshot_path.join("000001.sst"), b"data").await?;
 
+        // missing metadata.json
         let incomplete_snapshot_path = snapshots_destination
             .path()
             .join(partition_id.to_string())
-            .join("lsn_00000000000000000200-snap2");
+            .join("lsn_00000000000000000200-snap_1xyz789ABC456def123");
         tokio::fs::create_dir_all(&incomplete_snapshot_path).await?;
-        tokio::fs::write(incomplete_snapshot_path.join("data.sst"), b"data").await?;
+        tokio::fs::write(incomplete_snapshot_path.join("000001.sst"), b"data").await?;
 
-        // Scan the partition
+        // invalid snapshot name
+        let non_snapshot_path = snapshots_destination
+            .path()
+            .join(partition_id.to_string())
+            .join("lsn_00000000000000000300-something");
+        tokio::fs::create_dir_all(&non_snapshot_path).await?;
+        tokio::fs::write(non_snapshot_path.join("metadata.json"), b"{}").await?;
+
         let scan = repository.scan_partition_files(partition_id).await?;
 
-        assert_eq!(scan.shared_sst_files.len(), 2, "should find 2 SST files");
+        assert_eq!(
+            scan.shared_sst_files.len(),
+            2,
+            "should find 2 hex-named SST files"
+        );
+
         assert_eq!(
             scan.snapshot_prefixes.len(),
             2,
-            "should find 2 snapshot directories"
+            "should find 2 production-format snapshot directories"
         );
         assert_eq!(
             scan.snapshot_prefixes
-                .get("lsn_00000000000000000100-snap1")
-                .map(|(has_meta, _)| *has_meta),
+                .get("lsn_00000000000000000100-snap_1abc123DEF456ghi789")
+                .map(|(has_metadata, _)| *has_metadata),
             Some(true),
-            "snap1 should have metadata"
+            "first snapshot should have metadata"
         );
         assert_eq!(
             scan.snapshot_prefixes
-                .get("lsn_00000000000000000200-snap2")
-                .map(|(has_meta, _)| *has_meta),
+                .get("lsn_00000000000000000200-snap_1xyz789ABC456def123")
+                .map(|(has_metadata, _)| *has_metadata),
             Some(false),
-            "snap2 should not have metadata"
+            "second snapshot should not have metadata"
+        );
+
+        assert!(
+            !scan
+                .snapshot_prefixes
+                .contains_key("lsn_00000000000000000300-snap1"),
+            "invalid snapshot prefix should be ignored"
         );
 
         Ok(())

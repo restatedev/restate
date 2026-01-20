@@ -7832,6 +7832,7 @@ dependencies = [
  "paste",
  "prost 0.14.1",
  "rand 0.9.2",
+ "regex",
  "restate-clock",
  "restate-core",
  "restate-errors",
