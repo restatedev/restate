@@ -85,7 +85,7 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             .unwrap()
             .to_string(),
     );
-    base_config.worker.snapshots.experimental_snapshot_kind = SnapshotType::Incremental;
+    base_config.worker.snapshots.experimental_snapshot_type = SnapshotType::Incremental;
     base_config.worker.snapshots.experimental_num_retained =
         Some(NonZeroU8::new(RETAIN_SNAPSHOTS).unwrap());
     // Fast check interval for responsive snapshot triggering

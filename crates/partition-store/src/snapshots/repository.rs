@@ -1187,23 +1187,35 @@ impl SnapshotRepository {
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
+        let candidates = self.get_snapshot_candidates(partition_id, None).await?;
+        let Some(latest) = candidates.first() else {
+            return Ok(None);
+        };
+        tracing::Span::current().record("snapshot_id", tracing::field::display(latest.snapshot_id));
+        self.get_snapshot(partition_id, latest).await.map(Some)
+    }
+
+    pub async fn get_snapshot_candidates(
+        &self,
+        partition_id: PartitionId,
+        target_lsn: Option<Lsn>,
+    ) -> anyhow::Result<Vec<SnapshotReference>> {
         let latest_path = self.latest_snapshot_pointer_path(partition_id);
 
         let latest = match self.object_store.get(&latest_path).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => {
                 debug!("Latest snapshot data not found in repository");
-                return Ok(None);
+                return Ok(vec![]);
             }
             Err(err) => return Err(err.into()),
         };
 
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
-        tracing::Span::current().record("snapshot_id", tracing::field::display(latest.snapshot_id));
-        debug!("Latest snapshot metadata: {latest:?}");
+        debug!(snapshot_id = %latest.snapshot_id, "Latest snapshot metadata: {latest:?}");
+
         Metadata::with_current(|m| {
             let nodes_config = m.nodes_config_ref();
-
             latest.validate(
                 nodes_config.cluster_name(),
                 nodes_config.cluster_fingerprint(),
@@ -1212,25 +1224,44 @@ impl SnapshotRepository {
         })
         .with_context(|| format!("'{latest_path}' has validation errors"))?;
 
+        let candidates = latest.effective_retained_snapshots();
+        Ok(if let Some(min_lsn) = target_lsn {
+            candidates
+                .into_iter()
+                .filter(|c| c.min_applied_lsn >= min_lsn)
+                .collect()
+        } else {
+            candidates
+        })
+    }
+
+    #[instrument(
+        level = "error",
+        skip_all,
+        fields(%partition_id, snapshot_id = %snapshot_ref.snapshot_id),
+    )]
+    pub async fn get_snapshot(
+        &self,
+        partition_id: PartitionId,
+        snapshot_ref: &SnapshotReference,
+    ) -> anyhow::Result<LocalPartitionSnapshot> {
         let snapshot_metadata_path = self
             .prefix
             .child(partition_id.to_string())
-            .child(latest.path.as_str())
+            .child(snapshot_ref.path.as_str())
             .child("metadata.json");
-        let snapshot_metadata = self.object_store.get(&snapshot_metadata_path).await;
 
-        let snapshot_metadata = match snapshot_metadata {
-            Ok(result) => result,
-            Err(object_store::Error::NotFound { .. }) => {
-                bail!(
-                    "Latest snapshot points to '{snapshot_metadata_path}' that was not found in the repository!"
-                );
-            }
-            Err(err) => return Err(err.into()),
-        };
+        let snapshot_metadata = self
+            .object_store
+            .get(&snapshot_metadata_path)
+            .await
+            .with_context(|| {
+                format!("Snapshot metadata at '{snapshot_metadata_path}' not found in repository")
+            })?;
 
         let mut snapshot_metadata: PartitionSnapshotMetadata =
             serde_json::from_slice(&snapshot_metadata.bytes().await?)?;
+
         if !matches!(snapshot_metadata.version, SnapshotFormatVersion::V1) {
             bail!(
                 "Unsupported snapshot format version: {:?}",
@@ -1240,7 +1271,6 @@ impl SnapshotRepository {
 
         Metadata::with_current(|m| {
             let nodes_config = m.nodes_config_ref();
-
             snapshot_metadata.validate(
                 nodes_config.cluster_name(),
                 nodes_config.cluster_fingerprint(),
@@ -1270,6 +1300,7 @@ impl SnapshotRepository {
         let concurrency_limiter = Arc::new(Semaphore::new(DOWNLOAD_CONCURRENCY_LIMIT));
         let mut downloads = JoinSet::new();
         let mut task_handles = HashMap::with_capacity(snapshot_metadata.files.len());
+
         for file in &mut snapshot_metadata.files {
             let filename = strip_leading_slash(&file.name);
             let expected_size = file.size;
@@ -1279,7 +1310,7 @@ impl SnapshotRepository {
                     .file_keys
                     .get(&file.name)
                     .map(|s| s.as_str()),
-                &latest.path,
+                &snapshot_ref.path,
                 filename,
             );
             let local_path = snapshot_dir.path().join(filename);
@@ -1320,7 +1351,6 @@ impl SnapshotRepository {
                 anyhow::Ok(())
             }.instrument(Span::current()))?;
             task_handles.insert(handle.id(), filename.to_string());
-            // patch the directory path to reflect the actual location on the restoring node
             file.directory = directory.clone();
         }
 
@@ -1352,14 +1382,15 @@ impl SnapshotRepository {
             path = %snapshot_dir.path().display(),
             "Downloaded partition snapshot",
         );
-        Ok(Some(LocalPartitionSnapshot {
+
+        Ok(LocalPartitionSnapshot {
             base_dir: snapshot_dir.keep(),
             log_id: snapshot_metadata.log_id,
             min_applied_lsn: snapshot_metadata.min_applied_lsn,
             db_comparator_name: snapshot_metadata.db_comparator_name,
             files: snapshot_metadata.files,
             key_range: snapshot_metadata.key_range.clone(),
-        }))
+        })
     }
 
     /// Retrieve the latest snapshot metadata from the snapshot repository
