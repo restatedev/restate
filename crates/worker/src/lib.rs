@@ -55,6 +55,7 @@ use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
 use restate_types::schema::Redaction;
+use restate_types::schema::kafka::KafkaClusterResolver;
 use restate_types::schema::subscriptions::SubscriptionResolver;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -235,8 +236,7 @@ where
         TaskCenter::spawn_child(
             TaskKind::SystemService,
             "kafka-ingress",
-            self.ingress_kafka
-                .run(Configuration::map_live(|c| &c.ingress)),
+            self.ingress_kafka.run(),
         )?;
 
         self.partition_processor_manager.run().await?;
@@ -262,9 +262,10 @@ where
                 version = metadata.wait_for_version(MetadataKind::Schema, next_version) => {
                     let _ = version?;
                     let schema = updateable_schema.live_load();
+                    let kafka_clusters = schema.list_kafka_clusters(Redaction::No);
                     let subscriptions = schema.list_subscriptions(&[], Redaction::No);
                     subscription_controller
-                        .update_subscriptions(subscriptions)
+                        .update_subscriptions(kafka_clusters, subscriptions)
                         .await?;
 
                     next_version = schema.version().next();
