@@ -384,6 +384,10 @@ pub struct Schema {
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     subscriptions: HashMap<SubscriptionId, Subscription>,
+
+    // Kafka clusters
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kafka_clusters: Option<Vec<KafkaCluster>>,
 }
 
 impl From<super::Schema> for Schema {
@@ -392,6 +396,7 @@ impl From<super::Schema> for Schema {
             version,
             deployments,
             subscriptions,
+            kafka_clusters,
             ..
         }: super::Schema,
     ) -> Self {
@@ -401,6 +406,7 @@ impl From<super::Schema> for Schema {
             deployments_v2: Some(deployments.into_values().collect()),
             version,
             subscriptions,
+            kafka_clusters: Some(kafka_clusters.into_values().collect()),
         }
     }
 }
@@ -413,8 +419,15 @@ impl From<Schema> for super::Schema {
             deployments_v2,
             version,
             subscriptions,
+            kafka_clusters,
         }: Schema,
     ) -> Self {
+        let kafka_clusters_map: HashMap<String, KafkaCluster> = kafka_clusters
+            .unwrap_or_default()
+            .into_iter()
+            .map(|cluster| (cluster.name().to_string(), cluster))
+            .collect();
+
         if let Some(deployments_v2) = deployments_v2 {
             Self {
                 version,
@@ -424,6 +437,7 @@ impl From<Schema> for super::Schema {
                     .map(|deployment| (deployment.id, deployment))
                     .collect(),
                 subscriptions,
+                kafka_clusters: kafka_clusters_map,
             }
         } else if let (Some(services), Some(deployments)) = (services, deployments) {
             let conversions::V2Schemas { deployments } = conversions::V1Schemas {
@@ -440,6 +454,7 @@ impl From<Schema> for super::Schema {
                     .map(|deployment| (deployment.id, deployment))
                     .collect(),
                 subscriptions,
+                kafka_clusters: kafka_clusters_map,
             }
         } else {
             panic!(

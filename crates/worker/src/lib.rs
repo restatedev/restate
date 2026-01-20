@@ -54,6 +54,7 @@ use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
+use restate_types::schema::Redaction;
 use restate_types::schema::subscriptions::SubscriptionResolver;
 
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -261,7 +262,7 @@ where
                 version = metadata.wait_for_version(MetadataKind::Schema, next_version) => {
                     let _ = version?;
                     let schema = updateable_schema.live_load();
-                    let subscriptions = schema.list_subscriptions(&[]);
+                    let subscriptions = schema.list_subscriptions(&[], Redaction::No);
                     subscription_controller
                         .update_subscriptions(subscriptions)
                         .await?;

@@ -29,15 +29,18 @@ use crate::deployment::{
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
+use crate::schema::kafka::{KafkaCluster, KafkaClusterName, KafkaClusterResolver};
 use crate::schema::metadata::updater;
-use crate::schema::metadata::updater::{SchemaError, SchemaUpdater, ServiceError};
+use crate::schema::metadata::updater::{
+    AllowOrphanSubscriptions, SchemaError, SchemaUpdater, ServiceError,
+};
 use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
 
+use crate::schema::Redaction;
 pub use crate::schema::metadata::updater::{
     AddDeploymentResult, AllowBreakingChanges, ModifyServiceRequest, Overwrite,
 };
-
 // -- Schema registry error and other types
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -581,11 +584,34 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
     pub fn get_subscription(&self, subscription_id: SubscriptionId) -> Option<Subscription> {
         self.metadata_service
             .get()
-            .get_subscription(subscription_id)
+            .get_subscription(subscription_id, Redaction::Yes)
     }
 
     pub fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
-        self.metadata_service.get().list_subscriptions(filters)
+        self.metadata_service
+            .get()
+            .list_subscriptions(filters, Redaction::Yes)
+    }
+
+    pub fn get_kafka_cluster(&self, cluster_name: &str) -> Option<KafkaCluster> {
+        self.metadata_service
+            .get()
+            .get_kafka_cluster(cluster_name, Redaction::Yes)
+    }
+
+    fn get_kafka_cluster_and_subscriptions(
+        &self,
+        cluster_name: &str,
+    ) -> Option<(KafkaCluster, Vec<Subscription>)> {
+        self.metadata_service
+            .get()
+            .get_kafka_cluster_and_subscriptions(cluster_name, Redaction::Yes)
+    }
+
+    fn get_kafka_clusters(&self) -> Vec<KafkaCluster> {
+        self.metadata_service
+            .get()
+            .list_kafka_clusters(Redaction::Yes)
     }
 
     pub async fn create_subscription(
@@ -598,17 +624,90 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .metadata_service
             .update(|schema| {
                 SchemaUpdater::update_and_return(schema, |updater| {
-                    updater.add_subscription(None, source.clone(), sink.clone(), options.clone())
+                    updater.add_subscription(source.clone(), sink.clone(), options.clone())
                 })
                 .map_err(Into::into)
             })
             .await?;
 
         let subscription = schema
-            .get_subscription(subscription_id)
+            .get_subscription(subscription_id, Redaction::Yes)
             .expect("subscription was just added");
 
         Ok(subscription)
+    }
+
+    pub async fn create_kafka_cluster(
+        &self,
+        name: KafkaClusterName,
+        properties: HashMap<String, String>,
+    ) -> Result<KafkaCluster, SchemaRegistryError> {
+        let (kafka_cluster_name, schema) = self
+            .metadata_service
+            .update(|schema| {
+                SchemaUpdater::update_and_return(schema, |updater| {
+                    updater.add_kafka_cluster(name.clone(), properties.clone())
+                })
+                .map_err(Into::into)
+            })
+            .await?;
+
+        let subscription = schema
+            .get_kafka_cluster(kafka_cluster_name.as_str(), Redaction::Yes)
+            .expect("subscription was just added");
+
+        Ok(subscription)
+    }
+
+    pub async fn update_kafka_cluster(
+        &self,
+        name: KafkaClusterName,
+        properties: HashMap<String, String>,
+    ) -> Result<KafkaCluster, SchemaRegistryError> {
+        let (_, schema) = self
+            .metadata_service
+            .update(|schema| {
+                Ok((
+                    (),
+                    SchemaUpdater::update(schema, |updater| {
+                        updater.update_kafka_cluster(name.as_str(), properties.clone())
+                    })?,
+                ))
+            })
+            .await?;
+
+        let subscription = schema
+            .get_kafka_cluster(name.as_str(), Redaction::Yes)
+            .expect("subscription was just added");
+
+        Ok(subscription)
+    }
+
+    pub async fn delete_kafka_cluster(
+        &self,
+        name: KafkaClusterName,
+        allow_orphan_subscriptions: AllowOrphanSubscriptions,
+    ) -> Result<(), SchemaRegistryError> {
+        self.metadata_service
+            .update(|schema| {
+                Ok((
+                    (),
+                    SchemaUpdater::update(schema, |updater| {
+                        if updater
+                            .remove_kafka_cluster(name.as_str(), allow_orphan_subscriptions)?
+                        {
+                            Ok(())
+                        } else {
+                            Err(SchemaError::NotFound(format!(
+                                "kafka cluster named '{name}'"
+                            )))
+                        }
+                    })?,
+                ))
+            })
+            .await?;
+
+        Ok(())
     }
 }
 
