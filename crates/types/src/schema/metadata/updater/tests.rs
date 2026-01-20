@@ -2562,3 +2562,555 @@ mod modify_service {
         );
     }
 }
+
+mod kafka_cluster {
+    use super::*;
+    use crate::schema::Redaction;
+    use crate::schema::kafka::KafkaClusterResolver;
+    use crate::schema::subscriptions::SubscriptionResolver;
+    use googletest::prelude::*;
+    use restate_test_util::{assert, assert_eq};
+    use std::collections::HashMap;
+    use test_log::test;
+
+    fn kafka_cluster_properties() -> HashMap<String, String> {
+        let mut properties = HashMap::new();
+        properties.insert(
+            "bootstrap.servers".to_string(),
+            "localhost:9092".to_string(),
+        );
+        properties.insert("security.protocol".to_string(), "SASL_SSL".to_string());
+        properties.insert("sasl.mechanism".to_string(), "PLAIN".to_string());
+        properties.insert("sasl.username".to_string(), "my-user".to_string());
+        properties.insert(
+            "sasl.password".to_string(),
+            "super-secret-password".to_string(),
+        );
+        properties
+    }
+
+    #[test]
+    fn add_kafka_cluster() {
+        let schema = Schema::default();
+        let initial_version = schema.version();
+
+        let (_, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+        })
+        .unwrap();
+
+        // Version should be bumped
+        assert!(initial_version < schema.version());
+
+        // Cluster should be retrievable
+        let cluster = schema
+            .get_kafka_cluster("my-cluster", Redaction::No)
+            .expect("cluster should exist");
+
+        assert_eq!(cluster.name(), "my-cluster");
+        assert_eq!(cluster.properties(), &kafka_cluster_properties());
+    }
+
+    #[test]
+    fn add_kafka_cluster_missing_broker_config() {
+        let mut updater = SchemaUpdater::default();
+        let mut properties = HashMap::new();
+        properties.insert("security.protocol".to_string(), "SASL_SSL".to_string());
+
+        let result = updater.add_kafka_cluster("my-cluster".parse().unwrap(), properties);
+
+        assert_that!(
+            result,
+            err(pat!(SchemaError::KafkaCluster(pat!(
+                KafkaClusterError::MissingBrokerConfiguration(_)
+            ))))
+        );
+    }
+
+    #[test]
+    fn add_kafka_cluster_with_metadata_broker_list() {
+        let mut updater = SchemaUpdater::default();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "metadata.broker.list".to_string(),
+            "localhost:9092,localhost:9093".to_string(),
+        );
+
+        updater
+            .add_kafka_cluster("my-cluster".parse().unwrap(), properties)
+            .expect("should accept metadata.broker.list");
+    }
+
+    #[test]
+    fn add_duplicate_kafka_cluster() {
+        let mut updater = SchemaUpdater::default();
+
+        updater
+            .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+            .expect("first add should succeed");
+
+        let result =
+            updater.add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties());
+
+        assert_that!(
+            result,
+            err(pat!(SchemaError::KafkaCluster(pat!(
+                KafkaClusterError::AlreadyExists(_)
+            ))))
+        );
+    }
+
+    #[test]
+    fn remove_kafka_cluster() {
+        let schema = Schema::default();
+
+        let (_, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater
+                .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+                .unwrap();
+            updater.remove_kafka_cluster("my-cluster", AllowOrphanSubscriptions::No)
+        })
+        .unwrap();
+
+        // Cluster should not exist
+        assert!(
+            schema
+                .get_kafka_cluster("my-cluster", Redaction::No)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn remove_nonexistent_kafka_cluster() {
+        let schema = Schema::default();
+
+        let (removed, _) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater.remove_kafka_cluster("nonexistent", AllowOrphanSubscriptions::No)
+        })
+        .unwrap();
+
+        assert!(!removed);
+    }
+
+    #[test]
+    fn remove_kafka_cluster_with_orphan_subscriptions() {
+        let schema = Schema::default();
+
+        let result = SchemaUpdater::update_and_return(schema, |updater| {
+            // Add deployment and service
+            updater
+                .add_deployment(add_deployment_request(vec![greeter_service()]))
+                .unwrap();
+
+            // Add kafka cluster
+            updater
+                .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+                .unwrap();
+
+            // Add subscription referencing the cluster
+            updater
+                .add_subscription(
+                    "kafka://my-cluster/my-topic".parse().unwrap(),
+                    format!("service://{}/greet", GREETER_SERVICE_NAME)
+                        .parse()
+                        .unwrap(),
+                    None,
+                )
+                .unwrap();
+
+            // Try to remove the cluster without allowing orphan subscriptions
+            updater.remove_kafka_cluster("my-cluster", AllowOrphanSubscriptions::No)
+        });
+
+        assert_that!(
+            result,
+            err(pat!(SchemaError::KafkaCluster(pat!(
+                KafkaClusterError::RemovalLeadsToOrphanSubscription(_, _)
+            ))))
+        );
+    }
+
+    #[test]
+    fn remove_kafka_cluster_with_force() {
+        let schema = Schema::default();
+
+        let (removed, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            // Add deployment and service
+            updater
+                .add_deployment(add_deployment_request(vec![greeter_service()]))
+                .unwrap();
+
+            // Add kafka cluster
+            updater
+                .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+                .unwrap();
+
+            // Add subscription referencing the cluster
+            updater
+                .add_subscription(
+                    "kafka://my-cluster/my-topic".parse().unwrap(),
+                    format!("service://{}/greet", GREETER_SERVICE_NAME)
+                        .parse()
+                        .unwrap(),
+                    None,
+                )
+                .unwrap();
+
+            // Remove the cluster with force (allowing orphan subscriptions)
+            updater.remove_kafka_cluster("my-cluster", AllowOrphanSubscriptions::Yes)
+        })
+        .unwrap();
+
+        assert!(removed);
+        // Cluster should not exist
+        assert!(
+            schema
+                .get_kafka_cluster("my-cluster", Redaction::No)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn update_kafka_cluster() {
+        let schema = Schema::default();
+
+        let (_, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater
+                .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+                .unwrap();
+
+            let mut new_properties = HashMap::new();
+            new_properties.insert("bootstrap.servers".to_string(), "new-host:9092".to_string());
+            new_properties.insert("sasl.password".to_string(), "new-password".to_string());
+
+            updater.update_kafka_cluster("my-cluster", new_properties)
+        })
+        .unwrap();
+
+        // Cluster should have updated properties
+        let cluster = schema
+            .get_kafka_cluster("my-cluster", Redaction::No)
+            .expect("cluster should exist");
+        assert_eq!(
+            cluster.properties().get("bootstrap.servers").unwrap(),
+            "new-host:9092"
+        );
+        assert_eq!(
+            cluster.properties().get("sasl.password").unwrap(),
+            "new-password"
+        );
+        // Old properties should be gone
+        assert!(cluster.properties().get("security.protocol").is_none());
+    }
+
+    #[test]
+    fn update_kafka_cluster_missing_broker_config() {
+        let mut updater = SchemaUpdater::default();
+        updater
+            .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+            .unwrap();
+
+        let mut new_properties = HashMap::new();
+        new_properties.insert("security.protocol".to_string(), "SASL_SSL".to_string());
+
+        let result = updater.update_kafka_cluster("my-cluster", new_properties);
+
+        assert_that!(
+            result,
+            err(pat!(SchemaError::KafkaCluster(pat!(
+                KafkaClusterError::MissingBrokerConfiguration(_)
+            ))))
+        );
+    }
+
+    #[test]
+    fn update_nonexistent_kafka_cluster() {
+        let mut updater = SchemaUpdater::default();
+
+        let result = updater.update_kafka_cluster("nonexistent", kafka_cluster_properties());
+
+        assert_that!(result, err(pat!(SchemaError::NotFound(_))));
+    }
+
+    #[test]
+    fn redact_sensitive_properties() {
+        let schema = Schema::default();
+
+        let (_, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            let mut properties = HashMap::new();
+            properties.insert("bootstrap.servers".to_string(), "localhost:9092".to_string());
+            properties.insert("sasl.username".to_string(), "my-user".to_string());
+            properties.insert(
+                "sasl.password".to_string(),
+                "super-secret-password".to_string(),
+            );
+            properties.insert(
+                "sasl.jaas.config".to_string(),
+                "org.apache.kafka.common.security.plain.PlainLoginModule required username=\"user\" password=\"pass\";".to_string(),
+            );
+            properties.insert(
+                "ssl.key.password".to_string(),
+                "keystore-password".to_string(),
+            );
+            properties.insert(
+                "sasl.oauthbearer.client.secret".to_string(),
+                "oauth-secret".to_string(),
+            );
+
+            updater.add_kafka_cluster("my-cluster".parse().unwrap(), properties)
+        })
+        .unwrap();
+
+        // Without redaction
+        let cluster_no_redact = schema
+            .get_kafka_cluster("my-cluster", Redaction::No)
+            .expect("cluster should exist");
+        assert_eq!(
+            cluster_no_redact.properties().get("sasl.password").unwrap(),
+            "super-secret-password"
+        );
+        assert_eq!(
+            cluster_no_redact.properties().get("sasl.username").unwrap(),
+            "my-user"
+        );
+        assert!(
+            cluster_no_redact
+                .properties()
+                .get("sasl.jaas.config")
+                .unwrap()
+                .contains("password")
+        );
+
+        // With redaction
+        let cluster_redacted = schema
+            .get_kafka_cluster("my-cluster", Redaction::Yes)
+            .expect("cluster should exist");
+
+        // Non-sensitive properties should remain
+        assert_eq!(
+            cluster_redacted
+                .properties()
+                .get("bootstrap.servers")
+                .unwrap(),
+            "localhost:9092"
+        );
+
+        // Sensitive properties should be redacted
+        assert_eq!(
+            cluster_redacted.properties().get("sasl.password").unwrap(),
+            "***"
+        );
+        assert_eq!(
+            cluster_redacted.properties().get("sasl.username").unwrap(),
+            "***"
+        );
+        assert_eq!(
+            cluster_redacted
+                .properties()
+                .get("sasl.jaas.config")
+                .unwrap(),
+            "***"
+        );
+        assert_eq!(
+            cluster_redacted
+                .properties()
+                .get("ssl.key.password")
+                .unwrap(),
+            "***"
+        );
+        assert_eq!(
+            cluster_redacted
+                .properties()
+                .get("sasl.oauthbearer.client.secret")
+                .unwrap(),
+            "***"
+        );
+    }
+
+    #[test]
+    fn list_kafka_clusters() {
+        let schema = Schema::default();
+
+        let (_, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            updater
+                .add_kafka_cluster("cluster-1".parse().unwrap(), kafka_cluster_properties())
+                .unwrap();
+            updater
+                .add_kafka_cluster("cluster-2".parse().unwrap(), kafka_cluster_properties())
+                .unwrap();
+            Ok::<(), SchemaError>(())
+        })
+        .unwrap();
+
+        let clusters = schema.list_kafka_clusters(Redaction::No);
+        assert_eq!(clusters.len(), 2);
+
+        let cluster_names: Vec<&str> = clusters.iter().map(|c| c.name()).collect();
+        assert!(cluster_names.contains(&"cluster-1"));
+        assert!(cluster_names.contains(&"cluster-2"));
+    }
+
+    #[test]
+    fn kafka_cluster_with_subscription() {
+        let schema = Schema::default();
+
+        let (_, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            // Add deployment and service first
+            let _ = updater
+                .add_deployment(add_deployment_request(vec![greeter_service()]))
+                .unwrap()
+                .1;
+
+            // Add kafka cluster
+            updater
+                .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+                .unwrap();
+
+            // Add subscription referencing the cluster
+            updater.add_subscription(
+                "kafka://my-cluster/my-topic".parse().unwrap(),
+                format!("service://{}/greet", GREETER_SERVICE_NAME)
+                    .parse()
+                    .unwrap(),
+                None,
+            )
+        })
+        .unwrap();
+
+        // Subscription should exist
+        let subscriptions = schema.list_subscriptions(&[], Redaction::No);
+        assert_eq!(subscriptions.len(), 1);
+
+        let subscription = &subscriptions[0];
+        match subscription.source() {
+            Source::Kafka { cluster, topic } => {
+                assert_eq!(cluster, "my-cluster");
+                assert_eq!(topic, "my-topic");
+            }
+        }
+    }
+
+    #[test]
+    fn subscription_with_nonexistent_kafka_cluster() {
+        let mut updater = SchemaUpdater::default();
+
+        // Add deployment and service first
+        updater
+            .add_deployment(add_deployment_request(vec![greeter_service()]))
+            .unwrap();
+
+        // Try to add subscription with nonexistent cluster
+        let result = updater.add_subscription(
+            "kafka://nonexistent-cluster/my-topic".parse().unwrap(),
+            format!("service://{}/greet", GREETER_SERVICE_NAME)
+                .parse()
+                .unwrap(),
+            None,
+        );
+
+        assert_that!(
+            result,
+            err(pat!(SchemaError::Subscription(pat!(
+                SubscriptionError::Validation(_)
+            ))))
+        );
+    }
+
+    #[test]
+    fn get_kafka_cluster_and_subscriptions() {
+        let schema = Schema::default();
+
+        let (subscription_id, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            // Add deployment and service
+            updater
+                .add_deployment(add_deployment_request(vec![greeter_service()]))
+                .unwrap();
+
+            // Add kafka cluster
+            updater
+                .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+                .unwrap();
+
+            // Add subscription
+            updater.add_subscription(
+                "kafka://my-cluster/my-topic".parse().unwrap(),
+                format!("service://{}/greet", GREETER_SERVICE_NAME)
+                    .parse()
+                    .unwrap(),
+                None,
+            )
+        })
+        .unwrap();
+
+        // Get cluster with its subscriptions
+        let (cluster, subscriptions) = schema
+            .get_kafka_cluster_and_subscriptions("my-cluster", Redaction::No)
+            .expect("should return cluster and subscriptions");
+
+        assert_eq!(cluster.name(), "my-cluster");
+        assert_eq!(subscriptions.len(), 1);
+        assert_eq!(subscriptions[0].id(), subscription_id);
+    }
+
+    #[test]
+    fn subscription_metadata_redaction() {
+        let schema = Schema::default();
+
+        let (_, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            // Add deployment and service
+            updater
+                .add_deployment(add_deployment_request(vec![greeter_service()]))
+                .unwrap();
+
+            // Add kafka cluster
+            updater
+                .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+                .unwrap();
+
+            // Add subscription with sensitive metadata
+            let mut metadata = HashMap::new();
+            metadata.insert("custom.username".to_string(), "user".to_string());
+            metadata.insert(
+                "custom.password".to_string(),
+                "sensitive-password".to_string(),
+            );
+            metadata.insert("custom.property".to_string(), "non-sensitive".to_string());
+
+            updater.add_subscription(
+                "kafka://my-cluster/my-topic".parse().unwrap(),
+                format!("service://{}/greet", GREETER_SERVICE_NAME)
+                    .parse()
+                    .unwrap(),
+                Some(metadata),
+            )
+        })
+        .unwrap();
+
+        let subscriptions = schema.list_subscriptions(&[], Redaction::No);
+        let subscription_no_redact = &subscriptions[0];
+        assert_eq!(
+            subscription_no_redact
+                .metadata()
+                .get("custom.password")
+                .unwrap(),
+            "sensitive-password"
+        );
+
+        let subscriptions_redacted = schema.list_subscriptions(&[], Redaction::Yes);
+        let subscription_redacted = &subscriptions_redacted[0];
+        assert_eq!(
+            subscription_redacted
+                .metadata()
+                .get("custom.password")
+                .unwrap(),
+            "***"
+        );
+        assert_eq!(
+            subscription_redacted
+                .metadata()
+                .get("custom.property")
+                .unwrap(),
+            "non-sensitive"
+        );
+    }
+}
