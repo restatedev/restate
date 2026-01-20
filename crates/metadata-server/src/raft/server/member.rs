@@ -497,13 +497,46 @@ impl Member {
         request: MetadataStoreRequest,
         metadata_nodes_config: &NodesConfiguration,
     ) {
-        let request = request.into_request();
+        let (request, cluster_identity) = request.into_request();
+
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
+
+        // Validate cluster identity: first fingerprint, then cluster_name. In some cases only the
+        // cluster name is set (e.g. when a node is trying to join a cluster and asking for the
+        // NodesConfiguration). Older versions of Restate < v1.6 won't set these fields.
+        if let Some(incoming_fingerprint) = cluster_identity.fingerprint {
+            let expected_fingerprint = nodes_config.cluster_fingerprint();
+
+            if incoming_fingerprint != expected_fingerprint {
+                request.fail(RequestError::ClusterIdentityMismatch(format!(
+                    "cluster fingerprint mismatch: expected {}, got {}",
+                    expected_fingerprint, incoming_fingerprint
+                )));
+                return;
+            }
+        }
+
+        if let Some(incoming_cluster_name) = cluster_identity.cluster_name {
+            let expected_cluster_name = nodes_config.cluster_name();
+
+            if incoming_cluster_name != expected_cluster_name {
+                request.fail(RequestError::ClusterIdentityMismatch(format!(
+                    "cluster name mismatch: expected {}, got {}",
+                    expected_cluster_name, incoming_cluster_name
+                )));
+                return;
+            }
+        }
+        // If neither fingerprint nor cluster_name is provided, allow (backward compatibility)
+        // todo in v1.7 no longer accept if non of the ClusterIdentity fields is specified
+
         trace!("Handle metadata store request: {request:?}");
 
         if !self.is_leader {
             request.fail(RequestError::Unavailable(
                 "not leader".into(),
-                self.known_leader(metadata_nodes_config),
+                self.known_leader(nodes_config),
             ));
             return;
         }
@@ -522,7 +555,7 @@ impl Member {
                     && previous_pending_read_count == self.raw_node.raft.pending_read_count()
                 {
                     // fail the request if we cannot serve read-only requests yet
-                    read_only_request.fail(RequestError::Unavailable("Cannot serve read-only queries yet because the latest commit index has not been retrieved. Try again in a bit".into(), self.known_leader(metadata_nodes_config)));
+                    read_only_request.fail(RequestError::Unavailable("Cannot serve read-only queries yet because the latest commit index has not been retrieved. Try again in a bit".into(), self.known_leader(nodes_config)));
                 } else {
                     self.kv_storage
                         .register_read_only_request(read_only_request);

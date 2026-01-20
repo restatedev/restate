@@ -31,7 +31,7 @@ use restate_types::errors::ConversionError;
 use restate_types::metadata::Precondition;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
-use restate_types::nodes_config::NodesConfiguration;
+use restate_types::nodes_config::{ClusterFingerprint, NodesConfiguration};
 use restate_types::storage::StorageCodec;
 
 use crate::metric_definitions::{
@@ -41,7 +41,7 @@ use crate::metric_definitions::{
     STATUS_COMPLETED, STATUS_FAILED,
 };
 use crate::{
-    AddNodeError, MetadataCommand, MetadataCommandError, MetadataCommandSender,
+    AddNodeError, ClusterIdentity, MetadataCommand, MetadataCommandError, MetadataCommandSender,
     MetadataServerSummary, MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender,
     RequestError, RequestSender, StatusWatch, nodes_configuration_for_metadata_cluster_seed,
 };
@@ -98,9 +98,19 @@ impl MetadataServerSvc for MetadataServerHandler {
             let (result_tx, result_rx) = oneshot::channel();
 
             let request = request.into_inner();
+
+            let cluster_fingerprint =
+                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+
+            let cluster_identity = ClusterIdentity {
+                fingerprint: cluster_fingerprint,
+                cluster_name: request.cluster_name,
+            };
+
             self.request_tx
                 .send(MetadataStoreRequest::Get {
                     key: request.key.into(),
+                    cluster_identity,
                     result_tx,
                 })
                 .await
@@ -136,9 +146,19 @@ impl MetadataServerSvc for MetadataServerHandler {
             let (result_tx, result_rx) = oneshot::channel();
 
             let request = request.into_inner();
+
+            let cluster_fingerprint =
+                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+
+            let cluster_identity = ClusterIdentity {
+                fingerprint: cluster_fingerprint,
+                cluster_name: request.cluster_name,
+            };
+
             self.request_tx
                 .send(MetadataStoreRequest::GetVersion {
                     key: request.key.into(),
+                    cluster_identity,
                     result_tx,
                 })
                 .await
@@ -171,6 +191,15 @@ impl MetadataServerSvc for MetadataServerHandler {
             let (result_tx, result_rx) = oneshot::channel();
 
             let request = request.into_inner();
+
+            let cluster_fingerprint =
+                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+
+            let cluster_identity = ClusterIdentity {
+                fingerprint: cluster_fingerprint,
+                cluster_name: request.cluster_name,
+            };
+
             self.request_tx
                 .send(MetadataStoreRequest::Put {
                     key: request.key.into(),
@@ -188,6 +217,7 @@ impl MetadataServerSvc for MetadataServerHandler {
                         .map_err(|err: ConversionError| {
                             Status::invalid_argument(err.to_string())
                         })?,
+                    cluster_identity,
                     result_tx,
                 })
                 .await
@@ -218,6 +248,15 @@ impl MetadataServerSvc for MetadataServerHandler {
             let (result_tx, result_rx) = oneshot::channel();
 
             let request = request.into_inner();
+
+            let cluster_fingerprint =
+                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+
+            let cluster_identity = ClusterIdentity {
+                fingerprint: cluster_fingerprint,
+                cluster_name: request.cluster_name,
+            };
+
             self.request_tx
                 .send(MetadataStoreRequest::Delete {
                     key: request.key.into(),
@@ -228,6 +267,7 @@ impl MetadataServerSvc for MetadataServerHandler {
                         .map_err(|err: ConversionError| {
                             Status::invalid_argument(err.to_string())
                         })?,
+                    cluster_identity,
                     result_tx,
                 })
                 .await
@@ -301,6 +341,8 @@ impl MetadataServerSvc for MetadataServerHandler {
                     key: NODES_CONFIG_KEY.clone(),
                     value: versioned_value,
                     precondition: Precondition::DoesNotExist,
+                    // During provisioning, skip cluster identity validation
+                    cluster_identity: ClusterIdentity::default(),
                     result_tx,
                 })
                 .await
@@ -390,6 +432,7 @@ impl From<RequestError> for Status {
 
                 status
             }
+            RequestError::ClusterIdentityMismatch(_) => Status::permission_denied(err.to_string()),
             err => Status::internal(err.to_string()),
         }
     }

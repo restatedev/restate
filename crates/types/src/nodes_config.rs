@@ -315,6 +315,15 @@ impl NodesConfiguration {
         fingerprint
     }
 
+    /// Returns the cluster fingerprint if the nodes configuration is valid.
+    ///
+    /// # Important
+    /// This method should only be used by components that operate before the NodesConfiguration is
+    /// properly initialized. If this is not the case, then use [`NodesConfiguration::cluster_fingerprint`]
+    pub fn try_cluster_fingerprint(&self) -> Option<ClusterFingerprint> {
+        self.cluster_fingerprint
+    }
+
     pub fn cluster_name(&self) -> &str {
         &self.cluster_name
     }

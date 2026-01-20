@@ -79,6 +79,8 @@ pub enum RequestError {
     Encode(#[from] StorageEncodeError),
     #[error("decode error: {0}")]
     Decode(#[from] StorageDecodeError),
+    #[error("rejecting request because it seems to target a different cluster: {0}")]
+    ClusterIdentityMismatch(String),
 }
 
 impl MaybeRetryableError for RequestError {
@@ -90,6 +92,7 @@ impl MaybeRetryableError for RequestError {
             RequestError::InvalidArgument(_) => false,
             RequestError::Encode(_) => false,
             RequestError::Decode(_) => false,
+            RequestError::ClusterIdentityMismatch(_) => false,
         }
     }
 }
@@ -170,25 +173,38 @@ impl<T: MetadataServer + ?Sized> MetadataServer for Box<T> {
     }
 }
 
+/// Identifies the cluster for request validation.
+/// During normal operation, fingerprint is used.
+/// During bootstrapping when fingerprint is unavailable, cluster_name can be used as fallback.
+#[derive(Debug, Clone, Default)]
+pub struct ClusterIdentity {
+    pub fingerprint: Option<ClusterFingerprint>,
+    pub cluster_name: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum MetadataStoreRequest {
     Get {
         key: ByteString,
+        cluster_identity: ClusterIdentity,
         result_tx: oneshot::Sender<Result<Option<VersionedValue>, RequestError>>,
     },
     GetVersion {
         key: ByteString,
+        cluster_identity: ClusterIdentity,
         result_tx: oneshot::Sender<Result<Option<Version>, RequestError>>,
     },
     Put {
         key: ByteString,
         value: VersionedValue,
         precondition: Precondition,
+        cluster_identity: ClusterIdentity,
         result_tx: oneshot::Sender<Result<(), RequestError>>,
     },
     Delete {
         key: ByteString,
         precondition: Precondition,
+        cluster_identity: ClusterIdentity,
         result_tx: oneshot::Sender<Result<(), RequestError>>,
     },
 }
@@ -234,25 +250,38 @@ pub async fn create_metadata_server_and_client(
 }
 
 impl MetadataStoreRequest {
-    fn into_request(self) -> Request {
+    fn into_request(self) -> (Request, ClusterIdentity) {
         let request_id = Ulid::new();
 
         match self {
-            MetadataStoreRequest::Get { key, result_tx } => Request::ReadOnly(ReadOnlyRequest {
-                request_id,
-                kind: ReadOnlyRequestKind::Get { key, result_tx },
-            }),
-            MetadataStoreRequest::GetVersion { key, result_tx } => {
+            MetadataStoreRequest::Get {
+                key,
+                result_tx,
+                cluster_identity,
+            } => (
+                Request::ReadOnly(ReadOnlyRequest {
+                    request_id,
+                    kind: ReadOnlyRequestKind::Get { key, result_tx },
+                }),
+                cluster_identity,
+            ),
+            MetadataStoreRequest::GetVersion {
+                key,
+                result_tx,
+                cluster_identity,
+            } => (
                 Request::ReadOnly(ReadOnlyRequest {
                     request_id,
                     kind: ReadOnlyRequestKind::GetVersion { key, result_tx },
-                })
-            }
+                }),
+                cluster_identity,
+            ),
             MetadataStoreRequest::Put {
                 key,
                 value,
                 precondition,
                 result_tx,
+                cluster_identity,
             } => {
                 let request = WriteRequest {
                     request_id,
@@ -267,12 +296,13 @@ impl MetadataStoreRequest {
                     kind: CallbackKind::Put { result_tx },
                 };
 
-                Request::Write { callback, request }
+                (Request::Write { callback, request }, cluster_identity)
             }
             MetadataStoreRequest::Delete {
                 key,
                 precondition,
                 result_tx,
+                cluster_identity,
             } => {
                 let request = WriteRequest {
                     request_id,
@@ -282,7 +312,7 @@ impl MetadataStoreRequest {
                     request_id,
                     kind: CallbackKind::Delete { result_tx },
                 };
-                Request::Write { request, callback }
+                (Request::Write { request, callback }, cluster_identity)
             }
         }
     }

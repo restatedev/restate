@@ -112,7 +112,29 @@ impl Standby {
         loop {
             tokio::select! {
                 Some(request) = self.request_rx.recv() => {
-                    let request = request.into_request();
+                    let (request, cluster_identity) = request.into_request();
+
+                    let nodes_config = nodes_config.live_load();
+
+                    // Validate cluster identity: fingerprint takes priority, cluster_name as fallback
+                    if let Some(incoming_fingerprint) = cluster_identity.fingerprint {
+                        // nodes_config might still be uninitialized if we haven't joined a cluster yet.
+                        // Once nodes store the last seen nodes configuration, we can assume that the
+                        // nodes configuration is valid when starting the metadata server in standby.
+                        if let Some(my_cluster_fingerprint) = nodes_config.try_cluster_fingerprint() && my_cluster_fingerprint != incoming_fingerprint {
+                            request.fail(RequestError::ClusterIdentityMismatch(format!("cluster fingerprint mismatch: expected {}, got {}", my_cluster_fingerprint, incoming_fingerprint)));
+                            continue;
+                        }
+                    } else if let Some(incoming_cluster_name) = cluster_identity.cluster_name {
+                        let my_cluster_name = nodes_config.cluster_name();
+
+                        if my_cluster_name != incoming_cluster_name {
+                            request.fail(RequestError::ClusterIdentityMismatch(format!("cluster name mismatch: expected {}, got {}", my_cluster_name, incoming_cluster_name)));
+                            continue;
+                        }
+                    }
+                    // If neither fingerprint nor cluster_name is provided, allow (backward compatibility)
+
                     request.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
                         Standby::random_member(),

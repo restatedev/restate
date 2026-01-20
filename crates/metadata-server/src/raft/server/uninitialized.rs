@@ -157,8 +157,10 @@ impl Uninitialized {
         loop {
             tokio::select! {
                 Some(request) = self.request_rx.recv() => {
-                    // fail incoming requests while we are waiting for the provision signal
-                    let request = request.into_request();
+                    // Fail incoming requests while we are waiting for the provision signal. We
+                    // don't validate the cluster fingerprint because we aren't initialized and
+                    // might not have a valid NodesConfiguration yet.
+                    let (request, _) = request.into_request();
                     request.fail(RequestError::Unavailable("Metadata store has not been provisioned yet".into(), None))
                 },
                 Some(request) = self.command_rx.recv() => {

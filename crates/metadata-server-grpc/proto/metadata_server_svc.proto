@@ -42,17 +42,31 @@ service MetadataServerSvc {
   rpc RemoveNode(RemoveNodeRequest) returns (google.protobuf.Empty);
 }
 
-message GetRequest { string key = 1; }
+message GetRequest {
+  string key = 1;
+  // Cluster fingerprint for validation. If set to 0, then this field is ignored (for backward compatibility and allowing bootstrapping of a cluster).
+  uint64 cluster_fingerprint = 2;
+  // Cluster name for validation. Optional to support backward compatibility.
+  optional string cluster_name = 3;
+}
 
 message PutRequest {
   string key = 1;
   restate.metadata.VersionedValue value = 2;
   restate.metadata.Precondition precondition = 3;
+  // Cluster fingerprint for validation. If set to 0, then this field is ignored (for backward compatibility and allowing bootstrapping of a cluster).
+  uint64 cluster_fingerprint = 4;
+  // Cluster name for validation. Optional to support backward compatibility.
+  optional string cluster_name = 5;
 }
 
 message DeleteRequest {
   string key = 1;
   restate.metadata.Precondition precondition = 2;
+  // Cluster fingerprint for validation. If set to 0, then this field is ignored (for backward compatibility and allowing bootstrapping of a cluster).
+  uint64 cluster_fingerprint = 3;
+  // Cluster name for validation. Optional to support backward compatibility.
+  optional string cluster_name = 4;
 }
 
 message GetResponse { optional restate.metadata.VersionedValue value = 1; }
