@@ -159,13 +159,18 @@ impl LatestSnapshot {
 
     fn effective_retained_snapshots(&self) -> Vec<SnapshotReference> {
         if self.retained_snapshots.is_empty() {
-            // upgrade path from V1 - implicitly the "latest" snapshot is always retained
-            vec![SnapshotReference {
-                snapshot_id: self.snapshot_id,
-                min_applied_lsn: self.min_applied_lsn,
-                created_at: self.created_at,
-                path: self.path.clone(),
-            }]
+            // Upgrade path from V1 - implicitly the "latest" snapshot is always retained.
+            if self.snapshot_id == SnapshotId::INVALID {
+                // this is a placeholder (no snapshot exists in repo) - skip
+                vec![]
+            } else {
+                vec![SnapshotReference {
+                    snapshot_id: self.snapshot_id,
+                    min_applied_lsn: self.min_applied_lsn,
+                    created_at: self.created_at,
+                    path: self.path.clone(),
+                }]
+            }
         } else {
             self.retained_snapshots.clone()
         }
