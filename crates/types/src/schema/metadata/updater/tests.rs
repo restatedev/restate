@@ -2565,6 +2565,10 @@ mod modify_service {
 
 mod kafka_cluster {
     use super::*;
+
+    use crate::config::{
+        ConfigurationBuilder, IngressOptionsBuilder, KafkaClusterOptions, set_current_config,
+    };
     use crate::schema::Redaction;
     use crate::schema::kafka::KafkaClusterResolver;
     use crate::schema::subscriptions::SubscriptionResolver;
@@ -3111,6 +3115,155 @@ mod kafka_cluster {
                 .get("custom.property")
                 .unwrap(),
             "non-sensitive"
+        );
+    }
+
+    fn set_current_kafka_config(config_cluster: KafkaClusterOptions) {
+        let config = ConfigurationBuilder::default()
+            .ingress(
+                IngressOptionsBuilder::default()
+                    .kafka_clusters(vec![config_cluster])
+                    .build()
+                    .unwrap(),
+            )
+            .build()
+            .unwrap();
+        set_current_config(config);
+    }
+
+    #[test]
+    fn list_kafka_clusters_includes_configuration_clusters() {
+        // Set up configuration with a kafka cluster
+        set_current_kafka_config(KafkaClusterOptions {
+            name: "config-cluster".to_string(),
+            brokers: vec!["config-broker:9092".to_string()],
+            additional_options: Default::default(),
+        });
+
+        // Create schema with a schema-based kafka cluster
+        let (_, schema) = SchemaUpdater::update_and_return(Schema::default(), |updater| {
+            updater.add_kafka_cluster(
+                "schema-cluster".parse().unwrap(),
+                kafka_cluster_properties(),
+            )
+        })
+        .unwrap();
+
+        // list_kafka_clusters should include both
+        let clusters = schema.list_kafka_clusters(Redaction::No);
+        let cluster_names: Vec<&str> = clusters.iter().map(|c| c.name()).collect();
+
+        assert!(cluster_names.contains(&"schema-cluster"));
+        assert!(cluster_names.contains(&"config-cluster"));
+        assert_eq!(clusters.len(), 2);
+    }
+
+    #[test]
+    fn get_kafka_cluster_from_configuration() {
+        // Set up configuration with a kafka cluster
+        set_current_kafka_config(KafkaClusterOptions {
+            name: "config-cluster".to_string(),
+            brokers: vec!["config-broker:9092".to_string()],
+            additional_options: HashMap::from([(
+                "security.protocol".to_string(),
+                "PLAINTEXT".to_string(),
+            )]),
+        });
+
+        let schema = Schema::default();
+
+        // get_kafka_cluster should find the cluster from configuration
+        let cluster = schema
+            .get_kafka_cluster("config-cluster", Redaction::No)
+            .expect("cluster should exist");
+
+        assert_eq!(cluster.name(), "config-cluster");
+        assert_eq!(
+            cluster.properties().get("metadata.broker.list").unwrap(),
+            "config-broker:9092"
+        );
+        assert_eq!(
+            cluster.properties().get("security.protocol").unwrap(),
+            "PLAINTEXT"
+        );
+    }
+
+    #[test]
+    fn subscription_with_configuration_kafka_cluster() {
+        // Set up configuration with a kafka cluster
+        set_current_kafka_config(KafkaClusterOptions {
+            name: "config-cluster".to_string(),
+            brokers: vec!["config-broker:9092".to_string()],
+            additional_options: Default::default(),
+        });
+
+        let schema = Schema::default();
+
+        // Create subscription using the config-based cluster
+        let (subscription_id, schema) = SchemaUpdater::update_and_return(schema, |updater| {
+            // Add deployment and service first
+            updater
+                .add_deployment(add_deployment_request(vec![greeter_service()]))
+                .unwrap();
+
+            // Add subscription referencing the config cluster
+            updater.add_subscription(
+                "kafka://config-cluster/my-topic".parse().unwrap(),
+                format!("service://{}/greet", GREETER_SERVICE_NAME)
+                    .parse()
+                    .unwrap(),
+                None,
+            )
+        })
+        .unwrap();
+
+        // Subscription should exist and reference the config cluster
+        let subscriptions = schema.list_subscriptions(&[], Redaction::No);
+        assert_eq!(subscriptions.len(), 1);
+        assert_eq!(subscriptions[0].id(), subscription_id);
+
+        match subscriptions[0].source() {
+            Source::Kafka { cluster, topic } => {
+                assert_eq!(cluster, "config-cluster");
+                assert_eq!(topic, "my-topic");
+            }
+        }
+
+        // get_kafka_cluster_and_subscriptions should work with config cluster
+        let (cluster, subs) = schema
+            .get_kafka_cluster_and_subscriptions("config-cluster", Redaction::No)
+            .expect("should return cluster and subscriptions");
+
+        assert_eq!(cluster.name(), "config-cluster");
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].id(), subscription_id);
+    }
+
+    #[test]
+    fn schema_cluster_takes_precedence_over_configuration_cluster() {
+        // Create schema with same-named cluster (different broker)
+        let (_, schema) = SchemaUpdater::update_and_return(Schema::default(), |updater| {
+            updater.add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+        })
+        .unwrap();
+
+        // Now set up configuration with a kafka cluster, with same name
+        set_current_kafka_config(KafkaClusterOptions {
+            name: "my-cluster".to_string(),
+            brokers: vec!["config-broker:9092".to_string()],
+            additional_options: Default::default(),
+        });
+
+        // get_kafka_cluster should return the schema cluster, not config cluster
+        let cluster = schema
+            .get_kafka_cluster("my-cluster", Redaction::No)
+            .expect("cluster should exist");
+
+        assert_eq!(cluster.name(), "my-cluster");
+        // Schema cluster has localhost:9092, config cluster has config-broker:9092
+        assert_eq!(
+            cluster.properties().get("bootstrap.servers").unwrap(),
+            "localhost:9092"
         );
     }
 }
