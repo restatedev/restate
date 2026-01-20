@@ -10,10 +10,11 @@
 
 //! Utilities for opening RocksDB databases in read-only mode for analysis.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rocksdb::{DB, Options};
+use rocksdb::{DB, LiveFile, Options};
 
 /// Mode for opening the database
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -28,10 +29,59 @@ pub enum OpenMode {
 /// The default column family name in RocksDB (not used for partition data)
 pub const DEFAULT_CF: &str = "default";
 
+/// Extended information from `live_files()` that isn't available in column family metadata
+#[derive(Debug, Clone)]
+pub struct LiveFileInfo {
+    /// Column family this file belongs to (used by sst command)
+    #[allow(dead_code)]
+    pub column_family_name: String,
+    /// Level in the LSM tree (used by sst command)
+    #[allow(dead_code)]
+    pub level: i32,
+    /// Number of live entries in the file
+    pub num_entries: u64,
+    /// Number of deletion tombstones in the file
+    pub num_deletions: u64,
+    /// Smallest sequence number in the file (for future use)
+    #[allow(dead_code)]
+    pub smallest_seqno: u64,
+    /// Largest sequence number in the file (for future use)
+    #[allow(dead_code)]
+    pub largest_seqno: u64,
+}
+
+impl LiveFileInfo {
+    /// Calculate tombstone ratio as a percentage (0.0 - 100.0)
+    #[allow(dead_code)] // Used by sst command
+    pub fn tombstone_ratio(&self) -> f64 {
+        let total = self.num_entries + self.num_deletions;
+        if total == 0 {
+            0.0
+        } else {
+            (self.num_deletions as f64 / total as f64) * 100.0
+        }
+    }
+}
+
+impl From<&LiveFile> for LiveFileInfo {
+    fn from(lf: &LiveFile) -> Self {
+        Self {
+            column_family_name: lf.column_family_name.clone(),
+            level: lf.level,
+            num_entries: lf.num_entries,
+            num_deletions: lf.num_deletions,
+            smallest_seqno: lf.smallest_seqno,
+            largest_seqno: lf.largest_seqno,
+        }
+    }
+}
+
 /// Information about an opened RocksDB database
 pub struct DbInfo {
     pub db: DB,
     pub column_families: Vec<String>,
+    /// Live file info keyed by filename (e.g., "012345.sst")
+    live_files: HashMap<String, LiveFileInfo>,
 }
 
 impl DbInfo {
@@ -41,6 +91,29 @@ impl DbInfo {
             .iter()
             .filter(|name| name.as_str() != DEFAULT_CF)
     }
+
+    /// Get live file info by filename (e.g., "012345.sst")
+    pub fn get_live_file_info(&self, filename: &str) -> Option<&LiveFileInfo> {
+        self.live_files.get(filename)
+    }
+
+    /// Find a file by its number (e.g., 12345), returns (filename, info) if found
+    #[allow(dead_code)] // Used by sst command
+    pub fn find_file_by_number(&self, file_num: u64) -> Option<(&str, &LiveFileInfo)> {
+        // Search all filenames for a matching file number
+        self.live_files.iter().find_map(|(name, info)| {
+            extract_file_number(name)
+                .filter(|&num| num == file_num)
+                .map(|_| (name.as_str(), info))
+        })
+    }
+}
+
+/// Extract the file number from an SST filename (e.g., "012345.sst" -> 12345)
+pub fn extract_file_number(filename: &str) -> Option<u64> {
+    filename
+        .strip_suffix(".sst")
+        .and_then(|s| s.parse::<u64>().ok())
 }
 
 /// Open a RocksDB database for read-only analysis
@@ -90,9 +163,27 @@ pub fn open_db(
         }
     };
 
+    // Collect live file info for tombstone analysis and file lookup
+    // Note: LiveFile.name includes a leading '/' (e.g., "/012345.sst"), but
+    // column family metadata returns relative filenames without the slash.
+    // We normalize by stripping the leading slash.
+    let live_files = db
+        .live_files()
+        .map(|files| {
+            files
+                .iter()
+                .map(|lf| {
+                    let normalized_name = lf.name.strip_prefix('/').unwrap_or(&lf.name);
+                    (normalized_name.to_string(), LiveFileInfo::from(lf))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     Ok(DbInfo {
         db,
         column_families: cf_names,
+        live_files,
     })
 }
 
