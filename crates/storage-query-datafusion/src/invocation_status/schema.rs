@@ -122,4 +122,10 @@ define_table!(sys_invocation_status(
 
     /// For how long the journal is retained after completion.
     journal_retention: DataType::Duration,
+
+    /// List of completion ids the invocation is awaiting on, if `status = suspended`.
+    suspended_waiting_for_completions: UInt32List,
+
+    /// List of signals the invocation is awaiting on, if `status = suspended`.
+    suspended_waiting_for_signals: UInt32List,
 ));
