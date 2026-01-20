@@ -529,7 +529,7 @@ impl Member {
             }
         }
         // If neither fingerprint nor cluster_name is provided, allow (backward compatibility)
-        // todo in v1.7 no longer accept if non of the ClusterIdentity fields is specified
+        // todo in v1.7 no longer accept if no cluster identity was provided
 
         trace!("Handle metadata store request: {request:?}");
 

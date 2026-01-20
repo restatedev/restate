@@ -134,6 +134,7 @@ impl Standby {
                         }
                     }
                     // If neither fingerprint nor cluster_name is provided, allow (backward compatibility)
+                    // todo in v1.7 no longer accept if no cluster identity was provided
 
                     request.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
