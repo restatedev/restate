@@ -15,6 +15,7 @@ build = "build.rs"
 [package.metadata.dist]
 dist = true
 formula = "restate"
+features = ["dev-cmd"]
 
 [features]
 default = ["cloud", "no-trace-logging"]
