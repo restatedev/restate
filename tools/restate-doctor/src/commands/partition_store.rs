@@ -9,8 +9,9 @@
 // by the Apache License, Version 2.0.
 
 mod get;
-mod info;
+pub(crate) mod info;
 mod scan;
+mod sst;
 
 use std::path::PathBuf;
 
@@ -19,6 +20,7 @@ use cling::prelude::*;
 pub use get::Get;
 pub use info::Info;
 pub use scan::Scan;
+pub use sst::Sst;
 
 use crate::util::rocksdb::OpenMode;
 
@@ -31,6 +33,8 @@ pub enum PartitionStoreCommand {
     Get(Get),
     /// Display database and column family information (size, LSM tree structure, levels, files)
     Info(Info),
+    /// Inspect SST files in detail (decoded keys, colorized hex)
+    Sst(Sst),
 }
 
 /// Common options for partition store commands

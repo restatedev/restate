@@ -32,35 +32,20 @@ pub const DEFAULT_CF: &str = "default";
 /// Extended information from `live_files()` that isn't available in column family metadata
 #[derive(Debug, Clone)]
 pub struct LiveFileInfo {
-    /// Column family this file belongs to (used by sst command)
-    #[allow(dead_code)]
+    /// Column family this file belongs to
     pub column_family_name: String,
-    /// Level in the LSM tree (used by sst command)
-    #[allow(dead_code)]
+    /// Level in the LSM tree
     pub level: i32,
     /// Number of live entries in the file
     pub num_entries: u64,
     /// Number of deletion tombstones in the file
     pub num_deletions: u64,
-    /// Smallest sequence number in the file (for future use)
+    /// Smallest sequence number in the file
     #[allow(dead_code)]
     pub smallest_seqno: u64,
-    /// Largest sequence number in the file (for future use)
+    /// Largest sequence number in the file
     #[allow(dead_code)]
     pub largest_seqno: u64,
-}
-
-impl LiveFileInfo {
-    /// Calculate tombstone ratio as a percentage (0.0 - 100.0)
-    #[allow(dead_code)] // Used by sst command
-    pub fn tombstone_ratio(&self) -> f64 {
-        let total = self.num_entries + self.num_deletions;
-        if total == 0 {
-            0.0
-        } else {
-            (self.num_deletions as f64 / total as f64) * 100.0
-        }
-    }
 }
 
 impl From<&LiveFile> for LiveFileInfo {
