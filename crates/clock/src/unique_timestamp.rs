@@ -12,6 +12,8 @@ use std::fmt::{Debug, Formatter};
 use std::num::NonZeroU64;
 use std::time::SystemTime;
 
+use serde::{Deserialize, Serialize};
+
 use crate::RESTATE_EPOCH;
 use crate::time::{MillisSinceEpoch, NanosSinceEpoch};
 
@@ -28,7 +30,7 @@ pub(super) const LC_BITS: u8 = 22;
 /// A mask to extract the logical clock counter (LSB 22 bits)
 pub(super) const LC_MAX: u64 = (1 << LC_BITS) - 1;
 
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     #[error("HLC timestamp outside the valid range")]
     TimestampExceedsMax,
@@ -65,7 +67,7 @@ pub enum Error {
 /// the valid input range `0..=u64::MAX-1` to `1..=u64::MAX`. This assumes that
 /// `u64::MAX` is not a valid value and will never be used (see [`PHY_TIME_MAX`]
 /// for the upper bound of the physical time).
-#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct UniqueTimestamp(NonZeroU64);
 
