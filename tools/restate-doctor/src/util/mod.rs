@@ -8,7 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod colorize;
 pub mod colorize_id;
+pub mod decode_value;
+pub mod rocksdb;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 
