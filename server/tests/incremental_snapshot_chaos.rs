@@ -8,16 +8,17 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::num::NonZeroU8;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use enumset::EnumSet;
 use futures_util::StreamExt;
 use googletest::{IntoTestResult, fail};
+use serde::Deserialize;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
@@ -40,17 +41,67 @@ use restate_types::net::address::PeerNetAddress;
 use restate_types::protobuf::cluster::RunMode;
 use restate_types::protobuf::cluster::node_state::State;
 use restate_types::replication::ReplicationProperty;
-use restate_types::retries::RetryPolicy;
 
-/// Chaos test for incremental snapshots that exercises snapshot import paths during node restarts.
-///
-/// This test:
-/// 1. Runs a 3-node cluster with incremental snapshots enabled
-/// 2. Generates workload across multiple partitions
-/// 3. Creates snapshots with `trim_log: true` to force log trimming
-/// 4. Randomly restarts nodes, forcing them to import snapshots to catch up
-/// 5. Verifies snapshot imports occurred and LSNs converged
-#[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
+#[derive(Deserialize)]
+struct LatestSnapshotRef {
+    retained_snapshots: Vec<SnapshotRef>,
+}
+
+#[derive(Deserialize)]
+struct SnapshotRef {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct SnapshotMetadata {
+    #[serde(default)]
+    file_keys: std::collections::BTreeMap<String, String>,
+}
+
+fn corrupt_latest_snapshot(snapshots_dir: &Path, partition_id: u32) -> anyhow::Result<bool> {
+    let partition_dir = snapshots_dir.join(partition_id.to_string());
+    let latest_json = partition_dir.join("latest.json");
+
+    let latest: LatestSnapshotRef = serde_json::from_str(&std::fs::read_to_string(&latest_json)?)?;
+
+    if latest.retained_snapshots.len() < 2 {
+        return Ok(false);
+    }
+
+    let latest_metadata_path = partition_dir
+        .join(&latest.retained_snapshots[0].path)
+        .join("metadata.json");
+    let latest_metadata: SnapshotMetadata =
+        serde_json::from_str(&std::fs::read_to_string(&latest_metadata_path)?)?;
+    let latest_ssts: HashSet<_> = latest_metadata.file_keys.values().collect();
+
+    let mut older_ssts = HashSet::new();
+    for older_ref in &latest.retained_snapshots[1..] {
+        let metadata_path = partition_dir.join(&older_ref.path).join("metadata.json");
+        if let Ok(content) = std::fs::read_to_string(&metadata_path)
+            && let Ok(metadata) = serde_json::from_str::<SnapshotMetadata>(&content)
+        {
+            older_ssts.extend(metadata.file_keys.values().cloned());
+        }
+    }
+
+    let exclusive_ssts: Vec<_> = latest_ssts
+        .iter()
+        .filter(|sst| !older_ssts.contains(**sst))
+        .collect();
+
+    if exclusive_ssts.is_empty() {
+        return Ok(false);
+    }
+
+    let sst_to_delete = partition_dir.join(exclusive_ssts[0]);
+    std::fs::remove_file(&sst_to_delete)?;
+    info!("Corrupted latest snapshot by deleting: {:?}", sst_to_delete);
+
+    Ok(true)
+}
+
+#[test_log::test(restate_core::test(flavor = "multi_thread", worker_threads = 4))]
 async fn incremental_snapshot_chaos() -> googletest::Result<()> {
     const NUM_NODES: u32 = 3;
     const NUM_PARTITIONS: u32 = 3;
@@ -59,26 +110,20 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
     const RETAIN_SNAPSHOTS: u8 = 3;
     const MAX_WAIT_TIMEOUT: Duration = Duration::from_secs(60);
 
-    // Allow overriding chaos duration via environment variable (in seconds)
     let chaos_duration_secs: u64 = std::env::var("CHAOS_DURATION_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_CHAOS_DURATION_SECS);
     let chaos_duration = Duration::from_secs(chaos_duration_secs);
-    eprintln!(
-        "[CHAOS] Starting test with duration: {} seconds",
-        chaos_duration_secs
-    );
     info!("Chaos test duration: {} seconds", chaos_duration_secs);
 
     let mut base_config = Configuration::new_unix_sockets();
     base_config.common.default_num_partitions = NUM_PARTITIONS.try_into()?;
     base_config.bifrost.default_provider = Replicated;
-    base_config.common.log_filter = "warn,restate=debug".to_owned();
+    base_config.common.log_filter = "warn,restate=info,restate_partition_store=debug".to_owned();
     base_config.common.log_format = LogFormat::Compact;
     base_config.common.log_disable_ansi_codes = true;
 
-    // Configure snapshot repository for all nodes
     let snapshots_dir = TempDir::new()?;
     base_config.worker.snapshots.destination = Some(
         Url::from_file_path(snapshots_dir.path())
@@ -88,7 +133,6 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
     base_config.worker.snapshots.experimental_snapshot_type = SnapshotType::Incremental;
     base_config.worker.snapshots.experimental_num_retained =
         Some(NonZeroU8::new(RETAIN_SNAPSHOTS).unwrap());
-    // Fast check interval for responsive snapshot triggering
     base_config.worker.snapshots.check_interval = Some(Duration::from_millis(100).into());
 
     let nodes = NodeSpec::new_test_nodes(
@@ -107,13 +151,11 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         .start()
         .await?;
 
-    // Partition replication = 2 to force snapshot imports on node restarts
     let replicated_loglet_config = ReplicatedLogletConfig {
         target_nodeset_size: NodeSetSize::default(),
         replication_property: ReplicationProperty::new_unchecked(2),
     };
 
-    eprintln!("[CHAOS] Cluster started, provisioning...");
     info!("Provisioning the cluster");
     cluster.nodes[0]
         .provision_cluster(
@@ -127,10 +169,8 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
     let worker_1 = &cluster.nodes[0];
     let mut worker_1_ready = worker_1.lines("Partition [0-9]+ started".parse()?);
 
-    eprintln!("[CHAOS] Provisioned, waiting for healthy cluster...");
     info!("Waiting until the cluster is healthy");
     cluster.wait_healthy(Duration::from_secs(60)).await?;
-    eprintln!("[CHAOS] Cluster healthy");
 
     info!("Waiting until node-1 has started the partition processor");
     worker_1_ready.next().await;
@@ -145,12 +185,9 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         &base_config.networking,
     );
 
-    eprintln!("[CHAOS] Waiting for partitions to become active...");
     info!("Waiting until partition processors have become leaders");
     wait_all_partitions_active(&mut client, NUM_PARTITIONS, MAX_WAIT_TIMEOUT).await?;
-    eprintln!("[CHAOS] All partitions active");
 
-    // Start mock service
     let (running_tx, running_rx) = oneshot::channel();
     let addr: SocketAddr = ([127, 0, 0, 1], 0).into();
     let listener = TcpListener::bind(addr).await?;
@@ -170,7 +207,6 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
 
     running_rx.await?;
 
-    // Register deployment on first node
     let worker_1 = &cluster.nodes[0];
     let admin_uds = worker_1
         .admin_address()
@@ -190,7 +226,6 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         .await?;
     assert!(registration_response.status().is_success());
 
-    // Create ingress clients for each node
     let ingress_clients: Vec<_> = cluster
         .nodes
         .iter()
@@ -211,84 +246,78 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         })
         .collect();
 
-    // Warm up the service with a request (max 60 attempts = 30 seconds)
-    info!("Warming up the service");
-    let mut retry = RetryPolicy::fixed_delay(Duration::from_millis(500), Some(60)).into_iter();
-    loop {
-        let response = ingress_clients[0]
-            .post("http://localhost/Counter/0/get")
-            .send()
-            .await?;
-        if response.status().is_success() {
-            break;
-        }
-        if let Some(delay) = retry.next() {
-            tokio::time::sleep(delay).await;
-        } else {
-            fail!("Failed to invoke worker")?;
-        }
-    }
-
-    // Create initial snapshots for all partitions to establish a baseline
+    // make sure we have at least one snapshot per partition before chaos starts
     info!("Creating initial snapshots for all partitions");
     for partition_id in 0..NUM_PARTITIONS {
-        let _ = client
-            .create_partition_snapshot(CreatePartitionSnapshotRequest {
-                partition_id,
-                min_target_lsn: None,
-                trim_log: true,
-            })
-            .await;
+        let partition_dir = snapshots_dir.path().join(partition_id.to_string());
+        let latest_json = partition_dir.join("latest.json");
+        let start = Instant::now();
+        while !latest_json.exists() && start.elapsed() < Duration::from_secs(5) {
+            let _ = client
+                .create_partition_snapshot(CreatePartitionSnapshotRequest {
+                    partition_id,
+                    min_target_lsn: None,
+                    trim_log: false,
+                })
+                .await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert!(
+            latest_json.exists(),
+            "Initial snapshot should have been created for partition {}",
+            partition_id
+        );
     }
     info!("Initial snapshots created for all partitions");
 
     let (success_tx, success_rx) = watch::channel(0u32);
-    let successful_operations = Arc::new(AtomicUsize::new(0));
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-    eprintln!("[CHAOS] Starting chaos loop...");
     info!("Starting incremental snapshot chaos test");
 
-    // Spawn background health check task that distributes requests across nodes
-    let health_check_abort = {
+    let health_check_task = {
         let ingress_clients = ingress_clients.clone();
         let success_tx = success_tx.clone();
         let num_nodes = ingress_clients.len();
         tokio::spawn(async move {
-            let mut counter = 0u64;
-            loop {
-                let partition = (counter as u32) % NUM_PARTITIONS;
-                let node_idx = (counter as usize) % num_nodes;
-                counter = counter.wrapping_add(1);
+            tokio::select! {
+                biased;
+                _ = shutdown_rx => {}
+                _ = async {
+                    let mut counter = 0u64;
+                    loop {
+                        let partition = (counter as u32) % NUM_PARTITIONS;
+                        let node_idx = (counter as usize) % num_nodes;
+                        counter = counter.wrapping_add(1);
 
-                let url = format!("http://localhost/Counter/{partition}/get");
-                // Try the selected node, fall back to trying all nodes
-                let mut success = false;
-                let result: Result<reqwest::Response, _> =
-                    ingress_clients[node_idx].post(&url).send().await;
-                if result.is_ok_and(|r| r.status().is_success()) {
-                    success = true;
-                } else {
-                    // Try other nodes if the primary fails
-                    for (i, client) in ingress_clients.iter().enumerate() {
-                        if i == node_idx {
-                            continue;
-                        }
-                        let result: Result<reqwest::Response, _> = client.post(&url).send().await;
+                        let url = format!("http://localhost/Counter/{partition}/get");
+                        let mut success = false;
+                        let result: Result<reqwest::Response, _> =
+                            ingress_clients[node_idx].post(&url).send().await;
                         if result.is_ok_and(|r| r.status().is_success()) {
                             success = true;
-                            break;
+                        } else {
+                            for (i, client) in ingress_clients.iter().enumerate() {
+                                if i == node_idx {
+                                    continue;
+                                }
+                                let result: Result<reqwest::Response, _> = client.post(&url).send().await;
+                                if result.is_ok_and(|r| r.status().is_success()) {
+                                    success = true;
+                                    break;
+                                }
+                            }
                         }
+                        if success {
+                            success_tx.send_modify(|v| *v += 1);
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                     }
-                }
-                if success {
-                    success_tx.send_modify(|v| *v += 1);
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                } => {}
             }
         })
     };
 
-    // Run chaos loop inline with a time-based termination
     let chaos_start = Instant::now();
     let num_nodes = cluster.nodes.len();
     let mut invocation_counter = 0u64;
@@ -296,23 +325,15 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
     let mut success_rx = success_rx.clone();
 
     while chaos_start.elapsed() < chaos_duration {
-        eprintln!(
-            "[CHAOS] Iteration {} (elapsed: {:?})",
-            iteration,
-            chaos_start.elapsed()
-        );
         info!("Chaos iteration {}", iteration);
 
-        // 1. Generate workload across partitions and nodes
         for i in 0..10u64 {
             let partition = ((invocation_counter + i) % NUM_PARTITIONS as u64) as u32;
-            let node_idx = ((invocation_counter + i) as usize) % num_nodes;
+            let node_idx = (iteration as usize) % num_nodes;
             let url = format!("http://localhost/Counter/{partition}/add");
-            // Try the selected node, or fall back to a running node
             let client = if cluster.nodes[node_idx].pid().is_some() {
                 &ingress_clients[node_idx]
             } else {
-                // Find a running node
                 cluster
                     .nodes
                     .iter()
@@ -327,15 +348,13 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
                 .send()
                 .await;
             if result.is_ok_and(|r| r.status().is_success()) {
-                successful_operations.fetch_add(1, Ordering::Relaxed);
+                success_tx.send_modify(|v| *v += 1);
             }
             invocation_counter += 1;
         }
 
-        // 2. Create snapshot for partition (rotate through partitions)
         let partition_id = (iteration % NUM_PARTITIONS as u64) as u32;
 
-        // Find a healthy node to send the request to
         let client_node_idx = cluster
             .nodes
             .iter()
@@ -351,7 +370,6 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             &base_config.networking,
         );
 
-        // Try to create snapshot, ignore errors (node might be down)
         let snapshot_result = client
             .create_partition_snapshot(CreatePartitionSnapshotRequest {
                 partition_id,
@@ -366,40 +384,56 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
                 partition_id,
                 response.into_inner().min_applied_lsn
             );
+
+            if iteration >= 2 && iteration.is_multiple_of(2) {
+                match corrupt_latest_snapshot(snapshots_dir.path(), partition_id) {
+                    Ok(true) => {
+                        info!(
+                            "Corrupted latest snapshot for partition {}, fallback should be used",
+                            partition_id
+                        );
+                    }
+                    Ok(false) => {
+                        info!(
+                            "Could not corrupt partition {} (no exclusive SSTs or < 2 retained snapshots)",
+                            partition_id
+                        );
+                    }
+                    Err(e) => {
+                        info!("Failed to corrupt partition {}: {}", partition_id, e);
+                    }
+                }
+            }
         }
 
-        // 3. Restart node (rotate through nodes) with data wipe to force snapshot restore
         let node_to_restart = (iteration as usize) % num_nodes;
         let node_name;
         let db_dir;
         {
             let node = &mut cluster.nodes[node_to_restart];
             node_name = node.node_name().to_owned();
-            // Node data is stored in base_dir/<node_name>/db
             db_dir = node.config().common.base_dir().join(&node_name).join("db");
 
             info!("Restarting node '{}' with data wipe", node_name);
 
-            // Stop the node first
             node.terminate()?;
             let _ = node.status().await;
 
-            // Delete the RocksDB partition store directory to force snapshot restore
             if db_dir.exists() {
                 std::fs::remove_dir_all(&db_dir)?;
             }
 
-            // Start the node again (restart will be a no-op for stopping since already stopped)
+            // killing a node can potentially leave stale leases lying around, causing flakiness
             if let Err(e) = node.restart(TerminationSignal::SIGTERM).await {
                 fail!("Failed to restart node: {e}")?;
             }
         }
 
         // Set up watcher for snapshot restore log message (needs fresh borrow after restart)
-        let mut snapshot_restore_watcher =
-            cluster.nodes[node_to_restart].lines("Found partition snapshot, restoring it".parse()?);
+        let mut snapshot_restore_watcher = cluster.nodes[node_to_restart].lines(
+            "(Found partition snapshot, restoring it|Restored from fallback snapshot)".parse()?,
+        );
 
-        // 4. Wait for health
         if let Err(e) = cluster
             .wait_check_healthy(HealthCheck::Worker, Duration::from_secs(30))
             .await
@@ -407,8 +441,6 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             fail!("Failed to wait for cluster health: {e}")?;
         }
 
-        // 5. Verify snapshot restore happened (we wiped the db, so it must restore from snapshot)
-        // We expect at least one partition to be restored from snapshot
         let restore_result =
             tokio::time::timeout(Duration::from_secs(5), snapshot_restore_watcher.next()).await;
         if restore_result.is_err() {
@@ -420,7 +452,6 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         drop(snapshot_restore_watcher);
         info!("Node '{}' restored from snapshot", node_name);
 
-        // 6. Gate on successful operation
         success_rx.mark_unchanged();
         tokio::time::timeout(EXPECTED_RECOVERY_DURATION, success_rx.changed())
             .await
@@ -432,11 +463,9 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         iteration += 1;
     }
 
-    // Stop health check task
-    health_check_abort.abort();
+    let _ = shutdown_tx.send(());
+    let _ = health_check_task.await;
 
-    eprintln!("[CHAOS] Chaos loop completed, verifying LSN convergence...");
-    // Verify applied LSN convergence for all partitions
     info!("Waiting for applied LSN convergence");
     let mut final_client = new_cluster_ctrl_client(
         create_tonic_channel(
@@ -447,13 +476,8 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         &base_config.networking,
     );
 
-    // With partition replication = 2, we expect 2 processors per partition to converge
     const PARTITION_REPLICATION: usize = 2;
     for partition_id in 0..NUM_PARTITIONS {
-        eprintln!(
-            "[CHAOS] Checking LSN convergence for partition {}",
-            partition_id
-        );
         applied_lsn_converged(
             &mut final_client,
             PARTITION_REPLICATION,
@@ -461,11 +485,10 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             MAX_WAIT_TIMEOUT,
         )
         .await?;
-        eprintln!("[CHAOS] Partition {} converged", partition_id);
+        info!("Partition {} converged", partition_id);
     }
 
-    // Verify we processed some requests successfully
-    let total_ops = successful_operations.load(Ordering::Relaxed);
+    let total_ops = *success_rx.borrow();
     info!(
         "Chaos test completed. Total successful operations: {}",
         total_ops
@@ -475,8 +498,6 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         "Should have processed at least some operations successfully"
     );
 
-    eprintln!("[CHAOS] LSN convergence complete, verifying snapshots exist...");
-    // Verify snapshots exist in the repository
     for partition_id in 0..NUM_PARTITIONS {
         let partition_dir = snapshots_dir.path().join(partition_id.to_string());
         let latest_json = partition_dir.join("latest.json");
@@ -487,10 +508,8 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         );
     }
 
-    eprintln!("[CHAOS] Snapshots verified, shutting down cluster...");
     info!("Incremental snapshot chaos test passed!");
     cluster.graceful_shutdown(Duration::from_secs(10)).await?;
-    eprintln!("[CHAOS] Test complete!");
 
     Ok(())
 }
