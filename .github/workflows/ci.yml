@@ -262,7 +262,10 @@ jobs:
         with:
           testArtifactOutput: e2e-test-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
-          # Needed for backward compatibility tests 1.6 -> 1.5
+          # RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true is needed for forward compatibility
+          # tests 1.6 -> 1.5. The e2e tests create a v1.5 Restate server which gets the same env variables passed in,
+          # and we need to enable the protocol v6 which is being used by 1.6.
+          # todo remove once we use v1.6 as the LAST_COMPATIBLE_RESTATE_SERVER_VERSION in the e2e tests
           envVars: |
             RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
 

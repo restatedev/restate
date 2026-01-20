@@ -267,9 +267,9 @@ where
         }
 
         // Figure out the deployment id, validate the protocol version constraints.
-        let deployment_id = match patch_deployment_id {
+        let new_deployment_id = match patch_deployment_id {
             PatchDeploymentId::KeepPinned => {
-                // Just keep current deployment, all good
+                // Not setting a new deployment id will automatically keep the old deployment id
                 None
             }
             PatchDeploymentId::PinToLatest | PatchDeploymentId::PinTo { .. } => {
@@ -370,7 +370,7 @@ where
             invocation_id,
             new_invocation_id,
             copy_prefix_up_to_index_included,
-            patch_deployment_id: deployment_id,
+            patch_deployment_id: new_deployment_id,
             response_sink: Some(InvocationMutationResponseSink::Ingress(
                 IngressInvocationResponseSink { request_id },
             )),

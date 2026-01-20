@@ -794,7 +794,9 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &[],
             )?;
 
-            // Input is now a journal directly
+            // Input is now a journal directly. Setting the input to PreFlightInvocationArgument::Journal
+            // will skip the journal initialization step in init_journal_and_invoke because the passed
+            // invocation_input is None.
             pre_flight_invocation_metadata.input =
                 PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
                     journal_metadata: JournalMetadata {
@@ -1245,6 +1247,9 @@ impl<S> StateMachineApplyContext<'_, S> {
         )
     }
 
+    /// Inits the journal if invocation_input is `Some` and invokes the invocation. If
+    /// invocation_input is `None`, then the journal must have been created before and we only
+    /// invoke the invocation.
     fn init_journal_and_invoke(
         &mut self,
         invocation_id: InvocationId,
@@ -1265,6 +1270,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .increment(1);
         }
 
+        // Only init the journal if we have some invocation input
         let invoke_input_journal = if let Some(invocation_input) = invocation_input {
             self.init_journal(
                 invocation_id,

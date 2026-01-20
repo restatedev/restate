@@ -427,6 +427,7 @@ impl JournalMetadata {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PreFlightInvocationArgument {
     /// The preflight status contains directly argument and headers, not yet a journal
+    // todo: Remove once we drop support for the old journal v1
     Input(PreFlightInvocationInput),
     /// A journal has already been initialized for this preflight request
     Journal(PreFlightInvocationJournal),

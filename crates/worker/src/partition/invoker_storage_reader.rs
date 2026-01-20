@@ -112,6 +112,7 @@ where
                     entries,
                 )
             } else {
+                // todo remove once we no longer support journal v1: https://github.com/restatedev/restate/issues/3184
                 // We didn't read a thing from journal table v2 -> we need to read journal v1
                 (
                     JournalMetadata::new(
