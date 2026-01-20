@@ -85,7 +85,7 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             .unwrap()
             .to_string(),
     );
-    base_config.worker.snapshots.experimental_snapshot_kind = SnapshotType::Incremental;
+    base_config.worker.snapshots.experimental_snapshot_type = SnapshotType::Incremental;
     base_config.worker.snapshots.experimental_num_retained =
         Some(NonZeroU8::new(RETAIN_SNAPSHOTS).unwrap());
     // Fast check interval for responsive snapshot triggering
@@ -376,7 +376,12 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
             let node = &mut cluster.nodes[node_to_restart];
             node_name = node.node_name().to_owned();
             // Node data is stored in base_dir/<node_name>/db
-            db_dir = node.config().common.base_dir().join(&node_name).join("db");
+            db_dir = node
+                .config()
+                .common
+                .base_dir()
+                .join(&node_name)
+                .join("db");
 
             info!("Restarting node '{}' with data wipe", node_name);
 
@@ -396,8 +401,8 @@ async fn incremental_snapshot_chaos() -> googletest::Result<()> {
         }
 
         // Set up watcher for snapshot restore log message (needs fresh borrow after restart)
-        let mut snapshot_restore_watcher =
-            cluster.nodes[node_to_restart].lines("Found partition snapshot, restoring it".parse()?);
+        let mut snapshot_restore_watcher = cluster.nodes[node_to_restart]
+            .lines("Found partition snapshot, restoring it".parse()?);
 
         // 4. Wait for health
         if let Err(e) = cluster
