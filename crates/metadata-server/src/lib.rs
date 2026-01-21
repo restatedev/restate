@@ -488,29 +488,21 @@ enum JoinClusterError {
     UnknownNode(PlainNodeId),
     #[error("node '{0}' does not have the 'metadata-server' role")]
     InvalidRole(PlainNodeId),
-    #[error(
-        "cluster fingerprint mismatch; rejecting join request because node seems to belong to a different cluster"
-    )]
-    ClusterFingerprintMismatch,
+    #[error("rejecting join request because node seems to belong to a different cluster: {0}")]
+    ClusterIdentityMismatch(String),
 }
 
 type JoinClusterResponseSender = oneshot::Sender<Result<Version, JoinClusterError>>;
 
 struct JoinClusterRequest {
     member_id: MemberId,
-    cluster_fingerprint: Option<ClusterFingerprint>,
+    cluster_identity: ClusterIdentity,
     response_tx: JoinClusterResponseSender,
 }
 
 impl JoinClusterRequest {
-    fn into_inner(
-        self,
-    ) -> (
-        JoinClusterResponseSender,
-        MemberId,
-        Option<ClusterFingerprint>,
-    ) {
-        (self.response_tx, self.member_id, self.cluster_fingerprint)
+    fn into_inner(self) -> (JoinClusterResponseSender, MemberId, ClusterIdentity) {
+        (self.response_tx, self.member_id, self.cluster_identity)
     }
 }
 
@@ -527,14 +519,14 @@ impl JoinClusterHandle {
     pub async fn join_cluster(
         &self,
         member_id: MemberId,
-        cluster_fingerprint: Option<ClusterFingerprint>,
+        cluster_identity: ClusterIdentity,
     ) -> Result<Version, JoinClusterError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.join_cluster_tx
             .send(JoinClusterRequest {
                 member_id,
-                cluster_fingerprint,
+                cluster_identity,
                 response_tx,
             })
             .await

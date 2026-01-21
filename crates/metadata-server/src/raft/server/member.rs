@@ -597,8 +597,7 @@ impl Member {
         join_cluster_request: JoinClusterRequest,
         metadata_nodes_config: &NodesConfiguration,
     ) {
-        let (response_tx, joining_member_id, cluster_fingerprint) =
-            join_cluster_request.into_inner();
+        let (response_tx, joining_member_id, cluster_identity) = join_cluster_request.into_inner();
 
         let nodes_config =
             Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
@@ -613,13 +612,29 @@ impl Member {
             return;
         }
 
-        // todo in v1.7 make this check mandatory and fail if cluster_fingerprint is None
-        // Validate cluster fingerprint if provided (before other sanity checks)
-        if let Some(incoming_fingerprint) = cluster_fingerprint {
+        // Validate cluster identity: first fingerprint, then cluster_name. Older versions of
+        // Restate < v1.6 won't set these fields.
+        // todo in v1.7 make this check mandatory and fail if neither fingerprint nor cluster_name is set
+        if let Some(incoming_fingerprint) = cluster_identity.fingerprint {
             let expected_fingerprint = nodes_config.cluster_fingerprint();
 
             if incoming_fingerprint != expected_fingerprint {
-                let _ = response_tx.send(Err(JoinClusterError::ClusterFingerprintMismatch));
+                let _ = response_tx.send(Err(JoinClusterError::ClusterIdentityMismatch(format!(
+                    "cluster fingerprint mismatch: expected {}, got {}",
+                    expected_fingerprint, incoming_fingerprint
+                ))));
+                return;
+            }
+        }
+
+        if let Some(incoming_cluster_name) = cluster_identity.cluster_name {
+            let expected_cluster_name = nodes_config.cluster_name();
+
+            if incoming_cluster_name != expected_cluster_name {
+                let _ = response_tx.send(Err(JoinClusterError::ClusterIdentityMismatch(format!(
+                    "cluster name mismatch: expected {}, got {}",
+                    expected_cluster_name, incoming_cluster_name
+                ))));
                 return;
             }
         }

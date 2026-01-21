@@ -27,7 +27,7 @@ use crate::raft::network::connection_manager::ConnectionError;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
 use crate::raft::network::grpc_svc::{JoinClusterRequest, JoinClusterResponse};
 use crate::raft::network::{ConnectionManager, NetworkMessage, PEER_METADATA_KEY, grpc_svc};
-use crate::{JoinClusterError, JoinClusterHandle, MemberId};
+use crate::{ClusterIdentity, JoinClusterError, JoinClusterHandle, MemberId};
 
 #[derive(Debug)]
 pub struct MetadataServerNetworkHandler<M> {
@@ -107,8 +107,10 @@ where
             let request = request.into_inner();
 
             // Convert the optional fingerprint, if it is 0 (invalid) then we treat it as None
-            let cluster_fingerprint =
-                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+            let cluster_identity = ClusterIdentity {
+                fingerprint: ClusterFingerprint::try_from(request.cluster_fingerprint).ok(),
+                cluster_name: request.cluster_name,
+            };
 
             let nodes_config_version = join_handle
                 .join_cluster(
@@ -116,7 +118,7 @@ where
                         PlainNodeId::from(request.node_id),
                         request.created_at_millis,
                     ),
-                    cluster_fingerprint,
+                    cluster_identity,
                 )
                 .await?;
 
@@ -161,7 +163,7 @@ impl From<JoinClusterError> for Status {
             JoinClusterError::UnknownNode(_) | JoinClusterError::InvalidRole(_) => {
                 Status::invalid_argument(err.to_string())
             }
-            JoinClusterError::ClusterFingerprintMismatch => {
+            JoinClusterError::ClusterIdentityMismatch(_) => {
                 Status::permission_denied(err.to_string())
             }
         }

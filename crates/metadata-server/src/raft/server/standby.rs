@@ -290,6 +290,7 @@ impl Standby {
                 node_id: u32::from(member_id.node_id),
                 created_at_millis: member_id.created_at_millis,
                 cluster_fingerprint: nodes_config.cluster_fingerprint().to_u64(),
+                cluster_name: Some(nodes_config.cluster_name().to_owned()),
             })
             .await
         {
