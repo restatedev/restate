@@ -8359,6 +8359,7 @@ dependencies = [
  "restate-types",
  "restate-workspace-hack",
  "serde",
+ "serde_with",
  "strum",
  "tracing",
 ]

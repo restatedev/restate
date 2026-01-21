@@ -59,6 +59,20 @@ fn encode_serde_as_json<T: Serialize>(
 }
 
 /// Utility method to encode a [`bilrost::Message`] type
-pub fn encode_bilrost<T: bilrost::Message>(value: &T) -> Bytes {
+// todo(azmy): Contiguous encoding is supposedly faster for complex
+// and nested types. Confirm this claim by running benchmarks.
+// (is it still beneficial to encode_contiguous if we still have to
+// copy the bytes over to the buffer)
+pub fn encode_bilrost_contiguous<T: bilrost::Message>(value: &T) -> Bytes {
     value.encode_contiguous().into_vec().into()
+}
+
+/// Utility method to encode a [`bilrost::Message`] type
+pub fn encode_bilrost<T: bilrost::Message>(
+    value: &T,
+    buf: &mut BytesMut,
+) -> Result<(), StorageEncodeError> {
+    value
+        .encode(buf)
+        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))
 }

@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = ["serde"]
-serde = ["dep:serde", "enum-map/serde", "bytestring/serde", "restate-invoker-api/serde"]
+serde = ["dep:serde", "dep:serde_with", "enum-map/serde", "bytestring/serde", "restate-invoker-api/serde"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -23,6 +23,7 @@ bytestring = { workspace = true }
 bilrost = { workspace = true }
 enum-map = { workspace = true }
 serde = { workspace = true, optional = true }
+serde_with = { workspace = true, optional = true }
 strum = { workspace = true }
 tracing = { workspace = true }
 

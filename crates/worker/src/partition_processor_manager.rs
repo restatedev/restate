@@ -61,7 +61,7 @@ use restate_types::config::Configuration;
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::SnapshotId;
-use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
+use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::live::Live;
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -86,7 +86,7 @@ use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
 use crate::metric_definitions::PARTITION_LABEL;
 use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
-use crate::partition::ProcessorError;
+use crate::partition::{LeadershipInfo, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
 };
@@ -630,9 +630,9 @@ where
             } => {
                 if let Some(processor_state) = self.processor_states.get_mut(&partition_id) {
                     match result {
-                        Ok(leader_epoch) => {
+                        Ok(leadership_info) => {
                             processor_state
-                                .on_leader_epoch_obtained(leader_epoch, leader_epoch_token);
+                                .on_leader_epoch_obtained(leadership_info, leader_epoch_token);
                         }
                         Err(err) => {
                             if processor_state.is_valid_leader_epoch_token(leader_epoch_token) {
@@ -1212,7 +1212,7 @@ where
         metadata_store_client: MetadataStoreClient,
         partition_id: PartitionId,
         node_id: GenerationalNodeId,
-    ) -> Result<LeaderEpoch, ReadModifyWriteError> {
+    ) -> Result<Box<LeadershipInfo>, ReadModifyWriteError> {
         let epoch: EpochMetadata = metadata_store_client
             .read_modify_write(partition_processor_epoch_key(partition_id), |epoch| {
                 let next_epoch = epoch
@@ -1222,7 +1222,8 @@ where
                 Ok(next_epoch)
             })
             .await?;
-        Ok(epoch.epoch())
+
+        Ok(Box::new(epoch.into()))
     }
 
     fn handle_create_snapshot_request(&mut self, request: Incoming<Rpc<CreateSnapshotRequest>>) {
@@ -1483,7 +1484,7 @@ enum EventKind {
     Stopped(Result<(), ProcessorError>),
     NewLeaderEpoch {
         leader_epoch_token: LeaderEpochToken,
-        result: anyhow::Result<LeaderEpoch>,
+        result: anyhow::Result<Box<LeadershipInfo>>,
     },
     NewTargetTail {
         tail: Option<Lsn>,
