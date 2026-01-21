@@ -115,7 +115,7 @@ impl Standby {
 
                     let nodes_config = nodes_config.live_load();
 
-                    // Validate cluster identity: fingerprint takes priority, cluster_name as fallback
+                    // Validate cluster identity: fingerprint first, then cluster_name
                     if let Some(incoming_fingerprint) = cluster_identity.fingerprint {
                         // nodes_config might still be uninitialized if we haven't joined a cluster yet.
                         // Once nodes store the last seen nodes configuration, we can assume that the
@@ -124,7 +124,9 @@ impl Standby {
                             request.fail(RequestError::ClusterIdentityMismatch(format!("cluster fingerprint mismatch: expected {}, got {}", my_cluster_fingerprint, incoming_fingerprint)));
                             continue;
                         }
-                    } else if let Some(incoming_cluster_name) = cluster_identity.cluster_name {
+                    }
+
+                    if let Some(incoming_cluster_name) = cluster_identity.cluster_name {
                         let my_cluster_name = nodes_config.cluster_name();
 
                         if my_cluster_name != incoming_cluster_name {
