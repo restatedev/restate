@@ -136,19 +136,14 @@ where
         //  see https://github.com/restatedev/restate/issues/3184
         if use_old_journal_workaround {
             // Only copying the input entry works with this workaround!
-            if use_old_journal_workaround && copy_prefix_up_to_index_included > 0 {
+            if copy_prefix_up_to_index_included > 0 {
                 bail!(replier, Unsupported);
             }
 
-            // Patching the deployment id doesn't work with this workaround!
-            if matches!(
-                patch_deployment_id,
-                PatchDeploymentId::KeepPinned | PatchDeploymentId::PinTo { .. }
-            ) {
-                bail!(replier, CannotPatchDeploymentId);
-            }
-
-            // Patching the deployment id doesn't work with this method!
+            // Restarting an invocation that is using the journal v1 works by creating a new
+            // invocation w/o preserving any of the existing journal. A new invocation will
+            // automatically pick the latest deployment and therefore, we cannot keep the current
+            // pinned deployment nor can we specify the new deployment id.
             if matches!(
                 patch_deployment_id,
                 PatchDeploymentId::KeepPinned | PatchDeploymentId::PinTo { .. }
