@@ -77,7 +77,7 @@ const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
 pub enum LatestSnapshotVersion {
     #[default]
     V1,
-    /// V2 adds support for retained snapshots
+    /// V2 adds support for retained snapshots. Introduced in v1.6.
     V2,
 }
 
@@ -157,6 +157,7 @@ impl LatestSnapshot {
         }
     }
 
+    /// We ensure that retained snapshots is in descending order of archived LSN, most recent snapshot first.
     fn effective_retained_snapshots(&self) -> Vec<SnapshotReference> {
         if self.retained_snapshots.is_empty() {
             // Upgrade path from V1 - implicitly the "latest" snapshot is always retained.
@@ -232,26 +233,34 @@ impl PartitionSnapshotStatus {
     }
 }
 
-impl From<&LatestSnapshot> for PartitionSnapshotStatus {
-    fn from(latest: &LatestSnapshot) -> Self {
-        let log_id = latest.log_id.unwrap_or_else(|| {
-            if latest.version != LatestSnapshotVersion::V1 {
-                warn!(
-                    snapshot_id = %latest.snapshot_id,
-                    partition_id = %latest.partition_id,
-                    "LatestSnapshot V2 metadata with no stored log id, this is probably a bug"
-                );
+impl TryFrom<&LatestSnapshot> for PartitionSnapshotStatus {
+    type Error = anyhow::Error;
+
+    fn try_from(latest: &LatestSnapshot) -> Result<Self, Self::Error> {
+        let log_id = match (latest.version, latest.log_id) {
+            (_, Some(log_id)) => log_id,
+            (LatestSnapshotVersion::V1, None) => {
+                // V1 didn't store log_id, fall back to partition table lookup
+                Metadata::with_current(|m| m.partition_table_ref())
+                    .get(&latest.partition_id)
+                    .map(|p| p.log_id())
+                    .unwrap_or_else(|| LogId::default_for_partition(latest.partition_id))
             }
-            Metadata::with_current(|m| m.partition_table_ref())
-                .get(&latest.partition_id)
-                .map(|p| p.log_id())
-                .unwrap_or_else(|| LogId::default_for_partition(latest.partition_id))
-        });
+            (LatestSnapshotVersion::V2, None) => {
+                return Err(anyhow!(
+                    "LatestSnapshot V2 for partition {} (snapshot {}) missing required log_id",
+                    latest.partition_id,
+                    latest.snapshot_id
+                ));
+            }
+        };
 
         let (archived_lsn, latest_snapshot_created_at) = match latest.version {
             LatestSnapshotVersion::V1 => (latest.min_applied_lsn, latest.created_at.into()),
             LatestSnapshotVersion::V2 => {
-                // Report the earliest as the archived LSN, enables restoring from any of them
+                // Report the earliest as the archived LSN, enables restoring from any of them.
+                // We deliberately iterate instead of relying on the descending sort order
+                // invariant as a defensive measure against e.g. manually edited metadata.
                 let archived_lsn = latest
                     .retained_snapshots
                     .iter()
@@ -270,13 +279,13 @@ impl From<&LatestSnapshot> for PartitionSnapshotStatus {
             }
         };
 
-        PartitionSnapshotStatus {
+        Ok(PartitionSnapshotStatus {
             archived_lsn,
             latest_snapshot_lsn: latest.min_applied_lsn,
             latest_snapshot_created_at,
             latest_snapshot_id: latest.snapshot_id,
             log_id,
-        }
+        })
     }
 }
 
@@ -437,7 +446,7 @@ impl SnapshotRepository {
         let latest_path = self.latest_snapshot_pointer_path(snapshot.partition_id);
 
         let maybe_stored = self
-            .get_latest_snapshot_metadata_for_update(snapshot, &latest_path)
+            .get_latest_snapshot_metadata_for_update(&latest_path)
             .await
             .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
 
@@ -458,14 +467,15 @@ impl SnapshotRepository {
                 restate_core::TaskKind::Disposable,
                 "snapshot-cleanup-superseded",
                 async move {
-                    let _ = repository
+                    repository
                         .delete_snapshot_files(partition_id, &snapshot_ref)
                         .await;
                     Ok::<(), anyhow::Error>(())
                 },
             );
 
-            return Ok(PartitionSnapshotStatus::from(latest_stored));
+            return PartitionSnapshotStatus::try_from(latest_stored)
+                .map_err(|e| PutSnapshotError::from(e, progress.clone()));
         }
 
         let format_version = self.determine_format_version(maybe_stored.as_ref().map(|(l, _)| l));
@@ -505,7 +515,8 @@ impl SnapshotRepository {
             self.spawn_cleanup_task(snapshot.partition_id, evicted_snapshots);
         }
 
-        Ok(PartitionSnapshotStatus::from(&new_latest))
+        PartitionSnapshotStatus::try_from(&new_latest)
+            .map_err(|e| PutSnapshotError::from(e, progress.clone()))
     }
 
     fn determine_format_version(&self, current: Option<&LatestSnapshot>) -> LatestSnapshotVersion {
@@ -548,9 +559,9 @@ impl SnapshotRepository {
                 let mut retained_snapshots = current
                     .map(|l| l.effective_retained_snapshots())
                     .unwrap_or_default();
+
+                // List will be in correct descending order if we insert the newest snapshot first
                 retained_snapshots.insert(0, new_snapshot_ref.clone());
-                // maintain descending LSN order: split_off below relies on it to keep last N
-                retained_snapshots.sort_by_key(|s| std::cmp::Reverse(s.min_applied_lsn));
 
                 let evicted_snapshots = retained_snapshots
                     .split_off((num_retained.get() as usize).min(retained_snapshots.len()));
@@ -604,16 +615,17 @@ impl SnapshotRepository {
         for snapshot_ref in &cleanup_snapshots {
             // Errors are logged inside delete_snapshot_files; if cleanup fails,
             // these snapshots become orphans to be cleaned by future scan-sweep.
-            let _ = self.delete_snapshot_files(partition_id, snapshot_ref).await;
+            self.delete_snapshot_files(partition_id, snapshot_ref).await;
         }
     }
 
+    /// Best-effort deletion of snapshot files. Errors are logged but not propagated.
     #[instrument(level = "warn", skip(self), fields(%partition_id, snapshot_id = %snapshot_ref.snapshot_id))]
     async fn delete_snapshot_files(
         &self,
         partition_id: PartitionId,
         snapshot_ref: &SnapshotReference,
-    ) -> anyhow::Result<()> {
+    ) {
         let metadata_path = self
             .prefix
             .child(partition_id.to_string())
@@ -626,28 +638,28 @@ impl SnapshotRepository {
                     Ok(b) => b,
                     Err(err) => {
                         warn!(%err, "Failed to read snapshot metadata bytes during cleanup");
-                        return Err(err.into());
+                        return;
                     }
                 };
                 match serde_json::from_slice::<PartitionSnapshotMetadata>(&bytes) {
                     Ok(m) => m,
                     Err(err) => {
                         warn!(%err, "Failed to parse snapshot metadata during cleanup");
-                        return Err(err.into());
+                        return;
                     }
                 }
             }
             Err(object_store::Error::NotFound { .. }) => {
                 // already deleted, this is fine
-                return Ok(());
+                return;
             }
             Err(err) => {
                 warn!(%err, "Failed to fetch snapshot metadata during cleanup");
-                return Err(err.into());
+                return;
             }
         };
 
-        let mut failed_deletes = vec![];
+        let mut any_failed = false;
         for path in metadata
             .files
             .iter()
@@ -658,20 +670,14 @@ impl SnapshotRepository {
                 && !matches!(err, object_store::Error::NotFound { .. })
             {
                 warn!(%path, %err, "Failed to delete snapshot object");
-                failed_deletes.push(err);
+                any_failed = true;
             }
         }
 
-        if failed_deletes.is_empty() {
-            Ok(())
-        } else {
+        if any_failed {
             warn!(
                 "Failed to clean up old snapshot; repeated failures may lead to increased object store usage"
             );
-            Err(anyhow!(
-                "Could not fully delete snapshot {}",
-                snapshot_ref.snapshot_id
-            ))
         }
     }
 
@@ -884,12 +890,11 @@ impl SnapshotRepository {
         let latest: LatestSnapshot = serde_json::from_slice(&latest.bytes().await?)?;
         debug!(partition_id = %partition_id, snapshot_id = %latest.snapshot_id, "Latest snapshot metadata: {:?}", latest);
 
-        Ok(Some(PartitionSnapshotStatus::from(&latest)))
+        Ok(Some(PartitionSnapshotStatus::try_from(&latest)?))
     }
 
     async fn get_latest_snapshot_metadata_for_update(
         &self,
-        snapshot: &PartitionSnapshotMetadata,
         path: &ObjectPath,
     ) -> anyhow::Result<Option<(LatestSnapshot, UpdateVersion)>> {
         debug!(%path, "Getting latest snapshot pointer for update");
@@ -905,7 +910,6 @@ impl SnapshotRepository {
                     .inspect_err(|e| {
                         debug!(
                         repository_latest_lsn = "unknown",
-                        new_snapshot_lsn = ?snapshot.min_applied_lsn,
                         "Failed to parse stored latest snapshot pointer, refusing to overwrite: {}",
                         e
                     )
@@ -917,18 +921,13 @@ impl SnapshotRepository {
                     let fingerprint = nodes_config.cluster_fingerprint();
                     let cluster_name = nodes_config.cluster_name();
                     latest.validate(cluster_name, fingerprint)?;
-                    snapshot.validate(cluster_name, fingerprint)?;
                     anyhow::Ok(())
                 })?;
 
                 Ok(Some((latest, version)))
             }
             Err(object_store::Error::NotFound { .. }) => {
-                debug!(
-                    repository_latest_lsn = "none",
-                    new_snapshot_lsn = ?snapshot.min_applied_lsn,
-                    "No latest snapshot pointer found, will create one"
-                );
+                debug!("No latest snapshot pointer found, will create one");
                 Ok(None)
             }
             Err(err) => {
@@ -1548,8 +1547,6 @@ mod tests {
     async fn test_cleanup() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
-        // Upload snapshots with cleanup enabled - evicted snapshots are cleaned up in-memory
-        // (no longer accumulated in pending_deletions)
         let snapshots_destination = TempDir::new()?;
         let destination = Url::from_file_path(snapshots_destination.path())
             .unwrap()
@@ -1574,9 +1571,6 @@ mod tests {
             repository.put(&snapshot, source_dir).await?;
         }
 
-        // Allow the cleanup task to run
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
         let latest_path = repository.latest_snapshot_pointer_path(PartitionId::MIN);
         let partition_prefix = repository.partition_snapshots_prefix(PartitionId::MIN);
         let result = repository.object_store.get(&latest_path).await?;
@@ -1591,27 +1585,30 @@ mod tests {
             vec![Lsn::new(500), Lsn::new(400), Lsn::new(300)]
         );
 
-        // Wait for cleanup tasks to complete
         let retained_snapshot_paths: HashSet<_> = latest
             .retained_snapshots
             .iter()
-            .map(|s| s.path.clone())
+            .map(|s| s.path.to_string())
             .collect();
 
+        // wait for cleanup
+        let mut repository_snapshot_paths: HashSet<_> = HashSet::default();
         for _ in 0..10 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let full_list: Vec<_> = repository
+            let repository_listing: Vec<_> = repository
                 .object_store
                 .list(Some(&partition_prefix))
                 .try_collect()
                 .await?;
-            let repository_snapshot_paths: HashSet<_> = full_list
+            repository_snapshot_paths = repository_listing
                 .iter()
                 .filter_map(|obj| {
                     let path_str = obj.location.as_ref();
-                    path_str.split('/').find(|s| s.starts_with("lsn_"))
+                    path_str
+                        .split('/')
+                        .find(|s| s.starts_with("lsn_"))
+                        .map(|s| s.to_owned())
                 })
-                .map(|s| s.to_string())
                 .collect();
 
             if repository_snapshot_paths == retained_snapshot_paths {
@@ -1619,26 +1616,7 @@ mod tests {
             }
         }
 
-        // Verify that only retained snapshots exist in the object store
-        let full_list: Vec<_> = repository
-            .object_store
-            .list(Some(&partition_prefix))
-            .try_collect()
-            .await?;
-        let repository_snapshot_paths: HashSet<_> = full_list
-            .iter()
-            .filter_map(|obj| {
-                // path should be in form <partition>/lsn_xxx-snap_yyy/data.sst
-                let path_str = obj.location.as_ref();
-                path_str.split('/').find(|s| s.starts_with("lsn_"))
-            })
-            .collect();
-        let retained_snapshot_paths: HashSet<_> = latest
-            .retained_snapshots
-            .iter()
-            .map(|s| s.path.as_str())
-            .collect();
-
+        // only retained snapshots should exist in the object store, ignoring order (HashSet comparison)
         assert_eq!(
             repository_snapshot_paths,
             retained_snapshot_paths,
@@ -1657,7 +1635,10 @@ mod tests {
     async fn test_archived_lsn_reports_earliest_retained_v2() -> anyhow::Result<()> {
         use super::PartitionSnapshotStatus;
 
-        // Create a V2 latest snapshot with multiple retained snapshots
+        // Create a V2 latest snapshot with multiple retained snapshots.
+        // The retained_snapshots list is intentionally out of order to verify that the
+        // conversion code does NOT rely on the descending LSN sort invariant. This tests
+        // defensive behavior against corrupted or manually edited metadata.
         let latest = LatestSnapshot {
             version: LatestSnapshotVersion::V2,
             partition_id: PartitionId::MIN,
@@ -1678,21 +1659,20 @@ mod tests {
                 },
                 SnapshotReference {
                     snapshot_id: SnapshotId::new(),
-                    min_applied_lsn: Lsn::new(1342), // Oldest by LSN (last index)
+                    min_applied_lsn: Lsn::new(1342), // Oldest by LSN but at index 1
                     created_at: Timestamp::from_second(0).unwrap(),
                     path: "snap3".to_string(),
                 },
-                // we intentionally re-order some items within retained - should not influence archived LSN
                 SnapshotReference {
                     snapshot_id: SnapshotId::new(),
-                    min_applied_lsn: Lsn::new(2839),
+                    min_applied_lsn: Lsn::new(2839), // Middle LSN at index 2
                     created_at: Timestamp::from_second(1).unwrap(),
                     path: "snap2".to_string(),
                 },
             ],
         };
 
-        let status = PartitionSnapshotStatus::from(&latest);
+        let status = PartitionSnapshotStatus::try_from(&latest)?;
 
         assert_eq!(
             status.archived_lsn,

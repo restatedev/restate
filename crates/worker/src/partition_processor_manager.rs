@@ -989,7 +989,7 @@ where
             });
 
         for partition_id in &unknown_latest_snapshot {
-            self.spawn_update_archived_lsn_task(*partition_id);
+            self.spawn_update_latest_snapshot(*partition_id);
         }
 
         // Limit the number of snapshots we schedule automatically
@@ -1147,7 +1147,7 @@ where
         }
     }
 
-    fn spawn_update_archived_lsn_task(&mut self, partition_id: PartitionId) {
+    fn spawn_update_latest_snapshot(&mut self, partition_id: PartitionId) {
         if !self.pending_snapshot_status_refreshes.insert(partition_id) {
             return;
         }
@@ -1155,7 +1155,7 @@ where
         let psm = self.partition_store_manager.clone();
         self.asynchronous_operations
             .build_task()
-            .name(&format!("update-archived-lsn-{partition_id}"))
+            .name(&format!("update-latest-snapshot-{partition_id}"))
             .spawn(
                 async move {
                     match psm
@@ -1188,7 +1188,7 @@ where
                 }
                 .in_current_tc(),
             )
-            .expect("to spawn update archived LSN task");
+            .expect("to spawn update latest snapshot task");
     }
 
     async fn obtain_new_leader_epoch_task(
