@@ -56,7 +56,7 @@ impl Default for QueryEngineOptions {
     fn default() -> Self {
         #[allow(deprecated)]
         Self {
-            memory_size: NonZeroUsize::new(4 * 1024 * 1024 * 1024).unwrap(), // 4GiB
+            memory_size: NonZeroUsize::new(1024 * 1024 * 1024).unwrap(), // 1GiB
             tmp_dir: None,
             query_parallelism: None,
             datafusion_options: HashMap::new(),
