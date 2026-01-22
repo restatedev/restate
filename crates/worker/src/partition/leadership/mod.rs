@@ -67,6 +67,7 @@ use restate_wal_protocol::control::{AnnounceLeader, PartitionDurability, Version
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
 
+use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::{self, Cleaner};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::leader_state::LeaderState;
@@ -218,11 +219,14 @@ where
         }
     }
 
-    #[instrument(level = "debug", skip_all, fields(leader_epoch = %leader_epoch))]
-    pub async fn run_for_leader(&mut self, leader_epoch: LeaderEpoch) -> Result<(), Error> {
-        if self.is_new_leader_epoch(leader_epoch) {
+    #[instrument(level = "debug", skip_all, fields(leader_epoch = %leadership_info.leader_epoch))]
+    pub async fn run_for_leader(
+        &mut self,
+        leadership_info: Box<LeadershipInfo>,
+    ) -> Result<(), Error> {
+        if self.is_new_leader_epoch(leadership_info.leader_epoch) {
             self.become_follower().await;
-            self.announce_leadership(leader_epoch).await?;
+            self.announce_leadership(leadership_info).await?;
             debug!("Running for leadership.");
         } else {
             debug!(
@@ -233,11 +237,19 @@ where
         Ok(())
     }
 
-    async fn announce_leadership(&mut self, leader_epoch: LeaderEpoch) -> Result<(), Error> {
+    async fn announce_leadership(
+        &mut self,
+        leadership_info: Box<LeadershipInfo>,
+    ) -> Result<(), Error> {
+        let leader_epoch = leadership_info.leader_epoch;
+
         let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeader {
             node_id: my_node_id(),
             leader_epoch,
+            epoch_version: Some(leadership_info.version),
             partition_key_range: self.partition.key_range.clone(),
+            current_config: Some(leadership_info.current_config),
+            next_config: leadership_info.next_config,
         }));
 
         let mut self_proposer = SelfProposer::new(
@@ -766,6 +778,7 @@ impl shuffle::OutboxReader for OutboxReader {
 
 #[cfg(test)]
 mod tests {
+    use crate::partition::LeadershipInfo;
     use crate::partition::leadership::trim_queue::TrimQueue;
     use crate::partition::leadership::{LeadershipState, State};
     use assert2::let_assert;
@@ -777,15 +790,15 @@ mod tests {
     use restate_invoker_api::test_util::MockInvokerHandle;
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::GenerationalNodeId;
     use restate_types::config::Configuration;
     use restate_types::identifiers::{LeaderEpoch, PartitionId, PartitionKey};
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
-    use restate_types::partitions::Partition;
     use restate_types::partitions::state::PartitionReplicaSetStates;
+    use restate_types::partitions::{Partition, PartitionConfiguration};
+    use restate_types::{GenerationalNodeId, Version};
     use restate_vqueues::VQueuesMetaMut;
-    use restate_wal_protocol::control::AnnounceLeader;
-    use restate_wal_protocol::{Command, Envelope};
+    use restate_wal_protocol::Command;
+    use restate_wal_protocol::Envelope;
     use std::num::NonZeroUsize;
     use std::ops::RangeInclusive;
     use std::sync::Arc;
@@ -829,7 +842,14 @@ mod tests {
         assert!(matches!(state.state, State::Follower));
 
         let leader_epoch = LeaderEpoch::from(1);
-        state.run_for_leader(leader_epoch).await?;
+        let current_config = PartitionConfiguration::default();
+        let leadership_info = LeadershipInfo {
+            version: Version::MIN,
+            leader_epoch,
+            current_config: current_config.into(),
+            next_config: None,
+        };
+        state.run_for_leader(Box::new(leadership_info)).await?;
 
         assert!(matches!(state.state, State::Candidate { .. }));
 
@@ -843,14 +863,11 @@ mod tests {
         let envelope = record.try_decode::<Envelope>().unwrap()?;
 
         let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
-        assert_eq!(
-            *announce_leader,
-            AnnounceLeader {
-                node_id: NODE_ID,
-                leader_epoch,
-                partition_key_range: PARTITION_KEY_RANGE,
-            }
-        );
+        assert_eq!(announce_leader.node_id, NODE_ID);
+        assert_eq!(announce_leader.leader_epoch, leader_epoch);
+        assert_eq!(announce_leader.partition_key_range, PARTITION_KEY_RANGE);
+        assert!(announce_leader.current_config.is_some());
+        assert!(announce_leader.next_config.is_none());
 
         let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
         state
