@@ -1000,7 +1000,7 @@ fn is_sensitive_kafka_property(key: &str) -> bool {
     }
 
     // Redact SASL credentials
-    if key_lower.contains("sasl.username") || key_lower.contains("sasl.password") {
+    if key_lower.contains("sasl.username") {
         return true;
     }
 
@@ -1020,18 +1020,12 @@ fn is_sensitive_kafka_property(key: &str) -> bool {
     }
 
     // Redact SSL/TLS private keys (PEM format or file locations)
-    if key_lower.contains("ssl.key.location")
-        || key_lower.contains("ssl.key.pem")
-        || key_lower.contains("ssl.key.password")
-    {
+    if key_lower.contains("ssl.key.location") || key_lower.contains("ssl.key.pem") {
         return true;
     }
 
     // Redact keystore and truststore locations (can reveal filesystem structure)
-    if key_lower.contains("keystore.location")
-        || key_lower.contains("truststore.location")
-        || key_lower.contains("keystore.password")
-    {
+    if key_lower.contains("keystore.location") || key_lower.contains("truststore.location") {
         return true;
     }
 

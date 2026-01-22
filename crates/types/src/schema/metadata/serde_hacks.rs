@@ -386,8 +386,17 @@ pub struct Schema {
     subscriptions: HashMap<SubscriptionId, Subscription>,
 
     // Kafka clusters
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    kafka_clusters: Option<Vec<KafkaCluster>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde_as(as = "restate_serde_util::MapAsVec")]
+    kafka_clusters: HashMap<String, KafkaCluster>,
+}
+
+impl restate_serde_util::MapAsVecItem for KafkaCluster {
+    type Key = String;
+
+    fn key(&self) -> Self::Key {
+        self.name.to_string()
+    }
 }
 
 impl From<super::Schema> for Schema {
@@ -406,7 +415,7 @@ impl From<super::Schema> for Schema {
             deployments_v2: Some(deployments.into_values().collect()),
             version,
             subscriptions,
-            kafka_clusters: Some(kafka_clusters.into_values().collect()),
+            kafka_clusters,
         }
     }
 }
@@ -422,12 +431,6 @@ impl From<Schema> for super::Schema {
             kafka_clusters,
         }: Schema,
     ) -> Self {
-        let kafka_clusters_map: HashMap<String, KafkaCluster> = kafka_clusters
-            .unwrap_or_default()
-            .into_iter()
-            .map(|cluster| (cluster.name().to_string(), cluster))
-            .collect();
-
         if let Some(deployments_v2) = deployments_v2 {
             Self {
                 version,
@@ -437,7 +440,7 @@ impl From<Schema> for super::Schema {
                     .map(|deployment| (deployment.id, deployment))
                     .collect(),
                 subscriptions,
-                kafka_clusters: kafka_clusters_map,
+                kafka_clusters,
             }
         } else if let (Some(services), Some(deployments)) = (services, deployments) {
             let conversions::V2Schemas { deployments } = conversions::V1Schemas {
@@ -454,7 +457,7 @@ impl From<Schema> for super::Schema {
                     .map(|deployment| (deployment.id, deployment))
                     .collect(),
                 subscriptions,
-                kafka_clusters: kafka_clusters_map,
+                kafka_clusters,
             }
         } else {
             panic!(
