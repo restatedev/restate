@@ -23,6 +23,8 @@ pub(crate) const SNAPSHOT_DOWNLOAD_DURATION: &str =
     "restate.partition_store.snapshots.download.duration.seconds";
 pub(crate) const SNAPSHOT_DOWNLOAD_FAILED: &str =
     "restate.partition_store.snapshots.download.failed.total";
+pub(crate) const SNAPSHOT_DOWNLOAD_FALLBACK: &str =
+    "restate.partition_store.snapshots.download.fallback.total";
 pub(crate) const SNAPSHOT_ORPHAN_SCAN_TOTAL: &str =
     "restate.partition_store.snapshots.orphan_scan.total";
 pub(crate) const SNAPSHOT_ORPHAN_SCAN_FAILED: &str =
@@ -71,6 +73,12 @@ pub(crate) fn describe_metrics() {
         SNAPSHOT_DOWNLOAD_FAILED,
         Unit::Count,
         "Number of failed partition snapshot download operations"
+    );
+
+    describe_counter!(
+        SNAPSHOT_DOWNLOAD_FALLBACK,
+        Unit::Count,
+        "Number of snapshot downloads that succeeded using a fallback (non-latest) snapshot"
     );
 
     describe_counter!(
