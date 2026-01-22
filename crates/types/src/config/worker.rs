@@ -636,8 +636,8 @@ pub struct SnapshotsOptions {
     /// cluster nodes run a compatible version. Downgrading will forget the tracked snapshots and
     /// revert to v1.5.x behavior.
     ///
-    /// Default: `None` (unlimited retention, uses V1 format)
-    // todo(v1.7): Drop the experimental prefix
+    /// Default: `None` (feature is disabled, older snapshots will accumulate in repository)
+    // todo(v1.7): Drop the experimental prefix; make it non-optional with default value `1`
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experimental_num_retained: Option<NonZeroU8>,
