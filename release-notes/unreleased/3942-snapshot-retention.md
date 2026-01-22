@@ -49,4 +49,3 @@ This change ensures that any retained snapshot can be used for recovery. This it
 ### Related Issues
 
 - [#3942](https://github.com/restatedev/restate/pull/3942): Add support for managing a fixed number of retained snapshots
-- [#3918](https://github.com/restatedev/restate/pull/3918): Snapshot repository leases (prerequisite)
