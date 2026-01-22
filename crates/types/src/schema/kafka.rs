@@ -14,33 +14,27 @@ use crate::time::MillisSinceEpoch;
 use http::uri::Authority;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
 use std::ops::Deref;
 use std::str::FromStr;
 
 /// # Kafka cluster name
 ///
 /// Valid name to use as a kafka cluster identifier. MUST conform a valid hostname format.
-#[derive(Clone, serde_with::SerializeDisplay, serde_with::DeserializeFromStr)]
+#[derive(
+    Clone,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
+    derive_more::Debug,
+    derive_more::Display,
+)]
 #[cfg_attr(feature = "utoipa-schema", derive(::utoipa::ToSchema))]
 #[cfg_attr(feature = "utoipa-schema", schema(value_type = String, format = Hostname))]
+#[debug("{}", _0)]
 pub struct KafkaClusterName(String);
 
 impl KafkaClusterName {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
-    }
-}
-
-impl fmt::Debug for KafkaClusterName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl fmt::Display for KafkaClusterName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self, f)
     }
 }
 
