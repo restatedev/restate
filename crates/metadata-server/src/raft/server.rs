@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, watch};
 use tracing::debug;
 
 use restate_core::network::NetworkServerBuilder;
-use restate_core::{MetadataWriter, ShutdownError, cancellation_watcher};
+use restate_core::{Metadata, MetadataWriter, ShutdownError, cancellation_watcher};
 use restate_types::Version;
 use restate_types::config::Configuration;
 use restate_types::errors::{ConversionError, GenericError};
@@ -35,7 +35,7 @@ use crate::raft::server::member::Member;
 use crate::raft::server::standby::Standby;
 use crate::raft::server::uninitialized::Uninitialized;
 use crate::raft::storage::RocksDbStorage;
-use crate::raft::{network, storage};
+use crate::raft::{RaftServerState, network, storage};
 use crate::{
     JoinClusterHandle, JoinClusterReceiver, MemberId, MetadataCommandReceiver, MetadataServer,
     MetadataServerSummary, RequestError, RequestReceiver, StatusSender,
@@ -51,7 +51,7 @@ struct RaftServerComponents {
     status_tx: StatusSender,
     command_rx: MetadataCommandReceiver,
     join_cluster_rx: JoinClusterReceiver,
-    metadata_writer: MetadataWriter,
+    metadata_writer: Option<MetadataWriter>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -176,12 +176,12 @@ impl RaftMetadataServer {
                 status_tx,
                 command_rx,
                 join_cluster_rx,
-                provision_rx,
+                Some(provision_rx),
             ))),
         })
     }
 
-    pub async fn run(mut self, metadata_writer: MetadataWriter) -> Result<(), Error> {
+    pub async fn run(mut self, metadata_writer: Option<MetadataWriter>) -> Result<(), Error> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let health_status = self.health_status.take().expect("to be present");
 
@@ -204,7 +204,7 @@ impl RaftMetadataServer {
     async fn run_inner(
         &mut self,
         health_status: &HealthStatus<MetadataServerStatus>,
-        metadata_writer: MetadataWriter,
+        metadata_writer: Option<MetadataWriter>,
     ) -> Result<Never, Error> {
         self.initialize(health_status, metadata_writer).await?;
 
@@ -238,29 +238,41 @@ impl RaftMetadataServer {
     async fn initialize(
         &mut self,
         health_status: &HealthStatus<MetadataServerStatus>,
-        metadata_writer: MetadataWriter,
+        metadata_writer: Option<MetadataWriter>,
     ) -> Result<(), Error> {
         let RaftMetadataServerState::Uninitialized(uninitialized) =
-            self.inner.take().expect("inner state should be set")
+            self.inner.as_mut().expect("inner state should be set")
         else {
             panic!("Raft metadata server should have been uninitialized");
         };
 
-        self.inner = Some(
-            uninitialized
-                .initialize(health_status, metadata_writer)
-                .await?,
-        );
+        let initial_state = uninitialized
+            .initialize(health_status, metadata_writer)
+            .await?;
+
+        if let RaftServerState::Member {
+            my_member_id,
+            min_expected_nodes_config_version,
+        } = initial_state
+        {
+            self.become_member(
+                my_member_id,
+                min_expected_nodes_config_version
+                    .unwrap_or(Version::MIN)
+                    .max(Metadata::with_current(|m| m.nodes_config_version())),
+            )?;
+        } else {
+            self.become_standby();
+        }
+
         Ok(())
     }
 
     fn become_standby(&mut self) {
         self.inner = Some(RaftMetadataServerState::Standby(
             match self.inner.take().expect("inner state must be set") {
-                RaftMetadataServerState::Uninitialized(_) => {
-                    panic!(
-                        "Raft metadata server should have been initialized via RaftMetadataServer::initialize first"
-                    )
+                RaftMetadataServerState::Uninitialized(uninitialized) => {
+                    Standby::from(uninitialized)
                 }
                 RaftMetadataServerState::Member(member) => Standby::from(member),
                 RaftMetadataServerState::Standby(standby) => standby,
@@ -275,10 +287,12 @@ impl RaftMetadataServer {
     ) -> Result<(), Error> {
         self.inner = Some(RaftMetadataServerState::Member(
             match self.inner.take().expect("inner state must be set") {
-                RaftMetadataServerState::Uninitialized(_) => {
-                    panic!(
-                        "Raft metadata server should have been initialized via RaftMetadataServer::initialize first"
-                    )
+                RaftMetadataServerState::Uninitialized(uninitialized) => {
+                    Member::try_from_uninitialized(
+                        my_member_id,
+                        min_expected_nodes_config_version,
+                        uninitialized,
+                    )?
                 }
                 RaftMetadataServerState::Member(member) => member,
                 RaftMetadataServerState::Standby(standby) => Member::try_from_standby(
@@ -318,7 +332,7 @@ impl RaftMetadataServerState {
 
 #[async_trait::async_trait]
 impl MetadataServer for RaftMetadataServer {
-    async fn run(self, metadata_writer: MetadataWriter) -> anyhow::Result<()> {
+    async fn run(self, metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()> {
         self.run(metadata_writer).await.map_err(Into::into)
     }
 }
