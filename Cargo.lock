@@ -982,12 +982,8 @@ dependencies = [
 
 [[package]]
 name = "base62"
-version = "2.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0104d4d8d15e458f21dcd027ea350bf38e4364954909402f4da075aca8d0f136"
-dependencies = [
- "rustversion",
-]
+version = "2.2.3"
+source = "git+http://github.com/restatedev/base62?rev=dc62ff947d0ea84db0864e5c7e96c129e7b5874c#dc62ff947d0ea84db0864e5c7e96c129e7b5874c"
 
 [[package]]
 name = "base64"
