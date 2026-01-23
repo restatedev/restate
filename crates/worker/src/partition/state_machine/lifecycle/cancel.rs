@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -122,12 +122,12 @@ mod tests {
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use crate::partition::types::InvokerEffectKind;
     use assert2::assert;
-    use googletest::pat;
-    use googletest::prelude::{assert_that, contains, eq, ge, not, some};
+    use googletest::prelude::*;
     use restate_invoker_api::Effect;
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, ReadInvocationStatusTable,
     };
+    use restate_storage_api::journal_table_v2;
     use restate_storage_api::outbox_table::ReadOutboxTable;
     use restate_types::deployment::PinnedDeployment;
     use restate_types::errors::CANCELED_INVOCATION_ERROR;
@@ -137,9 +137,10 @@ mod tests {
         InvocationTarget, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
         ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
     };
-    use restate_types::journal_v2::CANCEL_SIGNAL;
+    use restate_types::journal_v2::{CANCEL_SIGNAL, CommandType, Entry, EntryMetadata, EntryType};
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
+    use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::Command;
 
     #[restate_core::test]
@@ -192,7 +193,8 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn cancel_invoked_invocation_without_pinned_deployment() {
+    async fn cancel_invoked_invocation_without_pinned_deployment_without_journal_table_v2_default()
+    {
         let mut test_env = TestEnv::create().await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
@@ -233,8 +235,53 @@ mod tests {
     }
 
     #[restate_core::test]
+    async fn cancel_invoked_invocation_without_pinned_deployment_with_journal_table_v2_default() {
+        let mut test_env =
+            TestEnv::create_with_min_restate_version(RESTATE_VERSION_1_6_0.clone()).await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+
+        // Send signal notification before pinning the deployment
+        let actions = test_env
+            .apply(Command::NotifySignal(NotifySignalRequest {
+                invocation_id,
+                signal: CANCEL_SIGNAL.try_into().unwrap(),
+            }))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::forward_notification(
+                invocation_id,
+                CANCEL_SIGNAL.clone()
+            ))
+        );
+
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 2).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(CANCEL_SIGNAL),
+            ]
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
     async fn cancel_scheduled_invocation_through_notify_signal() -> anyhow::Result<()> {
-        let mut test_env = TestEnv::create().await;
+        run_cancel_scheduled_invocation_through_notify_signal(SemanticRestateVersion::unknown())
+            .await
+    }
+
+    #[restate_core::test]
+    async fn cancel_scheduled_invocation_through_notify_signal_journal_v2_enabled()
+    -> anyhow::Result<()> {
+        run_cancel_scheduled_invocation_through_notify_signal(RESTATE_VERSION_1_6_0.clone()).await
+    }
+
+    async fn run_cancel_scheduled_invocation_through_notify_signal(
+        min_restate_version: SemanticRestateVersion,
+    ) -> anyhow::Result<()> {
+        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
 
         let invocation_id = InvocationId::mock_random();
         let rpc_id = PartitionProcessorRpcRequestId::new();
@@ -277,13 +324,47 @@ mod tests {
             .await?;
         assert!(let InvocationStatus::Free = current_invocation_status);
 
+        // Both journal table v1 and v2 are empty
+        assert!(
+            journal_table::ReadJournalTable::get_journal_entry(
+                &mut test_env.storage,
+                &invocation_id,
+                0
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            journal_table_v2::ReadJournalTable::get_journal_entry(
+                &mut test_env.storage,
+                invocation_id,
+                0
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+
         test_env.shutdown().await;
         Ok(())
     }
 
     #[restate_core::test]
     async fn cancel_inboxed_invocation_through_notify_signal() -> anyhow::Result<()> {
-        let mut test_env = TestEnv::create().await;
+        run_cancel_inboxed_invocation_through_notify_signal(SemanticRestateVersion::unknown()).await
+    }
+
+    #[restate_core::test]
+    async fn cancel_inboxed_invocation_through_notify_signal_journal_v2_enabled()
+    -> anyhow::Result<()> {
+        run_cancel_inboxed_invocation_through_notify_signal(RESTATE_VERSION_1_6_0.clone()).await
+    }
+
+    async fn run_cancel_inboxed_invocation_through_notify_signal(
+        min_restate_version: SemanticRestateVersion,
+    ) -> anyhow::Result<()> {
+        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
 
         let invocation_target = InvocationTarget::mock_virtual_object();
         let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -334,6 +415,28 @@ mod tests {
 
         // assert that invocation status was removed
         assert!(let InvocationStatus::Free = current_invocation_status);
+
+        // Both journal table v1 and v2 are empty
+        assert!(
+            journal_table::ReadJournalTable::get_journal_entry(
+                &mut test_env.storage,
+                &inboxed_id,
+                0
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            journal_table_v2::ReadJournalTable::get_journal_entry(
+                &mut test_env.storage,
+                inboxed_id,
+                0
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
 
         assert_that!(
             actions,

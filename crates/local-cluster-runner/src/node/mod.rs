@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -52,7 +52,8 @@ use restate_core::protobuf::node_ctl_svc::{
 use restate_metadata_server_grpc::grpc::{
     RemoveNodeRequest, StatusResponse, new_metadata_server_client,
 };
-use restate_metadata_store::ReadError;
+use restate_metadata_store::protobuf::metadata_proxy_svc::client::MetadataStoreProxy;
+use restate_metadata_store::{MetadataStoreClient, ReadError};
 use restate_types::config::InvalidConfigurationError;
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::net::address::{
@@ -681,11 +682,17 @@ impl StartedNode {
     }
 
     /// Obtain a metadata client based on this nodes client config.
-    pub async fn metadata_client(
-        &self,
-    ) -> anyhow::Result<restate_metadata_store::MetadataStoreClient> {
-        restate_metadata_providers::create_client(self.config().common.metadata_client.clone())
-            .await
+    pub fn metadata_client(&self) -> MetadataStoreClient {
+        let channel = create_tonic_channel(
+            self.advertised_address().clone(),
+            &self.config().common.metadata_client,
+            DNSResolution::Gai,
+        );
+
+        MetadataStoreClient::new(
+            MetadataStoreProxy::new(channel, &self.config().common.metadata_client),
+            None,
+        )
     }
 
     async fn probe_health<P: ListenerPort>(
@@ -785,10 +792,7 @@ impl StartedNode {
     }
 
     async fn get_nodes_configuration(&self) -> Result<Option<NodesConfiguration>, ReadError> {
-        let metadata_client = self
-            .metadata_client()
-            .await
-            .expect("to get metadata client");
+        let metadata_client = self.metadata_client();
 
         metadata_client
             .get::<NodesConfiguration>(NODES_CONFIG_KEY.clone())

@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -14,6 +14,7 @@ use assert2::assert;
 use assert2::let_assert;
 use googletest::any;
 use prost::Message;
+use restate_storage_api::journal_table;
 use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::timer_table::{
     ReadTimerTable, Timer, TimerKey, TimerKeyKind, WriteTimerTable,
@@ -29,7 +30,18 @@ use test_log::test;
 
 #[restate_core::test]
 async fn kill_inboxed_invocation() -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create().await;
+    run_kill_inboxed_invocation(SemanticRestateVersion::unknown()).await
+}
+
+#[restate_core::test]
+async fn kill_inboxed_invocation_journal_v2_enabled() -> anyhow::Result<()> {
+    run_kill_inboxed_invocation(RESTATE_VERSION_1_6_0.clone()).await
+}
+
+async fn run_kill_inboxed_invocation(
+    min_restate_version: SemanticRestateVersion,
+) -> anyhow::Result<()> {
+    let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
 
     let invocation_target = InvocationTarget::mock_virtual_object();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
@@ -84,6 +96,20 @@ async fn kill_inboxed_invocation() -> anyhow::Result<()> {
 
     // assert that invocation status was removed
     assert!(let InvocationStatus::Free = current_invocation_status);
+
+    // Both journal table v1 and v2 are empty
+    assert!(
+        journal_table::ReadJournalTable::get_journal_entry(&mut test_env.storage, &inboxed_id, 0)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        journal_table_v2::ReadJournalTable::get_journal_entry(&mut test_env.storage, inboxed_id, 0)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     assert_that!(
         actions,
@@ -290,6 +316,27 @@ async fn kill_call_tree() -> anyhow::Result<()> {
             .try_collect::<Vec<_>>()
             .await?,
         empty()
+    );
+    // Both journal table v1 and v2 are empty
+    assert!(
+        journal_table::ReadJournalTable::get_journal_entry(
+            &mut test_env.storage,
+            &invocation_id,
+            0
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert!(
+        journal_table_v2::ReadJournalTable::get_journal_entry(
+            &mut test_env.storage,
+            invocation_id,
+            0
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
 
     test_env.shutdown().await;

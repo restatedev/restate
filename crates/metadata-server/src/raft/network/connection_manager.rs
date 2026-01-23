@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,22 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::metric_definitions::{
-    METADATA_SERVER_REPLICATED_RECV_MESSAGE_BYTES, METADATA_SERVER_REPLICATED_RECV_MESSAGE_TOTAL,
-    METADATA_SERVER_REPLICATED_SENT_MESSAGE_BYTES, METADATA_SERVER_REPLICATED_SENT_MESSAGE_TOTAL,
-};
-use crate::raft::network::{NetworkMessage, grpc_svc};
-use futures::StreamExt;
-use metrics::counter;
-use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
-use restate_types::PlainNodeId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+use futures::StreamExt;
+use metrics::counter;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codegen::BoxStream;
 use tracing::{debug, instrument};
+
+use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+use restate_types::PlainNodeId;
+use restate_types::nodes_config::ClusterFingerprint;
+
+use crate::metric_definitions::{
+    METADATA_SERVER_REPLICATED_RECV_MESSAGE_BYTES, METADATA_SERVER_REPLICATED_RECV_MESSAGE_TOTAL,
+    METADATA_SERVER_REPLICATED_SENT_MESSAGE_BYTES, METADATA_SERVER_REPLICATED_SENT_MESSAGE_TOTAL,
+};
+use crate::raft::network::{NetworkMessage, grpc_svc};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectionError {
@@ -31,6 +35,14 @@ pub enum ConnectionError {
     Internal(String),
     #[error(transparent)]
     Shutdown(#[from] ShutdownError),
+    #[error(
+        "cluster fingerprint mismatch; rejecting connection because node seems to belong to a different cluster"
+    )]
+    ClusterFingerprintMismatch,
+    #[error(
+        "cluster name mismatch; rejecting connection because node seems to belong to a different cluster"
+    )]
+    ClusterNameMismatch,
 }
 
 #[derive(Clone, derive_more::Debug)]
@@ -42,9 +54,19 @@ impl<M> ConnectionManager<M>
 where
     M: NetworkMessage + Send + 'static,
 {
-    pub fn new(identity: PlainNodeId, router: mpsc::Sender<M>) -> Self {
+    pub fn new(
+        identity: PlainNodeId,
+        router: mpsc::Sender<M>,
+        cluster_fingerprint: ClusterFingerprint,
+        cluster_name: String,
+    ) -> Self {
         ConnectionManager {
-            inner: Arc::new(ConnectionManagerInner::new(identity, router)),
+            inner: Arc::new(ConnectionManagerInner::new(
+                identity,
+                router,
+                cluster_fingerprint,
+                cluster_name,
+            )),
         }
     }
 
@@ -52,11 +74,40 @@ where
         self.inner.identity
     }
 
+    pub fn cluster_fingerprint(&self) -> ClusterFingerprint {
+        self.inner.cluster_fingerprint
+    }
+
+    pub fn cluster_name(&self) -> &str {
+        &self.inner.cluster_name
+    }
+
     pub fn accept_connection(
         &self,
         raft_peer: PlainNodeId,
+        cluster_fingerprint: Option<ClusterFingerprint>,
+        cluster_name: Option<&str>,
         incoming_rx: tonic::Streaming<grpc_svc::NetworkMessage>,
     ) -> Result<BoxStream<grpc_svc::NetworkMessage>, ConnectionError> {
+        // todo in v1.7 make this check fail if cluster_fingerprint and cluster_name are none
+        // Validate cluster fingerprint if provided
+        if let Some(incoming_fingerprint) = cluster_fingerprint {
+            let expected_fingerprint = self.inner.cluster_fingerprint;
+
+            if incoming_fingerprint != expected_fingerprint {
+                return Err(ConnectionError::ClusterFingerprintMismatch);
+            }
+        }
+
+        // Validate cluster name if provided
+        if let Some(incoming_cluster_name) = cluster_name {
+            let expected_cluster_name = &self.inner.cluster_name;
+
+            if incoming_cluster_name != expected_cluster_name {
+                return Err(ConnectionError::ClusterNameMismatch);
+            }
+        }
+
         let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
         self.run_connection(raft_peer, outgoing_tx, incoming_rx)?;
 
@@ -179,14 +230,23 @@ impl<M> Drop for ConnectionReactor<M> {
 #[derive(Debug)]
 struct ConnectionManagerInner<M> {
     identity: PlainNodeId,
+    cluster_fingerprint: ClusterFingerprint,
+    cluster_name: String,
     connections: Mutex<HashMap<PlainNodeId, Connection>>,
     router: mpsc::Sender<M>,
 }
 
 impl<M> ConnectionManagerInner<M> {
-    pub fn new(identity: PlainNodeId, router: mpsc::Sender<M>) -> Self {
+    pub fn new(
+        identity: PlainNodeId,
+        router: mpsc::Sender<M>,
+        cluster_fingerprint: ClusterFingerprint,
+        cluster_name: String,
+    ) -> Self {
         ConnectionManagerInner {
             identity,
+            cluster_fingerprint,
+            cluster_name,
             router,
             connections: Mutex::default(),
         }

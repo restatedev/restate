@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -20,13 +20,17 @@ use tonic::{Request, Response, Status, Streaming};
 use restate_types::PlainNodeId;
 use restate_types::config::NetworkingOptions;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
+use restate_types::nodes_config::ClusterFingerprint;
 
 use super::MetadataServerNetworkSvcServer;
 use crate::raft::network::connection_manager::ConnectionError;
 use crate::raft::network::grpc_svc::metadata_server_network_svc_server::MetadataServerNetworkSvc;
 use crate::raft::network::grpc_svc::{JoinClusterRequest, JoinClusterResponse};
-use crate::raft::network::{ConnectionManager, NetworkMessage, PEER_METADATA_KEY, grpc_svc};
-use crate::{JoinClusterError, JoinClusterHandle, MemberId};
+use crate::raft::network::{
+    CLUSTER_FINGERPRINT_METADATA_KEY, CLUSTER_NAME_METADATA_KEY, ConnectionManager, NetworkMessage,
+    PEER_METADATA_KEY, grpc_svc,
+};
+use crate::{ClusterIdentity, JoinClusterError, JoinClusterHandle, MemberId};
 
 #[derive(Debug)]
 pub struct MetadataServerNetworkHandler<M> {
@@ -89,7 +93,39 @@ where
                     .map_err(|err| Status::invalid_argument(err.to_string()))?,
             )
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
-            let outgoing_rx = connection_manager.accept_connection(peer, request.into_inner())?;
+
+            // Extract optional cluster fingerprint from metadata
+            let cluster_fingerprint = request
+                .metadata()
+                .get(CLUSTER_FINGERPRINT_METADATA_KEY)
+                .map(|v| {
+                    v.to_str()
+                        .map_err(|err| Status::invalid_argument(err.to_string()))?
+                        .parse::<u64>()
+                        .map_err(|err| Status::invalid_argument(err.to_string()))
+                })
+                .transpose()?
+                .map(ClusterFingerprint::try_from)
+                .transpose()
+                .map_err(|err| Status::invalid_argument(err.to_string()))?;
+
+            // Extract optional cluster name from metadata
+            let cluster_name: Option<String> = request
+                .metadata()
+                .get(CLUSTER_NAME_METADATA_KEY)
+                .map(|v| {
+                    v.to_str()
+                        .map(|s| s.to_owned())
+                        .map_err(|err| Status::invalid_argument(err.to_string()))
+                })
+                .transpose()?;
+
+            let outgoing_rx = connection_manager.accept_connection(
+                peer,
+                cluster_fingerprint,
+                cluster_name.as_deref(),
+                request.into_inner(),
+            )?;
             Ok(Response::new(outgoing_rx))
         } else {
             Err(Status::unavailable(
@@ -104,11 +140,21 @@ where
     ) -> Result<Response<JoinClusterResponse>, Status> {
         if let Some(join_handle) = self.join_cluster_handle.as_ref() {
             let request = request.into_inner();
+
+            // Convert the optional fingerprint, if it is 0 (invalid) then we treat it as None
+            let cluster_identity = ClusterIdentity {
+                fingerprint: ClusterFingerprint::try_from(request.cluster_fingerprint).ok(),
+                cluster_name: request.cluster_name,
+            };
+
             let nodes_config_version = join_handle
-                .join_cluster(MemberId::new(
-                    PlainNodeId::from(request.node_id),
-                    request.created_at_millis,
-                ))
+                .join_cluster(
+                    MemberId::new(
+                        PlainNodeId::from(request.node_id),
+                        request.created_at_millis,
+                    ),
+                    cluster_identity,
+                )
                 .await?;
 
             Ok(Response::new(JoinClusterResponse {
@@ -152,6 +198,9 @@ impl From<JoinClusterError> for Status {
             JoinClusterError::UnknownNode(_) | JoinClusterError::InvalidRole(_) => {
                 Status::invalid_argument(err.to_string())
             }
+            JoinClusterError::ClusterIdentityMismatch(_) => {
+                Status::permission_denied(err.to_string())
+            }
         }
     }
 }
@@ -161,6 +210,9 @@ impl From<ConnectionError> for Status {
         match value {
             ConnectionError::Internal(err) => Status::internal(err),
             ConnectionError::Shutdown(err) => Status::aborted(err.to_string()),
+            ConnectionError::ClusterFingerprintMismatch | ConnectionError::ClusterNameMismatch => {
+                Status::permission_denied(value.to_string())
+            }
         }
     }
 }

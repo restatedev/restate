@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -216,6 +216,7 @@ mod tests {
         SleepCommand, SleepCompletion,
     };
     use restate_types::time::MillisSinceEpoch;
+    use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
     use restate_wal_protocol::Command;
     use restate_wal_protocol::timer::TimerKeyValue;
     use rstest::rstest;
@@ -261,7 +262,19 @@ mod tests {
 
     #[restate_core::test]
     async fn notify_signal_received_before_pinned_deployment() {
-        let mut test_env = TestEnv::create().await;
+        run_notify_signal_received_before_pinned_deployment(SemanticRestateVersion::unknown())
+            .await;
+    }
+
+    #[restate_core::test]
+    async fn notify_signal_received_before_pinned_deployment_journal_v2_enabled() {
+        run_notify_signal_received_before_pinned_deployment(RESTATE_VERSION_1_6_0.clone()).await;
+    }
+
+    async fn run_notify_signal_received_before_pinned_deployment(
+        min_restate_version: SemanticRestateVersion,
+    ) {
+        let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
         let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
 
         // Send signal notification before pinned deployment

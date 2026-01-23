@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -35,6 +35,9 @@ where
                 "Update a new minimum restate-server version barrier to {}",
                 ctx.min_restate_version
             );
+
+            // todo: Migrate invocations from journal v1 to journal v2 once bumping the min Restate version to v1.6.0
+            //  if it is not prohibitively expensive
         }
         Ok(())
     }
@@ -64,7 +67,6 @@ mod tests {
             PartitionKey::MIN..=PartitionKey::MAX,
             SemanticRestateVersion::unknown().clone(),
             Default::default(),
-            None,
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;
@@ -107,7 +109,6 @@ mod tests {
             PartitionKey::MIN..=PartitionKey::MAX,
             SemanticRestateVersion::unknown().clone(),
             Default::default(),
-            None,
         );
         // this is fine as we are always above the unknown version (current > 0.0.0)
         let mut test_env = TestEnv::create_with_state_machine(state_machine).await;

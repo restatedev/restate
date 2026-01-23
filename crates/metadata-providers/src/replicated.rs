@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -35,7 +35,9 @@ use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::net::address::{AdvertisedAddress, FabricPort};
 use restate_types::net::connect_opts::{CommonClientConnectionOptions, GrpcConnectionOptions};
 use restate_types::net::metadata::MetadataKind;
-use restate_types::nodes_config::{MetadataServerState, NodesConfiguration, Role};
+use restate_types::nodes_config::{
+    ClusterFingerprint, MetadataServerState, NodesConfiguration, Role,
+};
 use restate_types::storage::StorageCodec;
 use restate_types::{PlainNodeId, Version};
 
@@ -202,6 +204,23 @@ impl GrpcMetadataServerClient {
     }
 }
 
+/// Returns the cluster identity for metadata store requests.
+/// If the cluster fingerprint isn't available yet (not valid NodesConfiguration), then it skips it.
+fn cluster_identity() -> (String, Option<ClusterFingerprint>) {
+    // use try_with_current to allow this method be called from outside of the TaskCenter context
+    let cluster_fingerprint = TaskCenter::try_with_current(|handle| {
+        handle
+            .metadata()
+            .and_then(|m| m.nodes_config_ref().try_cluster_fingerprint())
+    })
+    .flatten();
+
+    (
+        Configuration::pinned().common.cluster_name().to_owned(),
+        cluster_fingerprint,
+    )
+}
+
 #[async_trait]
 impl MetadataStore for GrpcMetadataServerClient {
     #[instrument(level = "debug", skip_all, fields(%key))]
@@ -212,10 +231,14 @@ impl MetadataStore for GrpcMetadataServerClient {
                 .current_client()
                 .ok_or_else(|| ReadError::terminal(NoKnownMetadataServer))?;
 
+            let (cluster_name, cluster_fingerprint) = cluster_identity();
+
             trace!(attempt, %client.address, "Sending request");
             return match client
                 .get(GetRequest {
                     key: key.clone().into(),
+                    cluster_fingerprint: cluster_fingerprint.map(|f| f.to_u64()).unwrap_or(0),
+                    cluster_name: Some(cluster_name),
                 })
                 .await
             {
@@ -249,10 +272,14 @@ impl MetadataStore for GrpcMetadataServerClient {
                 .current_client()
                 .ok_or_else(|| ReadError::terminal(NoKnownMetadataServer))?;
 
+            let (cluster_name, cluster_fingerprint) = cluster_identity();
+
             trace!(attempt, %client.address, "Sending request");
             return match client
                 .get_version(GetRequest {
                     key: key.clone().into(),
+                    cluster_fingerprint: cluster_fingerprint.map(|f| f.to_u64()).unwrap_or(0),
+                    cluster_name: Some(cluster_name),
                 })
                 .await
             {
@@ -288,12 +315,16 @@ impl MetadataStore for GrpcMetadataServerClient {
                 .current_client()
                 .ok_or_else(|| WriteError::terminal(NoKnownMetadataServer))?;
 
+            let (cluster_name, cluster_fingerprint) = cluster_identity();
+
             trace!(attempt, %client.address, "Sending request");
             return match client
                 .put(PutRequest {
                     key: key.clone().into(),
                     value: Some(value.clone().into()),
                     precondition: Some(precondition.into()),
+                    cluster_fingerprint: cluster_fingerprint.map(|f| f.to_u64()).unwrap_or(0),
+                    cluster_name: Some(cluster_name),
                 })
                 .await
             {
@@ -324,12 +355,16 @@ impl MetadataStore for GrpcMetadataServerClient {
                 .current_client()
                 .ok_or_else(|| WriteError::terminal(NoKnownMetadataServer))?;
 
+            let (cluster_name, cluster_fingerprint) = cluster_identity();
+
             trace!(attempt, %client.address, "Sending request");
 
             return match client
                 .delete(DeleteRequest {
                     key: key.clone().into(),
                     precondition: Some(precondition.into()),
+                    cluster_fingerprint: cluster_fingerprint.map(|f| f.to_u64()).unwrap_or(0),
+                    cluster_name: Some(cluster_name),
                 })
                 .await
             {

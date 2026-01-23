@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -173,7 +173,7 @@ where
             replica_set_states,
             router_builder,
             bifrost,
-            SnapshotRepository::create_if_configured(
+            SnapshotRepository::new_from_config(
                 snapshots_options,
                 config.worker.storage.snapshots_staging_dir(),
             )

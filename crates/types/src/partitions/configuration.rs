@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -10,12 +10,11 @@
 
 use ahash::HashMap;
 
-use crate::logs::{Lsn, SequenceNumber};
 use crate::replication::{NodeSet, ReplicationProperty};
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned};
 
-use super::state::{MemberState, ReplicaSetState};
+use super::state::ReplicaSetState;
 
 /// The Partition configuration contains information about which nodes run partition processors for
 /// the given partition.
@@ -58,21 +57,15 @@ impl PartitionConfiguration {
     }
 
     pub fn to_replica_set_state(&self) -> ReplicaSetState {
-        ReplicaSetState {
-            version: self.version,
-            members: self
-                .replica_set
-                .iter()
-                .map(|node_id| MemberState {
-                    node_id: *node_id,
-                    durable_lsn: Lsn::INVALID,
-                })
-                .collect(),
-        }
+        ReplicaSetState::from_partition_configuration(self)
     }
 
     pub fn replica_set(&self) -> &NodeSet {
         &self.replica_set
+    }
+
+    pub fn into_replica_set(self) -> NodeSet {
+        self.replica_set
     }
 
     pub fn replication(&self) -> &ReplicationProperty {

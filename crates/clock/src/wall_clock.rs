@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -39,7 +39,7 @@ static RECENT_UNIX_TIMESTAMP_US: AtomicU64 = const { AtomicU64::new(0) };
 ///
 /// # Cached Time
 ///
-/// The cached timestamp is stored in a global atomic and refreshed every 500μs by
+/// The cached timestamp is stored in a global atomic and refreshed every 1ms by
 /// [`ClockUpkeep`](crate::ClockUpkeep). This provides sub-nanosecond read performance
 /// at the cost of up to ~1ms staleness.
 ///
@@ -74,7 +74,7 @@ impl WallClock {
     /// Updates the cached recent timestamp.
     ///
     /// This is intended to be called exclusively from the [`ClockUpkeep`](crate::ClockUpkeep)
-    /// background thread every 500μs.
+    /// background thread every 1ms.
     pub(crate) fn update_recent() {
         RECENT_UNIX_TIMESTAMP_US.store(Self::now_us(), Ordering::Relaxed);
     }
@@ -107,7 +107,7 @@ impl WallClock {
 
     /// Returns a cached unix timestamp (in milliseconds) that may be up to ~1ms stale.
     ///
-    /// This method reads from a global atomic variable updated every 500μs by
+    /// This method reads from a global atomic variable updated every 1ms by
     /// [`ClockUpkeep`](crate::ClockUpkeep), providing ~100x better performance than
     /// [`now_ms()`](WallClock::now_ms).
     ///
@@ -122,7 +122,7 @@ impl WallClock {
 
     /// Returns a cached unix timestamp (in microseconds) that may be up to ~1ms stale.
     ///
-    /// This method reads from a global atomic variable updated every 500μs by
+    /// This method reads from a global atomic variable updated every 1ms by
     /// [`ClockUpkeep`](crate::ClockUpkeep), providing ~100x better performance than
     /// [`now_us()`](WallClock::now_us).
     ///

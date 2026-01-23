@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -10,7 +10,7 @@
 
 use restate_storage_api::Result;
 use restate_storage_api::fsm_table::{
-    PartitionDurability, ReadFsmTable, SequenceNumber, WriteFsmTable,
+    CachedEpochMetadata, PartitionDurability, ReadFsmTable, SequenceNumber, WriteFsmTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_types::SemanticRestateVersion;
@@ -53,6 +53,10 @@ pub(crate) mod fsm_variable {
     pub(crate) const STORAGE_VERSION: u64 = 5;
 
     pub(crate) const SERVICES_SCHEMA_METADATA: u64 = 6;
+
+    /// Stores the current and next partition configuration from the latest AnnounceLeader.
+    /// *Since v1.6*
+    pub(crate) const PARTITION_CONFIG_STATE: u64 = 7;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -158,6 +162,11 @@ impl ReadFsmTable for PartitionStore {
         let key = create_key(self.partition_id(), fsm_variable::SERVICES_SCHEMA_METADATA);
         self.get_value_storage_codec(key)
     }
+
+    async fn get_partition_config_state(&mut self) -> Result<Option<CachedEpochMetadata>> {
+        let key = create_key(self.partition_id(), fsm_variable::PARTITION_CONFIG_STATE);
+        self.get_value_storage_codec(key)
+    }
 }
 
 impl WriteFsmTable for PartitionStoreTransaction<'_> {
@@ -209,5 +218,10 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
     fn put_schema(&mut self, schema: &Schema) -> Result<()> {
         let key = create_key(self.partition_id(), fsm_variable::SERVICES_SCHEMA_METADATA);
         self.put_kv_storage_codec(key, schema)
+    }
+
+    fn put_partition_config_state(&mut self, state: &CachedEpochMetadata) -> Result<()> {
+        let key = create_key(self.partition_id(), fsm_variable::PARTITION_CONFIG_STATE);
+        self.put_kv_storage_codec(key, state)
     }
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -89,8 +89,8 @@ impl MillisSinceEpoch {
     ///
     /// This method uses the cached [`WallClock::recent_ms()`] timestamp when available,
     /// providing ~100x better performance than a direct `SystemTime::now()` syscall.
-    /// The cached value is refreshed every 500μs by [`ClockUpkeep`](crate::ClockUpkeep),
-    /// so it may be up to ~1ms stale.
+    /// The cached value is refreshed every 1ms by [`ClockUpkeep`](crate::ClockUpkeep),
+    /// so it may be up to ~2ms stale.
     ///
     /// # Fallback Behavior
     ///
@@ -290,8 +290,8 @@ mod serde_encoding {
 mod bilrost_encoding {
     use super::MillisSinceEpoch;
 
-    use bilrost::Canonicity::Canonical;
     use bilrost::encoding::{DistinguishedProxiable, EmptyState, ForOverwrite, Proxiable};
+    use bilrost::Canonicity::Canonical;
     use bilrost::{Canonicity, DecodeErrorKind};
 
     impl Proxiable for MillisSinceEpoch {
@@ -535,8 +535,8 @@ mod nanos_serde_encoding {
 mod nanos_bilrost_encoding {
     use super::NanosSinceEpoch;
 
-    use bilrost::Canonicity::Canonical;
     use bilrost::encoding::{DistinguishedProxiable, EmptyState, ForOverwrite, Proxiable};
+    use bilrost::Canonicity::Canonical;
     use bilrost::{Canonicity, DecodeErrorKind};
 
     impl Proxiable for NanosSinceEpoch {

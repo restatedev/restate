@@ -7130,6 +7130,7 @@ dependencies = [
  "bytes",
  "criterion",
  "jiff",
+ "libc",
  "prost-types",
  "restate-clock",
  "restate-encoding",
@@ -7823,6 +7824,7 @@ dependencies = [
  "futures",
  "futures-util",
  "googletest",
+ "itertools 0.14.0",
  "jiff",
  "num-bigint",
  "object_store 0.13.0",
@@ -7849,6 +7851,7 @@ dependencies = [
  "static_assertions",
  "strum",
  "tempfile",
+ "test-log",
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",
@@ -8357,14 +8360,15 @@ dependencies = [
  "restate-types",
  "restate-workspace-hack",
  "serde",
+ "serde_with",
  "strum",
  "tracing",
 ]
 
 [[package]]
 name = "restate-web-ui"
-version = "0.1.30"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.30#c5615ce482b193203ea6949716c9647b0189df38"
+version = "0.1.33"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.33#82753f12a3bb89a8a8875e06c54dca041f6778b4"
 dependencies = [
  "anyhow",
  "include_dir",

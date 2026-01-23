@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -56,7 +56,7 @@ impl Default for QueryEngineOptions {
     fn default() -> Self {
         #[allow(deprecated)]
         Self {
-            memory_size: NonZeroUsize::new(4 * 1024 * 1024 * 1024).unwrap(), // 4GiB
+            memory_size: NonZeroUsize::new(1024 * 1024 * 1024).unwrap(), // 1GiB
             tmp_dir: None,
             query_parallelism: None,
             datafusion_options: HashMap::new(),

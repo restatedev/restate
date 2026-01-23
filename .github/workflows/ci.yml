@@ -125,6 +125,24 @@ jobs:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       serviceImage: "ghcr.io/restatedev/test-services-java:main"
 
+  sdk-java-journal-table-v2:
+    name: Run SDK-Java integration tests with Journal Table v2
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: docker
+    uses: restatedev/sdk-java/.github/workflows/integration.yaml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      serviceImage: "ghcr.io/restatedev/test-services-java:main"
+      testArtifactOutput: sdk-java-integration-test-journal-table-v2
+      envVars: |
+        RESTATE_INTERNAL_FORCE_MIN_RESTATE_VERSION=1.6.0-dev
+
   sdk-java-vqueues:
     name: Vqueues Run SDK-Java integration tests
     # for the time being we don't expect all tests to pass
@@ -244,9 +262,61 @@ jobs:
         with:
           testArtifactOutput: e2e-test-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
-          # Needed for backward compatibility tests 1.6 -> 1.5
+          # RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true is needed for forward compatibility
+          # tests 1.6 -> 1.5. The e2e tests create a v1.5 Restate server which gets the same env variables passed in,
+          # and we need to enable the protocol v6 which is being used by 1.6.
+          # todo remove once we use v1.6 as the LAST_COMPATIBLE_RESTATE_SERVER_VERSION in the e2e tests
           envVars: |
             RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
+
+  e2e-enable-journal-table-v2:
+    name: Run E2E tests with Journal Table V2 feature
+    runs-on: warp-ubuntu-latest-x64-4x
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    needs: docker
+    steps:
+      - name: Set up Docker containerd snapshotter
+        uses: docker/setup-docker-action@v4
+        with:
+          version: "v28.5.2"
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      ### Download the Restate container image, if needed
+      - name: Download restate snapshot from in-progress workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: restate.tar
+      - name: Install restate snapshot
+        run: |
+          output=$(docker load --input restate.tar | head -n 1)
+          docker tag "${output#*: }" "localhost/restatedev/restate-commit-download:latest"
+          docker image ls -a
+
+      ### Run e2e tests
+      - name: Run E2E tests
+        uses: restatedev/e2e@main
+        with:
+          testArtifactOutput: e2e-journal-table-v2-test-report
+          restateContainerImage: localhost/restatedev/restate-commit-download:latest
+          envVars: |
+            RESTATE_INTERNAL_FORCE_MIN_RESTATE_VERSION=1.6.0-dev
+          # Ignore forward compatibility tests as long as the previous version is not at least v1.6.0-dev. Otherwise,
+          # the previous version will hang at applying the version barrier with version 1.6.0-dev.
+          exclusions: |
+            exclusions:
+              "versionCompat":
+                - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
 
   e2e-vqueues:
     name: Vqueues Run E2E tests
@@ -290,9 +360,7 @@ jobs:
         with:
           testArtifactOutput: e2e-test-vqueues-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
-          # Needed for backward compatibility tests 1.6 -> 1.5
           envVars: |
-            RESTATE_WORKER__INVOKER__experimental_features_allow_protocol_v6=true
             RESTATE_EXPERIMENTAL_ENABLE_VQUEUES=true
           # We will never support the forward compatibility tests for v1.5 when using vqueues.
           # The backward compatibility tests are temporarily disabled until we support migration from v1.5 -> v1.6

@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -31,6 +31,8 @@ pub struct JournalMetadata {
     /// and the max time difference between two replicas applying the journal append command.
     pub last_modification_date: MillisSinceEpoch,
     pub random_seed: u64,
+    /// If true, the entries are stored in journal table v2
+    pub using_journal_table_v2: bool,
 }
 
 impl JournalMetadata {
@@ -40,6 +42,7 @@ impl JournalMetadata {
         pinned_deployment: Option<PinnedDeployment>,
         last_modification_date: MillisSinceEpoch,
         random_seed: u64,
+        using_journal_table_v2: bool,
     ) -> Self {
         Self {
             pinned_deployment,
@@ -47,6 +50,7 @@ impl JournalMetadata {
             length,
             last_modification_date,
             random_seed,
+            using_journal_table_v2,
         }
     }
 }

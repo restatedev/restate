@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -14,8 +14,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::RESTATE_EPOCH;
 use crate::time::{MillisSinceEpoch, NanosSinceEpoch};
+use crate::RESTATE_EPOCH;
 
 /// Number of bits to represent physical time in millis since restate epoch.
 const PHY_TIME_BITS: u8 = 42;
@@ -253,8 +253,8 @@ impl TryFrom<u64> for UniqueTimestamp {
 mod bilrost_encoding {
     use super::*;
 
-    use bilrost::Canonicity::Canonical;
     use bilrost::encoding::{DistinguishedProxiable, ForOverwrite, Proxiable};
+    use bilrost::Canonicity::Canonical;
     use bilrost::{Canonicity, DecodeErrorKind};
 
     impl Proxiable for UniqueTimestamp {

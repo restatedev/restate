@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -13,7 +13,7 @@ use crate::partition::state_machine::tests::TestEnv;
 use crate::partition::types::InvokerEffectKind;
 use bytes::Bytes;
 use googletest::prelude::*;
-use restate_invoker_api::{Effect, InvokeInputJournal};
+use restate_invoker_api::Effect;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_types::deployment::PinnedDeployment;
@@ -159,7 +159,6 @@ pub async fn mock_start_invocation_with_invocation_target(
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
             invocation_target: eq(invocation_target),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 

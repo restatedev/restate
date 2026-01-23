@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -405,7 +405,7 @@ impl Node {
             TaskCenter::spawn(
                 TaskKind::MetadataServer,
                 "metadata-server",
-                metadata_server.run(Some(metadata_writer.clone())),
+                metadata_server.run(metadata_writer.clone()),
             )?;
         }
 

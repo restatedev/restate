@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -10,8 +10,8 @@
 
 use std::num::NonZeroUsize;
 
-use crate::RESTATE_EPOCH;
 use crate::unique_timestamp::{LC_BITS, LC_MAX, PHY_TIME_MAX};
+use crate::RESTATE_EPOCH;
 
 use super::storage::HlcClockStorage;
 use super::{Clock, Error, UniqueTimestamp};
