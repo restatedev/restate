@@ -87,19 +87,17 @@ impl Uninitialized {
     pub async fn initialize(
         &mut self,
         health_status: &HealthStatus<MetadataServerStatus>,
-        mut metadata_writer: Option<MetadataWriter>,
+        metadata_writer: MetadataWriter,
     ) -> Result<RaftServerState, Error> {
-        if let Some(metadata_writer) = metadata_writer.as_mut() {
-            // Try to read a persisted nodes configuration in order to learn about the addresses of our
-            // potential peers and the metadata store states.
-            if let Some(nodes_configuration) = self.storage.get_nodes_configuration()? {
-                metadata_writer
-                    .update(Arc::new(nodes_configuration))
-                    .await?;
-            }
+        // Try to read a persisted nodes configuration in order to learn about the addresses of our
+        // potential peers and the metadata store states.
+        if let Some(nodes_configuration) = self.storage.get_nodes_configuration()? {
+            metadata_writer
+                .update(Arc::new(nodes_configuration))
+                .await?;
         }
 
-        self.metadata_writer = metadata_writer;
+        self.metadata_writer = Some(metadata_writer);
 
         // Check whether we are already provisioned based on the StorageMarker
         if self.storage.get_marker()?.is_none() {
