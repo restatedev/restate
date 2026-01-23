@@ -68,7 +68,7 @@ pub struct CurrentReplicaSetConfiguration {
     pub version: Version,
     pub replica_set: NodeSet,
     pub modified_at: MillisSinceEpoch,
-    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "serde", serde_as(as = "serde_with::DisplayFromStr"))]
     pub replication: ReplicationProperty,
 }
 
