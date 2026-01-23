@@ -8,11 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::time::MillisSinceEpoch;
-use crate::{Clock, RESTATE_EPOCH, WallClock};
+use crate::{Clock, WallClock, RESTATE_EPOCH};
 
 #[derive(Clone)]
 pub struct MockClock {
