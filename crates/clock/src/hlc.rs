@@ -10,8 +10,8 @@
 
 use std::num::NonZeroUsize;
 
-use crate::RESTATE_EPOCH;
 use crate::unique_timestamp::{LC_BITS, LC_MAX, PHY_TIME_MAX};
+use crate::RESTATE_EPOCH;
 
 use super::storage::HlcClockStorage;
 use super::{Clock, Error, UniqueTimestamp};
