@@ -8352,8 +8352,6 @@ version = "1.6.0-dev"
 dependencies = [
  "bilrost",
  "bytes",
- "bytestring",
- "enum-map",
  "restate-invoker-api",
  "restate-storage-api",
  "restate-types",
