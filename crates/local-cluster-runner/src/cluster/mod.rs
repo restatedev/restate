@@ -24,7 +24,6 @@ use tracing::info;
 use typed_builder::TypedBuilder;
 
 use restate_metadata_server_grpc::MetadataServerConfiguration;
-use restate_types::config::Configuration;
 use restate_types::{
     PlainNodeId,
     net::address::{AdvertisedAddress, FabricPort},
@@ -131,12 +130,6 @@ impl Cluster {
                 .map_err(|err| ClusterStartError::NodeStartError(i, err))?;
             started_nodes.push(node)
         }
-
-        let mut config = Configuration::default();
-        config.common.set_cluster_name(cluster_name.clone());
-
-        // make the current process aware of the cluster name
-        Configuration::set(config);
 
         Ok(StartedCluster {
             clock_guard,

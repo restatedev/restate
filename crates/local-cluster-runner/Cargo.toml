@@ -19,7 +19,7 @@ restate-metadata-store = { workspace = true }
 restate-metadata-providers = { workspace = true, features = ["replicated"] }
 restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
 # nb features here will also affect the compiled restate-server binary in integration tests
-restate-types = { workspace = true, features = ["unsafe-mutable-config", "test-util"] }
+restate-types = { workspace = true, features = ["unsafe-mutable-config"] }
 
 anyhow = { workspace = true }
 arc-swap = { workspace = true }
