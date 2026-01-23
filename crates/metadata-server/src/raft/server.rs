@@ -181,7 +181,7 @@ impl RaftMetadataServer {
         })
     }
 
-    pub async fn run(mut self, metadata_writer: Option<MetadataWriter>) -> Result<(), Error> {
+    pub async fn run(mut self, metadata_writer: MetadataWriter) -> Result<(), Error> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
         let health_status = self.health_status.take().expect("to be present");
 
@@ -204,7 +204,7 @@ impl RaftMetadataServer {
     async fn run_inner(
         &mut self,
         health_status: &HealthStatus<MetadataServerStatus>,
-        metadata_writer: Option<MetadataWriter>,
+        metadata_writer: MetadataWriter,
     ) -> Result<Never, Error> {
         self.initialize(health_status, metadata_writer).await?;
 
@@ -238,7 +238,7 @@ impl RaftMetadataServer {
     async fn initialize(
         &mut self,
         health_status: &HealthStatus<MetadataServerStatus>,
-        metadata_writer: Option<MetadataWriter>,
+        metadata_writer: MetadataWriter,
     ) -> Result<(), Error> {
         let RaftMetadataServerState::Uninitialized(uninitialized) =
             self.inner.as_mut().expect("inner state should be set")
@@ -332,7 +332,7 @@ impl RaftMetadataServerState {
 
 #[async_trait::async_trait]
 impl MetadataServer for RaftMetadataServer {
-    async fn run(self, metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()> {
+    async fn run(self, metadata_writer: MetadataWriter) -> anyhow::Result<()> {
         self.run(metadata_writer).await.map_err(Into::into)
     }
 }
