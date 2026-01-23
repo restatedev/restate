@@ -10,10 +10,8 @@
 
 use crate::raft::kv_memory_storage::KvMemoryStorage;
 use crate::raft::network::ConnectionManager;
-use crate::raft::server::member::Member;
-use crate::raft::server::standby::Standby;
 use crate::raft::server::{
-    Error, RAFT_INITIAL_LOG_INDEX, RAFT_INITIAL_LOG_TERM, RaftMetadataServerState,
+    Error, RAFT_INITIAL_LOG_INDEX, RAFT_INITIAL_LOG_TERM, RaftServerComponents,
 };
 use crate::raft::storage::RocksDbStorage;
 use crate::raft::{RaftServerState, StorageMarker, to_raft_id};
@@ -48,8 +46,8 @@ pub struct Uninitialized {
     status_tx: StatusSender,
     command_rx: MetadataCommandReceiver,
     join_cluster_rx: JoinClusterReceiver,
-    // Optional to consume this field when provisioning is done
     provision_rx: Option<ProvisionReceiver>,
+    metadata_writer: Option<MetadataWriter>,
 }
 
 impl Uninitialized {
@@ -60,7 +58,7 @@ impl Uninitialized {
         status_tx: StatusSender,
         command_rx: MetadataCommandReceiver,
         join_cluster_rx: JoinClusterReceiver,
-        provision_rx: ProvisionReceiver,
+        provision_rx: Option<ProvisionReceiver>,
     ) -> Self {
         Self {
             connection_manager,
@@ -69,25 +67,39 @@ impl Uninitialized {
             status_tx,
             command_rx,
             join_cluster_rx,
-            provision_rx: Some(provision_rx),
+            provision_rx,
+            metadata_writer: None,
         }
     }
 
-    /// Initialize the Raft metadata server state from [`Uninitialized`] to either [`Standby`] or
-    /// [`Member`] depending on the persisted [`RaftServerState`]. If no Raft server state is
-    /// persisted, then this call awaits until the server should be provisioned.
-    pub async fn initialize(
-        mut self,
-        health_status: &HealthStatus<MetadataServerStatus>,
-        metadata_writer: MetadataWriter,
-    ) -> Result<RaftMetadataServerState, Error> {
-        // Try to read a persisted nodes configuration in order to learn about the addresses of our
-        // potential peers and the metadata store states.
-        if let Some(nodes_configuration) = self.storage.get_nodes_configuration()? {
-            metadata_writer
-                .update(Arc::new(nodes_configuration))
-                .await?;
+    pub fn into_inner(self) -> RaftServerComponents {
+        RaftServerComponents {
+            storage: self.storage,
+            connection_manager: self.connection_manager,
+            request_rx: self.request_rx,
+            status_tx: self.status_tx,
+            command_rx: self.command_rx,
+            join_cluster_rx: self.join_cluster_rx,
+            metadata_writer: self.metadata_writer,
         }
+    }
+
+    pub async fn initialize(
+        &mut self,
+        health_status: &HealthStatus<MetadataServerStatus>,
+        mut metadata_writer: Option<MetadataWriter>,
+    ) -> Result<RaftServerState, Error> {
+        if let Some(metadata_writer) = metadata_writer.as_mut() {
+            // Try to read a persisted nodes configuration in order to learn about the addresses of our
+            // potential peers and the metadata store states.
+            if let Some(nodes_configuration) = self.storage.get_nodes_configuration()? {
+                metadata_writer
+                    .update(Arc::new(nodes_configuration))
+                    .await?;
+            }
+        }
+
+        self.metadata_writer = metadata_writer;
 
         // Check whether we are already provisioned based on the StorageMarker
         if self.storage.get_marker()?.is_none() {
@@ -105,43 +117,7 @@ impl Uninitialized {
             }
         })?;
 
-        let raft_server_state = self.storage.get_raft_server_state()?;
-
-        let initialized_state = if let RaftServerState::Member {
-            my_member_id,
-            min_expected_nodes_config_version,
-        } = raft_server_state
-        {
-            let member = Member::create(
-                my_member_id,
-                min_expected_nodes_config_version
-                    .unwrap_or(Version::MIN)
-                    .max(Metadata::with_current(|m| m.nodes_config_version())),
-                self.connection_manager,
-                self.storage,
-                self.request_rx,
-                self.join_cluster_rx,
-                metadata_writer,
-                self.status_tx,
-                self.command_rx,
-            )?;
-
-            RaftMetadataServerState::Member(member)
-        } else {
-            let standby = Standby::new(
-                self.storage,
-                self.connection_manager,
-                self.request_rx,
-                self.join_cluster_rx,
-                metadata_writer,
-                self.status_tx,
-                self.command_rx,
-            );
-
-            RaftMetadataServerState::Standby(standby)
-        };
-
-        Ok(initialized_state)
+        Ok(self.storage.get_raft_server_state()?)
     }
 
     async fn provision(&mut self) -> Result<(), Error> {
