@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -44,7 +44,7 @@ use restate_types::logs::metadata::{
     LogletParams, Logs, LogsConfiguration, ProviderConfiguration, ProviderKind,
     ReplicatedLogletConfig, SealMetadata, SegmentIndex,
 };
-use restate_types::logs::{LogId, LogletId, Lsn};
+use restate_types::logs::{self, LogId, LogletId, Lsn};
 use restate_types::net::node::NodeState;
 use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
@@ -614,7 +614,7 @@ async fn update_cluster_configuration(
                 ));
             }
 
-            let mut builder = logs.as_ref().clone().into_builder();
+            let mut builder = logs.as_ref().clone().try_into_builder()?;
 
             builder.set_configuration(LogsConfiguration {
                 default_provider: default_provider.clone(),
@@ -685,7 +685,9 @@ enum ClusterConfigurationUpdateError {
     #[error("changing default provider kind to {0} is not supported. Choose 'replicated' instead")]
     ChooseReplicatedLoglet(ProviderKind),
     #[error(transparent)]
-    BuildError(#[from] partition_table::BuilderError),
+    PartitionTableBuilderError(#[from] partition_table::BuilderError),
+    #[error(transparent)]
+    LogsBuilderError(#[from] logs::builder::BuilderError),
     #[error("missing partition table; cluster seems to be not provisioned")]
     MissingPartitionTable,
     #[error("changing the number of partitions is not yet supported by Restate")]

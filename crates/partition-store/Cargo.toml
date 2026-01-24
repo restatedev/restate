@@ -9,6 +9,7 @@ publish = false
 
 [features]
 default = []
+test-util = ["restate-object-store-util/test-util", "restate-types/test-util"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -32,6 +33,7 @@ derive_more = { workspace = true }
 enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+itertools = { workspace = true }
 jiff = { workspace = true }
 object_store = { workspace = true }
 parking_lot = { workspace = true }
@@ -68,6 +70,7 @@ num-bigint = "0.4"
 rand = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+test-log = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [[bench]]

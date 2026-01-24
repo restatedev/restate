@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -1014,7 +1014,7 @@ mod tests {
         let metadata = Metadata::current();
         let old_version = metadata.logs_version();
 
-        let mut builder = metadata.logs_ref().clone().into_builder();
+        let mut builder = metadata.logs_ref().clone().try_into_builder().unwrap();
         let mut chain_builder = builder.chain(LOG_ID).unwrap();
         assert_eq!(2, chain_builder.num_segments());
         let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);

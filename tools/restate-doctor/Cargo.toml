@@ -1,0 +1,58 @@
+[package]
+name = "restate-doctor"
+version.workspace = true
+authors.workspace = true
+description = "Restate diagnostic and analysis tools for partition-store and log-store"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+build = "build.rs"
+
+[features]
+default = ["no-trace-logging"]
+no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+# Restate crates
+restate-cli-util = { workspace = true }
+restate-partition-store = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-serde-util = { workspace = true }
+restate-storage-api = { workspace = true }
+restate-types = { workspace = true }
+
+anyhow = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
+clap_complete = { workspace = true }
+cling = { workspace = true }
+comfy-table = { workspace = true }
+crossterm = { workspace = true }
+ctrlc = { version = "3.4" }
+rlimit = { workspace = true }
+rocksdb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+ulid = { workspace = true }
+
+[build-dependencies]
+vergen = { workspace = true, default-features = false, features = [
+    "build",
+    "git",
+    "gitcl",
+    "cargo",
+] }
+
+[[bin]]
+name = "restate-doctor"
+path = "src/main.rs"

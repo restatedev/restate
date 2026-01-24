@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -979,7 +979,11 @@ mod tests {
         // perform manual reconfiguration (can be replaced with bifrost reconfiguration API
         // when it's implemented)
         let old_version = metadata.logs_version();
-        let mut builder = metadata.logs_ref().clone().into_builder();
+        let mut builder = metadata
+            .logs_ref()
+            .clone()
+            .try_into_builder()
+            .expect("can create builder");
         let mut chain_builder = builder.chain(LOG_ID).unwrap();
         assert_eq!(2, chain_builder.num_segments());
         let new_segment_params = new_single_node_loglet_params(ProviderKind::InMemory);
@@ -1306,7 +1310,11 @@ mod tests {
         let metadata = Metadata::current();
         // prepare a chain that starts from Lsn 10 (we expect trim from OLDEST -> 9)
         let old_version = metadata.logs_version();
-        let mut builder = metadata.logs_ref().clone().into_builder();
+        let mut builder = metadata
+            .logs_ref()
+            .clone()
+            .try_into_builder()
+            .expect("can create builder");
         let mut chain_builder = builder.chain(LOG_ID).unwrap();
         assert_eq!(1, chain_builder.num_segments());
         let new_segment_params = new_single_node_loglet_params(ProviderKind::Local);

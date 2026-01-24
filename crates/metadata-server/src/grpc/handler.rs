@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -24,14 +24,11 @@ use restate_metadata_server_grpc::grpc::{
     ProvisionRequest as ProtoProvisionRequest, ProvisionResponse, PutRequest, RemoveNodeRequest,
     StatusResponse,
 };
-use restate_metadata_store::serialize_value;
 use restate_types::PlainNodeId;
-use restate_types::config::{Configuration, NetworkingOptions};
+use restate_types::config::NetworkingOptions;
 use restate_types::errors::ConversionError;
-use restate_types::metadata::Precondition;
-use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
-use restate_types::nodes_config::NodesConfiguration;
+use restate_types::nodes_config::ClusterFingerprint;
 use restate_types::storage::StorageCodec;
 
 use crate::metric_definitions::{
@@ -41,25 +38,25 @@ use crate::metric_definitions::{
     STATUS_COMPLETED, STATUS_FAILED,
 };
 use crate::{
-    AddNodeError, MetadataCommand, MetadataCommandError, MetadataCommandSender,
+    AddNodeError, ClusterIdentity, MetadataCommand, MetadataCommandError, MetadataCommandSender,
     MetadataServerSummary, MetadataStoreRequest, ProvisionError, ProvisionRequest, ProvisionSender,
-    RequestError, RequestSender, StatusWatch, nodes_configuration_for_metadata_cluster_seed,
+    RequestError, RequestSender, StatusWatch,
 };
 
 /// Grpc svc handler for the metadata server.
 #[derive(Debug)]
 pub struct MetadataServerHandler {
     request_tx: RequestSender,
-    provision_tx: Option<ProvisionSender>,
-    status_watch: Option<StatusWatch>,
+    provision_tx: ProvisionSender,
+    status_watch: StatusWatch,
     command_tx: MetadataCommandSender,
 }
 
 impl MetadataServerHandler {
     pub fn new(
         request_tx: RequestSender,
-        provision_tx: Option<ProvisionSender>,
-        status_watch: Option<watch::Receiver<MetadataServerSummary>>,
+        provision_tx: ProvisionSender,
+        status_watch: watch::Receiver<MetadataServerSummary>,
         command_tx: MetadataCommandSender,
     ) -> Self {
         Self {
@@ -98,9 +95,19 @@ impl MetadataServerSvc for MetadataServerHandler {
             let (result_tx, result_rx) = oneshot::channel();
 
             let request = request.into_inner();
+
+            let cluster_fingerprint =
+                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+
+            let cluster_identity = ClusterIdentity {
+                fingerprint: cluster_fingerprint,
+                cluster_name: request.cluster_name,
+            };
+
             self.request_tx
                 .send(MetadataStoreRequest::Get {
                     key: request.key.into(),
+                    cluster_identity,
                     result_tx,
                 })
                 .await
@@ -136,9 +143,19 @@ impl MetadataServerSvc for MetadataServerHandler {
             let (result_tx, result_rx) = oneshot::channel();
 
             let request = request.into_inner();
+
+            let cluster_fingerprint =
+                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+
+            let cluster_identity = ClusterIdentity {
+                fingerprint: cluster_fingerprint,
+                cluster_name: request.cluster_name,
+            };
+
             self.request_tx
                 .send(MetadataStoreRequest::GetVersion {
                     key: request.key.into(),
+                    cluster_identity,
                     result_tx,
                 })
                 .await
@@ -171,6 +188,15 @@ impl MetadataServerSvc for MetadataServerHandler {
             let (result_tx, result_rx) = oneshot::channel();
 
             let request = request.into_inner();
+
+            let cluster_fingerprint =
+                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+
+            let cluster_identity = ClusterIdentity {
+                fingerprint: cluster_fingerprint,
+                cluster_name: request.cluster_name,
+            };
+
             self.request_tx
                 .send(MetadataStoreRequest::Put {
                     key: request.key.into(),
@@ -188,6 +214,7 @@ impl MetadataServerSvc for MetadataServerHandler {
                         .map_err(|err: ConversionError| {
                             Status::invalid_argument(err.to_string())
                         })?,
+                    cluster_identity,
                     result_tx,
                 })
                 .await
@@ -218,6 +245,15 @@ impl MetadataServerSvc for MetadataServerHandler {
             let (result_tx, result_rx) = oneshot::channel();
 
             let request = request.into_inner();
+
+            let cluster_fingerprint =
+                ClusterFingerprint::try_from(request.cluster_fingerprint).ok();
+
+            let cluster_identity = ClusterIdentity {
+                fingerprint: cluster_fingerprint,
+                cluster_name: request.cluster_name,
+            };
+
             self.request_tx
                 .send(MetadataStoreRequest::Delete {
                     key: request.key.into(),
@@ -228,6 +264,7 @@ impl MetadataServerSvc for MetadataServerHandler {
                         .map_err(|err: ConversionError| {
                             Status::invalid_argument(err.to_string())
                         })?,
+                    cluster_identity,
                     result_tx,
                 })
                 .await
@@ -256,79 +293,31 @@ impl MetadataServerSvc for MetadataServerHandler {
         &self,
         request: Request<ProtoProvisionRequest>,
     ) -> Result<Response<ProvisionResponse>, Status> {
-        if let Some(provision_tx) = self.provision_tx.as_ref() {
-            let (result_tx, result_rx) = oneshot::channel();
+        let (result_tx, result_rx) = oneshot::channel();
 
-            let mut request = request.into_inner();
+        let mut request = request.into_inner();
 
-            let nodes_configuration = StorageCodec::decode(&mut request.nodes_configuration)
-                .map_err(|err| Status::invalid_argument(err.to_string()))?;
-
-            provision_tx
-                .send(ProvisionRequest {
-                    nodes_configuration,
-                    result_tx,
-                })
-                .await
-                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
-
-            let newly_provisioned = result_rx
-                .await
-                .map_err(|_| Status::unavailable("metadata server is shut down"))??;
-
-            Ok(Response::new(ProvisionResponse { newly_provisioned }))
-        } else {
-            // if there is no provision_tx configured, then the underlying metadata server does not
-            // need a provision step.
-            let mut request = request.into_inner();
-            let mut nodes_configuration: NodesConfiguration =
-                StorageCodec::decode(&mut request.nodes_configuration)
-                    .map_err(|err| Status::invalid_argument(err.to_string()))?;
-
-            // Make sure that the NodesConfiguration contains our node and has the MetadataServerState::Member
-            nodes_configuration_for_metadata_cluster_seed(
-                &Configuration::pinned(),
-                &mut nodes_configuration,
-            )
+        let nodes_configuration = StorageCodec::decode(&mut request.nodes_configuration)
             .map_err(|err| Status::invalid_argument(err.to_string()))?;
 
-            let versioned_value = serialize_value(&nodes_configuration)
-                .map_err(|err| Status::invalid_argument(err.to_string()))?;
-            let (result_tx, result_rx) = oneshot::channel();
+        self.provision_tx
+            .send(ProvisionRequest {
+                nodes_configuration,
+                result_tx,
+            })
+            .await
+            .map_err(|_| Status::unavailable("metadata server is shut down"))?;
 
-            self.request_tx
-                .send(MetadataStoreRequest::Put {
-                    key: NODES_CONFIG_KEY.clone(),
-                    value: versioned_value,
-                    precondition: Precondition::DoesNotExist,
-                    result_tx,
-                })
-                .await
-                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
+        let newly_provisioned = result_rx
+            .await
+            .map_err(|_| Status::unavailable("metadata server is shut down"))??;
 
-            let result = result_rx
-                .await
-                .map_err(|_| Status::unavailable("metadata server is shut down"))?;
-
-            let newly_provisioned = match result {
-                Ok(()) => true,
-                Err(RequestError::FailedPrecondition(_)) => false,
-                Err(err) => Err(err)?,
-            };
-
-            Ok(Response::new(ProvisionResponse { newly_provisioned }))
-        }
+        Ok(Response::new(ProvisionResponse { newly_provisioned }))
     }
 
     async fn status(&self, _request: Request<()>) -> Result<Response<StatusResponse>, Status> {
-        if let Some(status_watch) = &self.status_watch {
-            let response = StatusResponse::from(status_watch.borrow().deref().clone());
-            Ok(Response::new(response))
-        } else {
-            Err(Status::unimplemented(
-                "metadata server does not support reporting its status",
-            ))
-        }
+        let response = StatusResponse::from(self.status_watch.borrow().deref().clone());
+        Ok(Response::new(response))
     }
 
     async fn add_node(&self, _request: Request<()>) -> Result<Response<()>, Status> {
@@ -390,6 +379,7 @@ impl From<RequestError> for Status {
 
                 status
             }
+            RequestError::ClusterIdentityMismatch(_) => Status::permission_denied(err.to_string()),
             err => Status::internal(err.to_string()),
         }
     }

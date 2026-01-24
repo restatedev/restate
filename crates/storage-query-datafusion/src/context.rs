@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -71,6 +71,8 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.completed_at,
             ss.completion_retention,
             ss.journal_retention,
+            ss.suspended_waiting_for_completions,
+            ss.suspended_waiting_for_signals,
 
             sis.retry_count,
             sis.last_start_at,

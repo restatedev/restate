@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -101,10 +101,28 @@ where
 
         // If the invocation is using the old protocol version or no version is set at all.
         // We have a workaround here that manually creates the ServiceInvocation data structure reading the journal table v1
-        let use_old_journal_workaround = completed_invocation
-            .pinned_deployment
-            .as_ref()
-            .is_none_or(|pd| pd.service_protocol_version < ServiceProtocolVersion::V4);
+        let use_old_journal_workaround = match &completed_invocation.pinned_deployment {
+            // If the pinned deployment is set, we know for sure which journal version will be used here.
+            Some(pd) => pd.service_protocol_version < ServiceProtocolVersion::V4,
+            None => {
+                // If the pinned deployment is not set, we try to read input entry v2. If absent, then we go with the workaround.
+                match journal_table_v2::ReadJournalTable::get_journal_entry(
+                    self.storage,
+                    invocation_id,
+                    0,
+                )
+                .await
+                {
+                    Ok(opt_entry) => opt_entry.is_none(),
+                    Err(storage_error) => {
+                        replier.send_result(Err(PartitionProcessorRpcError::Internal(
+                            storage_error.to_string(),
+                        )));
+                        return Ok(());
+                    }
+                }
+            }
+        };
 
         // New invocation id
         let new_invocation_id = InvocationId::from_parts(
@@ -118,19 +136,14 @@ where
         //  see https://github.com/restatedev/restate/issues/3184
         if use_old_journal_workaround {
             // Only copying the input entry works with this workaround!
-            if use_old_journal_workaround && copy_prefix_up_to_index_included > 0 {
+            if copy_prefix_up_to_index_included > 0 {
                 bail!(replier, Unsupported);
             }
 
-            // Patching the deployment id doesn't work with this workaround!
-            if matches!(
-                patch_deployment_id,
-                PatchDeploymentId::KeepPinned | PatchDeploymentId::PinTo { .. }
-            ) {
-                bail!(replier, CannotPatchDeploymentId);
-            }
-
-            // Patching the deployment id doesn't work with this method!
+            // Restarting an invocation that is using the journal v1 works by creating a new
+            // invocation w/o preserving any of the existing journal. A new invocation will
+            // automatically pick the latest deployment and therefore, we cannot keep the current
+            // pinned deployment nor can we specify the new deployment id.
             if matches!(
                 patch_deployment_id,
                 PatchDeploymentId::KeepPinned | PatchDeploymentId::PinTo { .. }
@@ -140,7 +153,6 @@ where
 
             // Now retrieve the input command
             let find_result = async {
-                // Use `?` to propagate storage errors, mapping them to our error type.
                 let Some(journal_table_v1::JournalEntry::Entry(entry)) =
                     journal_table_v1::ReadJournalTable::get_journal_entry(
                         self.storage,
@@ -237,20 +249,23 @@ where
         // For Restart from prefix, the PP will actually execute the operation,
         // but here we perform few checks anyway.
 
-        let pinned_deployment = completed_invocation.pinned_deployment.unwrap();
+        let pinned_service_protocol_version = completed_invocation
+            .pinned_deployment
+            .as_ref()
+            .map(|pd| pd.service_protocol_version);
 
         // Because of the changes to ctx.rand, you can restart from prefix different from 0 only if invocation >= protocol 6
-        if pinned_deployment.service_protocol_version < ServiceProtocolVersion::V6
-            && copy_prefix_up_to_index_included > 0
+        if copy_prefix_up_to_index_included > 0
+            && pinned_service_protocol_version.is_none_or(|sp| sp < ServiceProtocolVersion::V6)
         {
             bail!(replier, Unsupported);
         }
 
         // Figure out the deployment id, validate the protocol version constraints.
-        let deployment_id = match patch_deployment_id {
+        let new_deployment_id = match patch_deployment_id {
             PatchDeploymentId::KeepPinned => {
-                // Just keep current deployment, all good
-                pinned_deployment.deployment_id
+                // Not setting a new deployment id will automatically keep the old deployment id
+                None
             }
             PatchDeploymentId::PinToLatest | PatchDeploymentId::PinTo { .. } => {
                 // Retrieve the deployment
@@ -269,21 +284,21 @@ where
                 };
 
                 // Check the protocol constraints are respected.
-                if !deployment
-                    .supported_protocol_versions
-                    .contains(&(pinned_deployment.service_protocol_version as i32))
+                if let Some(pinned_service_protocol) = pinned_service_protocol_version
+                    && !deployment
+                        .supported_protocol_versions
+                        .contains(&(pinned_service_protocol as i32))
                 {
                     replier.send(
                         RestartAsNewInvocationRpcResponse::IncompatibleDeploymentId {
-                            pinned_protocol_version: pinned_deployment.service_protocol_version
-                                as i32,
+                            pinned_protocol_version: pinned_service_protocol as i32,
                             deployment_id: deployment.id,
                             supported_protocol_versions: deployment.supported_protocol_versions,
                         },
                     );
                     return Ok(());
                 }
-                deployment.id
+                Some(deployment.id)
             }
         };
 
@@ -350,7 +365,7 @@ where
             invocation_id,
             new_invocation_id,
             copy_prefix_up_to_index_included,
-            patch_deployment_id: Some(deployment_id),
+            patch_deployment_id: new_deployment_id,
             response_sink: Some(InvocationMutationResponseSink::Ingress(
                 IngressInvocationResponseSink { request_id },
             )),
@@ -865,7 +880,6 @@ mod tests {
         );
 
         let mut proposer = MockActuator::new();
-        let pinned_id = completed.pinned_deployment.unwrap().deployment_id;
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .return_once_st(move |_, cmd, _, _| {
@@ -874,7 +888,68 @@ mod tests {
                     pat!(Command::RestartAsNewInvocation(pat!(
                         RestartAsNewInvocationRequest {
                             copy_prefix_up_to_index_included: eq(0),
-                            patch_deployment_id: some(eq(pinned_id))
+                            patch_deployment_id: none()
+                        }
+                    )))
+                );
+                ready(()).boxed()
+            });
+        proposer
+            .expect_self_propose_and_respond_asynchronously::<RestartAsNewInvocationRpcResponse>()
+            .never();
+
+        let (tx, rx) = Reciprocal::mock();
+        RpcHandler::handle(
+            RpcContext::new(
+                &mut proposer,
+                &MockDeploymentMetadataRegistry::default(),
+                &mut storage,
+            ),
+            Request {
+                request_id: Default::default(),
+                invocation_id,
+                copy_prefix_up_to_index_included: 0,
+                patch_deployment_id: PatchDeploymentId::KeepPinned,
+            },
+            Replier::new(tx),
+        )
+        .await
+        .unwrap();
+
+        rx.assert_not_received();
+    }
+
+    #[test(restate_core::test)]
+    async fn copy_prefix_zero_without_pinned_uses_restart_as_new_command() {
+        let invocation_id = InvocationId::mock_random();
+        let target = InvocationTarget::mock_virtual_object();
+        let completed = CompletedInvocation {
+            invocation_target: target,
+            journal_metadata: JournalMetadata {
+                length: 1,
+                ..JournalMetadata::empty()
+            },
+            pinned_deployment: None,
+            ..CompletedInvocation::mock_neo()
+        };
+
+        let mut storage = MockStorage::new_with_journal_v2(
+            invocation_id,
+            InvocationStatus::Completed(completed.clone()),
+            vec![input_command()],
+            true,
+        );
+
+        let mut proposer = MockActuator::new();
+        proposer
+            .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
+            .return_once_st(move |_, cmd, _, _| {
+                assert_that!(
+                    cmd,
+                    pat!(Command::RestartAsNewInvocation(pat!(
+                        RestartAsNewInvocationRequest {
+                            copy_prefix_up_to_index_included: eq(0),
+                            patch_deployment_id: none()
                         }
                     )))
                 );
@@ -1135,7 +1210,6 @@ mod tests {
         );
 
         let mut proposer = MockActuator::new();
-        let pinned_id = completed.pinned_deployment.unwrap().deployment_id;
         proposer
             .expect_handle_rpc_proposal_command::<RestartAsNewInvocationRpcResponse>()
             .return_once_st(move |_, cmd, _, _| {
@@ -1144,7 +1218,7 @@ mod tests {
                     pat!(Command::RestartAsNewInvocation(pat!(
                         RestartAsNewInvocationRequest {
                             copy_prefix_up_to_index_included: eq(1),
-                            patch_deployment_id: some(eq(pinned_id))
+                            patch_deployment_id: none()
                         }
                     )))
                 );

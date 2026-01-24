@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use restate_core::{ShutdownError, SyncError};
 use restate_metadata_store::ReadWriteError;
+use restate_types::clock;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::logs::builder::BuilderError;
 use restate_types::logs::metadata::SegmentIndex;
@@ -83,6 +84,8 @@ pub enum AdminError {
     },
     #[error("loglet params could not be deserialized: {0}")]
     ParamsSerde(#[from] Arc<serde_json::Error>),
+    #[error("logs HLC clock error: {0}")]
+    LogsHlcClock(clock::Error),
 }
 
 impl From<OperationError> for Error {
@@ -103,6 +106,7 @@ impl From<BuilderError> for AdminError {
             }
             BuilderError::ParamsSerde(error) => AdminError::ParamsSerde(Arc::new(error)),
             BuilderError::SegmentConflict(lsn) => AdminError::SegmentConflict(lsn),
+            BuilderError::HlcClock(err) => AdminError::LogsHlcClock(err),
         }
     }
 }

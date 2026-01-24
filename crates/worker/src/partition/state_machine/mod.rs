@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -19,7 +19,6 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 use std::fmt::{Debug, Formatter};
-use std::hash::Hash;
 use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::time::Instant;
@@ -27,7 +26,6 @@ use std::time::Instant;
 use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
-use enumset::EnumSet;
 use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
 use tracing::{Instrument, Span, debug, error, info, trace, warn};
@@ -35,14 +33,14 @@ use tracing::{Instrument, Span, debug, error, info, trace, warn};
 use restate_invoker_api::InvokeInputJournal;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::Result as StorageResult;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::idempotency_table::{IdempotencyTable, ReadOnlyIdempotencyTable};
 use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalRetentionPolicy,
-    PreFlightInvocationArgument, PreFlightInvocationJournal, PreFlightInvocationMetadata,
-    ReadInvocationStatusTable, WriteInvocationStatusTable,
+    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
+    JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
+    PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
@@ -63,6 +61,7 @@ use restate_storage_api::vqueue_table::{self, EntryId, EntryKind, Stage, WaitSta
 use restate_storage_api::vqueue_table::{
     AsEntryStateHeader, EntryCard, ReadVQueueTable, VisibleAt, WriteVQueueTable,
 };
+use restate_storage_api::{Result as StorageResult, journal_table};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::config::Configuration;
@@ -97,11 +96,11 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
-use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::{RawEntry, RawNotification};
 use restate_types::journal_v2::{
-    CommandIndex, CommandType, CompletionId, EntryMetadata, NotificationId, Signal, SignalResult,
+    CommandIndex, CommandType, CompletionId, EntryMetadata, InputCommand, NotificationId, Signal,
+    SignalResult,
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
@@ -109,8 +108,10 @@ use restate_types::schema::Schema;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::{NewEntryPriority, VQueueId, VQueueInstance, VQueueParent};
+use restate_types::{RESTATE_VERSION_1_6_0, journal_v2};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_types::{Versioned, journal::*};
 use restate_vqueues::{VQueues, VQueuesMetaMut};
@@ -123,8 +124,19 @@ use crate::metric_definitions::{PARTITION_APPLY_COMMAND, USAGE_LEADER_JOURNAL_EN
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 
-#[derive(Debug, Hash, enumset::EnumSetType, strum::Display)]
-pub enum ExperimentalFeature {}
+trait StateMachineFeatures {
+    /// Write to journal v2 instead of journal v1 by default. This is a preparational step for
+    /// removing the journal v1 after enabling this feature and migrating all unpinned invocations
+    /// from journal v1 to journal v2.
+    fn use_journal_v2_as_default(&self) -> bool;
+}
+
+impl StateMachineFeatures for SemanticRestateVersion {
+    fn use_journal_v2_as_default(&self) -> bool {
+        // use journal v2 as default if the min Restate version is >= v1.6.0
+        self.is_equal_or_newer_than(&RESTATE_VERSION_1_6_0)
+    }
+}
 
 pub struct StateMachine {
     // initialized from persistent storage
@@ -139,9 +151,6 @@ pub struct StateMachine {
     pub(crate) schema: Option<Schema>,
 
     pub(crate) partition_key_range: RangeInclusive<PartitionKey>,
-
-    /// Enabled experimental features.
-    pub(crate) experimental_features: EnumSet<ExperimentalFeature>,
 }
 
 impl Debug for StateMachine {
@@ -158,7 +167,7 @@ impl Debug for StateMachine {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(
-        "partition is blocked; requires and upgrade to restate-server version \
+        "partition is blocked; requires an upgrade to restate-server version \
         {required_min_version} or higher; reason='{barrier_reason}'"
     )]
     VersionBarrier {
@@ -226,7 +235,6 @@ impl StateMachine {
         outbox_head_seq_number: Option<MessageIndex>,
         partition_key_range: RangeInclusive<PartitionKey>,
         min_restate_version: SemanticRestateVersion,
-        experimental_features: EnumSet<ExperimentalFeature>,
         schema: Option<Schema>,
     ) -> Self {
         Self {
@@ -235,7 +243,6 @@ impl StateMachine {
             outbox_head_seq_number,
             partition_key_range,
             min_restate_version,
-            experimental_features,
             schema,
         }
     }
@@ -253,8 +260,6 @@ pub(crate) struct StateMachineApplyContext<'a, S> {
     min_restate_version: &'a mut SemanticRestateVersion,
     schema: &'a mut Option<Schema>,
     partition_key_range: RangeInclusive<PartitionKey>,
-    #[allow(dead_code)]
-    experimental_features: &'a EnumSet<ExperimentalFeature>,
     is_leader: bool,
 }
 
@@ -295,7 +300,6 @@ impl StateMachine {
                 vqueues_cache,
                 schema: &mut self.schema,
                 partition_key_range: self.partition_key_range.clone(),
-                experimental_features: &self.experimental_features,
                 is_leader,
             }
             .on_apply(command)
@@ -687,7 +691,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + WriteVQueueTable
             + ReadVQueueTable
-            + WriteJournalTable,
+            + WriteJournalTable
+            + journal_table_v2::WriteJournalTable,
     {
         let invocation_id = service_invocation.invocation_id;
         debug_assert!(
@@ -733,7 +738,7 @@ impl<S> StateMachineApplyContext<'_, S> {
     async fn on_pre_flight_invocation(
         &mut self,
         invocation_id: InvocationId,
-        pre_flight_invocation_metadata: PreFlightInvocationMetadata,
+        mut pre_flight_invocation_metadata: PreFlightInvocationMetadata,
         submit_notification_sink: Option<SubmitNotificationSink>,
     ) -> Result<(), Error>
     where
@@ -747,8 +752,62 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteFsmTable
             + WriteVQueueTable
             + ReadVQueueTable
-            + WriteJournalTable,
+            + WriteJournalTable
+            + journal_table_v2::WriteJournalTable,
     {
+        // A pre-flight invocation has been already deduplicated
+
+        // 0. Prepare the journal table v2. This ensures that all newly created invocations will
+        // have a journal v2 created. To handle already existing invocations for which we didn't
+        // create the journal yet, there is a separate path in init_journal to create the journal
+        // v2. This change has been introduced with v1.6
+        if self.min_restate_version.use_journal_v2_as_default()
+            && let PreFlightInvocationArgument::Input(PreFlightInvocationInput {
+                argument,
+                headers,
+                span_context,
+            }) = pre_flight_invocation_metadata.input
+        {
+            // In this case, we do the following:
+            // * Write the input in the journal table v2
+            // * Change pre_flight_invocation_metadata.input to be PreFlightInvocationArgument::Journal
+            //   so that we don't create the journal again when calling init_journal_and_invoke
+
+            // Prepare the new entry
+            let new_entry: journal_v2::Entry = InputCommand {
+                headers,
+                payload: argument,
+                name: Default::default(),
+            }
+            .into();
+            let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
+
+            // Now write the entry in the new table
+            journal_table_v2::WriteJournalTable::put_journal_entry(
+                self.storage,
+                invocation_id,
+                0,
+                &StoredRawEntry::new(
+                    StoredRawEntryHeader::new(self.record_created_at),
+                    new_raw_entry,
+                ),
+                &[],
+            )?;
+
+            // Input is now a journal directly. Setting the input to PreFlightInvocationArgument::Journal
+            // will skip the journal initialization step in init_journal_and_invoke because the passed
+            // invocation_input is None.
+            pre_flight_invocation_metadata.input =
+                PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                    journal_metadata: JournalMetadata {
+                        length: 1,
+                        commands: 1,
+                        span_context,
+                    },
+                    pinned_deployment: None,
+                });
+        }
+
         if Configuration::pinned().common.experimental_enable_vqueues {
             // skips the rest of this logic and jumps straight to vqueues' implementation
             return self
@@ -759,8 +818,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await;
         }
-
-        // A pre-flight invocation has been already deduplicated
 
         // 1. Check if we need to schedule it
         let execution_time = pre_flight_invocation_metadata.execution_time;
@@ -1158,7 +1215,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_input: Option<InvocationInput>,
     ) -> Result<(), Error>
     where
-        S: WriteJournalTable + WriteInvocationStatusTable,
+        S: WriteJournalTable + WriteInvocationStatusTable + journal_table_v2::WriteJournalTable,
     {
         // Usage metering for "actions" should include the Input journal entry
         // type, but it gets filtered out before reaching the state machine.
@@ -1190,6 +1247,9 @@ impl<S> StateMachineApplyContext<'_, S> {
         )
     }
 
+    /// Inits the journal if invocation_input is `Some` and invokes the invocation. If
+    /// invocation_input is `None`, then the journal must have been created before and we only
+    /// invoke the invocation.
     fn init_journal_and_invoke(
         &mut self,
         invocation_id: InvocationId,
@@ -1197,7 +1257,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_input: Option<InvocationInput>,
     ) -> Result<(), Error>
     where
-        S: WriteJournalTable + WriteInvocationStatusTable,
+        S: WriteJournalTable + WriteInvocationStatusTable + journal_table_v2::WriteJournalTable,
     {
         // Usage metering for "actions" should include the Input journal entry
         // type, but it gets filtered out before reaching the state machine.
@@ -1210,6 +1270,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             .increment(1);
         }
 
+        // Only init the journal if we have some invocation input
         let invoke_input_journal = if let Some(invocation_input) = invocation_input {
             self.init_journal(
                 invocation_id,
@@ -1227,6 +1288,13 @@ impl<S> StateMachineApplyContext<'_, S> {
         )
     }
 
+    /// This method creates a journal for the given invocation id. Depending on `min_restate_version`
+    /// it will either be the journal v2 or journal v1.
+    // Once the minimum Restate version is v1.6.0, Restate will use the journal v2 by default. All
+    // new invocations will have a journal created when entering the pre-flight phase. Only for
+    // those invocations that were created before bumping the minimum Restate version to v1.6.0 we
+    // need to call this method. Once we migrate those invocations and create the journal, this method
+    // will no longer be needed.
     fn init_journal(
         &mut self,
         invocation_id: InvocationId,
@@ -1234,46 +1302,95 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_input: InvocationInput,
     ) -> Result<InvokeInputJournal, Error>
     where
-        S: WriteJournalTable,
+        S: WriteJournalTable + journal_table_v2::WriteJournalTable,
     {
         debug_if_leader!(self.is_leader, "Init journal with input entry");
 
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
         in_flight_invocation_metadata.journal_metadata.length = 1;
 
-        // We store the entry in the JournalTable V1.
-        // When pinning the deployment version we figure the concrete protocol version
-        // * If <= V3, we keep everything in JournalTable V1
-        // * If >= V4, we migrate the JournalTable to V2
-        let input_entry = JournalEntry::Entry(ProtobufRawEntryCodec::serialize_as_input_entry(
-            invocation_input.headers,
-            invocation_input.argument,
-        ));
-        self.storage
-            .put_journal_entry(&invocation_id, 0, &input_entry)
+        // This branch is only relevant for invocations that were created before we started using
+        // the journal v2 by default (setting the min Restate version to v1.6.0). For invocations
+        // that are created afterwards, Restate will create the journal in
+        // [`StateMachineApplyContext::on_pre_flight_invocation`].
+        if self.min_restate_version.use_journal_v2_as_default() {
+            // Prepare the new entry
+            let new_entry: journal_v2::Entry = InputCommand {
+                headers: invocation_input.headers,
+                payload: invocation_input.argument,
+                name: Default::default(),
+            }
+            .into();
+            let stored_entry = StoredRawEntry::new(
+                StoredRawEntryHeader::new(self.record_created_at),
+                new_entry.encode::<ServiceProtocolV4Codec>(),
+            );
+
+            // Now write the entry in the new table
+            journal_table_v2::WriteJournalTable::put_journal_entry(
+                self.storage,
+                invocation_id,
+                0,
+                &stored_entry,
+                &[],
+            )?;
+
+            Ok(InvokeInputJournal::CachedJournal(
+                restate_invoker_api::JournalMetadata::new(
+                    in_flight_invocation_metadata.journal_metadata.length,
+                    in_flight_invocation_metadata
+                        .journal_metadata
+                        .span_context
+                        .clone(),
+                    None,
+                    self.record_created_at,
+                    in_flight_invocation_metadata
+                        .random_seed
+                        .unwrap_or_else(|| invocation_id.to_random_seed()),
+                    true,
+                ),
+                vec![restate_invoker_api::invocation_reader::JournalEntry::JournalV2(stored_entry)],
+            ))
+        } else {
+            // We store the entry in the JournalTable V1.
+            // When pinning the deployment version we figure the concrete protocol version
+            // * If <= V3, we keep everything in JournalTable V1
+            // * If >= V4, we migrate the JournalTable to V2
+            let input_entry = JournalEntry::Entry(ProtobufRawEntryCodec::serialize_as_input_entry(
+                invocation_input.headers,
+                invocation_input.argument,
+            ));
+            journal_table::WriteJournalTable::put_journal_entry(
+                self.storage,
+                &invocation_id,
+                0,
+                &input_entry,
+            )
             .map_err(Error::Storage)?;
 
-        let_assert!(JournalEntry::Entry(input_entry) = input_entry);
+            let_assert!(JournalEntry::Entry(input_entry) = input_entry);
 
-        Ok(InvokeInputJournal::CachedJournal(
-            restate_invoker_api::JournalMetadata::new(
-                in_flight_invocation_metadata.journal_metadata.length,
-                in_flight_invocation_metadata
-                    .journal_metadata
-                    .span_context
-                    .clone(),
-                None,
-                self.record_created_at,
-                in_flight_invocation_metadata
-                    .random_seed
-                    .unwrap_or_else(|| invocation_id.to_random_seed()),
-            ),
-            vec![
-                restate_invoker_api::invocation_reader::JournalEntry::JournalV1(
-                    input_entry.erase_enrichment(),
+            Ok(InvokeInputJournal::CachedJournal(
+                restate_invoker_api::JournalMetadata::new(
+                    in_flight_invocation_metadata.journal_metadata.length,
+                    in_flight_invocation_metadata
+                        .journal_metadata
+                        .span_context
+                        .clone(),
+                    None,
+                    self.record_created_at,
+                    in_flight_invocation_metadata
+                        .random_seed
+                        .unwrap_or_else(|| invocation_id.to_random_seed()),
+                    false,
                 ),
-            ],
-        ))
+                vec![
+                    restate_invoker_api::invocation_reader::JournalEntry::JournalV1(
+                        input_entry.erase_enrichment(),
+                    ),
+                ],
+            ))
+        }
     }
 
     fn vqueue_invoke(
@@ -1528,52 +1645,57 @@ impl<S> StateMachineApplyContext<'_, S> {
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
 
-        match status.get_invocation_metadata().and_then(|meta| {
+        let pinned_service_protocol = status.get_invocation_metadata().and_then(|meta| {
             meta.pinned_deployment
                 .as_ref()
                 .map(|pd| pd.service_protocol_version)
-        }) {
-            Some(sp_version) if sp_version >= ServiceProtocolVersion::V4 => {
-                OnCancelCommand {
-                    invocation_id,
-                    invocation_status: status,
-                    response_sink,
-                }
-                .apply(self)
-                .await?;
-                return Ok(());
+        });
+
+        if pinned_service_protocol
+            .is_some_and(|sp_version| sp_version >= ServiceProtocolVersion::V4)
+            || journal_table_v2::ReadJournalTable::get_journal_entry(self.storage, invocation_id, 0)
+                .await?
+                .is_some()
+        {
+            // If we got protocol 4 already pinned, or we're using anyway the journal table v2, then process using the new cancellation command
+            OnCancelCommand {
+                invocation_id,
+                invocation_status: status,
+                response_sink,
             }
-            None if matches!(
+            .apply(self)
+            .await?;
+            return Ok(());
+        } else if pinned_service_protocol.is_none()
+            && matches!(
                 status,
                 InvocationStatus::Invoked(_) | InvocationStatus::Suspended { .. }
-            ) =>
-            {
-                // We need to apply a corner case fix here.
-                // We don't know yet what's the protocol version being used, but we know the status is either invoker or suspended.
-                // To sort this out, we write a field in invocation status to make sure that after pinning the deployment, we run the cancellation.
-                // See OnPinnedDeploymentCommand for more info.
-                trace!(
-                    "Storing hotfix for cancellation when invocation doesn't have a pinned service protocol, but is invoked/suspended"
-                );
+            )
+        {
+            // We need to apply a corner case fix here.
+            // We don't know yet what's the protocol version being used, but we know the status is either invoker or suspended.
+            // To sort this out, we write a field in invocation status to make sure that after pinning the deployment, we run the cancellation.
+            // See OnPinnedDeploymentCommand for more info.
+            trace!(
+                "Storing hotfix for cancellation when invocation doesn't have a pinned service protocol, but is invoked/suspended"
+            );
 
-                match &mut status {
-                    InvocationStatus::Invoked(metadata)
-                    | InvocationStatus::Suspended { metadata, .. } => {
-                        metadata.hotfix_apply_cancellation_after_deployment_is_pinned = true;
-                    }
-                    _ => {
-                        unreachable!("It's checked above")
-                    }
-                };
+            match &mut status {
+                InvocationStatus::Invoked(metadata)
+                | InvocationStatus::Suspended { metadata, .. } => {
+                    metadata.hotfix_apply_cancellation_after_deployment_is_pinned = true;
+                }
+                _ => {
+                    unreachable!("It's checked above")
+                }
+            };
 
-                self.storage
-                    .put_invocation_status(&invocation_id, &status)?;
-                self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
-                return Ok(());
-            }
-            _ => {
-                // Continue below
-            }
+            self.storage
+                .put_invocation_status(&invocation_id, &status)?;
+            self.reply_to_cancel(response_sink, CancelInvocationResponse::Appended);
+            return Ok(());
+        } else {
+            // Continue below
         };
 
         match status {
@@ -1745,14 +1867,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             pinned_deployment,
         }) = &input
         {
-            let should_remove_journal_table_v2 =
-                pinned_deployment.as_ref().is_some_and(|pinned_deployment| {
-                    pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
-                });
+            let pinned_service_protocol_version = pinned_deployment
+                .as_ref()
+                .map(|pd| pd.service_protocol_version);
+
             self.do_drop_journal(
                 invocation_id,
                 journal_metadata.length,
-                should_remove_journal_table_v2,
+                pinned_service_protocol_version,
             )
             .await?;
         }
@@ -1858,14 +1980,14 @@ impl<S> StateMachineApplyContext<'_, S> {
             pinned_deployment,
         }) = &input
         {
-            let should_remove_journal_table_v2 =
-                pinned_deployment.as_ref().is_some_and(|pinned_deployment| {
-                    pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
-                });
+            let pinned_service_protocol_version = pinned_deployment
+                .as_ref()
+                .map(|pd| pd.service_protocol_version);
+
             self.do_drop_journal(
                 invocation_id,
                 journal_metadata.length,
-                should_remove_journal_table_v2,
+                pinned_service_protocol_version,
             )
             .await?;
         }
@@ -2229,7 +2351,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteInvocationStatusTable
             + WriteInboxTable
             + WriteFsmTable
-            + WriteJournalTable,
+            + WriteJournalTable
+            + journal_table_v2::WriteJournalTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -2552,12 +2675,10 @@ impl<S> StateMachineApplyContext<'_, S> {
         let completion_retention = invocation_metadata.completion_retention_duration;
         let journal_retention = invocation_metadata.journal_retention_duration;
 
-        let should_remove_journal_table_v2 = invocation_metadata
+        let pinned_service_protocol_version = invocation_metadata
             .pinned_deployment
             .as_ref()
-            .is_some_and(|pinned_deployment| {
-                pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
-            });
+            .map(|pd| pd.service_protocol_version);
 
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
@@ -2638,7 +2759,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.do_drop_journal(
                 invocation_id,
                 journal_length,
-                should_remove_journal_table_v2,
+                pinned_service_protocol_version,
             )
             .await?;
         }
@@ -2737,7 +2858,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVQueueTable
             + WriteVQueueTable
             + ReadStateTable
-            + WriteStateTable,
+            + WriteStateTable
+            + journal_table_v2::WriteJournalTable,
     {
         let qid = VQueueId::new(
             VQueueParent::from_raw(command.assignment.parent),
@@ -2818,7 +2940,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + ReadVirtualObjectStatusTable
             + WriteJournalTable
             + ReadVQueueTable
-            + WriteVQueueTable,
+            + WriteVQueueTable
+            + journal_table_v2::WriteJournalTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
         match status {
@@ -2925,7 +3048,8 @@ impl<S> StateMachineApplyContext<'_, S> {
             + WriteVirtualObjectStatusTable
             + ReadStateTable
             + WriteStateTable
-            + WriteJournalTable,
+            + WriteJournalTable
+            + journal_table_v2::WriteJournalTable,
     {
         if Configuration::pinned().common.experimental_enable_vqueues {
             return Ok(());
@@ -4726,7 +4850,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
-        should_remove_journal_table_v2: bool,
+        pinned_protocol_version: Option<ServiceProtocolVersion>,
     ) -> Result<(), Error>
     where
         S: WriteJournalTable + journal_table_v2::WriteJournalTable + WriteJournalEventsTable,
@@ -4737,17 +4861,18 @@ impl<S> StateMachineApplyContext<'_, S> {
             "Effect: Drop journal"
         );
 
-        if should_remove_journal_table_v2 {
+        if pinned_protocol_version.is_none_or(|sp| sp < ServiceProtocolVersion::V4) {
+            WriteJournalTable::delete_journal(self.storage, &invocation_id, journal_length)
+                .map_err(Error::Storage)?;
+        };
+        if pinned_protocol_version.is_none_or(|sp| sp >= ServiceProtocolVersion::V4) {
             journal_table_v2::WriteJournalTable::delete_journal(
                 self.storage,
                 invocation_id,
                 journal_length,
             )
             .map_err(Error::Storage)?
-        } else {
-            WriteJournalTable::delete_journal(self.storage, &invocation_id, journal_length)
-                .map_err(Error::Storage)?;
-        }
+        };
         WriteJournalEventsTable::delete_journal_events(self.storage, invocation_id)
             .map_err(Error::Storage)?;
         Ok(())

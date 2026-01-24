@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -40,11 +40,12 @@ use restate_metadata_store::{ReadWriteError, WriteError, retry_on_retryable_erro
 use restate_partition_store::PartitionStoreManager;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::config::{CommonOptions, Configuration};
+use restate_types::errors::IntoMaybeRetryable;
 use restate_types::health::NodeStatus;
 use restate_types::live::Live;
 use restate_types::live::LiveLoadExt;
-use restate_types::logs::RecordCache;
 use restate_types::logs::metadata::{Logs, LogsConfiguration, ProviderConfiguration, ProviderKind};
+use restate_types::logs::{self, RecordCache};
 use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::net::listener::AddressBook;
 use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration, Role};
@@ -404,7 +405,7 @@ impl Node {
             TaskCenter::spawn(
                 TaskKind::MetadataServer,
                 "metadata-server",
-                metadata_server.run(Some(metadata_writer.clone())),
+                metadata_server.run(metadata_writer.clone()),
             )?;
         }
 
@@ -750,27 +751,38 @@ async fn write_initial_logs_dont_fail_if_it_exists(
             None => Ok(initial_value.clone()),
             Some(current_value) => {
                 if current_value.configuration() == initial_value.configuration() {
-                    Err(ReadModifyWriteError::FailedOperation(AlreadyInitialized))
+                    Err(WriteInitialLogsError::AlreadyInitialized)
                 } else if current_value.version() == Version::MIN && current_value.num_logs() == 0 {
-                    let builder = initial_value.clone().into_builder();
+                    let builder = initial_value.clone().try_into_builder()?;
                     // make sure version is incremented to MIN + 1
                     Ok(builder.build())
                 } else {
-                    Err(ReadModifyWriteError::FailedOperation(AlreadyInitialized))
+                    Err(WriteInitialLogsError::AlreadyInitialized)
                 }
             }
         })
         .await;
 
     match value {
-        Ok(_) | Err(ReadModifyWriteError::FailedOperation(_)) => Ok(()),
+        Ok(_) => Ok(()),
+        Err(ReadModifyWriteError::FailedOperation(WriteInitialLogsError::AlreadyInitialized)) => {
+            Ok(())
+        }
+        Err(ReadModifyWriteError::FailedOperation(WriteInitialLogsError::BuilderError(err))) => {
+            Err(ReadWriteError::Other(Box::new(err.into_terminal())))
+        }
         Err(ReadModifyWriteError::ReadWrite(err)) => Err(err),
     }
 }
 
-#[derive(Debug)]
-struct AlreadyInitialized;
+#[derive(Debug, thiserror::Error)]
+enum WriteInitialLogsError {
+    #[error("Logs already initialized")]
+    AlreadyInitialized,
 
+    #[error(transparent)]
+    BuilderError(#[from] logs::builder::BuilderError),
+}
 /// Update the logs configuration metadata on single nodes, if it is still using the local loglet
 /// when the configured provider is replicated (default in 1.4.0+). This migrates older nodes
 /// provisioned with default config from versions <1.4.0 to use the replicated loglet. Does not
@@ -805,7 +817,7 @@ async fn migrate_logs_configuration_to_replicated_if_needed(
             .global_metadata()
             .read_modify_write(|current: Option<Arc<Logs>>| {
                 let logs = current.expect("logs are initialized");
-                let mut builder = logs.as_ref().clone().into_builder();
+                let mut builder = logs.as_ref().clone().try_into_builder()?;
 
                 // Why not ProviderConfiguration::from_configuration(config)? Using the default
                 // replicated loglet provider configuration is a safer alternative as there might be

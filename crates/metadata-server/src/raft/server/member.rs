@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -114,20 +114,6 @@ impl Member {
         command_rx: MetadataCommandReceiver,
     ) -> Result<Self, Error> {
         let (raft_tx, raft_rx) = mpsc::channel(128);
-        let new_connection_manager = ConnectionManager::new(my_member_id.node_id, raft_tx);
-        let mut networking = Networking::new(new_connection_manager.clone());
-
-        networking.register_address(
-            my_member_id.node_id,
-            TaskCenter::with_current(|tc| {
-                Configuration::pinned()
-                    .common
-                    .advertised_address(tc.address_book())
-            }),
-        );
-
-        // todo remove additional indirection from Arc
-        connection_manager.store(Some(Arc::new(new_connection_manager)));
 
         let raft_options = &Configuration::pinned().metadata_server.raft_options;
 
@@ -181,6 +167,33 @@ impl Member {
         let mut tick_interval = time::interval(raft_options.raft_tick_interval.into());
         tick_interval.set_missed_tick_behavior(MissedTickBehavior::Burst);
         let status_update_interval = time::interval(raft_options.status_update_interval.into());
+
+        let metadata_nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        let nodes_config = Self::latest_nodes_configuration(&kv_storage, &metadata_nodes_config);
+
+        let new_connection_manager = ConnectionManager::new(
+            my_member_id.node_id,
+            raft_tx,
+            // nodes config must be valid since we are a member which means one of the following:
+            // a) if we got provisioned then the provision call created a snapshot with a valid NodesConfiguration
+            // b) if we got added to a metadata cluster then we have stored a valid NodesConfiguration together with
+            //    the member state to disk which gets restored on Uninitialized::initialize()
+            nodes_config.cluster_fingerprint(),
+            nodes_config.cluster_name().to_owned(),
+        );
+        let mut networking = Networking::new(new_connection_manager.clone());
+
+        networking.register_address(
+            my_member_id.node_id,
+            TaskCenter::with_current(|tc| {
+                Configuration::pinned()
+                    .common
+                    .advertised_address(tc.address_book())
+            }),
+        );
+
+        // todo remove additional indirection from Arc
+        connection_manager.store(Some(Arc::new(new_connection_manager)));
 
         let member = Member {
             _logger: logger,
@@ -497,13 +510,46 @@ impl Member {
         request: MetadataStoreRequest,
         metadata_nodes_config: &NodesConfiguration,
     ) {
-        let request = request.into_request();
+        let (request, cluster_identity) = request.into_request();
+
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
+
+        // Validate cluster identity: first fingerprint, then cluster_name. In some cases only the
+        // cluster name is set (e.g. when a node is trying to join a cluster and asking for the
+        // NodesConfiguration). Older versions of Restate < v1.6 won't set these fields.
+        if let Some(incoming_fingerprint) = cluster_identity.fingerprint {
+            let expected_fingerprint = nodes_config.cluster_fingerprint();
+
+            if incoming_fingerprint != expected_fingerprint {
+                request.fail(RequestError::ClusterIdentityMismatch(format!(
+                    "cluster fingerprint mismatch: expected {}, got {}",
+                    expected_fingerprint, incoming_fingerprint
+                )));
+                return;
+            }
+        }
+
+        if let Some(incoming_cluster_name) = cluster_identity.cluster_name {
+            let expected_cluster_name = nodes_config.cluster_name();
+
+            if incoming_cluster_name != expected_cluster_name {
+                request.fail(RequestError::ClusterIdentityMismatch(format!(
+                    "cluster name mismatch: expected {}, got {}",
+                    expected_cluster_name, incoming_cluster_name
+                )));
+                return;
+            }
+        }
+        // If neither fingerprint nor cluster_name is provided, allow (backward compatibility)
+        // todo in v1.7 no longer accept if no cluster identity was provided
+
         trace!("Handle metadata store request: {request:?}");
 
         if !self.is_leader {
             request.fail(RequestError::Unavailable(
                 "not leader".into(),
-                self.known_leader(metadata_nodes_config),
+                self.known_leader(nodes_config),
             ));
             return;
         }
@@ -522,7 +568,7 @@ impl Member {
                     && previous_pending_read_count == self.raw_node.raft.pending_read_count()
                 {
                     // fail the request if we cannot serve read-only requests yet
-                    read_only_request.fail(RequestError::Unavailable("Cannot serve read-only queries yet because the latest commit index has not been retrieved. Try again in a bit".into(), self.known_leader(metadata_nodes_config)));
+                    read_only_request.fail(RequestError::Unavailable("Cannot serve read-only queries yet because the latest commit index has not been retrieved. Try again in a bit".into(), self.known_leader(nodes_config)));
                 } else {
                     self.kv_storage
                         .register_read_only_request(read_only_request);
@@ -592,7 +638,10 @@ impl Member {
         join_cluster_request: JoinClusterRequest,
         metadata_nodes_config: &NodesConfiguration,
     ) {
-        let (response_tx, joining_member_id) = join_cluster_request.into_inner();
+        let (response_tx, joining_member_id, cluster_identity) = join_cluster_request.into_inner();
+
+        let nodes_config =
+            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
 
         trace!("Handle join request from node '{}'", joining_member_id);
 
@@ -604,11 +653,38 @@ impl Member {
             return;
         }
 
+        // Validate cluster identity: first fingerprint, then cluster_name. Older versions of
+        // Restate < v1.6 won't set these fields.
+        // todo in v1.7 make this check mandatory and fail if neither fingerprint nor cluster_name is set
+        if let Some(incoming_fingerprint) = cluster_identity.fingerprint {
+            let expected_fingerprint = nodes_config.cluster_fingerprint();
+
+            if incoming_fingerprint != expected_fingerprint {
+                let _ = response_tx.send(Err(JoinClusterError::ClusterIdentityMismatch(format!(
+                    "cluster fingerprint mismatch: expected {}, got {}",
+                    expected_fingerprint, incoming_fingerprint
+                ))));
+                return;
+            }
+        }
+
+        if let Some(incoming_cluster_name) = cluster_identity.cluster_name {
+            let expected_cluster_name = nodes_config.cluster_name();
+
+            if incoming_cluster_name != expected_cluster_name {
+                let _ = response_tx.send(Err(JoinClusterError::ClusterIdentityMismatch(format!(
+                    "cluster name mismatch: expected {}, got {}",
+                    expected_cluster_name, incoming_cluster_name
+                ))));
+                return;
+            }
+        }
+
         // sanity checks
 
         if !self.is_leader {
             let _ = response_tx.send(Err(JoinClusterError::NotLeader(
-                self.known_leader(metadata_nodes_config),
+                self.known_leader(nodes_config),
             )));
             return;
         }
@@ -626,9 +702,6 @@ impl Member {
             let _ = response_tx.send(Err(JoinClusterError::Internal(warning)));
             return;
         }
-
-        let nodes_config =
-            Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
 
         let Ok(joining_node_config) = nodes_config.find_node_by_id(joining_member_id.node_id)
         else {

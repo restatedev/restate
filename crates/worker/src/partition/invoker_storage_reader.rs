@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -19,7 +19,6 @@ use restate_storage_api::state_table::ReadStateTable;
 use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
 use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::ServiceId;
-use restate_types::service_protocol::ServiceProtocolVersion;
 use std::vec::IntoIter;
 
 #[derive(Debug, thiserror::Error)]
@@ -81,39 +80,40 @@ where
             .unwrap_or_else(|| invocation_id.to_random_seed());
 
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
-            let (journal_metadata, journal_stream) = if invoked_status
-                .pinned_deployment
-                .as_ref()
-                .is_some_and(|p| p.service_protocol_version >= ServiceProtocolVersion::V4)
-            {
-                // If pinned service protocol version exists and >= V4, we need to read from Journal Table V2!
-                let entries = journal_table_v2::ReadJournalTable::get_journal(
-                    &mut self.txn,
-                    *invocation_id,
-                    invoked_status.journal_metadata.length,
-                )?
-                .map(|entry| {
-                    entry
-                        .map_err(InvokerStorageReaderError::Storage)
-                        .map(|(_, entry)| {
-                            restate_invoker_api::invocation_reader::JournalEntry::JournalV2(entry)
-                        })
-                })
-                // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
-                // collecting the stream because we cannot keep the transaction open
-                .try_collect::<Vec<_>>()
-                .await?;
+            // Try to read first from journal table v2
+            let entries = journal_table_v2::ReadJournalTable::get_journal(
+                &mut self.txn,
+                *invocation_id,
+                invoked_status.journal_metadata.length,
+            )?
+            .map(|entry| {
+                entry
+                    .map_err(InvokerStorageReaderError::Storage)
+                    .map(|(_, entry)| {
+                        restate_invoker_api::invocation_reader::JournalEntry::JournalV2(entry)
+                    })
+            })
+            // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
+            // collecting the stream because we cannot keep the transaction open
+            .try_collect::<Vec<_>>()
+            .await?;
 
-                let journal_metadata = JournalMetadata::new(
-                    invoked_status.journal_metadata.length,
-                    invoked_status.journal_metadata.span_context,
-                    invoked_status.pinned_deployment,
-                    invoked_status.timestamps.modification_time(),
-                    random_seed,
-                );
-
-                (journal_metadata, entries)
+            let (journal_metadata, journal_stream) = if !entries.is_empty() {
+                // We got the journal, good to go
+                (
+                    JournalMetadata::new(
+                        invoked_status.journal_metadata.length,
+                        invoked_status.journal_metadata.span_context,
+                        invoked_status.pinned_deployment,
+                        invoked_status.timestamps.modification_time(),
+                        random_seed,
+                        true,
+                    ),
+                    entries,
+                )
             } else {
+                // todo remove once we no longer support journal v1: https://github.com/restatedev/restate/issues/3184
+                // We didn't read a thing from journal table v2 -> we need to read journal v1
                 (
                     JournalMetadata::new(
                         // Use entries len here, because we might be filtering out events
@@ -122,6 +122,7 @@ where
                         invoked_status.pinned_deployment,
                         invoked_status.timestamps.modification_time(),
                         random_seed,
+                        false,
                     ),
                     journal_table_v1::ReadJournalTable::get_journal(
                         &mut self.txn,

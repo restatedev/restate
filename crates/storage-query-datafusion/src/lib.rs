@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -130,6 +130,11 @@ pub(crate) fn decode_record_batch(bytes: &[u8]) -> Result<RecordBatch, DataFusio
 mod serde_tests {
     use datafusion::arrow::array::{Int32Array, RecordBatch};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::TaskContext;
+    use datafusion::logical_expr::Operator;
+    use datafusion::physical_plan::PhysicalExpr;
+    use datafusion::physical_plan::expressions::{BinaryExpr, Column, Literal};
+    use datafusion::scalar::ScalarValue;
     use std::sync::Arc;
 
     #[test]
@@ -166,5 +171,23 @@ mod serde_tests {
         assert_eq!(int32array.value(3), 3);
         assert_eq!(int32array.value(4), 4);
         assert_eq!(int32array.value(5), 5);
+    }
+
+    #[test]
+    pub fn round_trip_expr() {
+        let schema = Schema::new(vec![Field::new("status", DataType::LargeUtf8, false)]);
+
+        let physical_expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("status", 0)),
+            Operator::Eq,
+            Arc::new(Literal::new(ScalarValue::LargeUtf8(Some(
+                "completed".into(),
+            )))),
+        ));
+
+        let buf = super::encode_expr(&physical_expr).expect("it to work");
+        let decoded = super::decode_expr(&TaskContext::default(), &schema, &buf).expect("to work");
+
+        assert_eq!(&physical_expr, &decoded);
     }
 }

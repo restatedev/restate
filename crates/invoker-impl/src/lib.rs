@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -18,12 +18,11 @@ mod state_machine_manager;
 mod status_store;
 
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::io::ErrorKind;
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use std::{cmp, panic};
 
 use futures::StreamExt;
@@ -36,7 +35,7 @@ use tokio::task::{AbortHandle, JoinSet};
 use tracing::instrument;
 use tracing::{debug, trace, warn};
 
-use restate_core::cancellation_watcher;
+use restate_core::cancellation_token;
 use restate_errors::warn_it;
 use restate_invoker_api::capacity::TokenBucket;
 use restate_invoker_api::invocation_reader::InvocationReader;
@@ -47,7 +46,6 @@ use restate_invoker_api::{
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
-use restate_timer_queue::TimerQueue;
 use restate_types::config::{InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
@@ -63,6 +61,8 @@ use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
 use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
+use tokio_util::time::DelayQueue;
+use tokio_util::time::delay_queue::Key as RetryTimerKey;
 
 use crate::error::InvokerError;
 use crate::error::SdkInvocationErrorV2;
@@ -251,6 +251,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                 schemas,
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
+                last_retry_timer_compact: Instant::now(),
                 quota: quota::InvokerConcurrencyQuota::new(
                     invoker_id,
                     options.concurrent_invocations_limit(),
@@ -323,9 +324,6 @@ where
             ..
         } = self;
 
-        let shutdown = cancellation_watcher();
-        tokio::pin!(shutdown);
-
         let in_memory_limit = updateable_options
             .live_load()
             .in_memory_queue_length_limit();
@@ -359,10 +357,13 @@ where
 
         loop {
             let options = updateable_options.live_load();
-            if !service
-                .step(options, segmented_input_queue.as_mut(), shutdown.as_mut())
+            if cancellation_token()
+                .run_until_cancelled(service.step(options, segmented_input_queue.as_mut()))
                 .await
+                .is_none()
             {
+                debug!("Shutting down the invoker");
+                service.handle_shutdown();
                 break;
             }
         }
@@ -392,7 +393,8 @@ struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
 
     // Invoker state machine
     invocation_tasks: JoinSet<()>,
-    retry_timers: TimerQueue<(PartitionLeaderEpoch, InvocationId)>,
+    retry_timers: DelayQueue<(PartitionLeaderEpoch, InvocationId)>,
+    last_retry_timer_compact: Instant,
     quota: quota::InvokerConcurrencyQuota,
     status_store: InvocationStatusStore,
     invocation_state_machine_manager:
@@ -406,7 +408,7 @@ where
     Schemas: InvocationTargetResolver,
 {
     // Returns true if we should execute another step, false if we should stop executing steps
-    async fn step<F>(
+    async fn step(
         &mut self,
         options: &InvokerOptions,
         mut segmented_input_queue: Pin<
@@ -416,11 +418,7 @@ where
                 TokioClock,
             >,
         >,
-        mut shutdown: Pin<&mut F>,
-    ) -> bool
-    where
-        F: Future<Output = ()>,
-    {
+    ) {
         tokio::select! {
             Some(cmd) = self.status_rx.recv() => {
                 let keys = cmd.payload();
@@ -537,9 +535,10 @@ where
                     }
                 };
             },
-            timer = self.retry_timers.await_timer() => {
-                let (partition, fid) = timer.into_inner();
-                self.handle_retry_timer_fired(options, partition, fid);
+            Some(expired) = self.retry_timers.next() => {
+                let timer_key = expired.key();
+                let (partition, invocation_id) = expired.into_inner();
+                self.handle_retry_timer_fired(options, partition, invocation_id, timer_key);
             },
             Some(invocation_task_result) = self.invocation_tasks.join_next() => {
                 if let Err(err) = invocation_task_result {
@@ -551,14 +550,13 @@ where
                 // Other errors are cancellations caused by us (e.g. after AbortAllPartition),
                 // hence we can ignore them.
             }
-            _ = &mut shutdown => {
-                debug!("Shutting down the invoker");
-                self.handle_shutdown();
-                return false;
-            }
         }
-        // Execute next loop
-        true
+
+        // Periodically compact the retry timers to reclaim memory
+        if self.last_retry_timer_compact.elapsed() >= Duration::from_secs(10) {
+            self.retry_timers.compact();
+            self.last_retry_timer_compact = Instant::now();
+        }
     }
 
     // --- Event handlers
@@ -703,10 +701,11 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
+        timer_key: RetryTimerKey,
     ) {
         trace!("Retry timeout fired");
         self.handle_retry_event(options, partition, invocation_id, |sm| {
-            sm.notify_retry_timer_fired()
+            sm.notify_retry_timer_fired(timer_key)
         });
     }
 
@@ -1214,6 +1213,11 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
+            // Cancel retry timer if ISM was in WaitingRetry state
+            if let Some(timer_key) = ism.take_retry_timer_key() {
+                self.retry_timers.try_remove(&timer_key);
+            }
+
             // We abort only if the requested abort invocation epoch is same.
             trace!(
                 restate.invocation.target = %ism.invocation_target,
@@ -1243,8 +1247,19 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
     ) {
-        // Retry now is equivalent to immediately firing the retry timer.
-        self.handle_retry_timer_fired(options, partition, invocation_id);
+        // Get the timer key from the ISM if it's in WaitingRetry state
+        let timer_key = self
+            .invocation_state_machine_manager
+            .resolve_invocation(partition, &invocation_id)
+            .and_then(|(_, ism)| ism.take_retry_timer_key());
+
+        if let Some(timer_key) = timer_key {
+            // Cancel the pending timer from the queue
+            self.retry_timers.try_remove(&timer_key);
+
+            // Retry now is equivalent to immediately firing the retry timer
+            self.handle_retry_timer_fired(options, partition, invocation_id, timer_key);
+        }
     }
 
     #[instrument(
@@ -1264,6 +1279,11 @@ where
             .invocation_state_machine_manager
             .remove_invocation(partition, &invocation_id)
         {
+            // Cancel retry timer if ISM was in WaitingRetry state
+            if let Some(timer_key) = ism.take_retry_timer_key() {
+                self.retry_timers.try_remove(&timer_key);
+            }
+
             if ism.notify_pause() {
                 // If returns true, we need to pause now
                 let _ = sender
@@ -1303,6 +1323,11 @@ where
             .remove_partition(partition)
         {
             for (fid, mut ism) in invocation_state_machines.into_iter() {
+                // Cancel retry timer if ISM was in WaitingRetry state
+                if let Some(timer_key) = ism.take_retry_timer_key() {
+                    self.retry_timers.try_remove(&timer_key);
+                }
+
                 trace!(
                     restate.invocation.id = %fid,
                     restate.invocation.target = %ism.invocation_target,
@@ -1337,12 +1362,21 @@ where
         mut ism: InvocationStateMachine,
     ) {
         let attempt_deployment_id = ism.attempt_deployment_id();
-        match ism.handle_task_error(
+
+        // Call handle_task_error with a closure that registers the timer.
+        // We need to capture the duration for logging and status updates.
+        let result = ism.handle_task_error(
             error.is_transient(),
             error.next_retry_interval_override(),
             error.should_bump_start_message_retry_count_since_last_stored_entry(),
-        ) {
-            OnTaskError::ScheduleRetry(next_retry_timer_duration) => {
+            |duration| {
+                self.retry_timers
+                    .insert((partition, invocation_id), duration)
+            },
+        );
+
+        match result {
+            OnTaskError::Retrying(next_retry_timer_duration) => {
                 counter!(INVOKER_INVOCATION_TASKS,
                     "status" => TASK_OP_FAILED,
                     "transient" => "true",
@@ -1425,13 +1459,13 @@ where
                     invocation_error_report,
                     Some(next_retry_at),
                 );
+
+                // Timer was already registered inside handle_task_error via the closure
                 self.invocation_state_machine_manager.register_invocation(
                     partition,
                     invocation_id,
                     ism,
                 );
-                self.retry_timers
-                    .sleep_until(next_retry_at, (partition, invocation_id));
             }
             OnTaskError::Pause => {
                 counter!(INVOKER_INVOCATION_TASKS,
@@ -1621,12 +1655,6 @@ mod tests {
     use bytes::Bytes;
     use gardal::StreamExt as GardalStreamExt;
     use googletest::prelude::*;
-    use restate_types::vqueue::{VQueueId, VQueueInstance, VQueueParent};
-    use tempfile::tempdir;
-    use test_log::test;
-    use tokio::sync::mpsc;
-    use tokio_util::sync::CancellationToken;
-
     use restate_core::{TaskCenter, TaskKind};
     use restate_invoker_api::InvokerHandle;
     use restate_invoker_api::entry_enricher;
@@ -1653,6 +1681,10 @@ mod tests {
     };
     use restate_types::schema::service::ServiceMetadata;
     use restate_types::service_protocol::ServiceProtocolVersion;
+    use restate_types::vqueue::{VQueueId, VQueueInstance, VQueueParent};
+    use tempfile::tempdir;
+    use test_log::test;
+    use tokio::sync::mpsc;
 
     use crate::error::{InvokerError, SdkInvocationErrorV2};
     use crate::quota::InvokerConcurrencyQuota;
@@ -1694,6 +1726,7 @@ mod tests {
                 schemas: Live::from_value(schemas),
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
+                last_retry_timer_compact: Instant::now(),
                 quota: InvokerConcurrencyQuota::new(0, concurrency_limit),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
@@ -1713,6 +1746,29 @@ mod tests {
                 partition_tx,
             );
             partition_rx
+        }
+
+        /// Helper for tests: Process the registered retry timers until all timers have fired.
+        async fn process_retry_timers(&mut self, options: &InvokerOptions)
+        where
+            ITR: InvocationTaskRunner<IR>,
+        {
+            while let Some(expired) = self.retry_timers.next().await {
+                let timer_key = expired.key();
+                let (partition, invocation_id) = expired.into_inner();
+                self.handle_retry_timer_fired(options, partition, invocation_id, timer_key);
+            }
+        }
+
+        /// Helper for tests: checks if an invocation's ISM is in WaitingRetry state.
+        fn is_invocation_waiting_retry(
+            &mut self,
+            partition: PartitionLeaderEpoch,
+            invocation_id: &InvocationId,
+        ) -> bool {
+            self.invocation_state_machine_manager
+                .resolve_invocation(partition, invocation_id)
+                .is_some_and(|(_, ism)| ism.take_retry_timer_key().is_some())
         }
     }
 
@@ -1959,10 +2015,6 @@ mod tests {
         let mut segment_queue =
             std::pin::pin!(SegmentQueue::new(tempdir().unwrap().keep(), 1024).throttle(None));
 
-        let cancel_token = CancellationToken::new();
-        let shutdown = cancel_token.cancelled();
-        tokio::pin!(shutdown);
-
         let invocation_id_1 = InvocationId::mock_random();
         let invocation_id_2 = InvocationId::mock_random();
 
@@ -2000,11 +2052,9 @@ mod tests {
             .await;
 
         // Now step the state machine to start the invocation
-        assert!(
-            service_inner
-                .step(&invoker_options, segment_queue.as_mut(), shutdown.as_mut())
-                .await
-        );
+        service_inner
+            .step(&invoker_options, segment_queue.as_mut())
+            .await;
 
         // Check status and quota
         assert!(
@@ -2017,11 +2067,10 @@ mod tests {
         assert!(!service_inner.quota.is_slot_available());
 
         // Step again to remove sid_1 from task queue. This should not invoke sid_2!
-        assert!(
-            service_inner
-                .step(&invoker_options, segment_queue.as_mut(), shutdown.as_mut())
-                .await
-        );
+        service_inner
+            .step(&invoker_options, segment_queue.as_mut())
+            .await;
+
         assert!(
             service_inner
                 .status_store
@@ -2039,11 +2088,10 @@ mod tests {
         assert!(service_inner.quota.is_slot_available());
 
         // Step now should invoke sid_2
-        assert!(
-            service_inner
-                .step(&invoker_options, segment_queue.as_mut(), shutdown.as_mut(),)
-                .await
-        );
+        service_inner
+            .step(&invoker_options, segment_queue.as_mut())
+            .await;
+
         assert!(
             service_inner
                 .status_store
@@ -2137,7 +2185,7 @@ mod tests {
         assert_eq!(service_inner.quota.available_slots(), 2);
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(start_paused = true))]
     async fn notification_triggers_retry() {
         let invoker_options = InvokerOptionsBuilder::default()
             .inactivity_timeout(FriendlyDuration::ZERO)
@@ -2182,7 +2230,7 @@ mod tests {
         // Register a mock partition
         let _ = service_inner.register_mock_partition(EmptyStorageReader);
 
-        // Create an invocation state machine
+        // Create an invocation state machine and register it with an in-flight notification proposal
         let mut ism = InvocationStateMachine::create(
             Some(VQueueId::new(
                 VQueueParent::default_unlimited(),
@@ -2200,16 +2248,21 @@ mod tests {
         // Add a notification proposal
         ism.notify_new_notification_proposal(NotificationId::CompletionId(1));
 
-        // Put the state machine in the WaitingRetry state
-        ism.handle_task_error(true, None, true);
-
-        // Register the invocation state machine
+        // Register the ISM and use handle_invocation_task_failed to put it in WaitingRetry state.
+        // This will register the timer in the real DelayQueue.
         service_inner
             .invocation_state_machine_manager
             .register_invocation(MOCK_PARTITION, invocation_id, ism);
+        service_inner
+            .handle_invocation_task_failed(
+                MOCK_PARTITION,
+                invocation_id,
+                InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
+            )
+            .await;
 
-        // Fire the retry timer
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
+        // Fire the retry timer using the helper that retrieves the key from the ISM
+        service_inner.process_retry_timers(&invoker_options).await;
 
         // Create a notification
         let notification = RawNotification::new(
@@ -2226,17 +2279,13 @@ mod tests {
             notification,
         );
 
-        let (partition, id, target) =
-            tokio::time::timeout(Duration::from_millis(100), task_started_rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
+        let (partition, id, target) = task_started_rx.recv().await.unwrap();
         assert_eq!(partition, MOCK_PARTITION);
         assert_eq!(id, invocation_id);
         assert_eq!(target, invocation_target);
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(start_paused = true))]
     async fn status_store_clears_last_failure_on_new_command() {
         let invocation_id = InvocationId::mock_random();
 
@@ -2273,11 +2322,9 @@ mod tests {
         );
 
         // Trigger the retry
-        service_inner.handle_retry_timer_fired(
-            &InvokerOptions::default(),
-            MOCK_PARTITION,
-            invocation_id,
-        );
+        service_inner
+            .process_retry_timers(&InvokerOptions::default())
+            .await;
 
         // Now a new command proposal should clear the last failure (progress made)
         service_inner
@@ -2307,7 +2354,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(start_paused = true))]
     async fn transient_error_event_deduplication() {
         // Enable proposing events and keep timers short for the test
         let invoker_options = InvokerOptionsBuilder::default()
@@ -2370,7 +2417,7 @@ mod tests {
         );
 
         // Fire the timer to let the invocation go back to in flight
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
+        service_inner.process_retry_timers(&invoker_options).await;
 
         // Same transient error (A again) -> should NOT propose a new event
         let error_a_same = InvokerError::SdkV2(SdkInvocationErrorV2 {
@@ -2387,7 +2434,7 @@ mod tests {
         );
 
         // Fire the timer to let the invocation go back to in flight
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
+        service_inner.process_retry_timers(&invoker_options).await;
 
         // Different transient error (B: different message) -> should propose a new event
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2 {
@@ -2439,18 +2486,19 @@ mod tests {
             )
             .await;
 
+        // Check the ISM is in WaitingRetry state and retry count is 1
+        assert!(service_inner.is_invocation_waiting_retry(MOCK_PARTITION, &invocation_id));
         let (_, ism) = service_inner
             .invocation_state_machine_manager
             .resolve_invocation(MOCK_PARTITION, &invocation_id)
             .unwrap();
-        assert!(ism.is_waiting_retry());
         assert_that!(
             ism.start_message_retry_count_since_last_stored_command,
             eq(1)
         );
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(start_paused = true))]
     async fn pause_effect_emitted_when_pause_on_max_attempts_and_max_attempts_one() {
         // Configure invoker to propose events to flush transient error event (not strictly needed for pause)
         let invoker_options = InvokerOptionsBuilder::default()
@@ -2490,7 +2538,7 @@ mod tests {
         let _ = effects_rx.try_recv();
 
         // Fire timer to go back in flight
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
+        service_inner.process_retry_timers(&invoker_options).await;
 
         // Second transient error -> retries exhausted and Pause behavior -> expect Paused effect
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
@@ -2512,7 +2560,7 @@ mod tests {
         );
     }
 
-    #[test(restate_core::test)]
+    #[test(restate_core::test(start_paused = true))]
     async fn retry_iter_updates_on_pinned_deployment_and_not_reset_on_same_dp() {
         use restate_types::service_protocol::ServiceProtocolVersion;
 
@@ -2587,7 +2635,7 @@ mod tests {
             .await;
         // Drain any proposed event
         effects_rx.try_recv().unwrap();
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
+        service_inner.process_retry_timers(&invoker_options).await;
 
         // Second transient failure after pin -> schedules retry (attempts now exhausted)
         let err2 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
@@ -2595,7 +2643,7 @@ mod tests {
             .handle_invocation_task_failed(MOCK_PARTITION, invocation_id, err2)
             .await;
         effects_rx.try_recv().unwrap_err();
-        service_inner.handle_retry_timer_fired(&invoker_options, MOCK_PARTITION, invocation_id);
+        service_inner.process_retry_timers(&invoker_options).await;
 
         // Send the same pinned deployment again -> must NOT reset the retry iterator
         let same_dp = PinnedDeployment::new(dp.deployment_id, ServiceProtocolVersion::V4);
@@ -2652,11 +2700,8 @@ mod tests {
         let _ = effects_rx.try_recv();
 
         // Verify invocation is in WaitingRetry state
-        let (_, ism) = service_inner
-            .invocation_state_machine_manager
-            .resolve_invocation(MOCK_PARTITION, &invocation_id)
-            .unwrap();
-        assert!(ism.is_waiting_retry());
+        assert!(service_inner.is_invocation_waiting_retry(MOCK_PARTITION, &invocation_id));
+        assert!(!service_inner.retry_timers.is_empty());
 
         // Call manual pause while waiting for retry
         service_inner
@@ -2675,6 +2720,12 @@ mod tests {
                     paused_event: predicate(|e: &RawEvent| e.ty() == EventType::Paused)
                 })
             })
+        );
+
+        // Verify the retry timer was cancelled from the queue
+        assert!(
+            service_inner.retry_timers.is_empty(),
+            "retry timer should be cancelled after pause"
         );
     }
 
@@ -2832,11 +2883,7 @@ mod tests {
         let _ = effects_rx.try_recv();
 
         // Verify invocation is in WaitingRetry state
-        let (_, ism) = service_inner
-            .invocation_state_machine_manager
-            .resolve_invocation(MOCK_PARTITION, &invocation_id)
-            .unwrap();
-        assert!(ism.is_waiting_retry());
+        assert!(service_inner.is_invocation_waiting_retry(MOCK_PARTITION, &invocation_id));
 
         // Call manual pause while waiting for retry (after error was notified)
         service_inner

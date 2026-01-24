@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -15,6 +15,7 @@ use log::render_loglet_params;
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
 use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::{Tense, duration_to_human_rough};
 use restate_cli_util::{CliContext, c_println};
 use restate_core::protobuf::cluster_ctrl_svc::{DescribeLogRequest, new_cluster_ctrl_client};
 use restate_types::Versioned;
@@ -131,6 +132,7 @@ async fn describe_log(
         "REPLICATION",
         "SEQUENCER",
         "EFF-NODESET",
+        "CREATED-AT",
     ];
     if opts.extra {
         header_row.push("PARAMS");
@@ -170,6 +172,21 @@ async fn describe_log(
         let is_tail_segment = [Position::Last, Position::Only].contains(&position)
             && segment.index() == chain.tail_index();
 
+        let created_at = match segment.config.created_at {
+            None => Cell::new("--"),
+            Some(created_at) => {
+                match chrono::DateTime::from_timestamp_millis(
+                    created_at.to_unix_millis().as_u64() as i64
+                ) {
+                    Some(tz) => Cell::new(duration_to_human_rough(
+                        chrono::Local::now().signed_duration_since(tz),
+                        Tense::Past,
+                    )),
+                    None => Cell::new("--"),
+                }
+            }
+        };
+
         match segment.config.kind {
             InternalKind::Replicated => {
                 let params = log::deserialize_replicated_log_params(&segment);
@@ -186,6 +203,7 @@ async fn describe_log(
                     render_loglet_params(&params, |p| {
                         render_effective_nodeset(is_tail_segment, p, nodes_configuration)
                     }),
+                    created_at,
                 ];
                 if opts.extra {
                     segment_row.push(Cell::new(
@@ -207,6 +225,7 @@ async fn describe_log(
                     Cell::new(""),
                     Cell::new(""),
                     Cell::new(""),
+                    created_at,
                 ];
                 if opts.extra {
                     row.push(Cell::new(segment.config.params.to_string()))

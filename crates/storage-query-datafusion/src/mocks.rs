@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -251,7 +251,7 @@ where
     }
 }
 
-pub fn row_column<T>(
+pub fn row_column_matcher<T>(
     row: usize,
     column: &str,
     extractor: impl Fn(&ArrayRef, usize) -> Option<T>,
@@ -271,7 +271,7 @@ macro_rules! row {
     ($idx:expr, {$($column:literal => $arrayty:ty: $matcher:expr),* $(,)?}) => {
         googletest::prelude::all!(
             $(
-                $crate::mocks::row_column($idx, $column, |column, row| {
+                $crate::mocks::row_column_matcher($idx, $column, |column, row| {
                     use datafusion::arrow::array::Array;
 
                     let column = column.as_any().downcast_ref::<$arrayty>()

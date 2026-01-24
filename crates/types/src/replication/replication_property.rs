@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -35,8 +35,10 @@ static REPLICATION_PROPERTY_EXTRACTOR: LazyLock<Regex> = LazyLock::new(|| {
 pub struct ReplicationPropertyError(String);
 
 /// The replication policy for appends
-#[derive(serde::Serialize, serde::Deserialize, Clone, Eq, PartialEq)]
-pub struct ReplicationProperty(BTreeMap<LocationScope, u8>);
+#[derive(serde::Serialize, serde::Deserialize, Clone, Eq, PartialEq, bilrost::Message)]
+pub struct ReplicationProperty(
+    #[bilrost(tag(0), encoding(map<general, varint>))] BTreeMap<LocationScope, u8>,
+);
 
 impl ReplicationProperty {
     pub fn new(replication_factor: NonZeroU8) -> Self {

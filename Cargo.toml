@@ -10,6 +10,7 @@ members = [
     "benchmarks",
     "tools/bifrost-benchpress",
     "tools/mock-service-endpoint",
+    "tools/restate-doctor",
     "tools/restatectl",
     "tools/service-protocol-wireshark-dissector",
     "tools/xtask",
@@ -21,6 +22,7 @@ default-members = [
     "crates/core/derive",
     "crates/codederror/derive",
     "server",
+    "tools/restate-doctor",
     "tools/restatectl",
 ]
 resolver = "2"
@@ -209,7 +211,8 @@ reqwest = { version = "0.12", default-features = false, features = [
 rlimit = { version = "0.10.2" }
 rocksdb = { version = "0.45.0", package = "rust-rocksdb", features = [
     "multi-threaded-cf",
-], git = "https://github.com/restatedev/rust-rocksdb", rev = "40d19a6c4fa2eef9a8d60d570bd7c7ae1f983d13" }
+    "jemalloc",
+], git = "https://github.com/restatedev/rust-rocksdb", rev = "baaa733a94e2b590e20761a4de371cb367eeda51" }
 rstest = "0.26.1"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
 schemars = { version = "1.2", features = ["bytes1"] }

@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -14,7 +14,6 @@ use std::{sync::Arc, time::Duration};
 
 use enumset::{EnumSet, enum_set};
 use googletest::IntoTestResult;
-use googletest::internal::test_outcome::TestAssertionFailure;
 use tracing::info;
 
 use restate_bifrost::{Bifrost, loglet::Loglet};
@@ -163,10 +162,7 @@ where
     // or higher version
     logs_builder.set_version(NonZeroU32::new(1336).expect("1336 > 0"));
 
-    let metadata_store_client = cluster.nodes[0]
-        .metadata_client()
-        .await
-        .map_err(|err| TestAssertionFailure::create(err.to_string()))?;
+    let metadata_store_client = cluster.nodes[0].metadata_client();
     let logs = logs_builder.build();
     retry_on_retryable_error(
         RetryPolicy::fixed_delay(Duration::from_millis(500), Some(20)),

@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_expr_common::physical_expr::snapshot_generation;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tracing::debug;
@@ -46,7 +47,10 @@ impl RemoteScanner {
         }
     }
 
-    async fn next_batch(&self) -> Result<RemoteQueryScannerNextResult, DataFusionError> {
+    async fn next_batch(
+        &self,
+        next_predicate: Option<RemoteQueryScannerPredicate>,
+    ) -> Result<RemoteQueryScannerNextResult, DataFusionError> {
         let Some(ref connection) = self.connection else {
             return Err(DataFusionError::Internal(
                 "connection used after forget()".to_string(),
@@ -67,6 +71,7 @@ impl RemoteScanner {
             .send_rpc(
                 RemoteQueryScannerNext {
                     scanner_id: self.scanner_id,
+                    next_predicate,
                 },
                 None,
             )
@@ -150,6 +155,9 @@ pub fn remote_scan_as_datafusion_stream(
     let tx = builder.tx();
 
     let task = async move {
+        // get a snapshot of the initial predicate
+        let mut predicate_generation = predicate.as_ref().map(snapshot_generation).unwrap_or(0);
+
         let initial_predicate = match &predicate {
             Some(predicate) => Some(RemoteQueryScannerPredicate {
                 serialized_physical_expression: encode_expr(predicate)?,
@@ -176,7 +184,9 @@ pub fn remote_scan_as_datafusion_stream(
         // loop while we have record_batch coming in
         //
         loop {
-            let batch = match remote_scanner.next_batch().await {
+            let next_predicate = next_predicate(&mut predicate_generation, predicate.as_ref())?;
+
+            let batch = match remote_scanner.next_batch(next_predicate).await {
                 Err(e) => {
                     return Err(e);
                 }
@@ -216,6 +226,30 @@ pub fn remote_scan_as_datafusion_stream(
 
     builder.spawn(task);
     builder.build()
+}
+
+fn next_predicate(
+    predicate_generation: &mut u64,
+    predicate: Option<&Arc<dyn PhysicalExpr>>,
+) -> Result<Option<RemoteQueryScannerPredicate>, DataFusionError> {
+    if *predicate_generation != 0 {
+        // generation 0 means the predicate is static (or we never had one)
+        let predicate = predicate.ok_or(DataFusionError::Internal(
+            "Missing predicate despite non-zero predicate generation".into(),
+        ))?;
+        let current_predicate_generation = snapshot_generation(predicate);
+
+        if current_predicate_generation != *predicate_generation {
+            *predicate_generation = current_predicate_generation;
+            Ok(Some(RemoteQueryScannerPredicate {
+                serialized_physical_expression: encode_expr(predicate)?,
+            }))
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(None)
+    }
 }
 
 // ----- everything below is the client side implementation details -----

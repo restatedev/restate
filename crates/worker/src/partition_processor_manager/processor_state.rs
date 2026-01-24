@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -23,7 +23,7 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStat
 use restate_types::identifiers::{LeaderEpoch, PartitionKey};
 use restate_types::net::partition_processor::PartitionLeaderService;
 
-use crate::partition::TargetLeaderState;
+use crate::partition::{LeadershipInfo, TargetLeaderState};
 
 pub type LeaderEpochToken = Ulid;
 
@@ -186,9 +186,10 @@ impl ProcessorState {
 
     pub fn on_leader_epoch_obtained(
         &mut self,
-        leader_epoch: LeaderEpoch,
+        leadership_info: Box<LeadershipInfo>,
         leader_epoch_token: LeaderEpochToken,
     ) {
+        let leader_epoch = leadership_info.leader_epoch;
         match self {
             ProcessorState::Starting { .. } => {
                 debug!(
@@ -215,7 +216,7 @@ impl ProcessorState {
                             processor
                                 .as_ref()
                                 .expect("must be some")
-                                .run_for_leader(leader_epoch);
+                                .run_for_leader(leadership_info);
                             debug!(%leader_epoch, "Instruct partition processor to run as leader.");
                             *leader_state = LeaderState::Leader(leader_epoch);
                         } else {
@@ -376,7 +377,7 @@ impl StartedProcessor {
 
     pub fn step_down(&self) {
         self.control_tx.send_if_modified(|target_state| {
-            if *target_state != TargetLeaderState::Follower {
+            if !matches!(*target_state, TargetLeaderState::Follower) {
                 *target_state = TargetLeaderState::Follower;
                 true
             } else {
@@ -385,10 +386,17 @@ impl StartedProcessor {
         });
     }
 
-    pub fn run_for_leader(&self, leader_epoch: LeaderEpoch) {
+    pub fn run_for_leader(&self, leadership_info: Box<LeadershipInfo>) {
         self.control_tx.send_if_modified(|target_state| {
-            if *target_state != TargetLeaderState::Leader(leader_epoch) {
-                *target_state = TargetLeaderState::Leader(leader_epoch);
+            // Compare by leader_epoch only for equality check
+            let should_update = match target_state {
+                TargetLeaderState::Leader(info) => {
+                    info.leader_epoch != leadership_info.leader_epoch
+                }
+                TargetLeaderState::Follower => true,
+            };
+            if should_update {
+                *target_state = TargetLeaderState::Leader(leadership_info);
                 true
             } else {
                 false

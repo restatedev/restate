@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -40,7 +40,8 @@ use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::metadata::{Precondition, VersionedValue};
 use restate_types::nodes_config::{
-    MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration, Role,
+    ClusterFingerprint, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
+    Role,
 };
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
@@ -78,6 +79,8 @@ pub enum RequestError {
     Encode(#[from] StorageEncodeError),
     #[error("decode error: {0}")]
     Decode(#[from] StorageDecodeError),
+    #[error("rejecting request because it seems to target a different cluster: {0}")]
+    ClusterIdentityMismatch(String),
 }
 
 impl MaybeRetryableError for RequestError {
@@ -89,6 +92,7 @@ impl MaybeRetryableError for RequestError {
             RequestError::InvalidArgument(_) => false,
             RequestError::Encode(_) => false,
             RequestError::Decode(_) => false,
+            RequestError::ClusterIdentityMismatch(_) => false,
         }
     }
 }
@@ -134,25 +138,19 @@ enum JoinError {
 
 #[async_trait::async_trait]
 pub trait MetadataServerBoxed {
-    async fn run_boxed(
-        self: Box<Self>,
-        metadata_writer: Option<MetadataWriter>,
-    ) -> anyhow::Result<()>;
+    async fn run_boxed(self: Box<Self>, metadata_writer: MetadataWriter) -> anyhow::Result<()>;
 }
 
 #[async_trait::async_trait]
 impl<T: MetadataServer> MetadataServerBoxed for T {
-    async fn run_boxed(
-        self: Box<Self>,
-        metadata_writer: Option<MetadataWriter>,
-    ) -> anyhow::Result<()> {
+    async fn run_boxed(self: Box<Self>, metadata_writer: MetadataWriter) -> anyhow::Result<()> {
         (*self).run(metadata_writer).await
     }
 }
 
 #[async_trait::async_trait]
 pub trait MetadataServer: MetadataServerBoxed + Send {
-    async fn run(self, metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()>;
+    async fn run(self, metadata_writer: MetadataWriter) -> anyhow::Result<()>;
 
     fn boxed(self) -> BoxedMetadataServer
     where
@@ -164,30 +162,43 @@ pub trait MetadataServer: MetadataServerBoxed + Send {
 
 #[async_trait::async_trait]
 impl<T: MetadataServer + ?Sized> MetadataServer for Box<T> {
-    async fn run(self, metadata_writer: Option<MetadataWriter>) -> anyhow::Result<()> {
+    async fn run(self, metadata_writer: MetadataWriter) -> anyhow::Result<()> {
         self.run_boxed(metadata_writer).await
     }
+}
+
+/// Identifies the cluster for request validation.
+/// During normal operation, fingerprint is used.
+/// During bootstrapping when fingerprint is unavailable, cluster_name can be used as fallback.
+#[derive(Debug, Clone, Default)]
+pub struct ClusterIdentity {
+    pub fingerprint: Option<ClusterFingerprint>,
+    pub cluster_name: Option<String>,
 }
 
 #[derive(Debug)]
 pub enum MetadataStoreRequest {
     Get {
         key: ByteString,
+        cluster_identity: ClusterIdentity,
         result_tx: oneshot::Sender<Result<Option<VersionedValue>, RequestError>>,
     },
     GetVersion {
         key: ByteString,
+        cluster_identity: ClusterIdentity,
         result_tx: oneshot::Sender<Result<Option<Version>, RequestError>>,
     },
     Put {
         key: ByteString,
         value: VersionedValue,
         precondition: Precondition,
+        cluster_identity: ClusterIdentity,
         result_tx: oneshot::Sender<Result<(), RequestError>>,
     },
     Delete {
         key: ByteString,
         precondition: Precondition,
+        cluster_identity: ClusterIdentity,
         result_tx: oneshot::Sender<Result<(), RequestError>>,
     },
 }
@@ -233,25 +244,38 @@ pub async fn create_metadata_server_and_client(
 }
 
 impl MetadataStoreRequest {
-    fn into_request(self) -> Request {
+    fn into_request(self) -> (Request, ClusterIdentity) {
         let request_id = Ulid::new();
 
         match self {
-            MetadataStoreRequest::Get { key, result_tx } => Request::ReadOnly(ReadOnlyRequest {
-                request_id,
-                kind: ReadOnlyRequestKind::Get { key, result_tx },
-            }),
-            MetadataStoreRequest::GetVersion { key, result_tx } => {
+            MetadataStoreRequest::Get {
+                key,
+                result_tx,
+                cluster_identity,
+            } => (
+                Request::ReadOnly(ReadOnlyRequest {
+                    request_id,
+                    kind: ReadOnlyRequestKind::Get { key, result_tx },
+                }),
+                cluster_identity,
+            ),
+            MetadataStoreRequest::GetVersion {
+                key,
+                result_tx,
+                cluster_identity,
+            } => (
                 Request::ReadOnly(ReadOnlyRequest {
                     request_id,
                     kind: ReadOnlyRequestKind::GetVersion { key, result_tx },
-                })
-            }
+                }),
+                cluster_identity,
+            ),
             MetadataStoreRequest::Put {
                 key,
                 value,
                 precondition,
                 result_tx,
+                cluster_identity,
             } => {
                 let request = WriteRequest {
                     request_id,
@@ -266,12 +290,13 @@ impl MetadataStoreRequest {
                     kind: CallbackKind::Put { result_tx },
                 };
 
-                Request::Write { callback, request }
+                (Request::Write { callback, request }, cluster_identity)
             }
             MetadataStoreRequest::Delete {
                 key,
                 precondition,
                 result_tx,
+                cluster_identity,
             } => {
                 let request = WriteRequest {
                     request_id,
@@ -281,7 +306,7 @@ impl MetadataStoreRequest {
                     request_id,
                     kind: CallbackKind::Delete { result_tx },
                 };
-                Request::Write { request, callback }
+                (Request::Write { request, callback }, cluster_identity)
             }
         }
     }
@@ -463,18 +488,21 @@ enum JoinClusterError {
     UnknownNode(PlainNodeId),
     #[error("node '{0}' does not have the 'metadata-server' role")]
     InvalidRole(PlainNodeId),
+    #[error("rejecting join request because node seems to belong to a different cluster: {0}")]
+    ClusterIdentityMismatch(String),
 }
 
 type JoinClusterResponseSender = oneshot::Sender<Result<Version, JoinClusterError>>;
 
 struct JoinClusterRequest {
     member_id: MemberId,
+    cluster_identity: ClusterIdentity,
     response_tx: JoinClusterResponseSender,
 }
 
 impl JoinClusterRequest {
-    fn into_inner(self) -> (oneshot::Sender<Result<Version, JoinClusterError>>, MemberId) {
-        (self.response_tx, self.member_id)
+    fn into_inner(self) -> (JoinClusterResponseSender, MemberId, ClusterIdentity) {
+        (self.response_tx, self.member_id, self.cluster_identity)
     }
 }
 
@@ -488,12 +516,17 @@ impl JoinClusterHandle {
         JoinClusterHandle { join_cluster_tx }
     }
 
-    pub async fn join_cluster(&self, member_id: MemberId) -> Result<Version, JoinClusterError> {
+    pub async fn join_cluster(
+        &self,
+        member_id: MemberId,
+        cluster_identity: ClusterIdentity,
+    ) -> Result<Version, JoinClusterError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.join_cluster_tx
             .send(JoinClusterRequest {
                 member_id,
+                cluster_identity,
                 response_tx,
             })
             .await

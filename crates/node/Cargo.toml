@@ -22,8 +22,10 @@ options_schema = [
     "restate-admin/options_schema",
     "restate-worker/options_schema"
 ]
+
 kafka = ["restate-worker/kafka"]
 kafka-oidc = ["kafka", "restate-worker/kafka-oidc"]
+test-util = ["restate-worker/test-util"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }

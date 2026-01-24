@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -112,7 +112,32 @@ impl Standby {
         loop {
             tokio::select! {
                 Some(request) = self.request_rx.recv() => {
-                    let request = request.into_request();
+                    let (request, cluster_identity) = request.into_request();
+
+                    let nodes_config = nodes_config.live_load();
+
+                    // Validate cluster identity: fingerprint first, then cluster_name
+                    if let Some(incoming_fingerprint) = cluster_identity.fingerprint {
+                        // nodes_config might still be uninitialized if we haven't joined a cluster yet.
+                        // Once nodes store the last seen nodes configuration, we can assume that the
+                        // nodes configuration is valid when starting the metadata server in standby.
+                        if let Some(my_cluster_fingerprint) = nodes_config.try_cluster_fingerprint() && my_cluster_fingerprint != incoming_fingerprint {
+                            request.fail(RequestError::ClusterIdentityMismatch(format!("cluster fingerprint mismatch: expected {}, got {}", my_cluster_fingerprint, incoming_fingerprint)));
+                            continue;
+                        }
+                    }
+
+                    if let Some(incoming_cluster_name) = cluster_identity.cluster_name {
+                        let my_cluster_name = nodes_config.cluster_name();
+
+                        if my_cluster_name != incoming_cluster_name {
+                            request.fail(RequestError::ClusterIdentityMismatch(format!("cluster name mismatch: expected {}, got {}", my_cluster_name, incoming_cluster_name)));
+                            continue;
+                        }
+                    }
+                    // If neither fingerprint nor cluster_name is provided, allow (backward compatibility)
+                    // todo in v1.7 no longer accept if no cluster identity was provided
+
                     request.fail(RequestError::Unavailable(
                         "Not being part of the metadata store cluster.".into(),
                         Standby::random_member(),
@@ -267,6 +292,8 @@ impl Standby {
             .join_cluster(network::grpc_svc::JoinClusterRequest {
                 node_id: u32::from(member_id.node_id),
                 created_at_millis: member_id.created_at_millis,
+                cluster_fingerprint: nodes_config.cluster_fingerprint().to_u64(),
+                cluster_name: Some(nodes_config.cluster_name().to_owned()),
             })
             .await
         {

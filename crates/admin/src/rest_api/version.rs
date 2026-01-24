@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -13,12 +13,8 @@ use restate_admin_rest_model::version::{AdminApiVersion, VersionInformation};
 use restate_core::TaskCenter;
 use restate_types::config::Configuration;
 
-// Changes:
-// - Dropped support of V2 admin api in version v1.6. Changes include:
-//  - dropped `DELETE "/invocations/{invocation_id}"` endpoint
-
 /// Min/max supported admin api versions by the server
-pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V3;
+pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
 pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V3;
 
 /// Get version information

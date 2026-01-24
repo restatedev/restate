@@ -76,7 +76,7 @@ restate-local-cluster-runner = { workspace = true }
 restate-metadata-server = { workspace = true, features = ["test-util"] }
 restate-metadata-store = { workspace = true, features = ["test-util"] }
 restate-metadata-providers = { workspace = true, features = ["replicated"] }
-restate-node = { workspace = true, features = ["memory-loglet"] }
+restate-node = { workspace = true, features = ["memory-loglet", "test-util"] }
 restate-types = { workspace = true, features = ["test-util"] }
 mock-service-endpoint = { workspace = true }
 

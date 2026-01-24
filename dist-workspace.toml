@@ -4,33 +4,37 @@ members = ["cargo:."]
 # Config for 'dist'
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.28.0"
+cargo-dist-version = "0.30.3"
 # CI backends to support
 ci = "github"
+# Whether to enable GitHub Attestations
 github-attestations = false
 # The installers to generate for each app
 installers = ["homebrew"]
 # A GitHub repo to push Homebrew formulas to
 tap = "restatedev/homebrew-tap"
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-apple-darwin", "x86_64-unknown-linux-musl"]
+# Whether to sign macOS executables
 macos-sign = true
 
 github-build-setup = "steps/release-build-setup.yml"
+# Extra static files to include in each App (path relative to this Cargo.toml's dir)
 include = ["NOTICE"]
+# Build only the required packages, and individually
 precise-builds = true
+# Whether builds should try to be cached in CI
 cache-builds = false
-# npm and docker can handle pre-releases, we will skip homebrew manually
+# Whether to publish prereleases to package managers
 publish-prereleases = true
-
-# ci goes here because we want it to start early, and we don't want to create a release unless it succeeds
+# Local artifacts jobs to run in CI
 local-artifacts-jobs = ["./ci", "./docker-build-release"]
-# create release goes here because it needs to have happened before the host steps, which expect a draft release to already exist
+# Global artifacts jobs to run in CI
 global-artifacts-jobs = ["./notarize"]
-# we still need to include the native 'npm' job as well as our './npm' one, because otherwise publish-prereleases=true is ignored. It will do nothing.
-# https://github.com/axodotdev/cargo-dist/issues/1744
-publish-jobs = ["./homebrew", "./docker-push-release", "./npm", "npm", "./release-notes"]
+# Publish jobs to run in CI
+publish-jobs = ["./homebrew", "./docker-push-release", "./npm", "./release-notes"]
 # helm goes here because it shouldn't exist before docker-push-release happens
+# Post-announce jobs to run in CI
 post-announce-jobs = ["./helm"]
 
 [dist.github-custom-job-permissions.ci]

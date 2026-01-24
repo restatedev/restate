@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -18,14 +18,17 @@ use ahash::{HashMap, HashMapExt};
 use anyhow::Context;
 use bytestring::ByteString;
 use enum_map::Enum;
-use restate_encoding::BilrostNewType;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 use smallvec::SmallVec;
 
+use restate_clock::UniqueTimestamp;
+use restate_encoding::BilrostNewType;
+
 use super::LogletId;
 use super::builder::LogsBuilder;
 use crate::config::Configuration;
+use crate::logs::builder::BuilderError;
 use crate::logs::{LogId, Lsn, SequenceNumber};
 use crate::metadata::GlobalMetadata;
 use crate::net::metadata::{MetadataContainer, MetadataKind};
@@ -337,6 +340,8 @@ pub struct Logs {
     #[debug(skip)]
     pub(super) lookup_index: LookupIndex,
     pub(super) config: LogsConfiguration,
+    // The last modification time.
+    pub(super) modified_at: Option<UniqueTimestamp>,
 }
 
 impl Default for Logs {
@@ -346,6 +351,7 @@ impl Default for Logs {
             logs: Default::default(),
             lookup_index: Default::default(),
             config: LogsConfiguration::default(),
+            modified_at: None,
         }
     }
 }
@@ -366,6 +372,7 @@ impl From<Logs> for LogsSerde {
             version: value.version,
             logs: value.logs.into_iter().collect(),
             config: Some(value.config),
+            modified_at: value.modified_at,
         }
     }
 }
@@ -410,6 +417,7 @@ impl TryFrom<LogsSerde> for Logs {
             logs,
             lookup_index,
             config: config.unwrap_or_default(),
+            modified_at: value.modified_at,
         })
     }
 }
@@ -424,6 +432,8 @@ struct LogsSerde {
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     logs: Vec<(LogId, Chain)>,
     config: Option<LogsConfiguration>,
+    #[serde(default)]
+    modified_at: Option<UniqueTimestamp>,
 }
 
 /// Seal metadata is json-serialized and stored as loglet params of the seal marker segment.
@@ -436,6 +446,7 @@ pub struct SealMetadata {
     pub sealed_at: MillisSinceEpoch,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub context: std::collections::HashMap<String, String>,
+    pub tail_ts: Option<UniqueTimestamp>,
 }
 
 impl SealMetadata {
@@ -475,6 +486,7 @@ impl Default for SealMetadata {
             permanent_seal: false,
             sealed_at: MillisSinceEpoch::now(),
             context: Default::default(),
+            tail_ts: None,
         }
     }
 }
@@ -528,6 +540,8 @@ pub struct LogletConfig {
     // loglet chains already.
     #[serde(default)]
     index: SegmentIndex,
+    #[serde(default)]
+    pub created_at: Option<UniqueTimestamp>,
 }
 
 impl LogletConfig {
@@ -537,6 +551,7 @@ impl LogletConfig {
             kind: InternalKind::InMemory,
             params: LogletParams(ByteString::default()),
             index: 0.into(),
+            created_at: None,
         }
     }
 }
@@ -691,6 +706,7 @@ impl LogletConfig {
             kind: InternalKind::from(kind),
             params,
             index,
+            created_at: None,
         }
     }
 
@@ -702,6 +718,7 @@ impl LogletConfig {
             kind: InternalKind::Sealed,
             params: LogletParams::try_from(metadata)?,
             index,
+            created_at: None,
         })
     }
 
@@ -742,8 +759,8 @@ impl Logs {
         self.logs.get(log_id)
     }
 
-    pub fn into_builder(self) -> LogsBuilder {
-        self.into()
+    pub fn try_into_builder(self) -> Result<LogsBuilder, BuilderError> {
+        self.try_into()
     }
 
     pub fn configuration(&self) -> &LogsConfiguration {

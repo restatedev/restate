@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -24,7 +24,6 @@ use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, InvocationTargetType, WorkflowHandlerType,
 };
-use restate_types::service_protocol::ServiceProtocolVersion;
 use tracing::trace;
 
 pub struct OnPurgeCommand {
@@ -57,10 +56,9 @@ where
                 pinned_deployment,
                 ..
             }) => {
-                let should_remove_journal_table_v2 =
-                    pinned_deployment.as_ref().is_some_and(|pinned_deployment| {
-                        pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
-                    });
+                let pinned_service_protocol_version = pinned_deployment
+                    .as_ref()
+                    .map(|pd| pd.service_protocol_version);
 
                 ctx.do_free_invocation(invocation_id)?;
 
@@ -92,7 +90,7 @@ where
                     ctx.do_drop_journal(
                         invocation_id,
                         journal_metadata.length,
-                        should_remove_journal_table_v2,
+                        pinned_service_protocol_version,
                     )
                     .await?;
                 }

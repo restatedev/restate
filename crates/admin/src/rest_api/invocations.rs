@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -11,24 +11,125 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use futures::future;
+use tracing::warn;
+
 use restate_admin_rest_model::invocations::{
     BATCH_OPERATION_MAX_SIZE, BatchInvocationRequest, BatchOperationResult,
     BatchRestartAsNewRequest, BatchRestartAsNewResult, BatchResumeRequest,
     FailedInvocationOperation, PatchDeploymentId, RestartAsNewInvocationResponse,
     RestartedInvocation,
 };
-use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+use restate_core::network::TransportConnect;
+use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
     PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
 };
+use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
 use restate_types::journal_v2::EntryIndex;
+use restate_wal_protocol::{Command, Envelope};
 use serde::Deserialize;
 
 use super::error::*;
 use crate::generate_meta_api_error;
+use crate::rest_api::create_envelope_header;
 use crate::state::AdminServiceState;
-use futures::future;
+
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+pub enum DeletionMode {
+    #[default]
+    #[serde(alias = "cancel")]
+    Cancel,
+    #[serde(alias = "kill")]
+    Kill,
+    #[serde(alias = "purge")]
+    Purge,
+}
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
+pub struct DeleteInvocationParams {
+    pub mode: Option<DeletionMode>,
+}
+
+/// Delete an invocation
+///
+/// Use kill_invocation/cancel_invocation/purge_invocation instead.
+#[utoipa::path(
+    delete,
+    path = "/invocations/{invocation_id}",
+    operation_id = "delete_invocation",
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+        (
+            "mode" = Option<DeletionMode>, Query, 
+            description = "If cancel, it will gracefully terminate the invocation. \
+            If kill, it will terminate the invocation with a hard stop. \
+            If purge, it will only cleanup the response for completed invocations, 
+            and leave unaffected an in-flight invocation."
+        ),
+    ),
+    responses(
+        (status = 202, description = "Accepted"),
+        MetaApiError
+    )
+)]
+#[deprecated]
+pub async fn delete_invocation<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(mut state): State<
+        AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>,
+    >,
+    Path(invocation_id): Path<String>,
+    Query(DeleteInvocationParams { mode }): Query<DeleteInvocationParams>,
+) -> Result<StatusCode, MetaApiError>
+where
+    Transport: TransportConnect,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| MetaApiError::InvalidField("invocation_id", e.to_string()))?;
+
+    let cmd = match mode.unwrap_or_default() {
+        DeletionMode::Cancel => Command::TerminateInvocation(InvocationTermination {
+            invocation_id,
+            flavor: TerminationFlavor::Cancel,
+            response_sink: None,
+        }),
+        DeletionMode::Kill => Command::TerminateInvocation(InvocationTermination {
+            invocation_id,
+            flavor: TerminationFlavor::Kill,
+            response_sink: None,
+        }),
+        DeletionMode::Purge => Command::PurgeInvocation(PurgeInvocationRequest {
+            invocation_id,
+            response_sink: None,
+        }),
+    };
+
+    let partition_key = invocation_id.partition_key();
+
+    let envelope = Envelope::new(create_envelope_header(partition_key), cmd);
+
+    let result = state
+        .ingestion_client
+        .ingest(partition_key, envelope)
+        .await
+        .map_err(|err| {
+            warn!("Could not ingest invocation termination command: {err}");
+            MetaApiError::Internal(
+                "Failed sending invocation termination command to the cluster.".to_owned(),
+            )
+        })?;
+
+    if let Err(err) = result.await {
+        warn!("Could not ingest invocation termination command: {err}");
+        Err(MetaApiError::Internal(
+            "Failed sending invocation termination command to the cluster.".to_owned(),
+        ))
+    } else {
+        Ok(StatusCode::ACCEPTED)
+    }
+}
 
 generate_meta_api_error!(KillInvocationError: [InvocationNotFoundError, InvocationClientError, InvalidFieldError, InvocationWasAlreadyCompletedError]);
 

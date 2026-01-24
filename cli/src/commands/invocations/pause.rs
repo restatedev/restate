@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -19,6 +19,7 @@ use crate::commands::invocations::{
 use anyhow::{Result, anyhow, bail};
 use cling::prelude::*;
 use comfy_table::{Cell, Color, Table};
+use restate_admin_rest_model::version::AdminApiVersion;
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
 use restate_types::identifiers::InvocationId;
@@ -41,6 +42,11 @@ pub struct Pause {
 
 pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
     let client = clients::AdminClient::new(&env).await?;
+
+    if client.admin_api_version < AdminApiVersion::V3 {
+        bail!("Pausing invocations requires admin API version 3 or later (Restate server v1.6+)");
+    }
+
     let sql_client = clients::DataFusionHttpClient::from(client.clone());
 
     let q = opts.query.trim();

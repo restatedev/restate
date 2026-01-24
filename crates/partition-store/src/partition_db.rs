@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -32,7 +32,7 @@ use crate::TableKind;
 use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};
 use crate::keys::KeyKind;
 use crate::memory::MemoryBudget;
-use crate::snapshots::{ArchivedLsn, LocalPartitionSnapshot};
+use crate::snapshots::LocalPartitionSnapshot;
 
 type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 
@@ -40,7 +40,7 @@ type SmartString = smartstring::SmartString<smartstring::LazyCompact>;
 pub struct PartitionDb {
     meta: Arc<Partition>,
     durable_lsn: watch::Sender<Option<Lsn>>,
-    archived_lsn: watch::Sender<Option<ArchivedLsn>>,
+    archived_lsn: watch::Sender<Option<Lsn>>,
     // Note: Rust will drop the fields in the order they are declared in the struct.
     // It's crucial to keep the column family and the database in this exact order.
     cf: PartitionBoundCfHandle,
@@ -50,7 +50,7 @@ pub struct PartitionDb {
 impl PartitionDb {
     pub(crate) fn new(
         meta: Arc<Partition>,
-        archived_lsn: watch::Sender<Option<ArchivedLsn>>,
+        archived_lsn: watch::Sender<Option<Lsn>>,
         rocksdb: Arc<RocksDb>,
         cf: Arc<BoundColumnFamily<'_>>,
     ) -> Self {
@@ -100,7 +100,7 @@ impl PartitionDb {
             .await
     }
 
-    pub(crate) fn note_archived_lsn(&self, archived_lsn: ArchivedLsn) -> bool {
+    pub(crate) fn note_archived_lsn(&self, archived_lsn: Lsn) -> bool {
         self.archived_lsn.send_if_modified(|current| {
             if current.as_mut().is_none_or(|c| &archived_lsn > c) {
                 *current = Some(archived_lsn);
@@ -112,11 +112,11 @@ impl PartitionDb {
     }
 
     /// The last (locally) known archived LSN for this partition
-    pub fn get_archived_lsn(&self) -> Option<ArchivedLsn> {
+    pub fn get_archived_lsn(&self) -> Option<Lsn> {
         *self.archived_lsn.borrow()
     }
 
-    pub fn watch_archived_lsn(&self) -> watch::Receiver<Option<ArchivedLsn>> {
+    pub fn watch_archived_lsn(&self) -> watch::Receiver<Option<Lsn>> {
         self.archived_lsn.subscribe()
     }
 
@@ -177,7 +177,7 @@ impl PartitionBoundCfHandle {
 
 pub(crate) struct PartitionCell {
     meta: Arc<Partition>,
-    archived_lsn: watch::Sender<Option<ArchivedLsn>>,
+    archived_lsn: watch::Sender<Option<Lsn>>,
     durable_lsn: RwLock<Option<watch::Sender<Option<Lsn>>>>,
     pub(crate) inner: AsyncRwLock<State>,
 }
@@ -516,9 +516,9 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         let mut cf_options =
             restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
 
-        let config = &Configuration::pinned().worker.storage.rocksdb;
+        let config = &Configuration::pinned().worker.storage;
         let block_options = restate_rocksdb::configuration::create_default_block_options(
-            config,
+            &config.rocksdb,
             // use global block cache
             Some(global_cache),
         );
@@ -530,7 +530,21 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         );
         cf_options.set_max_successive_merges(100);
 
-        cf_options.set_disable_auto_compactions(config.rocksdb_disable_auto_compactions());
+        cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
+        if let Some(compaction_period) = config.rocksdb.rocksdb_periodic_compaction_seconds() {
+            cf_options.set_periodic_compaction_seconds(compaction_period);
+        }
+
+        if !config.rocksdb_disable_compact_on_deletion {
+            cf_options.add_compact_on_deletion_collector_factory_min_file_size(
+                config.rocksdb_compact_on_deletions_window.get(),
+                config.rocksdb_compact_on_deletions_count.get(),
+                config.rocksdb_compact_on_deletions_ratio,
+                config
+                    .rocksdb_compact_on_deletions_min_sst_file_size
+                    .as_u64(),
+            );
+        }
 
         // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
         // in the C API nor the rust binding. That's okay and we can change it later.

@@ -49,6 +49,7 @@ If these rules conflict with normal behavior, always follow the rules above.
 1. The use of `restate_clock::WallClock` is strongly encouraged over direct use of `std::time::SystemTime`
 1. Maintenance of unit-tests is an overhead we need to keep in check. When adding new tests, focus on high-signal tests and the most important paths instead of full coverage. For any given test, try and cover more than one assertion to reduce verbosity and the total number of test functions.
 1. Check release-notes/README.md and make sure to propose changes to release-notes/unreleased/ if needed. This is of paramount importance if you are making changes that break existing behavior or change current behavior in a way that require cooperation from our service users.
+1. Check crates/cli-util/README.md when doing CLI changes to make sure that you are adhering to the CLI style guide.
 
 
 # Validation Before Committing Changes

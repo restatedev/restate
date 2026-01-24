@@ -24,6 +24,37 @@ _features := if features == "all" {
         "--features=" + features
     } else { "" }
 
+# Features for testing. On Linux we can use --all-features. On other platforms (e.g., macOS),
+# we must compute a safe feature list because:
+#
+# 1. "taskdump" only compiles on Linux (tokio/taskdump)
+#
+# 2. Cargo's `dep:` syntax suppresses implicit features. When a crate uses `dep:foo` in its
+#    features table but doesn't define an explicit `foo` feature, the implicit `foo` feature
+#    is suppressed. If another crate in the workspace DOES have a `foo` feature, then
+#    `--features=foo` will fail because Cargo tries to enable it on ALL crates.
+#
+#    Example: restate-serde-util has `proto = ["dep:prost", ...]` but no `prost` feature,
+#    while restate-test-util has `prost = ["dep:prost"]`. Running `--features=prost` fails
+#    on restate-serde-util with "does not have feature prost".
+#
+# The script below extracts all features from restate-* crates and subtracts:
+#   - Features that are suppressed (dep:X used but X not a feature key in that crate)
+#   - Platform-specific features (taskdump)
+#   - The "default" pseudo-feature
+_test_features := if os() == "linux" {
+        "--all-features"
+    } else {
+        "--features=" + `cargo metadata --format-version=1 --no-deps 2>/dev/null | jq -r '
+            [.packages[] | select((.name | startswith("restate")) and (.name != "restate-benchmarks"))] |
+            ([.[].features | keys[]] | unique) -
+            ([.[] | (.features | keys) as $k |
+              [.features[][] | strings | select(startswith("dep:")) | .[4:]] |
+              map(select(IN($k[]) | not))[]] | unique) -
+            ["default", "taskdump"] |
+            sort | join(",")'`
+    }
+
 _arch := if arch == "" {
         arch()
     } else if arch == "amd64" {
@@ -125,10 +156,10 @@ run *flags: (_target-installed target)
 test: (_target-installed target)
     # remove possible old test ports
     rm -rf {{RESTATE_TEST_PORTS_POOL}}
-    cargo nextest run {{ _target-option }} --all-features --target-dir target/tests
+    cargo nextest run {{ _target-option }} {{ _test_features }} --target-dir target/tests
 
 test-package package *flags:
-    cargo nextest run --all-features --no-capture --package {{ package }} --target-dir target/tests {{ flags }}
+    cargo nextest run {{ _test_features }} --no-capture --package {{ package }} --target-dir target/tests {{ flags }}
 
 doctest:
     cargo test --doc
@@ -153,7 +184,7 @@ docker-local-fedora:
     docker buildx build . --platform linux/{{ _docker_arch }} --file docker/local-fedora.Dockerfile --tag={{ docker_image }} --progress='{{ DOCKER_PROGRESS }}' --load
 
 notice-file:
-    cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH <code@restate.dev>\n" && cat) > NOTICE
+    cargo license -d -a --avoid-build-deps --avoid-dev-deps {{ _features }} | (echo "Restate Runtime\nCopyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH <code@restate.dev>\n" && cat) > NOTICE
 
 generate-config-schema:
     cargo xtask generate-config-schema > restate_config_schema.json

@@ -62,7 +62,7 @@ restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-test-util = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
-restate-wal-protocol = { workspace = true, features = ["serde"] }
+restate-wal-protocol = { workspace = true }
 restate-invoker-api = { workspace = true }
 
 bytestring = { workspace = true }

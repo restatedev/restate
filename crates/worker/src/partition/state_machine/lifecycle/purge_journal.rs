@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -18,7 +18,6 @@ use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
-use restate_types::service_protocol::ServiceProtocolVersion;
 use tracing::trace;
 
 pub struct OnPurgeJournalCommand {
@@ -42,19 +41,17 @@ where
         } = self;
         match ctx.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Completed(mut completed) => {
-                let should_remove_journal_table_v2 = completed
+                let pinned_service_protocol_version = completed
                     .pinned_deployment
                     .as_ref()
-                    .is_some_and(|pinned_deployment| {
-                        pinned_deployment.service_protocol_version >= ServiceProtocolVersion::V4
-                    });
+                    .map(|pd| pd.service_protocol_version);
 
                 // If journal is not empty, clean it up
                 if completed.journal_metadata.length != 0 {
                     ctx.do_drop_journal(
                         invocation_id,
                         completed.journal_metadata.length,
-                        should_remove_journal_table_v2,
+                        pinned_service_protocol_version,
                     )
                     .await?;
                 }
@@ -113,6 +110,7 @@ mod tests {
         InvocationTarget, PurgeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::{CommandType, OutputCommand, OutputResult};
+    use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_wal_protocol::Command;
     use std::time::Duration;
 

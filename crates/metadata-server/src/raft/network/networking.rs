@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -27,7 +27,9 @@ use restate_types::net::address::{AdvertisedAddress, FabricPort};
 
 use crate::raft::network::connection_manager::ConnectionManager;
 use crate::raft::network::grpc_svc::new_metadata_server_network_client;
-use crate::raft::network::{PEER_METADATA_KEY, grpc_svc};
+use crate::raft::network::{
+    CLUSTER_FINGERPRINT_METADATA_KEY, CLUSTER_NAME_METADATA_KEY, PEER_METADATA_KEY, grpc_svc,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrySendError<T> {
@@ -181,6 +183,21 @@ where
                     request.metadata_mut().insert(
                         PEER_METADATA_KEY,
                         MetadataValue::try_from(connection_manager.identity().to_string())?,
+                    );
+                    // send our cluster fingerprint for validation
+                    request.metadata_mut().insert(
+                        CLUSTER_FINGERPRINT_METADATA_KEY,
+                        MetadataValue::try_from(
+                            connection_manager
+                                .cluster_fingerprint()
+                                .to_u64()
+                                .to_string(),
+                        )?,
+                    );
+                    // send our cluster name for validation
+                    request.metadata_mut().insert(
+                        CLUSTER_NAME_METADATA_KEY,
+                        MetadataValue::try_from(connection_manager.cluster_name())?,
                     );
 
                     let incoming_rx = network_client.connect_to(request).await?;

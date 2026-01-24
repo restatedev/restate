@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -10,11 +10,20 @@
 
 use std::future::Future;
 
-use restate_types::SemanticRestateVersion;
+use bytes::BytesMut;
+
+use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
+use restate_types::partitions::state::ReplicaSetState;
+use restate_types::replication::ReplicationProperty;
 use restate_types::schema::Schema;
+use restate_types::storage::{
+    StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError, decode,
+    encode,
+};
 use restate_types::time::MillisSinceEpoch;
+use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -35,6 +44,10 @@ pub trait ReadFsmTable {
     ) -> impl Future<Output = Result<Option<PartitionDurability>>> + Send + '_;
 
     fn get_schema(&mut self) -> impl Future<Output = Result<Option<Schema>>> + Send + '_;
+
+    fn get_partition_config_state(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<CachedEpochMetadata>>> + Send + '_;
 }
 
 pub trait WriteFsmTable {
@@ -49,6 +62,8 @@ pub trait WriteFsmTable {
     fn put_partition_durability(&mut self, durability: &PartitionDurability) -> Result<()>;
 
     fn put_schema(&mut self, schema: &Schema) -> Result<()>;
+
+    fn put_partition_config_state(&mut self, state: &CachedEpochMetadata) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Copy, derive_more::From, derive_more::Into)]
@@ -82,4 +97,74 @@ impl PartialOrd for PartitionDurability {
 
 impl PartitionStoreProtobufValue for PartitionDurability {
     type ProtobufType = crate::protobuf_types::v1::PartitionDurability;
+}
+
+/// Stores the current and next replica set state from the latest AnnounceLeader.
+/// *Since v1.6*
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct CachedEpochMetadata {
+    #[bilrost(tag(1))]
+    pub version: Version,
+    #[bilrost(tag(2))]
+    pub leader_node_id: GenerationalNodeId,
+    #[bilrost(tag(3))]
+    pub leader_epoch: LeaderEpoch,
+    /// The current replica set state at the time of the announcement.
+    #[bilrost(tag(4))]
+    pub current: CurrentReplicaSetState,
+    /// The next replica set state
+    #[bilrost(tag(5))]
+    pub next: Option<NextReplicaSetState>,
+}
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct CurrentReplicaSetState {
+    #[bilrost(tag(1))]
+    pub replica_set: ReplicaSetState,
+    #[bilrost(tag(2))]
+    pub modified_at: MillisSinceEpoch,
+    #[bilrost(tag(3))]
+    pub replication: ReplicationProperty,
+}
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct NextReplicaSetState {
+    #[bilrost(tag(1))]
+    pub replica_set: ReplicaSetState,
+}
+
+impl From<ReplicaSetState> for NextReplicaSetState {
+    fn from(value: ReplicaSetState) -> Self {
+        Self { replica_set: value }
+    }
+}
+
+impl From<NextReplicaSetState> for ReplicaSetState {
+    fn from(value: NextReplicaSetState) -> Self {
+        value.replica_set
+    }
+}
+
+impl StorageEncode for CachedEpochMetadata {
+    fn default_codec(&self) -> StorageCodecKind {
+        StorageCodecKind::Bilrost
+    }
+
+    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
+        encode::encode_bilrost(self, buf)
+    }
+}
+
+impl StorageDecode for CachedEpochMetadata {
+    fn decode<B: bytes::Buf>(
+        buf: &mut B,
+        kind: StorageCodecKind,
+    ) -> Result<Self, StorageDecodeError>
+    where
+        Self: Sized,
+    {
+        assert_eq!(kind, StorageCodecKind::Bilrost);
+
+        decode::decode_bilrost(buf)
+    }
 }

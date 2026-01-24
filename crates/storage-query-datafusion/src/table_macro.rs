@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -42,6 +42,9 @@ macro_rules! define_builder {
     };
     (DataType::Boolean) => {
         ::datafusion::arrow::array::BooleanBuilder
+    };
+    (UInt32List) => {
+        ::datafusion::arrow::array::ListBuilder<::datafusion::arrow::array::UInt32Builder>
     };
 }
 
@@ -203,6 +206,31 @@ impl ::datafusion::arrow::array::ArrayBuilder for TimestampMillisecondUTCBuilder
     }
 }
 
+// --- Support for Lists
+
+pub(crate) struct ListBuilderSize<T: BuilderCapacity> {
+    lists: usize,
+    items: T::Size,
+}
+
+impl<T: BuilderCapacity> BuilderCapacity for ::datafusion::arrow::array::ListBuilder<T> {
+    type Size = ListBuilderSize<T>;
+
+    fn len(&self) -> Self::Size {
+        let lists = ::datafusion::arrow::array::ArrayBuilder::len(self);
+        let items = BuilderCapacity::len(::datafusion::arrow::array::ListBuilder::values_ref(self));
+
+        ListBuilderSize { lists, items }
+    }
+
+    fn with_capacity(capacity: Self::Size) -> Self {
+        ::datafusion::arrow::array::ListBuilder::with_capacity(
+            T::with_capacity(capacity.items),
+            capacity.lists,
+        )
+    }
+}
+
 macro_rules! define_primitive_trait {
     (DataType::Utf8) => {
         impl AsRef<str>
@@ -234,6 +262,9 @@ macro_rules! define_primitive_trait {
     (DataType::Boolean) => {
         bool
     };
+    (UInt32List) => {
+        impl IntoIterator<Item = Option<u32>>
+    }
 }
 
 pub static TIMEZONE_UTC: std::sync::LazyLock<std::sync::Arc<str>> =
@@ -273,6 +304,11 @@ macro_rules! define_data_type {
     (DataType::Boolean) => {
         DataType::Boolean
     };
+    (UInt32List) => {
+        DataType::List(::datafusion::common::arrow::datatypes::FieldRef::new(
+            ::datafusion::common::arrow::datatypes::Field::new("item", DataType::UInt32, true),
+        ))
+    };
 }
 
 #[cfg(feature = "table_docs")]
@@ -306,6 +342,9 @@ macro_rules! document_type {
     };
     (DataType::Boolean) => {
         "Boolean"
+    };
+    (UInt32List) => {
+        "UInt32 List"
     };
 }
 

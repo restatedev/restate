@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -73,6 +73,7 @@ pub mod test_util {
                     None,
                     MillisSinceEpoch::UNIX_EPOCH,
                     0,
+                    true,
                 ),
                 futures::stream::empty(),
             )))

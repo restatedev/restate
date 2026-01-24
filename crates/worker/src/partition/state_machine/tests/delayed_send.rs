@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -16,9 +16,18 @@ use restate_types::time::MillisSinceEpoch;
 use std::time::{Duration, SystemTime};
 use test_log::test;
 
-#[test(restate_core::test)]
+#[restate_core::test]
 async fn send_with_delay() {
-    let mut test_env = TestEnv::create().await;
+    run_send_with_delay(SemanticRestateVersion::unknown()).await
+}
+
+#[restate_core::test]
+async fn send_with_delay_journal_v2_enabled() {
+    run_send_with_delay(RESTATE_VERSION_1_6_0.clone()).await
+}
+
+async fn run_send_with_delay(min_restate_version: SemanticRestateVersion) {
+    let mut test_env = TestEnv::create_with_min_restate_version(min_restate_version).await;
 
     let invocation_target = InvocationTarget::mock_service();
     let invocation_id = InvocationId::mock_random();
@@ -73,6 +82,81 @@ async fn send_with_delay() {
         test_env.storage.get_invocation_status(&invocation_id).await,
         ok(pat!(InvocationStatus::Invoked { .. }))
     );
+    test_env.shutdown().await;
+}
+
+/// This tests the case where an invocation was enqueued, and then the runtime was later restarted with journal table v2 default on
+#[restate_core::test]
+async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_later() {
+    let mut test_env = TestEnv::create().await;
+
+    let invocation_target = InvocationTarget::mock_service();
+    let invocation_id = InvocationId::mock_random();
+    let argument = restate_test_util::rand::bytes();
+
+    let request_id = PartitionProcessorRpcRequestId::default();
+
+    let wake_up_time = MillisSinceEpoch::from(SystemTime::now() + Duration::from_secs(60));
+    let actions = test_env
+        .apply(Command::Invoke(Box::new(ServiceInvocation {
+            invocation_id,
+            invocation_target: invocation_target.clone(),
+            response_sink: None,
+            argument: argument.clone(),
+            submit_notification_sink: Some(SubmitNotificationSink::Ingress { request_id }),
+            // Doesn't matter the execution time here, just needs to be filled
+            execution_time: Some(wake_up_time),
+            ..ServiceInvocation::mock()
+        })))
+        .await;
+    assert_that!(
+        actions,
+        all!(
+            not(contains(matchers::actions::invoke_for_id(invocation_id))),
+            contains(pat!(Action::RegisterTimer { .. })),
+            contains(eq(Action::IngressSubmitNotification {
+                request_id,
+                execution_time: Some(wake_up_time),
+                is_new_invocation: true
+            }))
+        )
+    );
+
+    // Now let's update the features
+    test_env.set_min_restate_version(RESTATE_VERSION_1_6_0.clone());
+
+    // Now fire the timer
+    let actions = test_env
+        .apply(Command::Timer(TimerKeyValue::neo_invoke(
+            wake_up_time,
+            invocation_id,
+        )))
+        .await;
+
+    assert_that!(
+        actions,
+        all!(
+            contains(matchers::actions::invoke_for_id(invocation_id)),
+            not(contains(eq(Action::IngressSubmitNotification {
+                request_id,
+                execution_time: Some(wake_up_time),
+                is_new_invocation: true,
+            })))
+        )
+    );
+    assert_that!(
+        test_env.storage.get_invocation_status(&invocation_id).await,
+        ok(pat!(InvocationStatus::Invoked { .. }))
+    );
+
+    assert_eq!(
+        test_env
+            .read_journal_entry::<InputCommand>(invocation_id, 0)
+            .await
+            .payload,
+        argument
+    );
+
     test_env.shutdown().await;
 }
 

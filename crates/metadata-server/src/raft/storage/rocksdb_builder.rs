@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -104,6 +104,9 @@ impl restate_rocksdb::configuration::CfConfigurator for RocksConfigurator {
         );
 
         cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
+        if let Some(compaction_period) = config.rocksdb.rocksdb_periodic_compaction_seconds() {
+            cf_options.set_periodic_compaction_seconds(compaction_period);
+        }
 
         if cf_name == DATA_CF {
             cf_data_options(&mut cf_options, &block_options, config);

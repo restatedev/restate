@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -95,6 +95,9 @@ pub enum RemoteQueryScannerOpened {
 pub struct RemoteQueryScannerNext {
     #[bilrost(1)]
     pub scanner_id: ScannerId,
+    #[bilrost(tag(2))]
+    #[serde(default)]
+    pub next_predicate: Option<RemoteQueryScannerPredicate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]

@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 kafka = ["dep:restate-ingress-kafka"]
+test-util = ["restate-partition-store/test-util"]
 options_schema = [
   "dep:schemars",
   "restate-ingress-http/options_schema",

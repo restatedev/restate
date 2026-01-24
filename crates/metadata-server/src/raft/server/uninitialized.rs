@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -87,19 +87,17 @@ impl Uninitialized {
     pub async fn initialize(
         &mut self,
         health_status: &HealthStatus<MetadataServerStatus>,
-        mut metadata_writer: Option<MetadataWriter>,
+        metadata_writer: MetadataWriter,
     ) -> Result<RaftServerState, Error> {
-        if let Some(metadata_writer) = metadata_writer.as_mut() {
-            // Try to read a persisted nodes configuration in order to learn about the addresses of our
-            // potential peers and the metadata store states.
-            if let Some(nodes_configuration) = self.storage.get_nodes_configuration()? {
-                metadata_writer
-                    .update(Arc::new(nodes_configuration))
-                    .await?;
-            }
+        // Try to read a persisted nodes configuration in order to learn about the addresses of our
+        // potential peers and the metadata store states.
+        if let Some(nodes_configuration) = self.storage.get_nodes_configuration()? {
+            metadata_writer
+                .update(Arc::new(nodes_configuration))
+                .await?;
         }
 
-        self.metadata_writer = metadata_writer;
+        self.metadata_writer = Some(metadata_writer);
 
         // Check whether we are already provisioned based on the StorageMarker
         if self.storage.get_marker()?.is_none() {
@@ -157,8 +155,10 @@ impl Uninitialized {
         loop {
             tokio::select! {
                 Some(request) = self.request_rx.recv() => {
-                    // fail incoming requests while we are waiting for the provision signal
-                    let request = request.into_request();
+                    // Fail incoming requests while we are waiting for the provision signal. We
+                    // don't validate the cluster fingerprint because we aren't initialized and
+                    // might not have a valid NodesConfiguration yet.
+                    let (request, _) = request.into_request();
                     request.fail(RequestError::Unavailable("Metadata store has not been provisioned yet".into(), None))
                 },
                 Some(request) = self.command_rx.recv() => {

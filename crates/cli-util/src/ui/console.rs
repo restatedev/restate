@@ -1,4 +1,4 @@
-// Copyright (c) 2023 - 2025 Restate Software, Inc., Restate GmbH.
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
 // All rights reserved.
 //
 // Use of this software is governed by the Business Source License
@@ -8,19 +8,64 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! A set of utilities and macros to control terminal output.
-//! Use this instead of println!()
+//! Terminal output utilities and macros.
 //!
-//! I hear you say: "Why not use std's `print*!()` macros?". I'm glad you asked.
-//! Because in CLI applications we don't want to panic when stdout/stderr is
-//! a broken pipe. We want to ignore the error and continue.
+//! This module provides the core output primitives for CLI applications. Use these
+//! instead of `println!()` and friends.
 //!
-//! An example:
-//! `restate whoami | head -n1` would panic if whoami uses print*! macros. This
-//! means that the user might see an error like this:
+//! # Why Not `println!()`?
 //!
-//!  thread 'main' panicked at 'failed printing to stdout: Broken pipe (os error 32)', library/std/src/io/stdio.rs:1019:9
-//!  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+//! In CLI applications, we don't want to panic when stdout/stderr is a broken pipe.
+//! For example, `restate whoami | head -n1` would panic if `whoami` uses `println!`:
+//!
+//! ```text
+//! thread 'main' panicked at 'failed printing to stdout: Broken pipe (os error 32)'
+//! ```
+//!
+//! The macros in this module silently ignore write errors, enabling safe piping.
+//!
+//! # Output Macros
+//!
+//! | Macro | Channel | Purpose |
+//! |-------|---------|---------|
+//! | [`c_println!`] | stdout | Print line (primary output) |
+//! | [`c_print!`] | stdout | Print without newline |
+//! | [`c_eprintln!`] | stderr | Print line to stderr |
+//! | [`c_eprint!`] | stderr | Print to stderr without newline |
+//! | [`c_success!`] | stdout | Success message with checkmark icon |
+//! | [`c_error!`] | stderr | Error message with X icon |
+//! | [`c_warn!`] | stderr | Warning box (yellow, bold, bordered) |
+//! | [`c_tip!`] | stderr | Tip box (italic, dim) |
+//! | [`c_title!`] | stdout | Section title with icon and underline |
+//! | [`c_indentln!`] | stdout | Indented line output |
+//! | [`c_indent_table!`] | stdout | Print table with indentation |
+//!
+//! # Example
+//!
+//! ```ignore
+//! use restate_cli_util::{c_println, c_success, c_error, c_warn, c_tip, c_title};
+//! use restate_cli_util::ui::console::Styled;
+//! use restate_cli_util::ui::stylesheet::Style;
+//!
+//! // Basic output
+//! c_println!("Hello, {}!", name);
+//!
+//! // Success/error with icons
+//! c_success!("Deployment registered!");
+//! c_error!("Failed to connect: {}", error);
+//!
+//! // Prominent warning box
+//! c_warn!("This action cannot be undone!");
+//!
+//! // Subtle tip
+//! c_tip!("Use --force to skip confirmation");
+//!
+//! // Section title with icon and underline
+//! c_title!("📜", "Service Information");
+//!
+//! // Styled text
+//! c_println!("Status: {}", Styled(Style::Success, "running"));
+//! ```
 
 use std::fmt::{Display, Formatter};
 
@@ -29,11 +74,51 @@ use crate::context::CliContext;
 
 use dialoguer::console::Style as DStyle;
 
-/// Emoji that fallback to a string if colors are disabled.
+/// An emoji icon with a text fallback for non-color terminals.
+///
+/// When colors are enabled, displays the emoji (first field). When colors are
+/// disabled, displays the fallback text (second field). This ensures output
+/// remains meaningful in all terminal environments.
+///
+/// # Example
+///
+/// ```ignore
+/// use restate_cli_util::ui::console::Icon;
+///
+/// // Define a custom icon
+/// let rocket = Icon("🚀", "[LAUNCH]");
+///
+/// // In color mode: prints "🚀"
+/// // In non-color mode: prints "[LAUNCH]"
+/// c_println!("{} Starting deployment...", rocket);
+/// ```
+///
+/// # Pre-defined Icons
+///
+/// See [`stylesheet`](super::stylesheet) for standard icons like `SUCCESS_ICON`,
+/// `ERR_ICON`, `WARN_ICON`, etc.
 #[derive(Copy, Clone)]
 pub struct Icon<'a, 'b>(pub &'a str, pub &'b str);
 
-/// Text with a style that drops the style if colors are disabled.
+/// Wrapper that applies a [`Style`] to any displayable value.
+///
+/// When colors are enabled, the style is applied. When colors are disabled,
+/// the value is displayed without styling. This ensures consistent output
+/// regardless of terminal capabilities.
+///
+/// # Example
+///
+/// ```ignore
+/// use restate_cli_util::ui::console::Styled;
+/// use restate_cli_util::ui::stylesheet::Style;
+///
+/// // Apply semantic styles to values
+/// let status = Styled(Style::Success, "running");
+/// let error = Styled(Style::Danger, "connection failed");
+///
+/// c_println!("Status: {}", status);  // Green in color mode
+/// c_println!("Error: {}", error);    // Red+bold in color mode
+/// ```
 #[derive(Copy, Clone)]
 pub struct Styled<T: ?Sized>(pub Style, pub T);
 
@@ -78,12 +163,53 @@ where
     }
 }
 
-/// Factory trait to create styled tables that respect the UI config.
-/// Impl is in stylesheets.
+/// Factory trait for creating styled tables that respect CLI configuration.
+///
+/// This trait provides methods for creating tables that automatically adapt to:
+/// - User's `--table-style` preference (compact vs. borders)
+/// - Color settings (styling disabled when colors are off)
+///
+/// The implementation for `comfy_table::Table` is in [`stylesheet`](super::stylesheet).
+///
+/// # Example
+///
+/// ```ignore
+/// use comfy_table::Table;
+/// use restate_cli_util::ui::console::StyledTable;
+///
+/// // Create a key-value table (detail view)
+/// let mut table = Table::new_styled();
+/// table.add_kv_row("Name:", "my-service");
+/// table.add_kv_row("Status:", "running");
+/// table.add_kv_row_if(
+///     || deployment.is_some(),
+///     "Deployment:",
+///     || deployment.as_ref().unwrap().id,
+/// );
+/// c_println!("{}", table);
+///
+/// // Create a list table (collection view)
+/// let mut table = Table::new_styled();
+/// table.set_styled_header(vec!["NAME", "TYPE", "STATUS"]);
+/// for service in services {
+///     table.add_row(vec![&service.name, &service.ty, &service.status]);
+/// }
+/// c_println!("{}", table);
+/// ```
 pub trait StyledTable {
+    /// Create a new table with styling based on CLI configuration.
     fn new_styled() -> Self;
+
+    /// Set bold column headers for list-style tables.
     fn set_styled_header<T: ToString>(&mut self, headers: Vec<T>) -> &mut Self;
+
+    /// Add a key-value row with bold key (for detail views).
     fn add_kv_row<V: Into<comfy_table::Cell>>(&mut self, key: &str, value: V) -> &mut Self;
+
+    /// Conditionally add a key-value row.
+    ///
+    /// Only adds the row if the predicate returns true. The value closure
+    /// is only called when the predicate passes, enabling lazy evaluation.
     fn add_kv_row_if<P: Fn() -> bool, V: Fn() -> D, D: Display>(
         &mut self,
         predicate: P,
@@ -98,6 +224,23 @@ pub trait StyledTable {
     }
 }
 
+/// Prompt for confirmation, returning an error if the user declines.
+///
+/// Use this for destructive operations where declining should abort the command.
+///
+/// # Auto-confirmation
+///
+/// Automatically confirms (returns `Ok(())`) when:
+/// - `--yes` / `-y` flag is set
+/// - `CI` environment variable is set
+///
+/// # Example
+///
+/// ```ignore
+/// confirm_or_exit("This will delete all data. Continue?")?;
+/// // Only reaches here if user confirmed
+/// delete_all_data();
+/// ```
 pub fn confirm_or_exit(prompt: &str) -> anyhow::Result<()> {
     if !confirm(prompt) {
         return Err(anyhow::anyhow!("User aborted"));
@@ -105,6 +248,15 @@ pub fn confirm_or_exit(prompt: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Present an interactive selection menu and return the chosen index.
+///
+/// # Example
+///
+/// ```ignore
+/// let options = ["Development", "Staging", "Production"];
+/// let selected = choose("Select environment:", &options)?;
+/// println!("You selected: {}", options[selected]);
+/// ```
 pub fn choose<T: ToString + std::fmt::Display>(
     prompt: &str,
     choices: &[T],
@@ -116,6 +268,13 @@ pub fn choose<T: ToString + std::fmt::Display>(
         .interact()?)
 }
 
+/// Prompt for text input with a default value.
+///
+/// # Example
+///
+/// ```ignore
+/// let name = input("Service name:", "my-service".to_string())?;
+/// ```
 #[allow(dead_code)]
 pub fn input(prompt: &str, default: String) -> anyhow::Result<String> {
     let theme = dialoguer::theme::ColorfulTheme::default();
@@ -125,6 +284,23 @@ pub fn input(prompt: &str, default: String) -> anyhow::Result<String> {
         .interact_text()?)
 }
 
+/// Prompt for yes/no confirmation, returning the user's choice.
+///
+/// # Auto-confirmation
+///
+/// Automatically returns `true` when:
+/// - `--yes` / `-y` flag is set
+/// - `CI` environment variable is set
+///
+/// # Example
+///
+/// ```ignore
+/// if confirm("Deploy to production?") {
+///     deploy();
+/// } else {
+///     println!("Deployment cancelled");
+/// }
+/// ```
 pub fn confirm(prompt: &str) -> bool {
     let theme = dialoguer::theme::ColorfulTheme::default();
     if CliContext::get().auto_confirm() {
