@@ -360,7 +360,7 @@ impl QueryContext {
         }
 
         session_config = session_config
-            .with_batch_size(128)
+            .with_batch_size(512)
             .with_information_schema(true)
             .with_default_catalog_and_schema("restate", "public");
 
