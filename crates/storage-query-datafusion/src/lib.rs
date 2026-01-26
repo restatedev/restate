@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod analyzer;
 pub mod context;
 
 pub mod remote_query_scanner_server;
