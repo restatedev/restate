@@ -135,6 +135,7 @@ impl From<RpcReplyError> for RpcErrorKind {
             // todo: perhaps this should be an explicit error
             e @ RpcReplyError::ConnectionClosed(_) => Self::Internal(e.to_string()),
             e @ RpcReplyError::MessageUnrecognized => Self::Internal(e.to_string()),
+            e @ RpcReplyError::InvalidPayload => Self::Internal(e.to_string()),
             RpcReplyError::ServiceNotFound | RpcReplyError::SortCodeNotFound => Self::NotLeader,
             RpcReplyError::LoadShedding => Self::Busy,
             RpcReplyError::ServiceNotReady => Self::Busy,

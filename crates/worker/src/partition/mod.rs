@@ -741,7 +741,9 @@ where
             ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
                 let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
                 // note: split() decodes the payload
-                let (response_tx, body) = msg.split();
+                let Some((response_tx, body)) = msg.split() else {
+                    return;
+                };
                 self.on_pp_rpc_request(response_tx, body, partition_store, schemas)
                     .await;
             }
@@ -801,7 +803,9 @@ where
         partition_store: &mut PartitionStore,
         msg: Incoming<Rpc<DedupSequenceNrQueryRequest>>,
     ) {
-        let (tx, body) = msg.split();
+        let Some((tx, body)) = msg.split() else {
+            return;
+        };
         let producer_id = match body.producer_id {
             ingest::ProducerId::Unknown => {
                 tx.send(DedupSequenceNrQueryResponse {
@@ -846,7 +850,9 @@ where
     }
 
     async fn on_pp_ingest_request(&mut self, msg: Incoming<Rpc<ReceivedIngestRequest>>) {
-        let (reciprocal, request) = msg.split();
+        let Some((reciprocal, request)) = msg.split() else {
+            return;
+        };
         histogram!(
             PARTITION_INGESTION_REQUEST_LEN, PARTITION_LABEL => self.partition_id_str.clone()
         )

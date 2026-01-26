@@ -213,7 +213,10 @@ impl MetadataManager {
     fn handle_network_message(&mut self, msg: ServiceMessage<MetadataManagerService>) {
         match msg {
             ServiceMessage::Rpc(msg) if msg.msg_type() == GetMetadataRequest::TYPE => {
-                let (reciprocal, request) = msg.into_typed::<GetMetadataRequest>().split();
+                let Some((reciprocal, request)) = msg.into_typed::<GetMetadataRequest>().split()
+                else {
+                    return;
+                };
                 self.send_metadata(reciprocal, request.metadata_kind, request.min_version);
             }
             msg => {

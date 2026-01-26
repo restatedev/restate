@@ -365,7 +365,7 @@ mod test {
             .unwrap();
 
         let msg = must_next(&mut incoming).await;
-        let (rx, body) = msg.split();
+        let (rx, body) = msg.split().expect("split should succeed");
         assert_that!(
             body.records,
             all!(
@@ -392,14 +392,14 @@ mod test {
             .unwrap();
 
         let msg = must_next(&mut incoming).await;
-        let (rx, _) = msg.split();
+        let (rx, _) = msg.split().expect("split should succeed");
         rx.send(ResponseStatus::NotLeader { of: 0.into() }.into());
 
         assert!((&mut commit).now_or_never().is_none());
 
         // ingestion will retry automatically so we must receive another message
         let msg = must_next(&mut incoming).await;
-        let (rx, body) = msg.split();
+        let (rx, body) = msg.split().expect("split should succeed");
         assert_that!(
             body.records,
             all!(

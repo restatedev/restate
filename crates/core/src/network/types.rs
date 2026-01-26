@@ -201,6 +201,8 @@ pub enum RpcReplyError {
     ServiceStopped,
     #[error("the requested rpc service didn't recognize this message")]
     MessageUnrecognized,
+    #[error("the requested rpc service couldn't decode this message")]
+    InvalidPayload,
     #[error("peer dropped the request due to back-pressure")]
     LoadShedding,
     #[error(
@@ -220,6 +222,7 @@ impl RpcReplyError {
             | Self::LoadShedding
             | Self::ServiceStopped
             | Self::MessageUnrecognized
+            | Self::InvalidPayload
             | Self::ServiceNotReady
             | Self::SortCodeNotFound => false,
         }
@@ -239,6 +242,7 @@ impl From<i32> for RpcReplyError {
             Ok(rpc_reply::Status::ServiceStopped) => Self::ServiceStopped,
             Ok(rpc_reply::Status::ServiceNotReady) => Self::ServiceNotReady,
             Ok(rpc_reply::Status::MessageUnrecognized) => Self::MessageUnrecognized,
+            Ok(rpc_reply::Status::InvalidPayload) => Self::InvalidPayload,
             Err(err) => err,
         }
     }

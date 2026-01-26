@@ -92,7 +92,9 @@ impl<T: TransportConnect> SequencerDataRpcHandler<T> {
     )]
     async fn handle_append(&mut self, incoming: Incoming<Rpc<Append>>) {
         let peer_logs_version = incoming.metadata_version().get(MetadataKind::Logs);
-        let (reciprocal, append) = incoming.split();
+        let Some((reciprocal, append)) = incoming.split() else {
+            return;
+        };
 
         let loglet = match get_loglet(&self.provider, peer_logs_version, &append.header).await {
             Ok(loglet) => loglet,
@@ -149,7 +151,9 @@ impl<T: TransportConnect> SequencerInfoRpcHandler<T> {
     #[instrument(level = "debug", skip_all)]
     async fn handle_get_sequencer_state(&mut self, incoming: Incoming<Rpc<GetSequencerState>>) {
         let peer_logs_version = incoming.metadata_version().get(MetadataKind::Logs);
-        let (reciprocal, msg) = incoming.split();
+        let Some((reciprocal, msg)) = incoming.split() else {
+            return;
+        };
 
         let loglet = match get_loglet(&self.provider, peer_logs_version, &msg.header).await {
             Ok(loglet) => loglet,

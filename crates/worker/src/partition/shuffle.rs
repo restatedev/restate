@@ -896,7 +896,9 @@ mod ingestion_client_tests {
         'out: while let Some(ServiceMessage::Rpc(incoming)) = stream.next().await {
             assert_eq!(incoming.msg_type(), ReceivedIngestRequest::TYPE);
             let incoming = incoming.into_typed::<ReceivedIngestRequest>();
-            let (r, body) = incoming.split();
+            let Some((r, body)) = incoming.split() else {
+                continue;
+            };
             r.send(ResponseStatus::Ack.into());
             for mut record in body.records {
                 let envelope = StorageCodec::decode::<Envelope, _>(&mut record.record)

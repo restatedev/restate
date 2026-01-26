@@ -188,7 +188,9 @@ impl<S: LogStore> LogletWorker<S> {
                 msg.follow_from_sender_for(&span);
                 let peer = msg.peer();
 
-                let (reciprocal, msg) = msg.split();
+                let Some((reciprocal, msg)) = msg.split() else {
+                    return;
+                };
                 let first_offset = msg.first_offset;
                 // this message might be telling us about a higher `known_global_tail`
                 self.loglet_state
@@ -270,7 +272,9 @@ impl<S: LogStore> LogletWorker<S> {
             ServiceMessage::Rpc(msg) if msg.msg_type() == GetLogletInfo::TYPE => {
                 let msg = msg.into_typed::<GetLogletInfo>();
                 let peer = msg.peer();
-                let (reciprocal, msg) = msg.split();
+                let Some((reciprocal, msg)) = msg.split() else {
+                    return;
+                };
                 self.loglet_state
                     .notify_known_global_tail(msg.header.known_global_tail);
                 // drop response if connection is lost/congested
@@ -288,7 +292,9 @@ impl<S: LogStore> LogletWorker<S> {
             // SEAL
             ServiceMessage::Rpc(msg) if msg.msg_type() == Seal::TYPE => {
                 let message = msg.into_typed::<Seal>();
-                let (reciprocal, msg) = message.split();
+                let Some((reciprocal, msg)) = message.split() else {
+                    return;
+                };
                 // this message might be telling us about a higher `known_global_tail`
                 self.loglet_state
                     .notify_known_global_tail(msg.header.known_global_tail);
@@ -413,7 +419,9 @@ impl<S: LogStore> LogletWorker<S> {
     }
 
     fn process_wait_for_tail(&mut self, msg: Incoming<Rpc<WaitForTail>>) {
-        let (reciprocal, msg) = msg.split();
+        let Some((reciprocal, msg)) = msg.split() else {
+            return;
+        };
         self.loglet_state
             .notify_known_global_tail(msg.header.known_global_tail);
 
@@ -458,7 +466,9 @@ impl<S: LogStore> LogletWorker<S> {
     }
 
     fn process_get_records(&mut self, msg: Incoming<Rpc<GetRecords>>) {
-        let (reciprocal, msg) = msg.split();
+        let Some((reciprocal, msg)) = msg.split() else {
+            return;
+        };
         self.loglet_state
             .notify_known_global_tail(msg.header.known_global_tail);
 
@@ -491,7 +501,9 @@ impl<S: LogStore> LogletWorker<S> {
     }
 
     fn process_get_digest(&mut self, msg: Incoming<Rpc<GetDigest>>) {
-        let (reciprocal, msg) = msg.split();
+        let Some((reciprocal, msg)) = msg.split() else {
+            return;
+        };
         self.loglet_state
             .notify_known_global_tail(msg.header.known_global_tail);
 
@@ -520,7 +532,9 @@ impl<S: LogStore> LogletWorker<S> {
     }
 
     fn process_trim(&mut self, msg: Incoming<Rpc<Trim>>) {
-        let (reciprocal, mut msg) = msg.split();
+        let Some((reciprocal, mut msg)) = msg.split() else {
+            return;
+        };
         self.loglet_state
             .notify_known_global_tail(msg.header.known_global_tail);
         // When trimming, we eagerly update the in-memory view of the trim-point _before_ we
