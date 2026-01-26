@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 mod grpc_svc_handler;
+#[cfg(not(target_env = "msvc"))]
+mod jemalloc;
 mod metrics;
 mod pprof;
 mod prometheus_helpers;

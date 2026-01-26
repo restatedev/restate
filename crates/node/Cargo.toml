@@ -78,6 +78,8 @@ tracing = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 jemalloc_pprof = "0.8.1"
+tikv-jemalloc-ctl = { workspace = true }
+tikv-jemalloc-sys = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }

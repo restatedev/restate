@@ -10,16 +10,18 @@
 
 use std::fmt::Write;
 
+use axum::extract::State;
+use metrics_exporter_prometheus::formatting;
+use rocksdb::statistics::{Histogram, Ticker};
+
+use restate_core::task_center::TaskCenterMonitoring;
+use restate_rocksdb::{CfName, RocksDbManager};
+
 use crate::network_server::prometheus_helpers::{
     MetricUnit, format_rocksdb_histogram_for_prometheus, format_rocksdb_property_for_prometheus,
     format_rocksdb_stat_ticker_for_prometheus,
 };
 use crate::network_server::state::NodeCtrlHandlerState;
-use axum::extract::State;
-use metrics_exporter_prometheus::formatting;
-use restate_core::task_center::TaskCenterMonitoring;
-use restate_rocksdb::{CfName, RocksDbManager};
-use rocksdb::statistics::{Histogram, Ticker};
 
 const ROCKSDB_TICKERS: &[Ticker] = &[
     Ticker::BlockCacheBytesRead,
@@ -181,6 +183,9 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
     if let Some(prometheus_handle) = state.prometheus_handle.handle() {
         // Default tokio runtime metrics
         state.task_center.submit_metrics();
+        // jemalloc memory statistics
+        #[cfg(not(target_env = "msvc"))]
+        super::jemalloc::submit_metrics();
         // Internal system metrics
         let _ = write!(&mut out, "{}", prometheus_handle.render());
     }
@@ -286,5 +291,6 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
             }
         }
     }
+
     out
 }
