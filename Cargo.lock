@@ -8555,6 +8555,7 @@ dependencies = [
  "stable_deref_trait",
  "syn 2.0.111",
  "sync_wrapper",
+ "tikv-jemalloc-sys",
  "time",
  "tokio-rustls 0.26.4",
  "tokio-stream",
