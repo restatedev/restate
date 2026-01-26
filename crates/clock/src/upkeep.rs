@@ -20,6 +20,7 @@ const UPKEEP_INTERVAL: Duration = const { Duration::from_millis(1) };
 /// Timer slack in nanoseconds. This allows the kernel to coalesce timer wakeups
 /// within this window, reducing context switch overhead for this low-priority thread.
 /// See `prctl(PR_SET_TIMERSLACK)` in Linux.
+#[cfg(target_os = "linux")]
 const TIMER_SLACK_NS: u64 = 500_000; // 500μs
 
 pub struct ClockUpkeep {

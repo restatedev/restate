@@ -39,7 +39,6 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
-use crate::analyzer;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 
 const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
@@ -371,26 +370,11 @@ impl QueryContext {
         //
         // build the state
         //
-        let mut state_builder = SessionStateBuilder::new()
+        let state = SessionStateBuilder::new()
             .with_config(session_config)
             .with_runtime_env(runtime)
-            .with_default_features();
-
-        // Rewrite the logical plan,  to transparently add a 'partition_key' column to Join's
-        // To tables that have a partition key in their schema.
-        //
-        // For example:
-        // 'SELECT  b.service_key FROM sys_invocation_status a JOIN state b on a.target_service_key = b.service_key'
-        //
-        // Will be rewritten to:
-        // 'SELECT  b.service_key FROM sys_invocation_status a JOIN state b on a.target_service_key = b.service_key AND a.partition_key = b.partition_key'
-        //
-        // This would be used by the SymmetricHashJoin as a watermark.
-        state_builder = state_builder.with_analyzer_rule(Arc::new(
-            analyzer::UseSymmetricHashJoinWhenPartitionKeyIsPresent::new(),
-        ));
-
-        let state = state_builder.build();
+            .with_default_features()
+            .build();
 
         let mut ctx = SessionContext::new_with_state(state);
 
