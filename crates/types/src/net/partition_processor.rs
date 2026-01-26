@@ -11,6 +11,8 @@
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::identifiers::{
     DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionKey,
     PartitionProcessorRpcRequestId, WithPartitionKey,
@@ -22,9 +24,11 @@ use crate::invocation::client::{
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
-use crate::net::ServiceTag;
+use crate::net::codec::{
+    EncodeError, WireDecode, WireEncode, decode_as_flexbuffers, encode_as_flexbuffers,
+};
+use crate::net::{ProtocolVersion, ServiceTag};
 use crate::net::{default_wire_codec, define_rpc, define_service};
-use serde::{Deserialize, Serialize};
 
 pub struct PartitionLeaderService;
 
@@ -38,7 +42,7 @@ define_rpc! {
     @response = Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>,
     @service = PartitionLeaderService,
 }
-default_wire_codec!(PartitionProcessorRpcRequest);
+
 default_wire_codec!(Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>);
 
 /// Requests to individual partition processors. We still need to route them through the PP manager.
@@ -47,6 +51,42 @@ pub struct PartitionProcessorRpcRequest {
     pub request_id: PartitionProcessorRpcRequestId,
     pub partition_id: PartitionId,
     pub inner: PartitionProcessorRpcRequestInner,
+}
+
+impl WireEncode for PartitionProcessorRpcRequest {
+    fn encode_to_bytes(
+        &self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<::bytes::Bytes, EncodeError> {
+        // PauseInvocation required protocol version V3
+        if matches!(
+            &self.inner,
+            PartitionProcessorRpcRequestInner::PauseInvocation { .. },
+        ) && protocol_version < ProtocolVersion::V3
+        {
+            return Err(EncodeError::IncompatibleVersion {
+                type_tag: stringify!(PartitionProcessorRpcRequest),
+                min_required: ProtocolVersion::V3,
+                actual: protocol_version,
+            });
+        }
+
+        Ok(::bytes::Bytes::from(encode_as_flexbuffers(self)))
+    }
+}
+
+impl WireDecode for PartitionProcessorRpcRequest {
+    type Error = anyhow::Error;
+
+    fn try_decode(
+        buf: impl bytes::Buf,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Self, anyhow::Error>
+    where
+        Self: Sized,
+    {
+        decode_as_flexbuffers(buf, protocol_version)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +134,7 @@ pub enum PartitionProcessorRpcRequestInner {
         invocation_id: InvocationId,
         deployment_id: PatchDeploymentId,
     },
+    // *Since v1.6/Protocol Version V3*
     PauseInvocation {
         invocation_id: InvocationId,
     },

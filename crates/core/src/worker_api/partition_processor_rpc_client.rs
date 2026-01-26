@@ -15,6 +15,7 @@ use crate::network::{Networking, TransportConnect};
 use crate::partitions::PartitionRouting;
 use assert2::let_assert;
 use restate_types::NodeId;
+use restate_types::errors::GenericError;
 use restate_types::identifiers::{
     EntryIndex, InvocationId, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
@@ -61,8 +62,8 @@ pub struct RpcError {
 pub enum RpcErrorKind {
     #[error(transparent)]
     Connect(#[from] ConnectError),
-    #[error("failed sending request")]
-    SendFailed,
+    #[error("failed sending request: {0}")]
+    SendFailed(GenericError),
     #[error("not leader")]
     NotLeader,
     #[error("lost leadership")]
@@ -103,7 +104,7 @@ impl RpcError {
             RpcErrorKind::Connect(_)
             | RpcErrorKind::NotLeader
             | RpcErrorKind::Busy
-            | RpcErrorKind::SendFailed => {
+            | RpcErrorKind::SendFailed(_) => {
                 // These are pre-flight error that we can distinguish,
                 // and for which we know for certain that no message was proposed yet to the log.
                 true
@@ -121,8 +122,8 @@ impl From<PartitionProcessorInvocationClientError> for InvocationClientError {
 }
 
 impl From<EncodeError> for RpcErrorKind {
-    fn from(_value: EncodeError) -> Self {
-        Self::SendFailed
+    fn from(value: EncodeError) -> Self {
+        Self::SendFailed(value.into())
     }
 }
 
@@ -210,10 +211,14 @@ where
             .get_connection(node_id, Swimlane::IngressData)
             .await
             .map_err(|err| RpcError::from_err(partition_id, node_id, err))?;
-        let permit = connection
-            .reserve()
-            .await
-            .ok_or_else(|| RpcError::from_err(partition_id, node_id, RpcErrorKind::SendFailed))?;
+
+        let permit = connection.reserve().await.ok_or_else(|| {
+            RpcError::from_err(
+                partition_id,
+                node_id,
+                RpcErrorKind::SendFailed("Connection lost".into()),
+            )
+        })?;
         let rpc_result = permit
             .send_rpc(
                 PartitionProcessorRpcRequest {
