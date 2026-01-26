@@ -3917,24 +3917,6 @@ pub mod v1 {
             response_result, source,
         };
 
-        fn merge_bytes_zerocopy<'a>(
-            wire_type: prost::encoding::WireType,
-            value: &mut &'a [u8],
-            buf: &mut &'a [u8],
-            _ctx: prost::encoding::DecodeContext,
-        ) -> Result<(), prost::DecodeError> {
-            use prost::encoding::*;
-            check_wire_type(WireType::LengthDelimited, wire_type)?;
-            let len = decode_varint(buf)?;
-            if len > buf.len() as u64 {
-                return Err(prost::DecodeError::new("buffer underflow"));
-            }
-            let len = len as usize;
-
-            (*value, *buf) = buf.split_at(len);
-            Ok(())
-        }
-
         #[derive(Debug, Default)]
         pub struct InvocationStatusV2Lazy<'a> {
             pub inner: super::InvocationStatusV2Lazy,
@@ -3962,7 +3944,7 @@ pub mod v1 {
             pub fn merge(&mut self, mut buf: &'a [u8]) -> Result<(), prost::DecodeError> {
                 let ctx = prost::encoding::DecodeContext::default();
                 while !buf.is_empty() {
-                    let (tag, wire_type) = prost::encoding::decode_key(&mut buf)?;
+                    let (tag, wire_type) = decode_key_1_or_2(&mut buf)?;
                     self.merge_field(tag, wire_type, &mut buf, ctx.clone())?;
                 }
 
@@ -4002,6 +3984,29 @@ pub mod v1 {
                                 error
                             })
                     }
+                    5u32 => {
+                        let value = &mut self.inner.creation_time;
+                        merge_uint64_6(wire_type, value, buf).map_err(|mut error| {
+                            error.push(STRUCT_NAME, "creation_time");
+                            error
+                        })
+                    }
+                    6u32 => {
+                        let value = &mut self.inner.modification_time;
+                        merge_uint64_6(wire_type, value, buf).map_err(|mut error| {
+                            error.push(STRUCT_NAME, "modification_time");
+                            error
+                        })
+                    }
+                    10u32 => {
+                        let value = &mut self.inner.execution_time;
+                        merge_uint64_6(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
+                                error.push(STRUCT_NAME, "execution_time");
+                                error
+                            },
+                        )
+                    }
                     11u32 => {
                         let value = &mut self.completion_retention_duration_lazy;
                         merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
@@ -4034,6 +4039,42 @@ pub mod v1 {
                                 error
                             })
                     }
+                    19u32 => {
+                        let value = &mut self.inner.inboxed_transition_time;
+                        merge_uint64_6(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
+                                error.push(STRUCT_NAME, "inboxed_transition_time");
+                                error
+                            },
+                        )
+                    }
+                    20u32 => {
+                        let value = &mut self.inner.scheduled_transition_time;
+                        merge_uint64_6(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
+                                error.push(STRUCT_NAME, "scheduled_transition_time");
+                                error
+                            },
+                        )
+                    }
+                    21u32 => {
+                        let value = &mut self.inner.running_transition_time;
+                        merge_uint64_6(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
+                                error.push(STRUCT_NAME, "running_transition_time");
+                                error
+                            },
+                        )
+                    }
+                    22u32 => {
+                        let value = &mut self.inner.completed_transition_time;
+                        merge_uint64_6(wire_type, value.get_or_insert_default(), buf).map_err(
+                            |mut error| {
+                                error.push(STRUCT_NAME, "completed_transition_time");
+                                error
+                            },
+                        )
+                    }
                     29u32 => {
                         let value = &mut self.journal_retention_duration_lazy;
                         merge_bytes_zerocopy(wire_type, value.get_or_insert_default(), buf, ctx)
@@ -4046,6 +4087,15 @@ pub mod v1 {
                         let value = &mut self.created_using_restate_version;
                         merge_bytes_zerocopy(wire_type, value, buf, ctx).map_err(|mut error| {
                             error.push(STRUCT_NAME, "created_using_restate_version");
+                            error
+                        })
+                    }
+                    31u32 => {
+                        // this is random_seed which typically would hit the skip field code path.
+                        // random_seed is a random u64, almost always 9 or 10 byte varint, so we special-case it.
+                        let value = &mut 0u64;
+                        merge_uint64_9_or_10(wire_type, value, buf).map_err(|mut error| {
+                            error.push(STRUCT_NAME, stringify!(random_seed));
                             error
                         })
                     }
@@ -4322,6 +4372,159 @@ pub mod v1 {
                 } else {
                     write!(f, "{}/{}", self.0, self.2)
                 }
+            }
+        }
+
+        // prost::encoding::bytes::merge, but writing slices instead of copying to vecs
+        #[inline]
+        fn merge_bytes_zerocopy<'a>(
+            wire_type: prost::encoding::WireType,
+            value: &mut &'a [u8],
+            buf: &mut &'a [u8],
+            _ctx: prost::encoding::DecodeContext,
+        ) -> Result<(), prost::DecodeError> {
+            use prost::encoding::*;
+            check_wire_type(WireType::LengthDelimited, wire_type)?;
+            // most strings/messages/bytes are less than 16kB, so we should strongly prefer 1 or 2 byte varints
+            let len = decode_varint_1_or_2(buf)? as usize;
+            if len > buf.len() {
+                return Err(prost::DecodeError::new("buffer underflow"));
+            }
+
+            // SAFETY: we already did a bounds check above
+            (*value, *buf) = unsafe { buf.split_at_unchecked(len) };
+            Ok(())
+        }
+
+        // prost::encoding::decode_key, but with preference for 1- or 2-byte varints.
+        // we use this because 2-byte varints hit a particularly slow path on decode_varint
+        // and about half the fields on inv_status are 2-byte
+        #[inline]
+        fn decode_key_1_or_2(
+            buf: &mut impl bytes::Buf,
+        ) -> Result<(u32, prost::encoding::WireType), prost::DecodeError> {
+            use prost::encoding::*;
+            let key = decode_varint_1_or_2(buf)?;
+            if key > u64::from(u32::MAX) {
+                return Err(prost::DecodeError::new(format!(
+                    "invalid key value: {}",
+                    key
+                )));
+            }
+            let wire_type = WireType::try_from(key & 0x07)?;
+            let tag = key as u32 >> 3;
+
+            if tag < MIN_TAG {
+                return Err(prost::DecodeError::new("invalid tag value: 0"));
+            }
+
+            Ok((tag, wire_type))
+        }
+
+        // prost::encoding::decode_varint, but with preference for 1- or 2-byte varints.
+        #[inline]
+        fn decode_varint_1_or_2(buf: &mut impl bytes::Buf) -> Result<u64, prost::DecodeError> {
+            match buf.chunk() {
+                [b0 @ 0x00..=0x7F, ..] => {
+                    let value = *b0 as u64;
+                    buf.advance(1);
+                    Ok(value)
+                }
+                [b0, b1 @ 0x00..=0x7F, ..] => {
+                    let value = (b0 & 0x7F) as u64 | ((*b1 as u64) << 7);
+                    buf.advance(2);
+                    Ok(value)
+                }
+                _ => prost::encoding::decode_varint(buf),
+            }
+        }
+
+        // prost::encoding::uint64::merge, but checking first for 6-byte varints like unix-millisecond timestamps
+        // the fast-path relies on there being 8 bytes available in the chunk; this will pretty much always be true
+        #[inline]
+        fn merge_uint64_6(
+            wire_type: prost::encoding::WireType,
+            value: &mut u64,
+            buf: &mut impl bytes::Buf,
+        ) -> Result<(), prost::DecodeError> {
+            use prost::encoding::*;
+            check_wire_type(WireType::Varint, wire_type)?;
+            *value = decode_varint_6(buf).map_or_else(|| decode_varint(buf), Ok)?;
+            Ok(())
+        }
+
+        #[inline]
+        fn decode_varint_6(buf: &mut impl bytes::Buf) -> Option<u64> {
+            let bytes = buf.chunk();
+            if bytes.len() < 8 {
+                return None;
+            }
+
+            let lo = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+            if lo & 0x0000_8080_8080_8080 != 0x0000_0080_8080_8080 {
+                // not a 6 byte varint
+                return None;
+            }
+
+            let value = (lo & 0x7f)
+                | ((lo >> 1) & (0x7f << 7))
+                | ((lo >> 2) & (0x7f << 14))
+                | ((lo >> 3) & (0x7f << 21))
+                | ((lo >> 4) & (0x7f << 28))
+                | ((lo >> 5) & (0x7f << 35));
+
+            buf.advance(6);
+            Some(value)
+        }
+
+        // prost::encoding::uint64::merge, but checking first for 9 or 10-byte varints like random u64s
+        #[inline]
+        fn merge_uint64_9_or_10(
+            wire_type: prost::encoding::WireType,
+            value: &mut u64,
+            buf: &mut impl bytes::Buf,
+        ) -> Result<(), prost::DecodeError> {
+            use prost::encoding::*;
+            check_wire_type(WireType::Varint, wire_type)?;
+            *value = decode_varint_9_or_10(buf).map_or_else(|| decode_varint(buf), Ok)?;
+            Ok(())
+        }
+
+        #[inline]
+        fn decode_varint_9_or_10(buf: &mut impl bytes::Buf) -> Option<u64> {
+            let bytes = buf.chunk();
+
+            let (first_8, tail) = bytes.split_at_checked(8)?;
+
+            // Check first 8 bytes have continuation bit set
+            let lo = u64::from_le_bytes(first_8.try_into().unwrap());
+            if lo & 0x8080_8080_8080_8080 != 0x8080_8080_8080_8080 {
+                // 1-8 byte varint
+                return None;
+            }
+
+            let base = u64::from(bytes[0] & 0x7F)
+                | (u64::from(bytes[1] & 0x7F) << 7)
+                | (u64::from(bytes[2] & 0x7F) << 14)
+                | (u64::from(bytes[3] & 0x7F) << 21)
+                | (u64::from(bytes[4] & 0x7F) << 28)
+                | (u64::from(bytes[5] & 0x7F) << 35)
+                | (u64::from(bytes[6] & 0x7F) << 42)
+                | (u64::from(bytes[7] & 0x7F) << 49);
+
+            match tail {
+                [b8 @ 0x00..=0x7F, ..] => {
+                    let value = base | (u64::from(*b8) << 56);
+                    buf.advance(9);
+                    Some(value)
+                }
+                // a u64 can only have 0 or 1 in the 10th byte (9 chars = 63 bits)
+                [b8, b9 @ 0x0..=0x1, ..] => {
+                    let value = base | (u64::from(b8 & 0x7F) << 56) | (u64::from(*b9) << 63);
+                    buf.advance(10);
+                    Some(value)
+                }
+                _ => None,
             }
         }
     }
