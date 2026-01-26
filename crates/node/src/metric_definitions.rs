@@ -23,6 +23,14 @@ pub const GOSSIP_LONELY: &str = "restate.failure_detector.lonely";
 /// dimensioned by "state" (STATE_*)
 pub const GOSSIP_NODES: &str = "restate.failure_detector.nodes.total";
 
+// Jemalloc memory statistics
+pub const JEMALLOC_ALLOCATED: &str = "restate.jemalloc.allocated.bytes";
+pub const JEMALLOC_ACTIVE: &str = "restate.jemalloc.active.bytes";
+pub const JEMALLOC_METADATA: &str = "restate.jemalloc.metadata.bytes";
+pub const JEMALLOC_MAPPED: &str = "restate.jemalloc.mapped.bytes";
+pub const JEMALLOC_RETAINED: &str = "restate.jemalloc.retained.bytes";
+pub const JEMALLOC_RESIDENT: &str = "restate.jemalloc.resident.bytes";
+
 pub fn describe_metrics() {
     describe_counter!(
         GOSSIP_RECEIVED,
@@ -40,5 +48,37 @@ pub fn describe_metrics() {
     describe_gauge!(
         GOSSIP_NODES,
         "Number of nodes per node state, dimensioned by state"
+    );
+
+    // jemalloc memory statistics
+    describe_gauge!(
+        JEMALLOC_ALLOCATED,
+        Unit::Bytes,
+        "Total bytes allocated by the application"
+    );
+    describe_gauge!(
+        JEMALLOC_ACTIVE,
+        Unit::Bytes,
+        "Total bytes in active pages allocated by the application"
+    );
+    describe_gauge!(
+        JEMALLOC_METADATA,
+        Unit::Bytes,
+        "Total bytes dedicated to jemalloc metadata"
+    );
+    describe_gauge!(
+        JEMALLOC_MAPPED,
+        Unit::Bytes,
+        "Total bytes in chunks mapped on behalf of the application"
+    );
+    describe_gauge!(
+        JEMALLOC_RETAINED,
+        Unit::Bytes,
+        "Total bytes in virtual memory mappings retained rather than returned to the OS"
+    );
+    describe_gauge!(
+        JEMALLOC_RESIDENT,
+        Unit::Bytes,
+        "Total bytes in physically resident data pages mapped by the allocator"
     );
 }
