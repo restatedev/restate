@@ -701,8 +701,8 @@ impl Default for CommonOptions {
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
             process_total_memory_size: None,
-            rocksdb_total_memory_size: NonZeroUsize::new(6 * 1024 * 1024 * 1024).unwrap(), // 6GiB
-            rocksdb_total_memtables_ratio: 0.5, // (50% of rocksdb-total-memory-size)
+            rocksdb_total_memory_size: NonZeroUsize::new(2 * 1024 * 1024 * 1024).unwrap(), // 2GiB
+            rocksdb_total_memtables_ratio: 0.85, // (85% of rocksdb-total-memory-size)
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
