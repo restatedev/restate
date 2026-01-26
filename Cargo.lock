@@ -7130,6 +7130,7 @@ dependencies = [
  "bytes",
  "criterion",
  "jiff",
+ "libc",
  "prost-types",
  "restate-clock",
  "restate-encoding",

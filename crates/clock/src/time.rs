@@ -89,8 +89,8 @@ impl MillisSinceEpoch {
     ///
     /// This method uses the cached [`WallClock::recent_ms()`] timestamp when available,
     /// providing ~100x better performance than a direct `SystemTime::now()` syscall.
-    /// The cached value is refreshed every 500μs by [`ClockUpkeep`](crate::ClockUpkeep),
-    /// so it may be up to ~1ms stale.
+    /// The cached value is refreshed every 1ms by [`ClockUpkeep`](crate::ClockUpkeep),
+    /// so it may be up to ~2ms stale.
     ///
     /// # Fallback Behavior
     ///

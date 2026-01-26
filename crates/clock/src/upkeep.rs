@@ -15,7 +15,12 @@ use std::time::Duration;
 use crate::{Clock, RESTATE_EPOCH, WallClock};
 
 /// Defines the frequency of updating the cached wall clock.
-const UPKEEP_INTERVAL: Duration = const { Duration::from_micros(500) };
+const UPKEEP_INTERVAL: Duration = const { Duration::from_millis(1) };
+
+/// Timer slack in nanoseconds. This allows the kernel to coalesce timer wakeups
+/// within this window, reducing context switch overhead for this low-priority thread.
+/// See `prctl(PR_SET_TIMERSLACK)` in Linux.
+const TIMER_SLACK_NS: u64 = 500_000; // 500μs
 
 pub struct ClockUpkeep {
     running: Arc<AtomicBool>,
@@ -56,6 +61,7 @@ impl ClockUpkeep {
             .spawn({
                 let running = running.clone();
                 move || {
+                    set_timer_slack();
                     while running.load(Ordering::Relaxed) {
                         std::thread::sleep(UPKEEP_INTERVAL);
                         WallClock::update_recent();
@@ -79,4 +85,20 @@ impl Drop for ClockUpkeep {
                 .map_err(|_| std::io::Error::other("failed to stop rs-clock thread"));
         }
     }
+}
+
+/// Sets the timer slack for the current thread, allowing the kernel to coalesce
+/// timer wakeups and reduce scheduling overhead.
+#[cfg(target_os = "linux")]
+fn set_timer_slack() {
+    // SAFETY: prctl with PR_SET_TIMERSLACK is safe to call and only affects
+    // the calling thread's timer slack value.
+    unsafe {
+        libc::prctl(libc::PR_SET_TIMERSLACK, TIMER_SLACK_NS);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_timer_slack() {
+    // Timer slack is a Linux-specific optimization; no-op on other platforms.
 }
