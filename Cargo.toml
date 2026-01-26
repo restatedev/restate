@@ -234,6 +234,7 @@ tikv-jemallocator = { version = "0.6", features = [
     "unprefixed_malloc_on_supported_platforms",
     "profiling",
 ] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling"] }
 thiserror = "2.0"
 tokio = { version = "1.48.0", default-features = false, features = [

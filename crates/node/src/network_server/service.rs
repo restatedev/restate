@@ -55,6 +55,18 @@ impl NetworkServer {
                 "/debug/pprof/heap/deactivate",
                 on(post_or_put, pprof::deactivate_heap),
             )
+            // Forward compatibility to remove "pprof" prefix
+            // Introduced in v1.6.0
+            .route("/debug/heap/dump", get(pprof::heap))
+            .route(
+                "/debug/heap/activate",
+                on(post_or_put, pprof::activate_heap),
+            )
+            .route(
+                "/debug/heap/deactivate",
+                on(post_or_put, pprof::deactivate_heap),
+            )
+            .route("/debug/heap/purge", on(post_or_put, pprof::jemalloc_purge))
             .with_state(shared_state);
 
         server_builder.register_axum_routes(axum_router);
