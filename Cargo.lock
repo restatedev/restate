@@ -7783,6 +7783,8 @@ dependencies = [
  "tempfile",
  "test-log",
  "thiserror 2.0.17",
+ "tikv-jemalloc-ctl",
+ "tikv-jemalloc-sys",
  "tokio",
  "tokio-stream",
  "tonic",
