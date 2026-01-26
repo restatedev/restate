@@ -23,7 +23,7 @@ use restate_metadata_providers::create_client;
 use restate_metadata_server::tests::Value;
 use restate_metadata_store::{MetadataStoreClient, WriteError, retry_on_retryable_error};
 use restate_types::config::{
-    Configuration, MetadataClientKind, MetadataClientOptions, RaftOptions,
+    Configuration, MetadataClientKind, MetadataClientOptions, RaftOptions, set_current_config,
 };
 use restate_types::metadata::Precondition;
 use restate_types::nodes_config::Role;
@@ -62,6 +62,13 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
         .iter()
         .map(|node| node.advertised_address().clone())
         .collect();
+
+    // Set a valid configuration with the cluster name for the GrpcMetadataServerClient to pick it up
+    let mut configuration = Configuration::default();
+    configuration
+        .common
+        .set_cluster_name(cluster.cluster_name().to_owned());
+    set_current_config(configuration);
 
     let metadata_store_client_options = MetadataClientOptions {
         kind: MetadataClientKind::Replicated { addresses },
@@ -176,6 +183,13 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
         .iter()
         .map(|node| node.advertised_address().clone())
         .collect();
+
+    // Set a valid configuration with the cluster name for the GrpcMetadataServerClient to pick it up
+    let mut configuration = Configuration::default();
+    configuration
+        .common
+        .set_cluster_name(cluster.cluster_name().to_owned());
+    set_current_config(configuration);
 
     let metadata_store_client_options = MetadataClientOptions {
         kind: MetadataClientKind::Replicated { addresses },
@@ -354,6 +368,13 @@ async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
         .await?;
 
     cluster.wait_healthy(Duration::from_secs(30)).await?;
+
+    // Set a valid configuration with the cluster name for the GrpcMetadataServerClient to pick it up
+    let mut configuration = Configuration::default();
+    configuration
+        .common
+        .set_cluster_name(cluster.cluster_name().to_owned());
+    set_current_config(configuration);
 
     let addresses = cluster
         .nodes

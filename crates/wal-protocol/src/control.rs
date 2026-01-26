@@ -22,8 +22,7 @@ use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version, Version
 
 /// Announcing a new leader. This message can be written by any component to make the specified
 /// partition processor the leader.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AnnounceLeader {
     /// Sender of the announce leader message.
     ///
@@ -39,31 +38,21 @@ pub struct AnnounceLeader {
     /// Optional only for backward compatibility
     ///
     /// *Since v1.6*
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch_version: Option<Version>,
     /// Current replica set configuration at the time of the announcement.
     /// This field is optional for backward compatibility with older versions.
     /// *Since v1.6*
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_config: Option<CurrentReplicaSetConfiguration>,
     /// Next replica set configuration.
     /// *Since v1.6*
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_config: Option<NextReplicaSetConfiguration>,
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", serde_with::serde_as)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[serde_with::serde_as]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CurrentReplicaSetConfiguration {
     pub version: Version,
     pub replica_set: NodeSet,
@@ -97,8 +86,7 @@ impl CurrentReplicaSetConfiguration {
     }
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NextReplicaSetConfiguration {
     pub version: Version,
     pub replica_set: NodeSet,
@@ -149,8 +137,7 @@ fn new_replica_set_state(version: Version, node_set: &NodeSet) -> ReplicaSetStat
 /// Readers before v1.4.0 will crash when reading this command. For v1.4.0+, the barrier defines the
 /// minimum version of restate server that can progress after this command. It also updates the FSM
 /// in case command has been trimmed.
-#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message, serde::Serialize, serde::Deserialize)]
 pub struct VersionBarrier {
     /// The minimum version required (inclusive) to progress after this barrier.
     pub version: SemanticRestateVersion,
@@ -166,8 +153,7 @@ pub struct VersionBarrier {
 /// NOTE: The durability point is monotonically increasing.
 ///
 /// Since v1.4.2.
-#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message, serde::Serialize, serde::Deserialize)]
 pub struct PartitionDurability {
     pub partition_id: PartitionId,
     /// The partition has applied this LSN durably to the replica-set and/or has been
@@ -180,8 +166,7 @@ pub struct PartitionDurability {
 /// Consistently store schema across partition replicas.
 ///
 /// Since v1.6.0.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UpsertSchema {
     pub partition_key_range: Keys,
     pub schema: Schema,

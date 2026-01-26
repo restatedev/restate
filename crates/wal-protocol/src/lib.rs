@@ -31,14 +31,12 @@ pub mod timer;
 pub mod vqueues;
 
 /// The primary envelope for all messages in the system.
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Envelope {
     pub header: Header,
     pub command: Command,
 }
 
-#[cfg(feature = "serde")]
 restate_types::flexbuffers_storage_encode_decode!(Envelope);
 
 impl Envelope {
@@ -48,16 +46,14 @@ impl Envelope {
 }
 
 /// Header is set on every message
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Header {
     pub source: Source,
     pub dest: Destination,
 }
 
 /// Identifies the source of a message
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Source {
     /// Message is sent from another partition processor
     Processor {
@@ -66,9 +62,9 @@ pub enum Source {
         /// v1.5 Marked as `Option`.
         /// v1.6 always set to `None`.
         /// Will be removed in v1.7.
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[serde(default)]
         partition_id: Option<PartitionId>,
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[serde(default)]
         partition_key: Option<PartitionKey>,
         /// The current epoch of the partition leader. Readers should observe this to decide which
         /// messages to accept. Readers should ignore messages coming from
@@ -79,7 +75,7 @@ pub enum Source {
         // still being set to Some(v) to maintain compatibility with v1.4.
         //
         // v1.6 field is removed. -- Kept here for reference only.
-        // #[cfg_attr(feature = "serde", serde(default))]
+        // #[serde(default)]
         // node_id: Option<PlainNodeId>,
 
         // From v1.1 this is always set, but maintained to support rollback to v1.0.
@@ -87,7 +83,7 @@ pub enum Source {
         // will be removed in v1.6. Commands that need the node-id of the sender should
         // include the node-id in the command payload itself (e.g. in the [`AnnounceLeader`])
         // v1.6 field is removed. -- Kept here for reference only.
-        // #[cfg_attr(feature = "serde", serde(default))]
+        // #[serde(default)]
         // generational_node_id: Option<GenerationalNodeId>,
     },
     /// Message is sent from an ingress node
@@ -99,7 +95,7 @@ pub enum Source {
         // Deprecated(v1.5): This field is set to Some(v) to maintain compatibility with v1.4.
         // but will be removed in v1.6.
         // v1.6 field is removed. -- Kept here for reference only.
-        // #[cfg_attr(feature = "serde", serde(default))]
+        // #[serde(default)]
         // node_id: Option<GenerationalNodeId>,
 
         // Last config version observed by sender. If this is a newer generation
@@ -108,7 +104,7 @@ pub enum Source {
         // Deprecated(v1.5): This field is set to Some(v) to maintain compatibility with v1.4.
         // but will be removed in v1.6.
         // v1.6 field is removed. -- Kept here for reference only.
-        // #[cfg_attr(feature = "serde", serde(default))]
+        // #[serde(default)]
         // nodes_config_version: Option<Version>,
     },
     /// Message is sent from some control plane component (controller, cli, etc.)
@@ -118,21 +114,26 @@ pub enum Source {
 }
 
 /// Identifies the intended destination of the message
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Destination {
     /// Message is sent to partition processor
     Processor {
         partition_key: PartitionKey,
-        #[cfg_attr(feature = "serde", serde(default))]
+        #[serde(default)]
         dedup: Option<DedupInformation>,
     },
 }
 
 /// State machine input commands
-#[derive(Debug, Clone, strum::EnumDiscriminants, strum::VariantNames)]
+#[derive(
+    Debug,
+    Clone,
+    strum::EnumDiscriminants,
+    strum::VariantNames,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[strum_discriminants(derive(strum::IntoStaticStr))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Command {
     /// Updates the `PARTITION_DURABILITY` FSM variable to the given value.
     /// See [`PartitionDurability`] for more details.
