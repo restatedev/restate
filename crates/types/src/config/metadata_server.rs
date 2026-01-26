@@ -77,7 +77,7 @@ impl MetadataServerOptions {
 
         if self.rocksdb_memory_budget.is_none() {
             self.rocksdb_memory_budget = Some(
-                // 1MB minimum
+                // 1MiB minimum
                 NonZeroUsize::new(
                     (common.rocksdb_safe_total_memtables_size() as f64
                         * self.rocksdb_memory_ratio as f64)
@@ -93,7 +93,7 @@ impl MetadataServerOptions {
         self.rocksdb_memory_budget
             .unwrap_or_else(|| {
                 warn!("metadata-server rocksdb_memory_budget is not set, defaulting to 1MB");
-                // 1MB minimum
+                // 1MiB minimum
                 NonZeroUsize::new(1024 * 1024).unwrap()
             })
             .get()
