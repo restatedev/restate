@@ -31,5 +31,14 @@ static_assertions = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+rand = { workspace = true }
+
 [build-dependencies]
 prost-build = { workspace = true }
+
+[[bench]]
+name = "basic_benchmark"
+harness = false
+required-features = ["test-util"]
