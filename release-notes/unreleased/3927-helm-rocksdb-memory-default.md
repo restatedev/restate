@@ -12,7 +12,7 @@ The Restate Helm chart default resource limits have been significantly increased
 | Memory request | 1Gi | **8Gi** |
 | CPU limit | 1 | **6** |
 | CPU request | 500m | **4** |
-| `RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE` | (not set) | **6Gi** |
+| `RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE` | (not set) | **3Gi** |
 
 ### Why This Matters
 
@@ -21,7 +21,7 @@ The Restate Helm chart default resource limits have been significantly increased
 - Clusters with limited available resources
 - Existing deployments that were running with the previous lower defaults
 
-**Performance improvement**: The new defaults are sized for production workloads and ensure RocksDB has adequate memory (75% of container limit) for optimal performance.
+**Performance improvement**: The new defaults are sized for production workloads and ensure RocksDB has adequate memory (<50% of container limit) for optimal performance.
 
 ### Impact on Users
 
@@ -36,7 +36,7 @@ The Restate Helm chart default resource limits have been significantly increased
 
 **Custom configurations**:
 - If you already specified custom `resources` in your values file, your settings will continue to be used
-- If you provision Restate with a different container memory limit, update `RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE` to ~75% of that limit
+- If you provision Restate with a different container memory limit, update `RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE` to be within ~20-50% of that limit
 
 ### Migration Guidance
 
@@ -51,7 +51,7 @@ If you need to maintain the previous resource limits (e.g., for development clus
 ```yaml
 env:
   - name: RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE
-    value: "2Gi"  # ~75% of 3Gi memory limit
+    value: "1Gi"  # ~<50% of 3Gi memory limit
 
 resources:
   limits:

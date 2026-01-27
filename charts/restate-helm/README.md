@@ -22,8 +22,8 @@ resources:
     memory: 8Gi
 ```
 
-The environment variable `RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE` should be set such that it is roughly 75% of the memory available.
-In the default helm values, this variable is set to `6Gi`.
+The environment variable `RESTATE_ROCKSDB_TOTAL_MEMORY_SIZE` should be set under 50% of the memory available.
+In the default helm values, this variable is set to `3Gi`.
 Under load, Restate will eventually use the entire RocksDB memory size offered to it.
 
 # Running a replicated cluster

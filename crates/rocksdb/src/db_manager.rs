@@ -475,21 +475,15 @@ fn check_memory_limit(opts: &CommonOptions) {
     if let Some(process_memory_size) = opts.process_total_memory_size() {
         let memory_ratio =
             opts.rocksdb_total_memory_size.get() as f64 / process_memory_size.get() as f64;
-        if memory_ratio < 0.5 {
-            warn!(
-                "'rocksdb-total-memory-size' parameter is set to {}, less than half the process memory limit of {}. Roughly 75% of process memory should be given to RocksDB",
-                ByteCount::from(opts.rocksdb_total_memory_size),
-                ByteCount::from(process_memory_size),
-            )
-        } else if memory_ratio > 1.0 {
+        if memory_ratio > 1.0 {
             error!(
-                "'rocksdb-total-memory-size' parameter is set to {}, more than the process memory limit of {}. This guarantees an OOM under load; roughly 75% of process memory should be given to RocksDB",
+                "'rocksdb-total-memory-size' parameter is set to {}, more than the process memory limit of {}. This guarantees an OOM under load; keep it under 50% of process memory",
                 ByteCount::from(opts.rocksdb_total_memory_size),
                 ByteCount::from(process_memory_size),
             )
         } else if memory_ratio > 0.9 {
             error!(
-                "'rocksdb-total-memory-size' parameter is set to {}, more than 90% of the process memory limit of {}. This risks an OOM under load; roughly 75% of process memory should be given to RocksDB",
+                "'rocksdb-total-memory-size' parameter is set to {}, more than 90% of the process memory limit of {}. This risks an OOM under load; keep it under 50% of process memory",
                 ByteCount::from(opts.rocksdb_total_memory_size),
                 ByteCount::from(process_memory_size),
             )
