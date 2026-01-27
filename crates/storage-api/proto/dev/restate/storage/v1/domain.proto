@@ -130,8 +130,11 @@ message Source {
   }
 }
 
-// Next generation InvocationStatus message, which will replace InvocationStatus
-// in a future version.
+// *Considerations for new fields*
+// - If its a random number, use fixed64 or fixed32 as varints are slow for
+// large numbers.
+// - If its a unix-milli timestamp, consider adding another special case in the
+// InvocationStatusV2Lazy::merge_field decoder, like we have for creation_time.
 message InvocationStatusV2 {
   reserved 27, 28;
 
