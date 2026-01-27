@@ -19,14 +19,14 @@ The previous 4 GiB default was required due to inefficient queries in earlier ve
 If you experience slower query performance, you can restore the previous behavior by configuring a larger memory budget:
 
 ```toml
-[query-engine]
+[admin.query-engine]
 memory-size = "4GiB"
 ```
 
 Or via environment variable:
 
 ```bash
-RESTATE_QUERY_ENGINE__MEMORY_SIZE=4GiB
+RESTATE_ADMIN__QUERY_ENGINE__MEMORY_SIZE=4GiB
 ```
 
 ### Related Issues
