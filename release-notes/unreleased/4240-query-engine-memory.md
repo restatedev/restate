@@ -16,7 +16,7 @@ The previous 4 GiB default was required due to inefficient queries in earlier ve
 
 ### Migration Guidance
 
-If you experience out-of-memory errors when running SQL queries, you can restore the previous behavior by configuring a larger memory budget:
+If you experience slower query performance, you can restore the previous behavior by configuring a larger memory budget:
 
 ```toml
 [query-engine]
