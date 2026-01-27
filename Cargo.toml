@@ -28,7 +28,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.6.0-dev"
+version = "1.6.0-rc.1"
 authors = ["restate.dev"]
 edition = "2024"
 rust-version = "1.92.0"
