@@ -20,7 +20,7 @@ use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocation
 pub(crate) fn append_invocation_status_row<'a>(
     builder: &mut SysInvocationStatusBuilder,
     invocation_id: InvocationId,
-    invocation_status: InvocationStatusV2Lazy<'a>,
+    invocation_status: &'a InvocationStatusV2Lazy<'a>,
 ) -> Result<(), ConversionError> {
     let mut row = builder.row();
 
@@ -73,7 +73,7 @@ pub(crate) fn append_invocation_status_row<'a>(
         fill_invoked_by(&mut row, invocation_status.source()?)?;
     }
 
-    fill_timestamps(&mut row, &invocation_status);
+    fill_timestamps(&mut row, invocation_status);
 
     // Additional invocation metadata
     use restate_storage_api::protobuf_types::v1::invocation_status_v2::Status;
@@ -130,13 +130,13 @@ pub(crate) fn append_invocation_status_row<'a>(
         }
         Status::Invoked => {
             row.status("invoked");
-            fill_journal_metadata(&mut row, &invocation_status)?;
-            fill_in_flight_invocation_metadata(&mut row, &invocation_status)?;
+            fill_journal_metadata(&mut row, invocation_status)?;
+            fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
         }
         Status::Paused => {
             row.status("paused");
-            fill_journal_metadata(&mut row, &invocation_status)?;
-            fill_in_flight_invocation_metadata(&mut row, &invocation_status)?;
+            fill_journal_metadata(&mut row, invocation_status)?;
+            fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
         }
         Status::Suspended => {
             row.status("suspended");
@@ -161,12 +161,12 @@ pub(crate) fn append_invocation_status_row<'a>(
                 );
             }
 
-            fill_journal_metadata(&mut row, &invocation_status)?;
-            fill_in_flight_invocation_metadata(&mut row, &invocation_status)?;
+            fill_journal_metadata(&mut row, invocation_status)?;
+            fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
         }
         Status::Completed => {
             row.status("completed");
-            fill_journal_metadata(&mut row, &invocation_status)?;
+            fill_journal_metadata(&mut row, invocation_status)?;
 
             if row.is_pinned_deployment_id_defined()
                 && let Some(deployment_id) = invocation_status.deployment_id()?

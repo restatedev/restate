@@ -151,7 +151,7 @@ impl ScanInvocationStatusTable for PartitionStore {
     fn for_each_invocation_status_lazy<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
-                (InvocationId, InvocationStatusV2Lazy<'a>),
+                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
             ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync
@@ -186,13 +186,14 @@ impl ScanInvocationStatusTable for PartitionStore {
                             return ControlFlow::Break(Err(StorageError::Conversion(restate_types::storage::StorageDecodeError::UnsupportedCodecKind(codec).into())));
                         };
 
-                        let inv_status_v2_lazy = break_on_err(restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::decode(value).map_err(|e| StorageError::Conversion(e.into())))?;
+                        let mut inv_status_v2_lazy = restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::default();
+                        break_on_err(inv_status_v2_lazy.merge(value).map_err(|e| StorageError::Conversion(e.into())))?;
 
                         let (partition_key, invocation_uuid) = status_key.split();
 
                         let result = f((
                             InvocationId::from_parts(partition_key, invocation_uuid),
-                            inv_status_v2_lazy,
+                            &inv_status_v2_lazy,
                         ));
 
                         result.map_break(|result| {
