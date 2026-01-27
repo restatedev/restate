@@ -319,7 +319,7 @@ jobs:
                 - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
 
   e2e-vqueues:
-    name: Vqueues Run E2E tests
+    name: Run E2E tests with vqueues
     runs-on: warp-ubuntu-latest-x64-4x
     # we don't expect all tests to pass, that's why we continue on error
     continue-on-error: true
@@ -355,7 +355,7 @@ jobs:
           docker image ls -a
 
       ### Run e2e tests with vqueues enabled.
-      - name: Vqueues Run E2E tests
+      - name: Run E2E tests
         uses: restatedev/e2e@main
         with:
           testArtifactOutput: e2e-test-vqueues-report
@@ -369,6 +369,96 @@ jobs:
               "versionCompat":
                 - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
                 - "dev.restate.sdktesting.tests.BackwardCompatibilityTest.*"
+
+  e2e-experimental-kafka-ingestion:
+    name: Run E2E tests with experimental Kafka ingestion
+    runs-on: warp-ubuntu-latest-x64-4x
+    # we don't expect all tests to pass, that's why we continue on error
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    needs: docker
+    steps:
+      - name: Set up Docker containerd snapshotter
+        uses: docker/setup-docker-action@v4
+        with:
+          version: "v28.5.2"
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      ### Download the Restate container image, if needed
+      - name: Download restate snapshot from in-progress workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: restate.tar
+      - name: Install restate snapshot
+        run: |
+          output=$(docker load --input restate.tar | head -n 1)
+          docker tag "${output#*: }" "localhost/restatedev/restate-commit-download:latest"
+          docker image ls -a
+
+      ### Run e2e tests with experimental kafka ingestion enabled.
+      - name: Run E2E tests
+        uses: restatedev/e2e@main
+        with:
+          testArtifactOutput: e2e-test-experimental-kafka-ingestion-report
+          restateContainerImage: localhost/restatedev/restate-commit-download:latest
+          envVars: |
+            RESTATE_experimental_kafka_batch_ingestion=true
+
+  e2e-experimental-shuffler:
+    name: Run E2E tests with experimental Shuffler
+    runs-on: warp-ubuntu-latest-x64-4x
+    # we don't expect all tests to pass, that's why we continue on error
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    needs: docker
+    steps:
+      - name: Set up Docker containerd snapshotter
+        uses: docker/setup-docker-action@v4
+        with:
+          version: "v28.5.2"
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      ### Download the Restate container image, if needed
+      - name: Download restate snapshot from in-progress workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: restate.tar
+      - name: Install restate snapshot
+        run: |
+          output=$(docker load --input restate.tar | head -n 1)
+          docker tag "${output#*: }" "localhost/restatedev/restate-commit-download:latest"
+          docker image ls -a
+
+      ### Run e2e tests with experimental shuffler enabled.
+      - name: Run E2E tests
+        uses: restatedev/e2e@main
+        with:
+          testArtifactOutput: e2e-test-experimental-shuffler-report
+          restateContainerImage: localhost/restatedev/restate-commit-download:latest
+          envVars: |
+            RESTATE_experimental_shuffler_batch_ingestion=true
 
   jepsen:
     if: github.event.repository.fork == false && github.event.pull_request.head.repo.full_name == 'restatedev/restate' && github.ref == 'refs/heads/main'
