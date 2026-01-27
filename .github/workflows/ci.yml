@@ -370,6 +370,51 @@ jobs:
                 - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
                 - "dev.restate.sdktesting.tests.BackwardCompatibilityTest.*"
 
+  e2e-experimental-kafka-ingestion:
+    name: Run experimental Kafka ingestion E2E tests
+    runs-on: warp-ubuntu-latest-x64-4x
+    # we don't expect all tests to pass, that's why we continue on error
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    needs: docker
+    steps:
+      - name: Set up Docker containerd snapshotter
+        uses: docker/setup-docker-action@v4
+        with:
+          version: "v28.5.2"
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      ### Download the Restate container image, if needed
+      - name: Download restate snapshot from in-progress workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: restate.tar
+      - name: Install restate snapshot
+        run: |
+          output=$(docker load --input restate.tar | head -n 1)
+          docker tag "${output#*: }" "localhost/restatedev/restate-commit-download:latest"
+          docker image ls -a
+
+      ### Run e2e tests with experimental kafka ingestion enabled.
+      - name: Experimental kafka ingestion E2E tests
+        uses: restatedev/e2e@main
+        with:
+          testArtifactOutput: e2e-test-experimental-kafka-ingestion-report
+          restateContainerImage: localhost/restatedev/restate-commit-download:latest
+          envVars: |
+            RESTATE_experimental_kafka_batch_ingestion=true
+
   jepsen:
     if: github.event.repository.fork == false && github.event.pull_request.head.repo.full_name == 'restatedev/restate' && github.ref == 'refs/heads/main'
     runs-on: warp-ubuntu-latest-arm64-4x
