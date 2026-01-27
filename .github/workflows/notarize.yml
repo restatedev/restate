@@ -37,18 +37,19 @@ jobs:
       - name: Extract binaries
         run: tar -xvf ${{ matrix.app_name }}-${{ matrix.target }}.tar.xz
 
-      - name: Add notary credentials
-        run: xcrun notarytool store-credentials --apple-id "$NOTARY_APPLE_ID" --password "$NOTARY_APP_SPECIFIC_PASSWORD" --team-id "$CODESIGN_IDENTITY" "Notarization"
+      - name: Notarize
+        shell: bash
         env:
           NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
           NOTARY_APP_SPECIFIC_PASSWORD: ${{ secrets.NOTARY_APP_SPECIFIC_PASSWORD }}
           CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
-
-      - name: Notarize
-        shell: bash
         run: |
           bin="$(echo "$PLAN" | jq -r '.artifacts["${{ matrix.app_name }}-${{ matrix.target }}.tar.xz"].assets[] | select(.kind == "executable").name')"
 
           zip ${{ matrix.app_name }}-${{ matrix.target }}.zip "${{ matrix.app_name }}-${{ matrix.target }}/${bin}"
 
-          xcrun notarytool submit ${{ matrix.app_name }}-${{ matrix.target }}.zip --keychain-profile "Notarization"
+          xcrun notarytool submit ${{ matrix.app_name }}-${{ matrix.target }}.zip \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --password "$NOTARY_APP_SPECIFIC_PASSWORD" \
+            --team-id "$CODESIGN_IDENTITY" \
+            --wait
