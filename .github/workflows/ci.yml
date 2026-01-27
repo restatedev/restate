@@ -319,7 +319,7 @@ jobs:
                 - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
 
   e2e-vqueues:
-    name: Vqueues Run E2E tests
+    name: Run E2E tests with vqueues
     runs-on: warp-ubuntu-latest-x64-4x
     # we don't expect all tests to pass, that's why we continue on error
     continue-on-error: true
@@ -355,7 +355,7 @@ jobs:
           docker image ls -a
 
       ### Run e2e tests with vqueues enabled.
-      - name: Vqueues Run E2E tests
+      - name: Run E2E tests
         uses: restatedev/e2e@main
         with:
           testArtifactOutput: e2e-test-vqueues-report
@@ -371,7 +371,7 @@ jobs:
                 - "dev.restate.sdktesting.tests.BackwardCompatibilityTest.*"
 
   e2e-experimental-kafka-ingestion:
-    name: Run experimental Kafka ingestion E2E tests
+    name: Run E2E tests with experimental Kafka ingestion
     runs-on: warp-ubuntu-latest-x64-4x
     # we don't expect all tests to pass, that's why we continue on error
     continue-on-error: true
@@ -407,7 +407,7 @@ jobs:
           docker image ls -a
 
       ### Run e2e tests with experimental kafka ingestion enabled.
-      - name: Experimental kafka ingestion E2E tests
+      - name: Run E2E tests
         uses: restatedev/e2e@main
         with:
           testArtifactOutput: e2e-test-experimental-kafka-ingestion-report
