@@ -32,6 +32,8 @@ ARG TARGETARCH
 ENV RUSTC_WRAPPER=/usr/bin/sccache
 ENV SCCACHE_DIR=/var/cache/sccache
 
+# Adding new env vars here to get a build working? They're probably also needed in release-build-setup.yml!
+
 # todo only enable those env variables when cross compiling
 # todo remove once https://github.com/MaterializeInc/rust-krb5-src/pull/30 has been merged and released
 # Set krb5 cross-compilation env variables (because we cannot run cross compiled tests)
