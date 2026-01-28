@@ -11,7 +11,7 @@
 use jsonptr::Pointer;
 use std::env;
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use typify::{TypeSpace, TypeSpaceSettings};
 
 fn main() -> std::io::Result<()> {
@@ -21,12 +21,8 @@ fn main() -> std::io::Result<()> {
         .bytes(["."])
         .protoc_arg("--experimental_allow_proto3_optional")
         .compile_protos(
-            &[
-                Path::new("../../service-protocol/dev/restate/service/protocol.proto")
-                    .canonicalize()
-                    .unwrap(),
-            ],
-            &[Path::new("../../service-protocol").canonicalize().unwrap()],
+            &["../../service-protocol/dev/restate/service/protocol.proto"],
+            &["../../service-protocol"],
         )?;
 
     let mut parsed_content: serde_json::Value = serde_json::from_reader(

@@ -16,7 +16,9 @@ use anyhow::{Context, bail};
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use criterion::{Criterion, criterion_group, criterion_main};
+#[cfg(unix)]
 use pprof::criterion::{Output, PProfProfiler};
+#[cfg(unix)]
 use pprof::flamegraph::Options;
 use prost::Message as _;
 use rand::distr::Alphanumeric;
@@ -46,6 +48,7 @@ use restate_wal_protocol::{Command, Destination, Envelope};
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+#[cfg(unix)]
 pub fn flamegraph_options<'a>() -> Options<'a> {
     #[allow(unused_mut)]
     let mut options = Options::default();
@@ -325,9 +328,18 @@ fn replicated_loglet_append_invoker_effect_cmd_serde(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(unix)]
 criterion_group!(
     name = benches;
     config = Criterion::default().with_profiler(PProfProfiler::new(997, Output::Flamegraph(Some(flamegraph_options()))));
     targets = replicated_loglet_append_invoke_cmd_serde, replicated_loglet_append_invoker_effect_cmd_serde
 );
+
+#[cfg(not(unix))]
+criterion_group!(
+    name = benches;
+    config = Criterion::default();
+    targets = replicated_loglet_append_invoke_cmd_serde, replicated_loglet_append_invoker_effect_cmd_serde
+);
+
 criterion_main!(benches);

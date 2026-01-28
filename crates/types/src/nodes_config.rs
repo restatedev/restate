@@ -731,6 +731,18 @@ mod tests {
 
     use restate_test_util::assert_eq;
 
+    /// Generate a test address that works on the current platform
+    fn test_address() -> AdvertisedAddress<FabricPort> {
+        #[cfg(unix)]
+        {
+            "unix:/tmp/my_socket".parse().unwrap()
+        }
+        #[cfg(windows)]
+        {
+            "http://127.0.0.1:9999".parse().unwrap()
+        }
+    }
+
     #[test]
     fn cluster_fingerprint_str_roundtrip() {
         let fingerprint = ClusterFingerprint::generate();
@@ -750,7 +762,7 @@ mod tests {
     #[test]
     fn test_upsert_node() {
         let mut config = NodesConfiguration::new_for_testing();
-        let address: AdvertisedAddress<_> = "unix:/tmp/my_socket".parse().unwrap();
+        let address: AdvertisedAddress<_> = test_address();
         let roles = EnumSet::only(Role::Worker);
         let current_gen = GenerationalNodeId::new(1, 1);
         let node = NodeConfig::builder()
@@ -834,7 +846,7 @@ mod tests {
     #[test]
     fn test_remove_node() {
         let mut config = NodesConfiguration::new_for_testing();
-        let address: AdvertisedAddress<_> = "unix:/tmp/my_socket".parse().unwrap();
+        let address: AdvertisedAddress<_> = test_address();
         let node1 = NodeConfig::new(
             "node1".to_owned(),
             GenerationalNodeId::new(1, 1),

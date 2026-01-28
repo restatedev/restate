@@ -500,11 +500,18 @@ impl<P: ListenerPort> FromStr for AdvertisedAddress<P> {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
+        #[cfg(unix)]
         if let Some(path) = trimmed.strip_prefix("unix:") {
             return Ok(Self {
                 inner: parse_uds(path).map(PeerNetAddress::Uds)?,
                 _phantom: std::marker::PhantomData,
             });
+        }
+        #[cfg(windows)]
+        if trimmed.starts_with("unix:") {
+            return Err(anyhow::anyhow!(
+                "Unix domain sockets are not supported on Windows. Use HTTP addresses instead."
+            ));
         }
 
         if trimmed.is_empty() {
@@ -548,6 +555,7 @@ fn guess_my_routable_ip() -> &'static str {
         .unwrap_or(LOCALHOST)
 }
 
+#[cfg(unix)]
 #[inline]
 fn parse_uds(s: &str) -> Result<PathBuf, anyhow::Error> {
     s.parse::<PathBuf>()
@@ -670,11 +678,14 @@ mod tests {
         let address = result.into_address().unwrap();
         assert_eq!(address.to_string(), "https://[::1]:8888/");
 
-        let input = "unix:/data/file.sock";
-        let result = input.parse::<AdvertisedAddress<ControlPort>>().unwrap();
-        assert_eq!(result.to_string(), "unix:/data/file.sock");
-        let address = result.into_address().unwrap();
-        assert_eq!(address.to_string(), "unix:/data/file.sock");
+        #[cfg(unix)]
+        {
+            let input = "unix:/data/file.sock";
+            let result = input.parse::<AdvertisedAddress<ControlPort>>().unwrap();
+            assert_eq!(result.to_string(), "unix:/data/file.sock");
+            let address = result.into_address().unwrap();
+            assert_eq!(address.to_string(), "unix:/data/file.sock");
+        }
 
         let input = "ftp://localhost:8080";
         let result = input.parse::<AdvertisedAddress<FabricPort>>().unwrap();

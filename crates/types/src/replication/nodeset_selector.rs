@@ -617,6 +617,19 @@ pub mod tests {
         config.has_role(Role::Worker)
     }
 
+    /// Generate a test address that works on the current platform
+    fn test_address(id: PlainNodeId) -> String {
+        #[cfg(unix)]
+        {
+            format!("unix:/tmp/my_socket-{id}")
+        }
+        #[cfg(windows)]
+        {
+            // Use HTTP addresses on Windows since UDS is not supported
+            format!("http://127.0.0.1:{}", 10000 + u32::from(id))
+        }
+    }
+
     fn generate_node(
         id: impl Into<PlainNodeId>,
         storage_state: StorageState,
@@ -628,7 +641,7 @@ pub mod tests {
             .name(format!("node-{id}"))
             .current_generation(GenerationalNodeId::new(id.into(), 1))
             .location(location.parse().unwrap())
-            .address(format!("unix:/tmp/my_socket-{id}").parse().unwrap())
+            .address(test_address(id).parse().unwrap())
             .roles(role.into())
             .log_server_config(LogServerConfig { storage_state })
             .build()

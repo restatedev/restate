@@ -15,14 +15,15 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use http::Uri;
 use hyper::body::{Body, Incoming};
 use hyper_util::rt::TokioIo;
 use hyper_util::server::graceful::GracefulShutdown;
+#[cfg(unix)]
+use http::Uri;
 use tokio::io;
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::task::JoinHandle;
-use tokio_util::either::Either;
 use tonic::transport::{Channel, Endpoint};
 use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
 
@@ -52,9 +53,14 @@ pub fn create_tonic_channel<
 ) -> Channel {
     let address = address.into_address().expect("valid address");
     let endpoint = match &address {
+        #[cfg(unix)]
         PeerNetAddress::Uds(_) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1").expect("/ should be a valid Uri")
+        }
+        #[cfg(not(unix))]
+        PeerNetAddress::Uds(_) => {
+            panic!("Unix domain sockets are not supported on this platform")
         }
         PeerNetAddress::Http(uri) => Channel::builder(uri.clone()),
     };
@@ -62,6 +68,7 @@ pub fn create_tonic_channel<
     let endpoint = apply_options(endpoint, options);
 
     match address {
+        #[cfg(unix)]
         PeerNetAddress::Uds(uds_path) => {
             endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
                 let uds_path = uds_path.clone();
@@ -69,6 +76,10 @@ pub fn create_tonic_channel<
                     Ok::<_, io::Error>(TokioIo::new(UnixStream::connect(uds_path).await?))
                 }
             }))
+        }
+        #[cfg(not(unix))]
+        PeerNetAddress::Uds(_) => {
+            panic!("Unix domain sockets are not supported on this platform")
         }
         PeerNetAddress::Http(_) => {
             match dns_resolution {
@@ -203,51 +214,25 @@ where
                     .keep_alive_interval(Some(network_options.http2_keep_alive_interval.into()))
                     .keep_alive_timeout(network_options.http2_keep_alive_timeout.into());
 
-                match stream {
-                    Either::Left(tcp_stream) => {
-                        // TCP SOCKET
-                        let io = TokioIo::new(tcp_stream);
-                        let connection = graceful_shutdown.watch(builder
-                            .serve_connection(io, service.clone()).into_owned());
-                        TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
-                            trace!("New tcp connection accepted");
-                            if let Err(e) = connection.await {
-                                if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
-                                    if hyper_error.is_incomplete_message() {
-                                        debug!("Connection closed before request completed");
-                                    }
-                                } else {
-                                    debug!("Connection terminated due to error: {e}");
-                                }
-                            } else {
-                                trace!("Connection completed cleanly");
+                // AcceptedStream implements AsyncRead + AsyncWrite, so we can use it directly
+                let io = TokioIo::new(stream);
+                let connection = graceful_shutdown.watch(builder
+                    .serve_connection(io, service.clone()).into_owned());
+                TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
+                    trace!("New connection accepted");
+                    if let Err(e) = connection.await {
+                        if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
+                            if hyper_error.is_incomplete_message() {
+                                debug!("Connection closed before request completed");
                             }
-                            Ok(())
-                        }.instrument(socket_span))?;
-
-                    },
-                    Either::Right(unix_stream) => {
-                        // UNIX SOCKET
-                        let io = TokioIo::new(unix_stream);
-                        let connection = graceful_shutdown.watch(builder
-                            .serve_connection(io, service.clone()).into_owned());
-                        TaskCenter::spawn(TaskKind::SocketHandler, task_name.clone(), async move {
-                            trace!("New uds connection accepted");
-                            if let Err(e) = connection.await {
-                                if let Some(hyper_error) = e.downcast_ref::<hyper::Error>() {
-                                    if hyper_error.is_incomplete_message() {
-                                        debug!("Connection closed before request completed");
-                                    }
-                                } else {
-                                    debug!("Connection terminated due to error: {e}");
-                                }
-                            } else {
-                                trace!("Connection completed cleanly");
-                            }
-                            Ok(())
-                        }.instrument(socket_span))?;
+                        } else {
+                            debug!("Connection terminated due to error: {e}");
+                        }
+                    } else {
+                        trace!("Connection completed cleanly");
                     }
-                }
+                    Ok(())
+                }.instrument(socket_span))?;
             }
         }
     }

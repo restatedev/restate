@@ -40,12 +40,8 @@ fn main() -> std::io::Result<()> {
             "#[derive(::strum::EnumIter)]",
         )
         .compile_protos(
-            &[
-                Path::new("../../service-protocol/dev/restate/service/discovery.proto")
-                    .canonicalize()
-                    .unwrap(),
-            ],
-            &[Path::new("../../service-protocol").canonicalize().unwrap()],
+            &["../../service-protocol/dev/restate/service/discovery.proto"],
+            &["../../service-protocol"],
         )?;
 
     // Common proto types for internal use

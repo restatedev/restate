@@ -9,12 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use futures::Stream;
+#[cfg(unix)]
 use http::Uri;
+#[cfg(unix)]
 use hyper_util::rt::TokioIo;
+#[cfg(unix)]
 use tokio::io;
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio_stream::StreamExt;
 use tonic::codec::CompressionEncoding;
+#[cfg(unix)]
 use tonic::transport::Endpoint;
 use tonic::transport::channel::Channel;
 use tracing::{debug, warn};
@@ -88,9 +93,14 @@ fn create_channel<P: ListenerPort + GrpcPort>(
 ) -> Channel {
     let address = address.into_address().expect("valid address");
     let endpoint = match &address {
+        #[cfg(unix)]
         PeerNetAddress::Uds(_) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere
             Endpoint::try_from("http://127.0.0.1").expect("/ should be a valid Uri")
+        }
+        #[cfg(not(unix))]
+        PeerNetAddress::Uds(_) => {
+            panic!("Unix domain sockets are not supported on this platform")
         }
         PeerNetAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
     };
@@ -112,6 +122,7 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         .tcp_nodelay(true);
 
     match address {
+        #[cfg(unix)]
         PeerNetAddress::Uds(uds_path) => {
             endpoint.connect_with_connector_lazy(tower::service_fn(move |_: Uri| {
                 let uds_path = uds_path.clone();
@@ -120,7 +131,11 @@ fn create_channel<P: ListenerPort + GrpcPort>(
                 }
             }))
         }
-        PeerNetAddress::Http(_) => endpoint.connect_lazy()
+        #[cfg(not(unix))]
+        PeerNetAddress::Uds(_) => {
+            panic!("Unix domain sockets are not supported on this platform")
+        }
+        PeerNetAddress::Http(_) => endpoint.connect_lazy(),
     }
 }
 

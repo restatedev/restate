@@ -9,16 +9,17 @@ publish = false
 
 [features]
 default = []
+kafka = ["dep:restate-ingress-kafka"]
 test-util = ["restate-partition-store/test-util"]
 options_schema = [
   "dep:schemars",
   "restate-ingress-http/options_schema",
-  "restate-ingress-kafka/options_schema",
+  "restate-ingress-kafka?/options_schema",
   "restate-invoker-impl/options_schema",
   "restate-storage-query-datafusion/options_schema",
   "restate-timer/options_schema",
 ]
-kafka-oidc = ["restate-ingress-kafka/oidc"]
+kafka-oidc = ["kafka", "restate-ingress-kafka?/oidc"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -29,7 +30,7 @@ restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-futures-util = { workspace = true }
 restate-ingress-http = { workspace = true }
-restate-ingress-kafka = { workspace = true }
+restate-ingress-kafka = { workspace = true, optional = true }
 restate-ingestion-client = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }

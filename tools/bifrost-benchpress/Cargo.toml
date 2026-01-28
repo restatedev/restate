@@ -37,7 +37,6 @@ hdrhistogram = { version = "7.5.4" }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 quanta = { version = "0.12.3" }
-rlimit = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -54,3 +53,6 @@ tracing-subscriber = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }
+
+[target.'cfg(unix)'.dependencies]
+rlimit = { workspace = true }

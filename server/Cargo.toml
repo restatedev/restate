@@ -15,7 +15,8 @@ build = "build.rs"
 dist = true
 
 [features]
-# kafka-oidc should work on all targets, so let's enable it by default
+# Note: kafka (and kafka-oidc) don't build on Windows (rdkafka requires building OpenSSL).
+# Windows users should build with: --no-default-features -F no-trace-logging
 default = ["no-trace-logging", "kafka-oidc"]
 console = [
     "tokio/full",
@@ -32,7 +33,8 @@ options_schema = [
 memory-loglet = ["restate-node/memory-loglet"]
 no-trace-logging = ["tracing/max_level_trace", "tracing/release_max_level_debug"]
 metadata-api = ["restate-admin/metadata-api"]
-kafka-oidc = ["restate-node/kafka-oidc"]
+kafka = ["restate-node/kafka"]
+kafka-oidc = ["kafka", "restate-node/kafka-oidc"]
 taskdump = ["restate-core/taskdump"]
 
 [dependencies]
@@ -58,7 +60,6 @@ http = { workspace = true }
 http-body-util = { workspace = true }
 octocrab = { workspace = true, features = ["stream"] }
 regex = { workspace = true }
-rlimit = { workspace = true }
 rustls = { workspace = true, features = ["aws-lc-rs"] }
 schemars = { workspace = true, optional = true }
 tokio = { workspace = true }
@@ -93,6 +94,9 @@ url = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rlimit = { workspace = true }
 
 [target.'cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))'.dependencies]
 restate-core = { workspace = true, features = ["taskdump"] }

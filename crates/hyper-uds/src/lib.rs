@@ -8,83 +8,90 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::{
-    fmt,
-    path::PathBuf,
-    pin::Pin,
-    task::{self, Context, Poll},
-};
+// Unix domain sockets are only available on Unix platforms
+#[cfg(unix)]
+mod unix_impl {
+    use std::{
+        fmt,
+        path::PathBuf,
+        pin::Pin,
+        task::{self, Context, Poll},
+    };
 
-use http::Uri;
-use hyper_util::rt::TokioIo;
-use pin_project::pin_project;
-use tokio::net::UnixStream;
-use tower::Service;
+    use http::Uri;
+    use hyper_util::rt::TokioIo;
+    use pin_project::pin_project;
+    use tokio::net::UnixStream;
+    use tower::Service;
 
-/// Unix domain socket connector for Hyper.
-///
-/// Can be used to create hyper clients that channel requests to the underlying unix-domain socket
-#[derive(Clone)]
-pub struct UnixSocketConnector(PathBuf);
+    /// Unix domain socket connector for Hyper.
+    ///
+    /// Can be used to create hyper clients that channel requests to the underlying unix-domain socket
+    #[derive(Clone)]
+    pub struct UnixSocketConnector(PathBuf);
 
-impl UnixSocketConnector {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self(path.into())
+    impl UnixSocketConnector {
+        pub fn new(path: impl Into<PathBuf>) -> Self {
+            Self(path.into())
+        }
+    }
+
+    impl Service<Uri> for UnixSocketConnector {
+        type Response = TokioIo<UnixStream>;
+        type Error = BoxError;
+        type Future = UnixConnecting;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        // Unix-socket based connections ignore "authority" and "scheme" parts of the URI
+        fn call(&mut self, _dst: Uri) -> Self::Future {
+            let socket_path = self.0.clone();
+
+            let fut = async move {
+                UnixStream::connect(socket_path)
+                    .await
+                    .map(TokioIo::new)
+                    .map_err(Into::into)
+            };
+
+            UnixConnecting { fut: Box::pin(fut) }
+        }
+    }
+
+    type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+    impl fmt::Debug for UnixSocketConnector {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.debug_struct("UnixConnector").finish_non_exhaustive()
+        }
+    }
+
+    type ConnectResult = Result<TokioIo<UnixStream>, BoxError>;
+    type BoxConnecting = Pin<Box<dyn Future<Output = ConnectResult> + Send>>;
+
+    #[pin_project]
+    #[must_use = "futures do nothing unless polled"]
+    pub struct UnixConnecting {
+        #[pin]
+        fut: BoxConnecting,
+    }
+
+    impl Future for UnixConnecting {
+        type Output = ConnectResult;
+
+        fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
+            self.project().fut.poll(cx)
+        }
+    }
+
+    impl fmt::Debug for UnixConnecting {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.pad("UnixConnecting")
+        }
     }
 }
 
-impl Service<Uri> for UnixSocketConnector {
-    type Response = TokioIo<UnixStream>;
-    type Error = BoxError;
-    type Future = UnixConnecting;
-
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    // Unix-socket based connections ignore "authority" and "scheme" parts of the URI
-    fn call(&mut self, _dst: Uri) -> Self::Future {
-        let socket_path = self.0.clone();
-
-        let fut = async move {
-            UnixStream::connect(socket_path)
-                .await
-                .map(TokioIo::new)
-                .map_err(Into::into)
-        };
-
-        UnixConnecting { fut: Box::pin(fut) }
-    }
-}
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
-impl fmt::Debug for UnixSocketConnector {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("UnixConnector").finish_non_exhaustive()
-    }
-}
-
-type ConnectResult = Result<TokioIo<UnixStream>, BoxError>;
-type BoxConnecting = Pin<Box<dyn Future<Output = ConnectResult> + Send>>;
-
-#[pin_project]
-#[must_use = "futures do nothing unless polled"]
-pub struct UnixConnecting {
-    #[pin]
-    fut: BoxConnecting,
-}
-
-impl Future for UnixConnecting {
-    type Output = ConnectResult;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        self.project().fut.poll(cx)
-    }
-}
-
-impl fmt::Debug for UnixConnecting {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.pad("UnixConnecting")
-    }
-}
+#[cfg(unix)]
+pub use unix_impl::*;
