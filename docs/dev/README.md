@@ -14,4 +14,6 @@ This directory contains documentation relevant for Restate developers.
 
 [release.md](release.md) contains explanation for how to release the runtime.
 
+[release-testing.md](release-testing.md) contains the release testing checklist and process for testing before a major/minor release.
+
 [bilrost-migration-guidelines](bilrost-migration-guidelines.md) guidelines on how to create bilrost messages and how to migrate current serde messages to bilrost without breaking compatibility
