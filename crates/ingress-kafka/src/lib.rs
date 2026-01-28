@@ -20,10 +20,10 @@ use tokio::sync::mpsc;
 use restate_bifrost::Bifrost;
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
+use restate_types::schema::kafka::KafkaCluster;
 use restate_types::{
-    config::{Configuration, IngressOptions},
-    identifiers::SubscriptionId,
-    live::{Live, LiveLoad},
+    config::Configuration,
+    live::Live,
     partitions::PartitionTableError,
     schema::{Schema, subscriptions::Subscription},
 };
@@ -32,9 +32,7 @@ use tracing::debug;
 
 #[derive(Debug)]
 pub enum Command {
-    StartSubscription(Subscription),
-    StopSubscription(SubscriptionId),
-    UpdateSubscriptions(Vec<Subscription>),
+    UpdateSubscriptions(Vec<KafkaCluster>, Vec<Subscription>),
 }
 
 pub type SubscriptionCommandSender = mpsc::Sender<Command>;
@@ -118,13 +116,10 @@ where
         }
     }
 
-    pub async fn run(
-        self,
-        updateable_config: impl LiveLoad<Live = IngressOptions>,
-    ) -> anyhow::Result<()> {
+    pub async fn run(self) -> anyhow::Result<()> {
         match self.inner {
-            ServiceInner::Legacy(svc) => svc.run(updateable_config).await,
-            ServiceInner::IngestionClient(svc) => svc.run(updateable_config).await,
+            ServiceInner::Legacy(svc) => svc.run().await,
+            ServiceInner::IngestionClient(svc) => svc.run().await,
         }
     }
 }
