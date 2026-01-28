@@ -570,7 +570,7 @@ mod tests {
     use crate::nodes_config::{NodeConfig, NodesConfiguration, Role, WorkerConfig, WorkerState};
     use crate::partitions::worker_candidate_filter;
     use crate::replication::{NodeSet, ReplicationProperty};
-    use crate::{GenerationalNodeId, PlainNodeId};
+    use crate::{GenerationalNodeId, PlainNodeId, RestateVersion};
 
     fn generate_node(
         id: impl Into<PlainNodeId>,
@@ -586,6 +586,7 @@ mod tests {
             .address(format!("unix:/tmp/my_socket-{id}").parse().unwrap())
             .roles(role.into())
             .worker_config(WorkerConfig { worker_state })
+            .binary_version(RestateVersion::current())
             .build()
     }
 

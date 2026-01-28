@@ -1516,7 +1516,7 @@ mod tests {
     use restate_types::partitions::state::{
         MemberState, PartitionReplicaSetStates, ReplicaSetState,
     };
-    use restate_types::{GenerationalNodeId, Version};
+    use restate_types::{GenerationalNodeId, RestateVersion, Version};
     use std::num::NonZeroUsize;
     use std::time::Duration;
     use test_log::test;
@@ -1534,6 +1534,7 @@ mod tests {
             .current_generation(node_id)
             .address(AdvertisedAddress::default())
             .roles(Role::Worker | Role::Admin)
+            .binary_version(RestateVersion::current())
             .build();
         nodes_config.upsert_node(node_config);
 

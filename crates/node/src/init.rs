@@ -331,7 +331,7 @@ mod tests {
     use restate_types::config::{Configuration, set_current_config};
     use restate_types::net::listener::AddressBook;
     use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration};
-    use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+    use restate_types::{GenerationalNodeId, PlainNodeId, RestateVersion, Version};
 
     use crate::init::NodeInit;
 

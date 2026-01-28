@@ -340,7 +340,7 @@ mod tests {
     use restate_test_util::assert_eq;
     use restate_types::net::address::AdvertisedAddress;
     use restate_types::nodes_config::{NodeConfig, Role};
-    use restate_types::{GenerationalNodeId, Version};
+    use restate_types::{GenerationalNodeId, RestateVersion, Version};
 
     use crate::metadata::spawn_metadata_manager;
     use crate::{TaskCenter, TaskCenterBuilder};
@@ -509,6 +509,7 @@ mod tests {
             .current_generation(node_id)
             .address(address)
             .roles(roles)
+            .binary_version(RestateVersion::current())
             .build();
         nodes_config.upsert_node(my_node);
         nodes_config

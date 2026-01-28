@@ -11,7 +11,7 @@
 use restate_types::nodes_config::{
     LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
 };
-use restate_types::{GenerationalNodeId, PlainNodeId};
+use restate_types::{GenerationalNodeId, PlainNodeId, RestateVersion};
 
 pub fn generate_logserver_node(
     id: impl Into<PlainNodeId>,
@@ -25,6 +25,7 @@ pub fn generate_logserver_node(
         .address(format!("unix:/tmp/my_socket-{id}").parse().unwrap())
         .roles(Role::LogServer.into())
         .log_server_config(LogServerConfig { storage_state })
+        .binary_version(RestateVersion::current())
         .build()
 }
 
