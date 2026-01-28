@@ -16,6 +16,19 @@ Restate Server now supports listening on Unix domain sockets for all services (f
 - `restate-data/ingress.sock` - HTTP ingress
 - `restate-data/tokio.sock` - Tokio console (if enabled)
 
+#### Random ports
+
+You can now easily start `restate-server` binding to random ports using the command line argument `--use-random-ports=true`. For example:
+
+```shell
+$ restate-server --use-random-ports=true --no-logo
+Admin: http://192.168.1.17:39623/
+HTTP Ingress: http://192.168.1.17:43759/
+Message Fabric: http://192.168.1.17:33711/
+```
+
+The chosen ports will be displayed in the first three standard output lines.
+
 #### New Configuration Options
 
 The following new global options are available and can be overridden per-service:
