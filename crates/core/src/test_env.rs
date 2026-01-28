@@ -24,7 +24,7 @@ use restate_types::net::address::AdvertisedAddress;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
-use restate_types::{GenerationalNodeId, Version};
+use restate_types::{GenerationalNodeId, RestateVersion, Version};
 
 use crate::network::protobuf::network::Message;
 use crate::network::{
@@ -245,6 +245,7 @@ pub fn create_mock_nodes_config(node_id: u32, generation: u32) -> NodesConfigura
         .current_generation(node_id)
         .address(address)
         .roles(roles)
+        .binary_version(RestateVersion::current())
         .build();
     nodes_config.upsert_node(my_node);
     nodes_config

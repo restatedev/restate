@@ -206,7 +206,7 @@ impl GlobalMetadata for NodesConfiguration {
 #[derive(Debug, Clone, Eq, PartialEq, strum::EnumIs, serde::Serialize, serde::Deserialize)]
 enum MaybeNode {
     Tombstone,
-    Node(NodeConfig),
+    Node(Box<NodeConfig>),
 }
 
 #[derive(
@@ -364,7 +364,7 @@ impl NodesConfiguration {
 
         let plain_id = node.current_generation.as_plain();
         let name = node.name.clone();
-        let existing = self.nodes.insert(plain_id, MaybeNode::Node(node));
+        let existing = self.nodes.insert(plain_id, MaybeNode::Node(Box::new(node)));
         if let Some(MaybeNode::Node(existing)) = existing {
             self.name_lookup.remove(&existing.name);
         }
@@ -457,17 +457,9 @@ impl NodesConfiguration {
         }
     }
 
-    /// Returns _an_ admin node.
-    pub fn get_admin_node(&self) -> Option<&NodeConfig> {
-        self.nodes.values().find_map(|maybe| match maybe {
-            MaybeNode::Node(node) if node.roles.contains(Role::Admin) => Some(node),
-            _ => None,
-        })
-    }
-
     pub fn get_admin_nodes(&self) -> impl Iterator<Item = &NodeConfig> {
         self.nodes.values().filter_map(|maybe| match maybe {
-            MaybeNode::Node(node) if node.roles.contains(Role::Admin) => Some(node),
+            MaybeNode::Node(node) if node.roles.contains(Role::Admin) => Some(node.as_ref()),
             _ => None,
         })
     }
@@ -482,7 +474,7 @@ impl NodesConfiguration {
     /// Iterate over nodes with a given role
     pub fn iter_role(&self, role: Role) -> impl Iterator<Item = (PlainNodeId, &'_ NodeConfig)> {
         self.nodes.iter().filter_map(move |(k, v)| match v {
-            MaybeNode::Node(node) if node.has_role(role) => Some((*k, node)),
+            MaybeNode::Node(node) if node.has_role(role) => Some((*k, node.as_ref())),
             _ => None,
         })
     }
@@ -491,7 +483,7 @@ impl NodesConfiguration {
     pub fn iter(&self) -> impl Iterator<Item = (PlainNodeId, &'_ NodeConfig)> {
         self.nodes.iter().filter_map(|(k, v)| {
             if let MaybeNode::Node(node) = v {
-                Some((*k, node))
+                Some((*k, node.as_ref()))
             } else {
                 None
             }
@@ -501,7 +493,7 @@ impl NodesConfiguration {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (PlainNodeId, &'_ mut NodeConfig)> {
         self.nodes.iter_mut().filter_map(|(k, v)| {
             if let MaybeNode::Node(node) = v {
-                Some((*k, node))
+                Some((*k, node.as_mut()))
             } else {
                 None
             }
