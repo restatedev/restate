@@ -28,6 +28,10 @@ pub(crate) fn append_invocation_status_row<'a>(
         row.partition_key(invocation_id.partition_key());
     }
 
+    if row.is_uuid_defined() {
+        row.uuid(invocation_id.invocation_uuid().to_bytes());
+    }
+
     if (row.is_target_service_name_defined()
         || row.is_target_service_key_defined()
         || row.is_target_handler_name_defined()

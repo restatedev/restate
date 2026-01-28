@@ -64,7 +64,9 @@ pub(crate) fn register_self(
         schema,
         sys_invocation_state_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_partition_scanner),
-        FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
+        FirstMatchingPartitionKeyExtractor::default()
+            .with_invocation_id("id")
+            .with_invocation_id_udf("uuid"),
     )
     .with_statistics(statistics.build());
     ctx.register_partitioned_table(NAME, Arc::new(status_table))

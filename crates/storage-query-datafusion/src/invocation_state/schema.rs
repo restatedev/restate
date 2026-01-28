@@ -21,6 +21,9 @@ define_table!(sys_invocation_state(
     /// [Invocation ID](/operate/invocation#invocation-identifier).
     id: DataType::LargeUtf8,
 
+    /// Invocation UUID. Along with the partition key, forms part of the invocation ID, but is cheaper to query
+    uuid: FixedSizeBinary16,
+
     /// If true, the invocation is currently in-flight
     in_flight: DataType::Boolean,
 

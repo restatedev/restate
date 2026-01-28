@@ -8,16 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
-use datafusion::common::ScalarValue;
-use datafusion::logical_expr::expr::InList;
-use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col};
-use restate_types::identifiers::partitioner::HashPartitioner;
-use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
+use std::sync::Arc;
+
+use anyhow::Context;
+use datafusion::common::ScalarValue;
+use datafusion::logical_expr::expr::InList;
+use datafusion::logical_expr::{BinaryExpr, Expr, Operator, ScalarUDF, col};
+
+use restate_types::identifiers::partitioner::HashPartitioner;
+use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
+
+use crate::udfs::RestateInvocationIdUdf;
 
 pub trait PartitionKeyExtractor: Send + Sync + 'static + Debug {
     fn try_extract(&self, filters: &[Expr]) -> anyhow::Result<Option<BTreeSet<PartitionKey>>>;
@@ -38,7 +43,7 @@ impl Default for FirstMatchingPartitionKeyExtractor {
 
 impl FirstMatchingPartitionKeyExtractor {
     pub fn with_service_key(self, column_name: impl Into<String>) -> Self {
-        let e = MatchingColumnExtractor::new(column_name, |column_value: &str| {
+        let e = MatchingExpressionExtractor::new(col(column_name.into()), |column_value: &str| {
             let key = HashPartitioner::compute_partition_key(column_value);
             Ok(key)
         });
@@ -46,7 +51,22 @@ impl FirstMatchingPartitionKeyExtractor {
     }
 
     pub fn with_invocation_id(self, column_name: impl Into<String>) -> Self {
-        let e = MatchingColumnExtractor::new(column_name, |column_value: &str| {
+        let e = MatchingExpressionExtractor::new(col(column_name.into()), |column_value: &str| {
+            let invocation_id =
+                InvocationId::from_str(column_value).context("non valid invocation id")?;
+            Ok(invocation_id.partition_key())
+        });
+        self.append(e)
+    }
+
+    /// Accept filters on a `restate_invocation_id(partition_key, uuid)` UDF call,
+    /// such as those pushed down from views that define `id` as a computed column.
+    pub fn with_invocation_id_udf(self, uuid_col: impl Into<String>) -> Self {
+        let udf_expr = Expr::ScalarFunction(datafusion::logical_expr::expr::ScalarFunction {
+            func: Arc::new(ScalarUDF::from(RestateInvocationIdUdf::new())),
+            args: vec![col("partition_key"), col(uuid_col.into())],
+        });
+        let e = MatchingExpressionExtractor::new(udf_expr, |column_value: &str| {
             let invocation_id =
                 InvocationId::from_str(column_value).context("non valid invocation id")?;
             Ok(invocation_id.partition_key())
@@ -67,30 +87,31 @@ impl PartitionKeyExtractor for FirstMatchingPartitionKeyExtractor {
                 return Ok(Some(partition_keys));
             }
         }
-
         Ok(None)
     }
 }
 
-pub(crate) struct MatchingColumnExtractor<F> {
-    column: Expr,
+pub(crate) struct MatchingExpressionExtractor<F> {
+    expr: Expr,
     extractor: F,
 }
 
-impl<F> Debug for MatchingColumnExtractor<F> {
+impl<F> Debug for MatchingExpressionExtractor<F> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("MatchingColumnExtractor{:?}", self.column))
+        f.write_fmt(format_args!("MatchingExpressionExtractor{:?}", self.expr))
     }
 }
 
-impl<F> MatchingColumnExtractor<F> {
-    pub(crate) fn new(column_name: impl Into<String>, extractor: F) -> Self {
-        let column = col(column_name.into());
-        Self { column, extractor }
+impl<F> MatchingExpressionExtractor<F> {
+    pub(crate) fn new(column: Expr, extractor: F) -> Self {
+        Self {
+            expr: column,
+            extractor,
+        }
     }
 }
 
-impl<F> PartitionKeyExtractor for MatchingColumnExtractor<F>
+impl<F> PartitionKeyExtractor for MatchingExpressionExtractor<F>
 where
     F: Fn(&str) -> anyhow::Result<PartitionKey> + Send + Sync + 'static,
 {
@@ -103,12 +124,11 @@ where
                 continue;
             };
 
-            if *filter_as_inlist.expr != self.column {
+            if *filter_as_inlist.expr != self.expr {
                 continue;
             }
 
             let mut list_keys = BTreeSet::new();
-
             for item in &filter_as_inlist.list {
                 if let Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _) = item {
                     let f = &self.extractor;
@@ -122,8 +142,17 @@ where
 
             return Ok(Some(list_keys));
         }
-
         Ok(None)
+    }
+}
+
+/// Returns true if the expression is one that we support as the target of a
+/// partition key filter: column references, or scalar UDF calls over columns.
+fn is_filterable_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(_) => true,
+        Expr::ScalarFunction(f) => f.args.iter().all(|arg| matches!(arg, Expr::Column(_))),
+        _ => false,
     }
 }
 
@@ -140,12 +169,12 @@ fn as_inlist(expr: &Expr, depth_limit: usize) -> Option<Cow<'_, InList>> {
             op: Operator::Eq,
             right,
         }) => match (left.as_ref(), right.as_ref()) {
-            (Expr::Column(_), Expr::Literal(_, _)) => Some(Cow::Owned(InList {
+            (expr, Expr::Literal(_, _)) if is_filterable_expr(expr) => Some(Cow::Owned(InList {
                 expr: left.clone(),
                 list: vec![*right.clone()],
                 negated: false,
             })),
-            (Expr::Literal(_, _), Expr::Column(_)) => Some(Cow::Owned(InList {
+            (Expr::Literal(_, _), expr) if is_filterable_expr(expr) => Some(Cow::Owned(InList {
                 expr: right.clone(),
                 list: vec![*left.clone()],
                 negated: false,
@@ -160,8 +189,8 @@ fn as_inlist(expr: &Expr, depth_limit: usize) -> Option<Cow<'_, InList>> {
             let left_as_inlist = as_inlist(left, depth_limit - 1)?;
             let right_as_inlist = as_inlist(right, depth_limit - 1)?;
 
-            if matches!(left_as_inlist.expr.as_ref(), Expr::Column(_))
-                && matches!(right_as_inlist.expr.as_ref(), Expr::Column(_))
+            if is_filterable_expr(&left_as_inlist.expr)
+                && is_filterable_expr(&right_as_inlist.expr)
                 && left_as_inlist.expr == right_as_inlist.expr
                 && !left_as_inlist.negated
                 && !right_as_inlist.negated
@@ -226,11 +255,16 @@ impl PartitionKeyExtractor for IdentityPartitionKeyExtractor {
 
 #[cfg(test)]
 mod tests {
-    use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+    use std::sync::Arc;
+
     use datafusion::common::ScalarValue;
-    use datafusion::logical_expr::{Expr, col, or};
+    use datafusion::logical_expr::{Expr, ScalarUDF, col, or};
+
     use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
+
+    use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+    use crate::udfs::RestateInvocationIdUdf;
 
     #[test]
     fn test_service_key() {
@@ -437,6 +471,74 @@ mod tests {
             .expect("extract");
 
         assert_eq!(None, got_keys);
+    }
+
+    #[test]
+    fn test_invocation_id_udf_eq() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_invocation_id_udf("uuid");
+
+        let invocation_target = InvocationTarget::virtual_object(
+            "counter",
+            "key-2",
+            "count",
+            VirtualObjectHandlerType::Exclusive,
+        );
+        let invocation_id = InvocationId::generate(&invocation_target, None);
+        let expected_key = invocation_id.partition_key();
+
+        let udf_expr = udf_invocation_id_expr();
+        let got_keys = extractor
+            .try_extract(&[udf_expr.eq(utf8_lit(invocation_id.to_string()))])
+            .expect("extract")
+            .expect("to find a value");
+
+        assert_eq!(1, got_keys.len());
+        assert_eq!(expected_key, got_keys.into_iter().next().unwrap());
+    }
+
+    #[test]
+    fn test_invocation_id_udf_ored() {
+        let extractor =
+            FirstMatchingPartitionKeyExtractor::default().with_invocation_id_udf("uuid");
+
+        let invocation_target_1 = InvocationTarget::virtual_object(
+            "counter",
+            "key-1",
+            "add",
+            VirtualObjectHandlerType::Exclusive,
+        );
+        let invocation_target_2 = InvocationTarget::virtual_object(
+            "counter",
+            "key-2",
+            "count",
+            VirtualObjectHandlerType::Exclusive,
+        );
+        let invocation_id_1 = InvocationId::generate(&invocation_target_1, None);
+        let invocation_id_2 = InvocationId::generate(&invocation_target_2, None);
+        let expected_key_1 = invocation_id_1.partition_key();
+        let expected_key_2 = invocation_id_2.partition_key();
+
+        let udf_expr = udf_invocation_id_expr();
+        let got_keys = extractor
+            .try_extract(&[or(
+                udf_expr.clone().eq(utf8_lit(invocation_id_1.to_string())),
+                udf_expr.eq(utf8_lit(invocation_id_2.to_string())),
+            )])
+            .expect("extract")
+            .expect("to find a value");
+
+        assert_eq!(2, got_keys.len());
+        let mut got_keys = got_keys.into_iter();
+        assert_eq!(expected_key_1, got_keys.next().unwrap());
+        assert_eq!(expected_key_2, got_keys.next().unwrap());
+    }
+
+    fn udf_invocation_id_expr() -> Expr {
+        Expr::ScalarFunction(datafusion::logical_expr::expr::ScalarFunction {
+            func: Arc::new(ScalarUDF::from(RestateInvocationIdUdf::new())),
+            args: vec![col("partition_key"), col("uuid")],
+        })
     }
 
     fn utf8_lit(value: impl Into<String>) -> Expr {

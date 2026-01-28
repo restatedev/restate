@@ -41,9 +41,10 @@ use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::udfs::RestateInvocationIdUdf;
 
 const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
-            ss.id,
+            restate_invocation_id(ss.partition_key, ss.uuid) as id,
             ss.target,
             ss.target_service_name,
             ss.target_service_key,
@@ -101,7 +102,7 @@ const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
             ss.completion_result,
             ss.completion_failure
         FROM sys_invocation_state sis
-        RIGHT JOIN sys_invocation_status ss ON ss.id = sis.id";
+        RIGHT JOIN sys_invocation_status ss ON ss.partition_key = sis.partition_key AND ss.uuid = sis.uuid";
 
 const CLUSTER_LOGS_TAIL_SEGMENTS_VIEW: &str = "CREATE VIEW logs_tail_segments as SELECT
         l.* FROM logs AS l JOIN (
@@ -385,6 +386,11 @@ impl QueryContext {
                 warn!("Unable to register json functions {}", err);
             }
         };
+
+        // Register restate UDFs
+        ctx.register_udf(datafusion::logical_expr::ScalarUDF::from(
+            RestateInvocationIdUdf::new(),
+        ));
 
         let sql_options = SQLOptions::new()
             .with_allow_ddl(false)

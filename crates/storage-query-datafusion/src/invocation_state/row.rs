@@ -28,6 +28,9 @@ pub(crate) fn append_invocation_state_row(
     if row.is_id_defined() {
         row.fmt_id(invocation_id);
     }
+    if row.is_uuid_defined() {
+        row.uuid(invocation_id.invocation_uuid().to_bytes());
+    }
     row.in_flight(status_row.in_flight());
     row.retry_count(status_row.retry_count() as u64);
     row.last_start_at(MillisSinceEpoch::as_u64(&status_row.last_start_at().into()) as i64);
