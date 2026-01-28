@@ -20,7 +20,7 @@ use serde_with::serde_as;
 use crate::base62_util::base62_max_length_for_type;
 use crate::locality::NodeLocation;
 use crate::metadata::GlobalMetadata;
-use crate::net::address::{AdvertisedAddress, FabricPort};
+use crate::net::address::{AdvertisedAddress, ControlPort, FabricPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::{
     GenerationalNodeId, NodeId, PlainNodeId, RestateVersion, base62_util,
@@ -216,6 +216,11 @@ pub struct NodeConfig {
     pub name: String,
     pub current_generation: GenerationalNodeId,
     pub address: AdvertisedAddress<FabricPort>,
+    /// The address to use for control plane requests (NodeCtlSvc / ClusterCtrlSvc)
+    /// Introduced in v1.6.0 (for forward compatibility, not populated by v1.6.0)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[builder(default)]
+    pub ctrl_address: Option<AdvertisedAddress<ControlPort>>,
     pub roles: EnumSet<Role>,
     #[serde(default)]
     #[builder(default)]
@@ -832,6 +837,7 @@ mod tests {
             current_generation: GenerationalNodeId::new(1, 1),
             location: "region1.zone1".parse().unwrap(),
             address: address.clone(),
+            ctrl_address: None,
             roles: Role::Worker.into(),
             log_server_config: LogServerConfig::default(),
             metadata_server_config: MetadataServerConfig::default(),
@@ -843,6 +849,7 @@ mod tests {
             current_generation: GenerationalNodeId::new(2, 1),
             location: "region1.zone1".parse().unwrap(),
             address: address.clone(),
+            ctrl_address: None,
             roles: Role::Worker.into(),
             log_server_config: LogServerConfig::default(),
             metadata_server_config: MetadataServerConfig::default(),
