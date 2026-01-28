@@ -784,7 +784,7 @@ mod tests {
     use crate::nodes_config::{
         LogServerConfig, NodeConfig, NodesConfiguration, Role, StorageState,
     };
-    use crate::{GenerationalNodeId, PlainNodeId};
+    use crate::{GenerationalNodeId, PlainNodeId, RestateVersion};
 
     fn generate_logserver_node(
         id: impl Into<PlainNodeId>,
@@ -799,6 +799,7 @@ mod tests {
             .address(format!("unix:/tmp/my_socket-{id}").parse().unwrap())
             .roles(Role::LogServer.into())
             .log_server_config(LogServerConfig { storage_state })
+            .binary_version(RestateVersion::current())
             .build()
     }
 

@@ -647,6 +647,7 @@ mod tests {
     use tokio_stream::wrappers::ReceiverStream;
 
     use restate_test_util::assert_eq;
+    use restate_types::RestateVersion;
     use restate_types::Version;
     use restate_types::config::NetworkingOptions;
     use restate_types::net::address::AdvertisedAddress;
@@ -841,6 +842,7 @@ mod tests {
             .current_generation(node_id)
             .address(AdvertisedAddress::default())
             .roles(Role::Worker.into())
+            .binary_version(RestateVersion::current())
             .build();
         nodes_config.upsert_node(node_config);
 
