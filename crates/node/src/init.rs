@@ -11,7 +11,6 @@
 use crate::cluster_marker::mark_cluster_as_provisioned;
 use restate_core::{MetadataWriter, ShutdownError, TaskCenter, cancellation_token};
 use restate_metadata_store::{MetadataStoreClient, ReadWriteError};
-use restate_types::PlainNodeId;
 use restate_types::config::Configuration;
 use restate_types::errors::MaybeRetryableError;
 use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
@@ -19,6 +18,7 @@ use restate_types::nodes_config::{
     MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
 };
 use restate_types::retries::RetryPolicy;
+use restate_types::{PlainNodeId, RestateVersion};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{Level, debug, enabled, info, trace, warn};
@@ -304,6 +304,7 @@ impl<'a> NodeInit<'a> {
                             .metadata_server_config(MetadataServerConfig {
                                 metadata_server_state,
                             })
+                            .binary_version(RestateVersion::current())
                             .build()
                     };
 
@@ -356,6 +357,7 @@ mod tests {
                     .advertised_address(&address_book),
             )
             .roles(EnumSet::default())
+            .binary_version(RestateVersion::current())
             .build();
         let mut nodes_configuration =
             NodesConfiguration::new(Version::MIN, cluster_name, ClusterFingerprint::generate());
