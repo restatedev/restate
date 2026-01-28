@@ -22,7 +22,6 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
 use raft_proto::eraftpb::Snapshot;
-use restate_types::net::listener::AddressBook;
 use tokio::sync::{mpsc, oneshot, watch};
 use tonic::Status;
 use ulid::Ulid;
@@ -39,13 +38,14 @@ use restate_types::errors::{ConversionError, GenericError, MaybeRetryableError};
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
 use restate_types::metadata::{Precondition, VersionedValue};
+use restate_types::net::listener::AddressBook;
 use restate_types::nodes_config::{
     ClusterFingerprint, MetadataServerConfig, MetadataServerState, NodeConfig, NodesConfiguration,
     Role,
 };
 use restate_types::protobuf::common::MetadataServerStatus;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
-use restate_types::{GenerationalNodeId, PlainNodeId, Version};
+use restate_types::{GenerationalNodeId, PlainNodeId, RestateVersion, Version};
 
 use crate::raft::RaftMetadataServer;
 
@@ -660,6 +660,7 @@ fn nodes_configuration_for_metadata_cluster_seed(
             .address(advertised_address)
             .roles(configuration.common.roles)
             .metadata_server_config(metadata_server_config)
+            .binary_version(RestateVersion::current())
             .build();
 
         nodes_configuration.upsert_node(node_config);
