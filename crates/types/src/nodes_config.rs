@@ -187,16 +187,19 @@ impl GlobalMetadata for NodesConfiguration {
     }
 
     fn validate_update(&self, previous: Option<&Arc<Self>>) -> Result<(), anyhow::Error> {
-        // never accept new configuration that changes the cluster fingerprint if the previous
-        // configuration was valid
-        if let Some(previous_config) = previous
-            && previous_config.is_valid()
-            && self.cluster_fingerprint() != previous_config.cluster_fingerprint()
+        // never accept new configuration that changes the cluster fingerprint
+        if let Some(current_config) = previous
+            && let Some(current_fingerprint) = current_config.cluster_fingerprint()
+            && self
+                .cluster_fingerprint()
+                .is_none_or(|incoming| incoming != current_fingerprint)
         {
             Err(anyhow::anyhow!(
                 "Cannot accept nodes-configuration update that mutates the cluster fingerprint. Rejected a change of fingerprint from '{}' to incoming value of '{}'.",
-                previous_config.cluster_fingerprint(),
+                current_fingerprint,
                 self.cluster_fingerprint()
+                    .map(|f| f.to_string())
+                    .unwrap_or_default()
             ))
         } else {
             Ok(())
@@ -299,36 +302,7 @@ impl NodesConfiguration {
         self.name_lookup.is_empty()
     }
 
-    #[track_caller]
-    pub fn cluster_fingerprint(&self) -> ClusterFingerprint {
-        let Some(fingerprint) = self.cluster_fingerprint else {
-            if self.is_valid() {
-                panic!(
-                    "No cluster fingerprint found in the nodes configuration {}. This indicates \
-                    that you are resuming from a nodes configuration that has been written by \
-                    Restate < v1.5. Please upgrade first to Restate v1.5 to store the cluster \
-                    fingerprint before upgrading to this version. Note that Restate does not \
-                    support skipping minor versions when upgrading.",
-                    self.version()
-                )
-            } else {
-                panic!(
-                    "Accessing the cluster fingerprint while the nodes configuration is invalid is \
-                    not supported and indicates a programming bug. Please contact the Restate \
-                    developers."
-                );
-            }
-        };
-
-        fingerprint
-    }
-
-    /// Returns the cluster fingerprint if the nodes configuration is valid.
-    ///
-    /// # Important
-    /// This method should only be used by components that operate before the NodesConfiguration is
-    /// properly initialized. If this is not the case, then use [`NodesConfiguration::cluster_fingerprint`]
-    pub fn try_cluster_fingerprint(&self) -> Option<ClusterFingerprint> {
+    pub fn cluster_fingerprint(&self) -> Option<ClusterFingerprint> {
         self.cluster_fingerprint
     }
 

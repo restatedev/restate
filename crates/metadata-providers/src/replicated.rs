@@ -211,7 +211,7 @@ fn cluster_identity() -> (String, Option<ClusterFingerprint>) {
     let cluster_fingerprint = TaskCenter::try_with_current(|handle| {
         handle
             .metadata()
-            .and_then(|m| m.nodes_config_ref().try_cluster_fingerprint())
+            .and_then(|m| m.nodes_config_ref().cluster_fingerprint())
     })
     .flatten();
 

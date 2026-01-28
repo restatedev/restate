@@ -180,7 +180,7 @@ impl LatestSnapshot {
     pub fn validate(
         &self,
         cluster_name: &str,
-        cluster_fingerprint: ClusterFingerprint,
+        cluster_fingerprint: Option<ClusterFingerprint>,
     ) -> anyhow::Result<()> {
         if cluster_name != self.cluster_name {
             anyhow::bail!(
@@ -191,13 +191,14 @@ impl LatestSnapshot {
         }
 
         // Snapshots from earlier Restate versions might not have the fingerprint set. Hence, only
-        // compare the fingerprints if the snapshot's fingerprint is present.
-        if let Some(incoming_fingerprint) = self.cluster_fingerprint
-            && cluster_fingerprint != incoming_fingerprint
+        // compare the fingerprints if both the snapshot and the cluster have fingerprints.
+        if let (Some(incoming_fingerprint), Some(expected_fingerprint)) =
+            (self.cluster_fingerprint, cluster_fingerprint)
+            && expected_fingerprint != incoming_fingerprint
         {
             bail!(
                 "cluster fingerprint mismatch, \
-                 expected:'{cluster_fingerprint}' {cluster_fingerprint:?} got:'{incoming_fingerprint}' {incoming_fingerprint:?}. \
+                 expected:'{expected_fingerprint}' {expected_fingerprint:?} got:'{incoming_fingerprint}' {incoming_fingerprint:?}. \
                  This often happens if this cluster is reusing a snapshot repository path from a different cluster"
             );
         }
@@ -1317,9 +1318,9 @@ mod tests {
             cluster_name: Metadata::with_current(|m| {
                 m.nodes_config_ref().cluster_name().to_string()
             }),
-            cluster_fingerprint: Some(Metadata::with_current(|m| {
+            cluster_fingerprint: Metadata::with_current(|m| {
                 m.nodes_config_ref().cluster_fingerprint()
-            })),
+            }),
             node_name: "node".to_string(),
             partition_id: PartitionId::MIN,
             created_at: jiff::Timestamp::now(),

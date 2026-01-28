@@ -174,11 +174,6 @@ impl Member {
         let new_connection_manager = ConnectionManager::new(
             my_member_id.node_id,
             raft_tx,
-            // nodes config must be valid since we are a member which means one of the following:
-            // a) if we got provisioned then the provision call created a snapshot with a valid NodesConfiguration
-            // b) if we got added to a metadata cluster then we have stored a valid NodesConfiguration together with
-            //    the member state to disk which gets restored on Uninitialized::initialize()
-            nodes_config.cluster_fingerprint(),
             nodes_config.cluster_name().to_owned(),
         );
         let mut networking = Networking::new(new_connection_manager.clone());
@@ -518,16 +513,16 @@ impl Member {
         // Validate cluster identity: first fingerprint, then cluster_name. In some cases only the
         // cluster name is set (e.g. when a node is trying to join a cluster and asking for the
         // NodesConfiguration). Older versions of Restate < v1.6 won't set these fields.
-        if let Some(incoming_fingerprint) = cluster_identity.fingerprint {
-            let expected_fingerprint = nodes_config.cluster_fingerprint();
-
-            if incoming_fingerprint != expected_fingerprint {
-                request.fail(RequestError::ClusterIdentityMismatch(format!(
-                    "cluster fingerprint mismatch: expected {}, got {}",
-                    expected_fingerprint, incoming_fingerprint
-                )));
-                return;
-            }
+        // If server has no fingerprint, allow (backward compatibility).
+        if let Some(incoming_fingerprint) = cluster_identity.fingerprint
+            && let Some(expected_fingerprint) = nodes_config.cluster_fingerprint()
+            && incoming_fingerprint != expected_fingerprint
+        {
+            request.fail(RequestError::ClusterIdentityMismatch(format!(
+                "cluster fingerprint mismatch: expected {}, got {}",
+                expected_fingerprint, incoming_fingerprint
+            )));
+            return;
         }
 
         if let Some(incoming_cluster_name) = cluster_identity.cluster_name {
@@ -542,7 +537,7 @@ impl Member {
             }
         }
         // If neither fingerprint nor cluster_name is provided, allow (backward compatibility)
-        // todo in v1.7 no longer accept if no cluster identity was provided
+        // todo once cluster fingerprint is non-optional no longer accept if no cluster identity was provided
 
         trace!("Handle metadata store request: {request:?}");
 
@@ -655,17 +650,17 @@ impl Member {
 
         // Validate cluster identity: first fingerprint, then cluster_name. Older versions of
         // Restate < v1.6 won't set these fields.
-        // todo in v1.7 make this check mandatory and fail if neither fingerprint nor cluster_name is set
-        if let Some(incoming_fingerprint) = cluster_identity.fingerprint {
-            let expected_fingerprint = nodes_config.cluster_fingerprint();
-
-            if incoming_fingerprint != expected_fingerprint {
-                let _ = response_tx.send(Err(JoinClusterError::ClusterIdentityMismatch(format!(
-                    "cluster fingerprint mismatch: expected {}, got {}",
-                    expected_fingerprint, incoming_fingerprint
-                ))));
-                return;
-            }
+        // todo once cluster fingerprint is non-optional make this check mandatory and fail if neither fingerprint nor cluster_name is set
+        // If server has no fingerprint, allow (backward compatibility).
+        if let Some(incoming_fingerprint) = cluster_identity.fingerprint
+            && let Some(expected_fingerprint) = nodes_config.cluster_fingerprint()
+            && incoming_fingerprint != expected_fingerprint
+        {
+            let _ = response_tx.send(Err(JoinClusterError::ClusterIdentityMismatch(format!(
+                "cluster fingerprint mismatch: expected {}, got {}",
+                expected_fingerprint, incoming_fingerprint
+            ))));
+            return;
         }
 
         if let Some(incoming_cluster_name) = cluster_identity.cluster_name {

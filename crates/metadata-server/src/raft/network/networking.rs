@@ -20,7 +20,7 @@ use tonic::metadata::MetadataValue;
 use tracing::trace;
 
 use restate_core::network::net_util;
-use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskKind};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::PlainNodeId;
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::net::address::{AdvertisedAddress, FabricPort};
@@ -184,16 +184,15 @@ where
                         PEER_METADATA_KEY,
                         MetadataValue::try_from(connection_manager.identity().to_string())?,
                     );
-                    // send our cluster fingerprint for validation
-                    request.metadata_mut().insert(
-                        CLUSTER_FINGERPRINT_METADATA_KEY,
-                        MetadataValue::try_from(
-                            connection_manager
-                                .cluster_fingerprint()
-                                .to_u64()
-                                .to_string(),
-                        )?,
-                    );
+                    // Look up fingerprint from Metadata and send if available
+                    let cluster_fingerprint =
+                        Metadata::with_current(|m| m.nodes_config_ref().cluster_fingerprint());
+                    if let Some(fp) = cluster_fingerprint {
+                        request.metadata_mut().insert(
+                            CLUSTER_FINGERPRINT_METADATA_KEY,
+                            MetadataValue::try_from(fp.to_u64().to_string())?,
+                        );
+                    }
                     // send our cluster name for validation
                     request.metadata_mut().insert(
                         CLUSTER_NAME_METADATA_KEY,

@@ -34,7 +34,7 @@ pub struct SnapshotPartitionTask {
     pub snapshot_base_path: PathBuf,
     pub partition_store_manager: Arc<PartitionStoreManager>,
     pub cluster_name: String,
-    pub cluster_fingerprint: ClusterFingerprint,
+    pub cluster_fingerprint: Option<ClusterFingerprint>,
     pub node_name: String,
     pub snapshot_repository: SnapshotRepository,
 }
@@ -114,7 +114,7 @@ impl SnapshotPartitionTask {
         PartitionSnapshotMetadata {
             version: SnapshotFormatVersion::V1,
             cluster_name: self.cluster_name.clone(),
-            cluster_fingerprint: Some(self.cluster_fingerprint),
+            cluster_fingerprint: self.cluster_fingerprint,
             node_name: self.node_name.clone(),
             partition_id: self.partition_id,
             created_at: created_at.into_timestamp(),
