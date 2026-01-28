@@ -170,9 +170,9 @@ impl<'a> MetadataClientWrapper<'a> {
                                     self.writer.inner.wait_for_version(T::KIND, next_version),
                                 )
                                 .await
-                                .map_err(|_elapsed| {
+                                .map_err(|elapsed| {
                                     // timed out, we'll report exhausted retries
-                                    ReadWriteError::RetriesExhausted(key.clone())
+                                    ReadWriteError::RetriesExhausted(key.clone(), elapsed.into())
                                 })?
                                 .map_err(|e| {
                                     // metadata manager stopped
@@ -180,7 +180,11 @@ impl<'a> MetadataClientWrapper<'a> {
                                 })?;
                             }
                             WaitDuration::None => {
-                                return Err(ReadWriteError::RetriesExhausted(key).into());
+                                return Err(ReadWriteError::RetriesExhausted(
+                                    key,
+                                    "retry duration exceeded".into(),
+                                )
+                                .into());
                             }
                         }
                     }
@@ -190,7 +194,9 @@ impl<'a> MetadataClientWrapper<'a> {
                             let elapsed_time = start_time.elapsed();
                             let remaining = total_retry_time.subtract(elapsed_time);
                             let Some(delay) = remaining.min(delay) else {
-                                return Err(ReadWriteError::RetriesExhausted(key).into());
+                                return Err(
+                                    ReadWriteError::RetriesExhausted(key, err.into()).into()
+                                );
                             };
                             debug!(
                                 %retry_count,
@@ -203,7 +209,7 @@ impl<'a> MetadataClientWrapper<'a> {
                                 %retry_count,
                                 "Exhausted all retries"
                             );
-                            return Err(ReadWriteError::RetriesExhausted(key).into());
+                            return Err(ReadWriteError::RetriesExhausted(key, err.into()).into());
                         }
                     }
                     Err(err) => {
