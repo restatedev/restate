@@ -68,6 +68,9 @@ pub enum Verdict {
     /// returns gives the caller the guarantee that it's safe to retry the request
     /// without causing any duplication.
     LoadShedding,
+    /// Message type was recognized but payload failed
+    /// to decode.
+    InvalidPayload,
 }
 
 impl From<Verdict> for rpc_reply::Status {
@@ -76,6 +79,7 @@ impl From<Verdict> for rpc_reply::Status {
             Verdict::MessageUnrecognized => Self::MessageUnrecognized,
             Verdict::SortCodeNotFound => Self::SortCodeNotFound,
             Verdict::LoadShedding => Self::LoadShedding,
+            Verdict::InvalidPayload => Self::InvalidPayload,
         }
     }
 }
@@ -86,6 +90,7 @@ impl From<Verdict> for watch_update::Start {
             Verdict::MessageUnrecognized => Self::MessageUnrecognized,
             Verdict::SortCodeNotFound => Self::SortCodeNotFound,
             Verdict::LoadShedding => Self::LoadShedding,
+            Verdict::InvalidPayload => Self::InvalidPayload,
         }
     }
 }

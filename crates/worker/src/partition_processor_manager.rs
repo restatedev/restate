@@ -1228,7 +1228,9 @@ where
 
     fn handle_create_snapshot_request(&mut self, request: Incoming<Rpc<CreateSnapshotRequest>>) {
         let (sender, rx) = oneshot::channel();
-        let (reciprocal, body) = request.split();
+        let Some((reciprocal, body)) = request.split() else {
+            return;
+        };
         self.on_create_snapshot(body.partition_id, body.min_target_lsn, sender);
         tokio::spawn(async move {
             let Ok(result) = rx.await else {

@@ -84,7 +84,9 @@ impl RemoteQueryScannerServer {
                         }
                         ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerClose::TYPE => {
                             let close_req = msg.into_typed::<RemoteQueryScannerClose>();
-                            let (reciprocal, close_req) = close_req.split();
+                            let Some((reciprocal, close_req)) = close_req.split() else {
+                                continue;
+                            };
                             scanners.remove(&close_req.scanner_id);
                             let res = RemoteQueryScannerClosed {
                                 scanner_id: close_req.scanner_id,
@@ -105,7 +107,9 @@ impl RemoteQueryScannerServer {
         remote_scanner_manager: &RemoteScannerManager,
     ) {
         let peer = scan_req.peer();
-        let (reciprocal, body) = scan_req.split();
+        let Some((reciprocal, body)) = scan_req.split() else {
+            return;
+        };
         let partition_id = body.partition_id;
 
         if let Err(e) = ScannerTask::spawn(scanner_id, remote_scanner_manager, peer, scanners, body)
@@ -121,7 +125,9 @@ impl RemoteQueryScannerServer {
     }
 
     fn on_next(scanners: &ScannerMap, req: Incoming<Rpc<RemoteQueryScannerNext>>) {
-        let (reciprocal, req) = req.split();
+        let Some((reciprocal, req)) = req.split() else {
+            return;
+        };
         let scanner_id = req.scanner_id;
         let Some(scanner) = scanners.get(&scanner_id) else {
             tracing::info!(
