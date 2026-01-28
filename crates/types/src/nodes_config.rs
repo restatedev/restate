@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::num::NonZero;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -245,6 +246,13 @@ impl NodeConfig {
     #[inline]
     pub fn has_role(&self, role: Role) -> bool {
         self.roles.contains(role)
+    }
+
+    pub fn ctrl_address(&self) -> Cow<'_, AdvertisedAddress<ControlPort>> {
+        match &self.ctrl_address {
+            Some(addr) => Cow::Borrowed(addr),
+            None => Cow::Owned(self.address.clone().coerce()),
+        }
     }
 }
 

@@ -10,12 +10,14 @@
 
 use enumset::EnumSet;
 
-use super::schema::NodeBuilder;
+use restate_types::RestateVersion;
 use restate_types::cluster_state::NodeState;
 use restate_types::{
     PlainNodeId, Version,
     nodes_config::{NodeConfig, Role},
 };
+
+use super::schema::NodeBuilder;
 
 pub(crate) fn append_node_row(
     builder: &mut NodeBuilder,
@@ -33,7 +35,14 @@ pub(crate) fn append_node_row(
     row.fmt_state(node_state);
     row.fmt_name(&node_config.name);
     row.fmt_address(&node_config.address);
+    row.fmt_ctrl_address(node_config.ctrl_address());
     row.fmt_location(&node_config.location);
+    row.fmt_binary_version(
+        node_config
+            .binary_version
+            .as_ref()
+            .unwrap_or(&RestateVersion::unknown()),
+    );
 
     let all: EnumSet<Role> = EnumSet::all();
     for role in all {

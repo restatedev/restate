@@ -493,6 +493,16 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
 
         Ok(PeerNetAddress::Http(Uri::from_parts(parts)?))
     }
+
+    /// Should used carefully, this makes one address from a given listener port act
+    /// as if it was another listener port. Used when we want to fallback from one address type to
+    /// another.
+    pub(crate) fn coerce<T: ListenerPort>(self) -> AdvertisedAddress<T> {
+        AdvertisedAddress {
+            inner: self.inner,
+            _phantom: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<P: ListenerPort> FromStr for AdvertisedAddress<P> {
