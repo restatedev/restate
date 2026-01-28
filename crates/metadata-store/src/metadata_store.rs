@@ -443,7 +443,10 @@ impl MetadataStoreClient {
                             );
                             tokio::time::sleep(backoff).await;
                         } else {
-                            return Err(ReadWriteError::RetriesExhausted(key));
+                            return Err(ReadWriteError::RetriesExhausted(
+                                key,
+                                WriteError::FailedPrecondition(msg).into(),
+                            ));
                         }
                     }
                     Err(err) => return Err(err.into()),
@@ -491,7 +494,11 @@ impl MetadataStoreClient {
                             );
                             tokio::time::sleep(backoff).await;
                         } else {
-                            return Err(ReadWriteError::RetriesExhausted(key).into());
+                            return Err(ReadWriteError::RetriesExhausted(
+                                key,
+                                WriteError::FailedPrecondition(msg).into(),
+                            )
+                            .into());
                         }
                     }
                     Err(err) => return Err(ReadModifyWriteError::ReadWrite(err.into())),
@@ -580,8 +587,8 @@ pub enum ReadWriteError {
     Other(BoxedMaybeRetryableError),
     #[error("codec error: {0}")]
     Codec(GenericError),
-    #[error("retries for operation on key '{0}' exhausted")]
-    RetriesExhausted(ByteString),
+    #[error("retries for operation on key '{0}' exhausted; last error: {1}")]
+    RetriesExhausted(ByteString, GenericError),
 }
 
 impl MaybeRetryableError for ReadWriteError {
@@ -589,7 +596,7 @@ impl MaybeRetryableError for ReadWriteError {
         match self {
             ReadWriteError::Other(err) => err.retryable(),
             ReadWriteError::Codec(_) => false,
-            ReadWriteError::RetriesExhausted(_) => true,
+            ReadWriteError::RetriesExhausted(_, _) => true,
         }
     }
 }
