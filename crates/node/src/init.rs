@@ -272,6 +272,7 @@ impl<'a> NodeInit<'a> {
                         node_config.roles = common.roles;
                         node_config.address = my_advertised_address.clone();
                         node_config.current_generation.bump_generation();
+                        node_config.binary_version = Some(RestateVersion::current());
 
                         node_config
                     } else {

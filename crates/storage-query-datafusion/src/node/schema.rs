@@ -29,6 +29,9 @@ define_table!(
         /// Node advertised address
         address: DataType::Utf8,
 
+        /// Node control address
+        ctrl_address: DataType::Utf8,
+
         /// Node location
         location: DataType::Utf8,
 
@@ -58,5 +61,8 @@ define_table!(
 
         /// Current known metadata version
         nodes_configuration_version: DataType::UInt32,
+
+        // The last seen binary version of this node (only set in >= v1.6.0)
+        binary_version: DataType::Utf8,
     )
 );

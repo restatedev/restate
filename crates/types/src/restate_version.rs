@@ -21,8 +21,18 @@ use restate_encoding::BilrostNewType;
 pub struct RestateVersionError(#[from] semver::Error);
 
 /// Version of a restate binary
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, BilrostNewType)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    BilrostNewType,
+    derive_more::Display,
+)]
 #[serde(transparent)]
+#[display("{_0}")]
 pub struct RestateVersion(Cow<'static, str>);
 
 impl RestateVersion {
