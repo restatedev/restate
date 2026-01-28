@@ -800,7 +800,7 @@ pub trait ScanInvocationStatusTable {
     fn for_each_invocation_status_lazy<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
-                (InvocationId, InvocationStatusV2Lazy<'a>),
+                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
             ) -> ControlFlow<std::result::Result<(), E>>
             + Send
             + Sync
