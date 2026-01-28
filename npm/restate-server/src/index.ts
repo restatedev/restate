@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 /*
  * Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
  * All rights reserved.
@@ -9,8 +11,6 @@
  * the Business Source License, use of this software will be governed
  * by the Apache License, Version 2.0.
  */
-
-#!/usr/bin/env node
 
 import { spawn } from "child_process";
 import os from "node:os";
