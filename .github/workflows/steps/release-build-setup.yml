@@ -40,3 +40,14 @@
 - name: Set up RUSTFLAGS (Linux)
   if: ${{ runner.os == 'Linux' }}
   run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable" >> "$GITHUB_ENV"
+
+# These env vars are needed when cross-compiling
+- name: Set up cross-compilation env variables
+  run: |
+    # for krb5
+    echo krb5_cv_attr_constructor_destructor="yes" >> "$GITHUB_ENV"
+    echo ac_cv_func_regcomp="yes" >> "$GITHUB_ENV"
+    echo ac_cv_printf_positional="yes" >> "$GITHUB_ENV"
+
+    # for sasl2
+    echo ac_cv_gssapi_supports_spnego="yes" >> "$GITHUB_ENV"
