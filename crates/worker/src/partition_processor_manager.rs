@@ -22,7 +22,7 @@ use ahash::{HashMap, HashSet};
 use anyhow::{Context, bail};
 use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::{Either, Itertools};
-use metrics::gauge;
+use metrics::{counter, gauge};
 use rand::Rng;
 use rand::seq::SliceRandom;
 use tokio::sync::mpsc;
@@ -81,11 +81,14 @@ use restate_types::retries::with_jitter;
 use restate_types::{GenerationalNodeId, SharedString};
 use restate_wal_protocol::Envelope;
 
-use crate::metric_definitions::NUM_PARTITIONS;
-use crate::metric_definitions::PARTITION_IS_EFFECTIVE_LEADER;
-use crate::metric_definitions::PARTITION_LABEL;
-use crate::metric_definitions::PARTITION_TIME_SINCE_LAST_STATUS_UPDATE;
+use crate::metric_definitions::{
+    ERROR_STOP, FLARE_REASON_SNAPSHOT_UNAVAILABLE, GAP_STOP, PARTITION_BLOCKED_FLARE,
+    PARTITION_IS_EFFECTIVE_LEADER, PARTITION_START, REASON_LABEL, STARTUP_ERROR_STOP, TYPE_LABEL,
+};
+use crate::metric_definitions::{NORMAL_STOP, PARTITION_TIME_SINCE_LAST_STATUS_UPDATE};
 use crate::metric_definitions::{NUM_ACTIVE_PARTITIONS, PARTITION_APPLIED_LSN_LAG};
+use crate::metric_definitions::{NUM_PARTITIONS, SNAPSHOT_AGE};
+use crate::metric_definitions::{PARTITION_LABEL, PARTITION_STOP};
 use crate::partition::{LeadershipInfo, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
     LeaderEpochToken, ProcessorState, StartedProcessor,
@@ -537,6 +540,7 @@ where
                         }
                     }
                     Err(err) => {
+                        // todo: metrics
                         info!(%partition_id, %err, "Partition processor failed to start");
                         self.processor_states.remove(&partition_id);
                         self.restart_partition_processor_if_replica(
@@ -552,10 +556,12 @@ where
                     None => {
                         debug!("Stopped partition processor which is no longer running.");
                         // immediately try to restart if we are still part of the partition's membership
+                        counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => NORMAL_STOP).increment(1);
                         RestartDelay::Immediate
                     }
                     Some(processor_state) => match processor_state {
                         ProcessorState::Starting { .. } => {
+                            counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => STARTUP_ERROR_STOP).increment(1);
                             warn!(%partition_id, "Partition processor failed to start: {result:?}");
                             RestartDelay::Fixed
                         }
@@ -577,6 +583,7 @@ where
                                     read_pointer: sequence_number,
                                     data_loss_gap_end: to_lsn,
                                 }) => {
+                                    counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => GAP_STOP).increment(1);
                                     if self.partition_store_manager.is_repository_configured() {
                                         info!(
                                             %partition_id,
@@ -584,6 +591,7 @@ where
                                                 will attempt to fast-forward on restart",
                                         );
                                         self.fast_forward_on_startup.insert(partition_id, *to_lsn);
+
                                         RestartDelay::Immediate
                                     } else {
                                         error!(
@@ -591,6 +599,7 @@ where
                                             "Partition processor stopped due to a log gap [{sequence_number}..{to_lsn}], and no snapshot repository is configured. \
                                                 Cannot recover without a partition snapshot!",
                                         );
+                                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => partition_id.to_string(), REASON_LABEL => FLARE_REASON_SNAPSHOT_UNAVAILABLE).set(1);
                                         // configuration problem; until we have peer-to-peer state exchange we can only wait
                                         RestartDelay::MaxBackoff
                                     }
@@ -600,10 +609,12 @@ where
                                         start_time,
                                         last_delay: delay,
                                     };
+                                    counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => ERROR_STOP).increment(1);
                                     error!(%partition_id, %err, "Partition processor exited unexpectedly, {}", next_delay);
                                     next_delay
                                 }
                                 Ok(_) => {
+                                    counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => NORMAL_STOP).increment(1);
                                     info!(%partition_id, "Partition processor stopped");
                                     RestartDelay::Immediate
                                 }
@@ -613,6 +624,7 @@ where
                             if let Some(processor) = processor {
                                 self.invokers_status_reader.remove(processor.key_range());
                             }
+                            counter!(PARTITION_STOP, PARTITION_LABEL => partition_id.to_string(), TYPE_LABEL => NORMAL_STOP).increment(1);
                             RestartDelay::Immediate
                         }
                     },
@@ -931,6 +943,8 @@ where
         partition_id: PartitionId,
         snapshot_status: PartitionSnapshotStatus,
     ) {
+        gauge!(SNAPSHOT_AGE, PARTITION_LABEL => partition_id.to_string())
+            .set(snapshot_status.latest_snapshot_created_at.elapsed());
         match self.latest_snapshots.entry(partition_id) {
             Entry::Occupied(mut e) => {
                 if snapshot_status.archived_lsn >= e.get().archived_lsn {
@@ -1350,6 +1364,8 @@ where
             .name(&format!("start-pp-{partition_id}"))
             .spawn(
                 async move {
+                    counter!(PARTITION_START, PARTITION_LABEL => partition_id.to_string())
+                        .increment(1);
                     let result = starting_task.run(delay);
                     AsynchronousEvent {
                         partition_id,
