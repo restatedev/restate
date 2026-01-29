@@ -43,8 +43,8 @@ This includes backward and forward compatibility checks.
 The tests run against `ghcr.io/restatedev/restate:main`.
 Check the [Actions page](https://github.com/restatedev/e2e-verification-runner/actions) for test results.
 
-[!IMPORTANT]
-Make sure that the [`RESTATE_RELEASED_CONTAINER_IMAGE`](https://github.com/restatedev/e2e-verification-runner/blob/main/scripts/run-verification.sh#L8) is pointing to the latest released version of the previous minor release.
+> [!IMPORTANT]
+> Make sure that the [`RESTATE_RELEASED_CONTAINER_IMAGE`](https://github.com/restatedev/e2e-verification-runner/blob/main/scripts/run-verification.sh#L8) is pointing to the latest released version of the previous minor release.
 
 ### Long-lived Load Tests
 
@@ -58,10 +58,8 @@ Follow the [instructions](https://github.com/restatedev/internal/blob/main/labs/
 
 The following categories might require manual testing before each minor release.
 
-[!IMPORTANT]
-Automating manual tests, if possible, will save us time with every future release. 
-So whenever you test something manually think very hard whether there is a way to automate it.
-A good place for adding new e2e tests is https://github.com/restatedev/e2e.
+> [!IMPORTANT]
+> Consider automating any manual test—it saves time on every future release. Add new e2e tests at https://github.com/restatedev/e2e.
 
 ### 1. Upgrade and Migration Testing
 
@@ -136,6 +134,10 @@ Before release, verify documentation accuracy:
 - Configuration changes are documented
 - Breaking changes are clearly communicated
 
+### 9. Restate K8s Operator Testing
+
+Make sure that the upcoming release works with Restate's [k8s operator](https://github.com/restatedev/restate-operator).
+
 ## Creating a Release Testing Issue
 
 ### Process
@@ -172,6 +174,7 @@ Whenever possible, try to automate manual tests to save us time for future relea
 - [ ] Feature-specific testing (list features)
 - [ ] Cloud deployment testing
 - [ ] Documentation review
+- [ ] Restate k8s operator testing
 - [ ] Jepsen tests passing
 - [ ] E2E verification runner passing
 - [ ] Load tests completed
