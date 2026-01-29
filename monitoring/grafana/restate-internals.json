@@ -1,14 +1,4 @@
 {
-  "__inputs": [
-    {
-      "name": "DS_PROMETHEUS",
-      "label": "Prometheus",
-      "description": "Prometheus datasource for Restate metrics",
-      "type": "datasource",
-      "pluginId": "prometheus",
-      "pluginName": "Prometheus"
-    }
-  ],
   "__requires": [
     {
       "type": "grafana",
@@ -75,7 +65,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Current invoker failure rate",
       "fieldConfig": {
@@ -155,7 +145,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum(rate(restate_invoker_invocation_tasks_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=\"failed\"}[$__rate_interval])) or vector(0)",
           "legendFormat": "Errors/sec",
@@ -168,7 +158,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Cumulative failed tasks since server start",
       "fieldConfig": {
@@ -226,7 +216,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum(restate_invoker_invocation_tasks_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=\"failed\"})",
           "legendFormat": "Total Failed",
@@ -239,7 +229,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Error rate by node - identify problematic nodes",
       "fieldConfig": {
@@ -309,7 +299,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_invoker_invocation_tasks_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=\"failed\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}}",
@@ -322,7 +312,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Which partitions are experiencing failures",
       "fieldConfig": {
@@ -385,7 +375,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "topk(10, sum by (partition_id) (rate(restate_invoker_invocation_tasks_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=\"failed\"}[$__rate_interval])))",
           "legendFormat": "p{{partition_id}}",
@@ -398,7 +388,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Started vs Completed vs Failed - gap indicates problems",
       "fieldConfig": {
@@ -528,7 +518,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (status) (rate(restate_invoker_invocation_tasks_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
@@ -554,7 +544,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Requests per second (stacked by service)",
       "fieldConfig": {
@@ -652,7 +642,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (rpc_service) (rate(restate_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=\"completed\"}[$__rate_interval]))",
           "legendFormat": "{{rpc_service}}",
@@ -661,7 +651,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum(rate(restate_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=\"completed\"}[$__rate_interval]))",
           "legendFormat": "Total",
@@ -674,7 +664,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "P99 latency per node - identify slow nodes",
       "fieldConfig": {
@@ -739,7 +729,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_name) (restate_ingress_request_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.5\"})",
           "legendFormat": "{{node_name}} P50",
@@ -748,7 +738,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_name) (restate_ingress_request_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"})",
           "legendFormat": "{{node_name}} P99",
@@ -761,7 +751,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "admitted/completed/throttled rates",
       "fieldConfig": {
@@ -872,7 +862,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (status) (rate(restate_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
@@ -885,7 +875,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Kafka consumer requests and lag",
       "fieldConfig": {
@@ -975,7 +965,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum(rate(restate_kafka_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "Requests",
@@ -984,7 +974,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum(restate_kafka_ingress_consumer_lag{cluster_name=\"$cluster\", node_name=~\"$node\"})",
           "legendFormat": "Lag",
@@ -1010,7 +1000,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "All task events with failures highlighted in RED",
       "fieldConfig": {
@@ -1144,7 +1134,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (status) (rate(restate_invoker_invocation_tasks_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
@@ -1157,7 +1147,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Time to complete invoker tasks per node",
       "fieldConfig": {
@@ -1253,7 +1243,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_name) (restate_invoker_task_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.5\"})",
           "legendFormat": "{{node_name}} P50",
@@ -1262,7 +1252,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_name) (restate_invoker_task_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"})",
           "legendFormat": "{{node_name}} P99",
@@ -1275,7 +1265,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Available slots vs limit per node",
       "fieldConfig": {
@@ -1380,7 +1370,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_invoker_available_slots{cluster_name=\"$cluster\", node_name=~\"$node\"})",
           "legendFormat": "{{node_name}} Available",
@@ -1389,7 +1379,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_invoker_concurrency_limit{cluster_name=\"$cluster\", node_name=~\"$node\"})",
           "legendFormat": "{{node_name}} Limit",
@@ -1415,7 +1405,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Records and bytes committed per node",
       "fieldConfig": {
@@ -1498,7 +1488,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_bifrost_sequencer_committed_records_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} Records",
@@ -1507,7 +1497,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_bifrost_sequencer_committed_records_bytes_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} Bytes",
@@ -1520,7 +1510,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Append duration measures total time to durably commit a batch (waiting for enough STORE acks based on replication factor). This is the end-to-end latency seen by the sequencer.",
       "fieldConfig": {
@@ -1617,7 +1607,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_name) (restate_bifrost_sequencer_append_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.5\"})",
           "legendFormat": "{{node_name}} P50",
@@ -1626,7 +1616,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_name) (restate_bifrost_sequencer_append_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"})",
           "legendFormat": "{{node_name}} P99",
@@ -1639,7 +1629,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Record throughput per node (write up, read down)",
       "fieldConfig": {
@@ -1738,7 +1728,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_bifrost_replicatedloglet_enqueued_records_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "Write {{node_name}}",
@@ -1747,7 +1737,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_bifrost_replicatedloglet_read_record_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "Read {{node_name}}",
@@ -1760,7 +1750,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Store latency measures time to receive STORE acknowledgement from each log server (node_id). High latency on specific node_id indicates slow log servers. The sequencer (node_name) sends STORE requests to log servers (node_id).",
       "fieldConfig": {
@@ -1857,7 +1847,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_id) (restate_bifrost_sequencer_store_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.5\"})",
           "legendFormat": "\u2192{{node_id}} P50",
@@ -1866,7 +1856,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_id) (restate_bifrost_sequencer_store_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"})",
           "legendFormat": "\u2192{{node_id}} P99",
@@ -1879,7 +1869,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "STORE operations per second sent to each log server (node_id). Shows distribution of write load across log servers.",
       "fieldConfig": {
@@ -1945,7 +1935,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_id) (rate(restate_bifrost_sequencer_store_duration_seconds_count{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "\u2192{{node_id}}",
@@ -1958,7 +1948,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Record cache hit rate - higher is better. Shows efficiency of the read cache.",
       "fieldConfig": {
@@ -2032,7 +2022,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_bifrost_replicatedloglet_read_record_cache_hit_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) / sum by (node_name) (rate(restate_bifrost_replicatedloglet_read_record_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}}",
@@ -2045,7 +2035,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "P99 store latency for each sequencer\u2192log-server path. Helps identify specific problematic paths in multi-node clusters.",
       "fieldConfig": {
@@ -2110,7 +2100,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "restate_bifrost_sequencer_store_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"}",
           "legendFormat": "{{node_name}}\u2192{{node_id}}",
@@ -2136,7 +2126,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Commands applied per second by type",
       "fieldConfig": {
@@ -2202,7 +2192,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (command) (rate(restate_partition_apply_command_duration_seconds_count{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "{{command}}",
@@ -2215,7 +2205,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Top 5 slowest commands",
       "fieldConfig": {
@@ -2281,7 +2271,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "topk(5, avg by (command) (restate_partition_apply_command_duration_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"}))",
           "legendFormat": "{{command}}",
@@ -2294,7 +2284,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Gap between applied LSN and log tail per partition",
       "fieldConfig": {
@@ -2359,7 +2349,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "restate_partition_applied_lsn_lag{cluster_name=\"$cluster\", node_name=~\"$node\", partition=~\"$partition\"}",
           "legendFormat": "{{node_name}}/p{{partition}}",
@@ -2372,7 +2362,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Total partition starts/stops and stop reasons. Error stops are highlighted in red.",
       "fieldConfig": {
@@ -2514,7 +2504,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum(rate(restate_partition_start_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "total starts",
@@ -2523,7 +2513,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum(rate(restate_partition_stop_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "total stops",
@@ -2532,7 +2522,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (type) (rate(restate_partition_stop_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) > 0",
           "legendFormat": "stop:{{type}}",
@@ -2545,7 +2535,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Partitions with frequent restarts. High values indicate unstable partitions.",
       "fieldConfig": {
@@ -2610,7 +2600,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "topk(10, sum by (partition) (rate(restate_partition_start_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))) > 0",
           "legendFormat": "p{{partition}}",
@@ -2623,7 +2613,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Maximum snapshot age per partition (across all nodes). High values indicate snapshots may be stale.",
       "fieldConfig": {
@@ -2688,7 +2678,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "max by (partition) (restate_partition_snapshot_age_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", partition=~\"$partition\"})",
           "legendFormat": "p{{partition}}",
@@ -2701,7 +2691,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Partitions that are blocked and cannot start due to version mismatch or missing snapshots.",
       "fieldConfig": {
@@ -2770,7 +2760,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "restate_partition_blocked_flare{cluster_name=\"$cluster\", node_name=~\"$node\", partition=~\"$partition\"}",
           "legendFormat": "{{node_name}}/p{{partition}} ({{reason}})",
@@ -2796,7 +2786,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Keys read and written per second by node and db",
       "fieldConfig": {
@@ -2861,7 +2851,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name, db) (rate(restate_rocksdb_number_keys_read_total{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} {{db}} reads",
@@ -2870,7 +2860,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name, db) (rate(restate_rocksdb_number_keys_written_total{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} {{db}} writes",
@@ -2883,7 +2873,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Average get/write latencies per scrape interval. RocksDB histograms are cumulative since DB open, so we compute per-interval averages using rate(sum)/rate(count).",
       "fieldConfig": {
@@ -2948,7 +2938,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name, db) (rate(restate_rocksdb_db_get_seconds_sum{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval])) / sum by (node_name, db) (rate(restate_rocksdb_db_get_seconds_count{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} {{db}} get avg",
@@ -2957,7 +2947,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name, db) (rate(restate_rocksdb_db_write_seconds_sum{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval])) / sum by (node_name, db) (rate(restate_rocksdb_db_write_seconds_count{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} {{db}} write avg",
@@ -2970,7 +2960,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Cache performance per node (green=hit, red=miss)",
       "fieldConfig": {
@@ -3066,7 +3056,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name, db) (rate(restate_rocksdb_block_cache_hit_total{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} {{db}} hit",
@@ -3075,7 +3065,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name, db) (rate(restate_rocksdb_block_cache_miss_total{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} {{db}} miss",
@@ -3088,7 +3078,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Currently running and pending compactions/flushes. High pending values indicate backpressure.",
       "fieldConfig": {
@@ -3220,7 +3210,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_num_running_compactions{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} compaction running",
@@ -3229,7 +3219,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_compaction_pending{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} compaction pending",
@@ -3238,7 +3228,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_num_running_flushes{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} flush running",
@@ -3247,7 +3237,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_mem_table_flush_pending{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} flush pending",
@@ -3260,7 +3250,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Bytes read (up) and written (down) during compaction. Stacked by node to show cluster total.",
       "fieldConfig": {
@@ -3340,7 +3330,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_rocksdb_compact_read_bytes_total{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "Reads {{node_name}}",
@@ -3349,7 +3339,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_rocksdb_compact_write_bytes_total{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "Writes {{node_name}}",
@@ -3362,7 +3352,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "SST files per LSM level. Level 0 is hot (recent writes), higher levels contain older/compacted data.",
       "fieldConfig": {
@@ -3474,7 +3464,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_num_files_at_level0{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} L0",
@@ -3483,7 +3473,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_num_files_at_level1{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} L1",
@@ -3492,7 +3482,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_num_files_at_level2{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} L2",
@@ -3501,7 +3491,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_num_files_at_level3{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} L3",
@@ -3510,7 +3500,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_num_files_at_level4{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} L4",
@@ -3519,7 +3509,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_num_files_at_level5{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} L5",
@@ -3528,7 +3518,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_num_files_at_level6{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} L6",
@@ -3541,7 +3531,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Write stall time and pending compaction bytes. Stalls indicate RocksDB is slowing writes to let compaction catch up.",
       "fieldConfig": {
@@ -3654,7 +3644,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_rocksdb_stall_micros_total{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval])) / 1e6",
           "legendFormat": "{{node_name}} stall time",
@@ -3663,7 +3653,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_estimate_pending_compaction_bytes{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} pending bytes",
@@ -3676,7 +3666,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Average compaction and flush duration per interval. High values may indicate disk I/O bottlenecks. Note: RocksDB histograms are cumulative since DB open, so we compute per-interval averages.",
       "fieldConfig": {
@@ -3772,7 +3762,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_rocksdb_compaction_times_seconds_sum{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval])) / sum by (node_name) (rate(restate_rocksdb_compaction_times_seconds_count{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} compaction avg",
@@ -3781,7 +3771,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (rate(restate_rocksdb_db_flush_seconds_sum{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval])) / sum by (node_name) (rate(restate_rocksdb_db_flush_seconds_count{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"}[$__rate_interval]))",
           "legendFormat": "{{node_name}} flush avg",
@@ -3794,7 +3784,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Memtable memory usage - unflushed data waiting to be written to SST files.",
       "fieldConfig": {
@@ -3891,7 +3881,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_memory_approx_memtable_bytes{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} total",
@@ -3900,7 +3890,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (node_name) (restate_rocksdb_memory_approx_memtable_unflushed_bytes{cluster_name=\"$cluster\", node_name=~\"$node\", db=~\"$db\"})",
           "legendFormat": "{{node_name}} unflushed",
@@ -3926,7 +3916,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Get/put rates with status",
       "fieldConfig": {
@@ -4022,7 +4012,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (status) (rate(restate_metadata_server_get_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "get {{status}}",
@@ -4031,7 +4021,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "sum by (status) (rate(restate_metadata_server_put_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
           "legendFormat": "put {{status}}",
@@ -4044,7 +4034,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Get and put latencies per node",
       "fieldConfig": {
@@ -4109,7 +4099,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_name) (restate_metadata_server_get_duration{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"})",
           "legendFormat": "{{node_name}} get P99",
@@ -4118,7 +4108,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "avg by (node_name) (restate_metadata_server_put_duration{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"})",
           "legendFormat": "{{node_name}} put P99",
@@ -4131,7 +4121,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
+        "uid": "${datasource}"
       },
       "description": "Committed vs applied LSN per node",
       "fieldConfig": {
@@ -4195,7 +4185,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "restate_metadata_server_replicated_committed_lsn{cluster_name=\"$cluster\", node_name=~\"$node\"}",
           "legendFormat": "{{node_name}} Committed",
@@ -4204,7 +4194,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "${DS_PROMETHEUS}"
+            "uid": "${datasource}"
           },
           "expr": "restate_metadata_server_replicated_applied_lsn{cluster_name=\"$cluster\", node_name=~\"$node\"}",
           "legendFormat": "{{node_name}} Applied",
@@ -4225,10 +4215,29 @@
   "templating": {
     "list": [
       {
+        "current": {
+          "selected": false,
+          "text": "default",
+          "value": "default"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "queryValue": "",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
         "current": {},
         "datasource": {
           "type": "prometheus",
-          "uid": "${DS_PROMETHEUS}"
+          "uid": "${datasource}"
         },
         "hide": 0,
         "includeAll": false,
@@ -4236,7 +4245,7 @@
         "name": "cluster",
         "options": [],
         "query": "label_values(restate_failure_detector_nodes_total, cluster_name)",
-        "refresh": 2,
+        "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
@@ -4246,7 +4255,7 @@
         "current": {},
         "datasource": {
           "type": "prometheus",
-          "uid": "${DS_PROMETHEUS}"
+          "uid": "${datasource}"
         },
         "hide": 0,
         "includeAll": true,
@@ -4254,7 +4263,7 @@
         "name": "node",
         "options": [],
         "query": "label_values(restate_failure_detector_nodes_total{cluster_name=\"$cluster\"}, node_name)",
-        "refresh": 2,
+        "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
@@ -4264,7 +4273,7 @@
         "current": {},
         "datasource": {
           "type": "prometheus",
-          "uid": "${DS_PROMETHEUS}"
+          "uid": "${datasource}"
         },
         "hide": 0,
         "includeAll": true,
@@ -4272,7 +4281,7 @@
         "name": "partition",
         "options": [],
         "query": "label_values(restate_partition_is_effective_leader{cluster_name=\"$cluster\"}, partition)",
-        "refresh": 2,
+        "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
         "sort": 3,
@@ -4282,7 +4291,7 @@
         "current": {},
         "datasource": {
           "type": "prometheus",
-          "uid": "${DS_PROMETHEUS}"
+          "uid": "${datasource}"
         },
         "hide": 0,
         "includeAll": true,
@@ -4290,7 +4299,7 @@
         "name": "db",
         "options": [],
         "query": "label_values(restate_rocksdb_estimate_num_keys{cluster_name=\"$cluster\"}, db)",
-        "refresh": 2,
+        "refresh": 1,
         "regex": "",
         "skipUrlSync": false,
         "sort": 1,
