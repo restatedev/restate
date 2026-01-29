@@ -12,7 +12,6 @@ use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use super::error::GenericRestError;
 use crate::query_utils::{RecordBatchWriter, WriteRecordBatchStream};
 use crate::state::AdminServiceState;
 use axum::extract::State;
@@ -34,6 +33,38 @@ use restate_admin_rest_model::query::QueryRequest;
 use restate_core::network::TransportConnect;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
+use serde::Serialize;
+
+/// Error response for query endpoint.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+struct QueryErrorBody {
+    message: String,
+}
+
+/// Errors that can occur when executing a query.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum QueryError {
+    #[error("Datafusion error: {0}")]
+    Datafusion(#[from] datafusion::error::DataFusionError),
+    #[error("Query service not available")]
+    Unavailable,
+}
+
+impl IntoResponse for QueryError {
+    fn into_response(self) -> Response {
+        let status_code = match &self {
+            QueryError::Datafusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        };
+        (
+            status_code,
+            Json(QueryErrorBody {
+                message: self.to_string(),
+            }),
+        )
+            .into_response()
+    }
+}
 
 /// Query the system and service state by using SQL.
 #[utoipa::path(
@@ -47,15 +78,15 @@ use restate_types::schema::registry::{DiscoveryClient, MetadataService, Telemetr
                 ("application/vnd.apache.arrow.stream"),
                 ("application/json", example = json!({"rows": []}))
             )),
-        (status = 500, description = "Internal Datafusion error"),
-        (status = 503, description = "Query service not available"),
+        (status = 500, description = "Datafusion error", body = QueryErrorBody),
+        (status = 503, description = "Query service not available", body = QueryErrorBody),
     )
 )]
 pub(crate) async fn query<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     headers: HeaderMap,
     Json(payload): Json<QueryRequest>,
-) -> Result<impl IntoResponse, GenericRestError>
+) -> Result<Response, QueryError>
 where
     Metadata: MetadataService + Send + Sync + Clone + 'static,
     Discovery: DiscoveryClient + Send + Sync + Clone + 'static,
@@ -64,23 +95,14 @@ where
     Transport: TransportConnect,
 {
     let Some(query_context) = state.query_context.as_ref() else {
-        return Err(GenericRestError::new(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Query service not available",
-        ));
+        return Err(QueryError::Unavailable);
     };
 
-    let record_batch_stream = query_context
-        .execute(&payload.query)
-        .await
-        .map_err(|e| GenericRestError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let record_batch_stream = query_context.execute(&payload.query).await?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
-            WriteRecordBatchStream::<JsonWriter>::new(record_batch_stream, payload.query)
-                .map_err(|e| {
-                    GenericRestError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-                })?
+            WriteRecordBatchStream::<JsonWriter>::new(record_batch_stream, payload.query)?
                 .map_ok(Frame::data)
                 .left_stream(),
             "application/json",
@@ -89,8 +111,7 @@ where
             WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
                 record_batch_stream,
                 payload.query,
-            )
-            .map_err(|e| GenericRestError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            )?
             .map_ok(Frame::data)
             .right_stream(),
             "application/vnd.apache.arrow.stream",
@@ -102,16 +123,14 @@ where
     // return an error (instead of just closing the stream) if there is a error getting the first record batch (eg, out of memory)
     if let Some(Err(_)) = futures::stream::Peekable::peek(Pin::new(&mut result_stream)).await {
         let err = result_stream.next().await.unwrap().unwrap_err();
-        return Err(GenericRestError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            err.to_string(),
-        ));
+        return Err(err.into());
     }
 
     Ok(Response::builder()
         .header(http::header::CONTENT_TYPE, content_type)
         .body(StreamBody::new(result_stream))
-        .expect("content-type header is correct"))
+        .expect("content-type header is correct")
+        .into_response())
 }
 
 #[derive(Clone)]
