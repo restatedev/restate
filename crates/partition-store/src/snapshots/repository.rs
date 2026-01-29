@@ -371,7 +371,7 @@ impl SnapshotRepository {
 
         debug!("Publishing partition snapshot to: {}", self.destination);
 
-        let start = std::time::Instant::now();
+        let start = tokio::time::Instant::now();
         let put_result = self
             .put_snapshot_inner(snapshot, local_snapshot_path.as_path())
             .await;
@@ -383,7 +383,7 @@ impl SnapshotRepository {
             warn!(%err, "Failed to delete local snapshot files");
         }
 
-        metrics::histogram!(SNAPSHOT_UPLOAD_DURATION).record(start.elapsed().as_secs_f64());
+        metrics::histogram!(SNAPSHOT_UPLOAD_DURATION).record(start.elapsed());
 
         match put_result {
             Ok(status) => {
@@ -707,13 +707,13 @@ impl SnapshotRepository {
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
         use crate::metric_definitions::{SNAPSHOT_DOWNLOAD_DURATION, SNAPSHOT_DOWNLOAD_FAILED};
 
-        let start = std::time::Instant::now();
+        let start = tokio::time::Instant::now();
         let result = self.get_latest_inner(partition_id).await;
 
         if result.is_err() {
             metrics::counter!(SNAPSHOT_DOWNLOAD_FAILED).increment(1);
         }
-        metrics::histogram!(SNAPSHOT_DOWNLOAD_DURATION).record(start.elapsed().as_secs_f64());
+        metrics::histogram!(SNAPSHOT_DOWNLOAD_DURATION).record(start.elapsed());
 
         result
     }
