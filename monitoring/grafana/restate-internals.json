@@ -2370,12 +2370,423 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Total partition starts/stops and stop reasons. Error stops are highlighted in red.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total starts"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "total stops"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*error.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 30
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*log-gap.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 45
+      },
+      "id": 25,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(restate_partition_start_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
+          "legendFormat": "total starts",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(restate_partition_stop_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
+          "legendFormat": "total stops",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (type) (rate(restate_partition_stop_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) > 0",
+          "legendFormat": "stop:{{type}}",
+          "refId": "C"
+        }
+      ],
+      "title": "Partition Starts/Stops",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Partitions with frequent restarts. High values indicate unstable partitions.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisPlacement": "auto",
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "yellow",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 45
+      },
+      "id": 28,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "topk(10, sum by (partition) (rate(restate_partition_start_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))) > 0",
+          "legendFormat": "p{{partition}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Frequently Restarting Partitions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Maximum snapshot age per partition (across all nodes). High values indicate snapshots may be stale.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 45
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "max by (partition) (restate_partition_snapshot_age_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", partition=~\"$partition\"})",
+          "legendFormat": "p{{partition}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Snapshot Age",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Partitions that are blocked and cannot start due to version mismatch or missing snapshots.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "opacity",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "area"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 45
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "restate_partition_blocked_flare{cluster_name=\"$cluster\", node_name=~\"$node\", partition=~\"$partition\"}",
+          "legendFormat": "{{node_name}}/p{{partition}} ({{reason}})",
+          "refId": "A"
+        }
+      ],
+      "title": "Blocked Partitions",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 52
       },
       "id": 40,
       "panels": [],
@@ -2429,7 +2840,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 46
+        "y": 53
       },
       "id": 41,
       "options": {
@@ -2515,7 +2926,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 46
+        "y": 53
       },
       "id": 42,
       "options": {
@@ -2634,7 +3045,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 46
+        "y": 53
       },
       "id": 43,
       "options": {
@@ -2787,7 +3198,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 53
+        "y": 60
       },
       "id": 44,
       "options": {
@@ -2907,7 +3318,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 53
+        "y": 60
       },
       "id": 45,
       "options": {
@@ -3042,7 +3453,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 53
+        "y": 60
       },
       "id": 46,
       "options": {
@@ -3221,7 +3632,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 60
+        "y": 67
       },
       "id": 47,
       "options": {
@@ -3339,7 +3750,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 60
+        "y": 67
       },
       "id": 48,
       "options": {
@@ -3458,7 +3869,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 60
+        "y": 67
       },
       "id": 49,
       "options": {
@@ -3505,7 +3916,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 67
+        "y": 74
       },
       "id": 50,
       "panels": [],
@@ -3590,7 +4001,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 68
+        "y": 75
       },
       "id": 51,
       "options": {
@@ -3676,7 +4087,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 68
+        "y": 75
       },
       "id": 52,
       "options": {
@@ -3763,7 +4174,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 68
+        "y": 75
       },
       "id": 53,
       "options": {

@@ -77,8 +77,9 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
-    PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN, PARTITION_INGESTION_REQUEST_SIZE,
-    PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
+    FLARE_REASON_VERSION_BARRIER, PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN,
+    PARTITION_INGESTION_REQUEST_SIZE, PARTITION_LABEL,
+    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
@@ -239,7 +240,9 @@ where
 
         if !SemanticRestateVersion::current().is_equal_or_newer_than(&min_restate_version) {
             gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL =>
-                partition_store.partition_id().to_string())
+                partition_store.partition_id().to_string(),
+                REASON_LABEL => FLARE_REASON_VERSION_BARRIER
+            )
             .set(1);
             return Err(state_machine::Error::VersionBarrier {
                 required_min_version: min_restate_version,
@@ -365,7 +368,7 @@ where
                             "Shutting partition processor down because it encountered a trim gap in the log."
                         ),
                     Err(ProcessorError::StateMachine(state_machine::Error::VersionBarrier { .. })) => {
-                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id_str.clone()).set(1);
+                        gauge!(PARTITION_BLOCKED_FLARE, PARTITION_LABEL => self.partition_id_str.clone(), REASON_LABEL => FLARE_REASON_VERSION_BARRIER).set(1);
                     }
                     Err(err) => warn!("Shutting partition processor down because of error: {err}"),
                 }
