@@ -130,6 +130,8 @@ pub struct PartitionStoreManager {
 
 impl PartitionStoreManager {
     pub async fn create() -> Result<Arc<Self>, BuildError> {
+        crate::metric_definitions::describe_metrics();
+
         // Start the memory controller, how do we know when db is dropped?
         let state = Arc::new(SharedState::default());
         let memory_controller = MemoryController::start(state.clone())?;
