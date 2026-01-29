@@ -377,6 +377,84 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
+      "description": "Partitions that are blocked and cannot start. Non-zero indicates partitions requiring manual intervention (version mismatch or missing snapshots).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "match": "null",
+                "result": {
+                  "color": "green",
+                  "text": "0"
+                }
+              },
+              "type": "special"
+            }
+          ],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 12,
+        "y": 1
+      },
+      "id": 37,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(restate_partition_blocked_flare{cluster_name=\"$cluster\", node_name=~\"$node\"}) or vector(0)",
+          "legendFormat": "Blocked",
+          "refId": "A"
+        }
+      ],
+      "title": "Blocked Partitions",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "description": "Distribution of node states",
       "fieldConfig": {
         "defaults": {
@@ -461,8 +539,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 12,
+        "w": 4,
+        "x": 15,
         "y": 1
       },
       "id": 14,
@@ -542,8 +620,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 7,
-        "x": 17,
+        "w": 5,
+        "x": 19,
         "y": 1
       },
       "id": 15,

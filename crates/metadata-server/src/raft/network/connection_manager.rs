@@ -19,7 +19,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::codegen::BoxStream;
 use tracing::{debug, instrument};
 
-use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_types::PlainNodeId;
 use restate_types::nodes_config::ClusterFingerprint;
 
@@ -54,28 +54,14 @@ impl<M> ConnectionManager<M>
 where
     M: NetworkMessage + Send + 'static,
 {
-    pub fn new(
-        identity: PlainNodeId,
-        router: mpsc::Sender<M>,
-        cluster_fingerprint: ClusterFingerprint,
-        cluster_name: String,
-    ) -> Self {
+    pub fn new(identity: PlainNodeId, router: mpsc::Sender<M>, cluster_name: String) -> Self {
         ConnectionManager {
-            inner: Arc::new(ConnectionManagerInner::new(
-                identity,
-                router,
-                cluster_fingerprint,
-                cluster_name,
-            )),
+            inner: Arc::new(ConnectionManagerInner::new(identity, router, cluster_name)),
         }
     }
 
     pub fn identity(&self) -> PlainNodeId {
         self.inner.identity
-    }
-
-    pub fn cluster_fingerprint(&self) -> ClusterFingerprint {
-        self.inner.cluster_fingerprint
     }
 
     pub fn cluster_name(&self) -> &str {
@@ -89,14 +75,16 @@ where
         cluster_name: Option<&str>,
         incoming_rx: tonic::Streaming<grpc_svc::NetworkMessage>,
     ) -> Result<BoxStream<grpc_svc::NetworkMessage>, ConnectionError> {
-        // todo in v1.7 make this check fail if cluster_fingerprint and cluster_name are none
-        // Validate cluster fingerprint if provided
-        if let Some(incoming_fingerprint) = cluster_fingerprint {
-            let expected_fingerprint = self.inner.cluster_fingerprint;
+        // todo once the fingerprint is non-optional make this check fail if cluster_fingerprint and cluster_name are none
+        // Look up our expected fingerprint from Metadata
+        let expected_fingerprint =
+            Metadata::with_current(|m| m.nodes_config_ref().cluster_fingerprint());
 
-            if incoming_fingerprint != expected_fingerprint {
-                return Err(ConnectionError::ClusterFingerprintMismatch);
-            }
+        // Only validate if BOTH sides have a fingerprint
+        if let Some(incoming_fp) = cluster_fingerprint
+            && expected_fingerprint.is_some_and(|expected_fp| incoming_fp != expected_fp)
+        {
+            return Err(ConnectionError::ClusterFingerprintMismatch);
         }
 
         // Validate cluster name if provided
@@ -230,22 +218,15 @@ impl<M> Drop for ConnectionReactor<M> {
 #[derive(Debug)]
 struct ConnectionManagerInner<M> {
     identity: PlainNodeId,
-    cluster_fingerprint: ClusterFingerprint,
     cluster_name: String,
     connections: Mutex<HashMap<PlainNodeId, Connection>>,
     router: mpsc::Sender<M>,
 }
 
 impl<M> ConnectionManagerInner<M> {
-    pub fn new(
-        identity: PlainNodeId,
-        router: mpsc::Sender<M>,
-        cluster_fingerprint: ClusterFingerprint,
-        cluster_name: String,
-    ) -> Self {
+    pub fn new(identity: PlainNodeId, router: mpsc::Sender<M>, cluster_name: String) -> Self {
         ConnectionManagerInner {
             identity,
-            cluster_fingerprint,
             cluster_name,
             router,
             connections: Mutex::default(),

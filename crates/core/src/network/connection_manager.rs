@@ -300,9 +300,10 @@ impl ConnectionManager {
         let nodes_config = metadata.nodes_config_ref();
 
         // check cluster fingerprint if it's set on the hello message *and* our nodes config has it
-        // set as well.
+        // set as well. Only validate if BOTH sides have a fingerprint.
         if let Ok(incoming_fingerprint) = ClusterFingerprint::try_from(hello.cluster_fingerprint)
-            && incoming_fingerprint != nodes_config.cluster_fingerprint()
+            && let Some(expected_fingerprint) = nodes_config.cluster_fingerprint()
+            && incoming_fingerprint != expected_fingerprint
         {
             return Err(HandshakeError::Failed("cluster fingerprint mismatch".to_owned()).into());
         }
@@ -716,7 +717,10 @@ mod tests {
             max_protocol_version: ProtocolVersion::Unknown.into(),
             my_node_id: Some(my_node_id.into()),
             cluster_name: metadata.nodes_config_ref().cluster_name().to_owned(),
-            cluster_fingerprint: metadata.nodes_config_ref().cluster_fingerprint().to_u64(),
+            cluster_fingerprint: metadata
+                .nodes_config_ref()
+                .cluster_fingerprint()
+                .map_or(0, |f| f.to_u64()),
             direction: ConnectionDirection::Bidirectional.into(),
             swimlane: Swimlane::default().into(),
         };
@@ -742,7 +746,10 @@ mod tests {
             max_protocol_version: CURRENT_PROTOCOL_VERSION.into(),
             my_node_id: Some(my_node_id.into()),
             cluster_name: "Random-cluster".to_owned(),
-            cluster_fingerprint: metadata.nodes_config_ref().cluster_fingerprint().to_u64(),
+            cluster_fingerprint: metadata
+                .nodes_config_ref()
+                .cluster_fingerprint()
+                .map_or(0, |f| f.to_u64()),
             direction: ConnectionDirection::Bidirectional.into(),
             swimlane: Swimlane::default().into(),
         };
