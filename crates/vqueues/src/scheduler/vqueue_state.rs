@@ -43,6 +43,9 @@ pub(super) enum Pop<Item> {
     DeficitExhausted,
     Item {
         action: Action,
+        /// The permit is None if the action does not require a permit (e.g. yield).
+        /// or if the item itself doesn't require a permit (state mutation)
+        permit: Option<Permit>,
         entry: Entry<Item>,
         updated_zt: Option<f64>,
     },
@@ -234,8 +237,11 @@ impl<S: VQueueStore> VQueueState<S> {
         let (inbox_head, is_running) = match self.queue.head() {
             Some(QueueItem::Inbox(item)) => (item, false),
             Some(QueueItem::Running(item)) => (item, true),
-            Some(QueueItem::None) | None => {
-                unreachable!("cannot pop from empty queue or attempted to pop before polling")
+            e @ Some(QueueItem::None) | e @ None => {
+                unreachable!(
+                    "cannot pop from empty queue or attempted to pop before polling {:?}/{e:?}",
+                    self.handle
+                )
             }
         };
 
@@ -256,10 +262,10 @@ impl<S: VQueueStore> VQueueState<S> {
             // only support yielding.
             let result = Pop::Item {
                 action: Action::Yield,
+                permit: None,
                 entry: Entry {
                     item: inbox_head.clone(),
                     stats: self.head_stats.finalize(),
-                    permit: Permit::new_empty(),
                 },
                 updated_zt: None,
             };
@@ -302,9 +308,9 @@ impl<S: VQueueStore> VQueueState<S> {
                     trace!("vqueue {:?} is blocked on global capacity", self.qid);
                     return Ok(Pop::BlockedOnCapacity);
                 };
-                permit
+                Some(permit)
             }
-            EntryKind::StateMutation | EntryKind::Unknown => Permit::new_empty(),
+            EntryKind::StateMutation | EntryKind::Unknown => None,
         };
 
         if let Some(global_throttling) = global_throttling
@@ -332,10 +338,10 @@ impl<S: VQueueStore> VQueueState<S> {
             .insert(inbox_head.unique_hash());
         let result = Pop::Item {
             action: Action::MoveToRunning,
+            permit,
             entry: Entry {
                 item: inbox_head.clone(),
                 stats: self.head_stats.finalize(),
-                permit,
             },
             updated_zt: self
                 .start_tb
@@ -409,10 +415,13 @@ impl<S: VQueueStore> VQueueState<S> {
         }
     }
 
-    pub fn notify_removed(&mut self, item_hash: u64) {
+    pub fn notify_removed(&mut self, item_hash: u64) -> bool {
         self.remove_from_unconfirmed_assignments(item_hash);
         if self.queue.remove(item_hash) {
             self.head_stats.reset();
+            true
+        } else {
+            false
         }
     }
 
