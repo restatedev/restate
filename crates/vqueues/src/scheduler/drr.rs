@@ -730,10 +730,22 @@ mod tests {
             scheduler.get_status(&qids[0], cache.view()).unwrap().status,
             SchedulingStatus::BlockedOnCapacity,
         );
-        // dropping the permit should release the token, we should get another item
-        drop(result);
-        // Second poll should return Pending since we're at capacity
-        let result2 = poll_scheduler(pin!(&mut scheduler), &cache);
+        // Pop the permit from the scheduler to release the concurrency token.
+        // In production, the leader calls pop_permit() when it actually runs the item.
+        let item_hash = result
+            .into_iter()
+            .flat_map(|(_, a)| a.into_iter_per_action())
+            .flat_map(|(_, items)| items)
+            .next()
+            .unwrap()
+            .item
+            .unique_hash();
+        let mut scheduler = pin!(scheduler);
+        let permit = scheduler.as_mut().pop_permit(item_hash);
+        assert!(permit.is_some());
+        drop(permit);
+        // Now we should be able to get another item
+        let result2 = poll_scheduler(scheduler.as_mut(), &cache);
         let Poll::Ready(Ok(result2)) = result2 else {
             panic!("expected Poll::Ready(Ok(decision))");
         };
@@ -1129,8 +1141,23 @@ mod tests {
         assert!(matches!(status.is_paused, IsPaused::No));
         assert_eq!(status.tokens_used, 1);
 
-        drop(decision);
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
+        // Pop the permit from the scheduler to release the concurrency token.
+        // Only inbox items acquire permits, running items yield without permits.
+        // The inbox item from qid2 is the only one that acquired a permit.
+        let inbox_item_hash = decision
+            .into_iter()
+            .flat_map(|(_, a)| a.into_iter_per_action())
+            .flat_map(|(_, items)| items)
+            .find(|e| e.item.priority.is_new())
+            .unwrap()
+            .item
+            .unique_hash();
+        let mut scheduler = pin!(scheduler);
+        let permit = scheduler.as_mut().pop_permit(inbox_item_hash);
+        assert!(permit.is_some());
+        drop(permit);
+
+        let result = poll_scheduler(scheduler.as_mut(), &cache);
         let Poll::Ready(Ok(decision)) = result else {
             panic!("expected decision");
         };
@@ -1146,7 +1173,7 @@ mod tests {
             SchedulingStatus::Empty
         );
         assert!(matches!(
-            poll_scheduler(pin!(&mut scheduler), &cache),
+            poll_scheduler(scheduler.as_mut(), &cache),
             Poll::Pending
         ));
     }
