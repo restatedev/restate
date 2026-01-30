@@ -9,10 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Poll;
 use std::time::Duration;
 
 use futures::{Stream, StreamExt};
+use restate_clock::WallClock;
 use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_stream::wrappers::{IntervalStream, WatchStream};
@@ -29,6 +31,8 @@ use restate_wal_protocol::control::PartitionDurability;
 
 const WARN_PERIOD: Duration = Duration::from_secs(60);
 
+static LAST_SNAPSHOT_WARNING_AT: AtomicU64 = AtomicU64::new(0);
+
 /// A stream that tracks the last reported durable Lsn, replica-set durable points, and archived LSN
 /// (from snapshot repository), and emits a [`PartitionDurability`] when the durable LSN changes.
 ///
@@ -41,7 +45,6 @@ pub struct DurabilityTracker {
     replica_set_states: PartitionReplicaSetStates,
     archived_lsn_watch: WatchStream<Option<Lsn>>,
     check_timer: IntervalStream,
-    last_warning_at: Instant,
     /// cache of the last archived_lsn
     last_archived: Lsn,
     terminated: bool,
@@ -66,14 +69,13 @@ impl DurabilityTracker {
             replica_set_states,
             archived_lsn_watch: WatchStream::new(archived_lsn_watch),
             check_timer,
-            last_warning_at: Instant::now() - WARN_PERIOD,
             last_archived: Lsn::INVALID,
             terminated: false,
         }
     }
 
     fn sanitize_durability_mode(
-        &mut self,
+        &self,
         input_durability_mode: Option<DurabilityMode>,
     ) -> DurabilityMode {
         let configuration = Configuration::pinned();
@@ -81,20 +83,19 @@ impl DurabilityTracker {
         let is_cluster =
             Metadata::with_current(|m| m.nodes_config_ref().iter_role(Role::Worker).count() > 1);
 
-        let require_snapshots_notice = |durability_mode, last_warning_at: &mut Instant| {
-            if !has_snapshot_repository && last_warning_at.elapsed() > WARN_PERIOD {
+        let require_snapshots_notice = |durability_mode| {
+            if !has_snapshot_repository && should_emit_snapshot_warning() {
                 warn!(
                     %durability_mode,
                     "Detected cluster environment with no snapshot repository configured. \
                     Automatic log trimming is disabled, please refer to \
                     https://docs.restate.dev/operate/snapshots/ for more."
                 );
-                *last_warning_at = Instant::now();
             }
         };
 
-        let risk_notice = |durability_mode, last_warning_at: &mut Instant| {
-            if !has_snapshot_repository && last_warning_at.elapsed() > WARN_PERIOD {
+        let risk_notice = |durability_mode| {
+            if !has_snapshot_repository && should_emit_snapshot_warning() {
                 warn!(
                     "No snapshot repository is configured. \
                     Due to the configured durability mode '{durability_mode}', the cluster might \
@@ -102,7 +103,6 @@ impl DurabilityTracker {
                     Please configure the cluster to use a shared snapshot repository. Please refer \
                     to https://docs.restate.dev/operate/snapshots/ for more."
                 );
-                *last_warning_at = Instant::now();
             }
         };
 
@@ -134,12 +134,12 @@ impl DurabilityTracker {
             DurabilityMode::ReplicaSetOnly if !is_cluster => {}
             DurabilityMode::ReplicaSetOnly => {
                 // todo: remove when we support ad-hoc snapshot sharing
-                risk_notice(durability_mode, &mut self.last_warning_at);
+                risk_notice(durability_mode);
             }
             DurabilityMode::SnapshotAndReplicaSet
             | DurabilityMode::SnapshotOnly
             | DurabilityMode::Balanced => {
-                require_snapshots_notice(durability_mode, &mut self.last_warning_at);
+                require_snapshots_notice(durability_mode);
             }
         }
         durability_mode
@@ -226,5 +226,17 @@ impl Stream for DurabilityTracker {
         );
 
         Poll::Ready(Some(partition_durability))
+    }
+}
+
+fn should_emit_snapshot_warning() -> bool {
+    let now = WallClock::recent_ms().as_u64();
+    let last = LAST_SNAPSHOT_WARNING_AT.load(Ordering::Relaxed);
+    if now.saturating_sub(last) > WARN_PERIOD.as_millis() as u64 {
+        LAST_SNAPSHOT_WARNING_AT
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    } else {
+        false
     }
 }
