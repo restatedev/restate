@@ -22,7 +22,7 @@ use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::scan::TableScan;
+use crate::scan::{ScanDirection, TableScan};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
     TableScanIterationDecision, break_on_err,
@@ -108,6 +108,7 @@ impl ScanPromiseTable for PartitionStore {
             "df-promise",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<PromiseKey>(range),
+            ScanDirection::Forward,
             move |(mut k, mut v)| {
                 let key = break_on_err(PromiseKey::deserialize_from(&mut k))?;
                 let metadata = break_on_err(Promise::decode(&mut v))?;

@@ -45,4 +45,5 @@ pub use partition_store_manager::*;
 // re-export
 pub use restate_rocksdb::Priority;
 
+pub use crate::scan::ScanDirection;
 use crate::scan::TableScan;

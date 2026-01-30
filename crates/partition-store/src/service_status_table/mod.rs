@@ -22,7 +22,7 @@ use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::scan::TableScan;
+use crate::scan::{ScanDirection, TableScan};
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
 define_table_key!(
@@ -102,6 +102,7 @@ impl ScanVirtualObjectStatusTable for PartitionStore {
             "df-vo-status",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<ServiceStatusKey>(range),
+            ScanDirection::Forward,
             move |(mut key, mut value)| {
                 let state_key = break_on_err(ServiceStatusKey::deserialize_from(&mut key))?;
                 let state_value = break_on_err(VirtualObjectStatus::decode(&mut value))?;

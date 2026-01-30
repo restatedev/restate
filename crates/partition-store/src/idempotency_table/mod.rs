@@ -22,7 +22,7 @@ use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{IdempotencyId, PartitionKey, WithPartitionKey};
 
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::scan::TableScan;
+use crate::scan::{ScanDirection, TableScan};
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
 define_table_key!(
@@ -99,6 +99,7 @@ impl ScanIdempotencyTable for PartitionStore {
             "df-idempotency",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<IdempotencyKey>(range),
+            ScanDirection::Forward,
             move |(mut key, mut value)| {
                 let key = break_on_err(IdempotencyKey::deserialize_from(&mut key))?;
                 let idempotency_metadata = break_on_err(IdempotencyMetadata::decode(&mut value))?;

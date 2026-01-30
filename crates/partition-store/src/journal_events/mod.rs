@@ -28,6 +28,7 @@ use restate_types::time::MillisSinceEpoch;
 use crate::TableKind::{JournalEvent, State};
 use crate::error::break_on_err;
 use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::scan::ScanDirection;
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, TableScanIterationDecision,
 };
@@ -181,6 +182,7 @@ impl ScanJournalEventsTable for PartitionStore {
             "df-journal-events",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<JournalEventKey>(range),
+            ScanDirection::Forward,
             move |(mut key, mut value)| {
                 let event_key = break_on_err(JournalEventKey::deserialize_from(&mut key))?;
                 let (pk, inv_uuid, event_type, timestamp, _) = event_key.split();

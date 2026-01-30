@@ -8,15 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
+use bytes::BytesMut;
+
+use restate_types::identifiers::{PartitionId, PartitionKey};
+
 use crate::keys::{KeyCodec, KeyKind, TableKey, TableKeyPrefix};
 use crate::scan::TableScan::{
     FullScanPartitionKeyRange, KeyRangeInclusiveInSinglePartition, SinglePartition,
     SinglePartitionKeyPrefix,
 };
 use crate::{PaddedPartitionId, ScanMode, TableKind};
-use bytes::BytesMut;
-use restate_types::identifiers::{PartitionId, PartitionKey};
-use std::ops::RangeInclusive;
+
+/// Direction of iteration for table scans.
+#[derive(Debug, Copy, Clone, Default, Eq, PartialEq)]
+pub enum ScanDirection {
+    #[default]
+    Forward,
+    Backward,
+}
 
 // Note: we take extra arguments like (PartitionId or PartitionKey) only to make sure that
 // call-sites know what they are opting to. Those values might not actually be used to perform the

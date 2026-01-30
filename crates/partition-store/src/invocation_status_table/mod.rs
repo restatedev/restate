@@ -24,7 +24,7 @@ use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, Wit
 
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::scan::TableScan;
+use crate::scan::{ScanDirection, TableScan};
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
 
 define_table_key!(
@@ -144,6 +144,10 @@ impl ScanInvocationStatusTable for PartitionStore {
                 "df-for-each-invocation-status",
                 Priority::Low,
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                // many inv-status queries ask for the most recently created or modified invocations
+                // if we scan backward, those are highly likely to be early in the scan,
+                // which means that dynamic filter pushdown will be very effective
+                ScanDirection::Backward,
                 {
                     move |(mut key, mut value)| {
                         let status_key =

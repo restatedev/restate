@@ -25,6 +25,7 @@ use restate_types::message::MessageIndex;
 
 use crate::TableKind::Inbox;
 use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::scan::ScanDirection;
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
@@ -110,6 +111,7 @@ impl ScanInboxTable for PartitionStore {
             "df-inbox",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
+            ScanDirection::Forward,
             move |(mut key, mut value)| {
                 let key = break_on_err(InboxKey::deserialize_from(&mut key))?;
                 let inbox_entry = break_on_err(InboxEntry::decode(&mut value))?;

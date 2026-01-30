@@ -22,7 +22,9 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::TableKind::State;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, break_on_err};
+use crate::{
+    PartitionStore, PartitionStoreTransaction, ScanDirection, StorageAccess, break_on_err,
+};
 use crate::{TableScan, TableScanIterationDecision};
 
 define_table_key!(
@@ -148,6 +150,7 @@ impl ScanStateTable for PartitionStore {
             "df-user-state",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<StateKey>(range),
+            ScanDirection::Forward,
             move |(mut key, value)| {
                 let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
                 let (partition_key, service_name, service_key, state_key) = row_key.split();

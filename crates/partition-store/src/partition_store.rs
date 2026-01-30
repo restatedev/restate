@@ -48,6 +48,7 @@ use crate::keys::TableKeyPrefix;
 use crate::migrations::{LATEST_VERSION, SchemaVersion};
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
+use crate::scan::ScanDirection;
 use crate::scan::TableScan;
 use crate::snapshots::LocalPartitionSnapshot;
 
@@ -413,8 +414,13 @@ impl PartitionStore {
     fn iterator_step_for_each(
         tx: oneshot::Sender<StorageError>,
         mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+        direction: ScanDirection,
     ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
         let mut tx = Some(tx);
+        let continue_action = match direction {
+            ScanDirection::Forward => IterAction::Next,
+            ScanDirection::Backward => IterAction::Prev,
+        };
         move |item| {
             let mut must_send = |v| match tx.take() {
                 Some(tx) => tx.send(v),
@@ -430,7 +436,7 @@ impl PartitionStore {
                             IterAction::Stop
                         }
                         // the channel is not closed yet, keep iterating
-                        Some(_) => IterAction::Next,
+                        Some(_) => continue_action.clone(),
                         None => panic!("Iterator continued after IterAction::Stop"),
                     },
                     ControlFlow::Break(Ok(())) => {
@@ -456,11 +462,12 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
+        direction: ScanDirection,
         f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_for_each(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        let on_iter = Self::iterator_step_for_each(tx, f, direction);
+        self.run_iterator_internal(name, priority, scan, direction, on_iter)?;
         Ok(async {
             match rx.await {
                 Ok(storage_err) => Err(storage_err),
@@ -481,7 +488,7 @@ impl PartitionStore {
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_map(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, scan, ScanDirection::Forward, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -494,7 +501,7 @@ impl PartitionStore {
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_filter_map(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, scan, ScanDirection::Forward, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -503,6 +510,7 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
+        direction: ScanDirection,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
         let scan: PhysicalScan = scan.into();
@@ -511,12 +519,17 @@ impl PartitionStore {
                 assert!(table.has_key_kind(&prefix));
                 let prefix = prefix.freeze();
                 let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
+                let initial_action = match direction {
+                    ScanDirection::Forward => IterAction::Seek(prefix),
+                    // SeekToLast respects the prefix iterator bounds.
+                    ScanDirection::Backward => IterAction::SeekToLast,
+                };
                 self.db.rocksdb().clone().run_background_iterator(
                     // todo(asoli): Pass an owned cf handle instead of name
                     self.db.partition().cf_name().into(),
                     name,
                     priority,
-                    IterAction::Seek(prefix),
+                    initial_action,
                     opts,
                     on_iter,
                 )?;
@@ -525,12 +538,18 @@ impl PartitionStore {
                 assert!(table.has_key_kind(&start));
                 let start = start.freeze();
                 let end = end.freeze();
-                let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
+                let initial_action = match direction {
+                    ScanDirection::Forward => IterAction::Seek(start.clone()),
+                    // SeekToLast respects the iterator bounds, so it will land on the
+                    // last key < end (since end is exclusive).
+                    ScanDirection::Backward => IterAction::SeekToLast,
+                };
+                let opts = self.new_range_iterator_opts(scan_mode, start, end);
                 self.db.rocksdb().clone().run_background_iterator(
                     self.db.partition().cf_name().as_ref().into(),
                     name,
                     priority,
-                    IterAction::Seek(start),
+                    initial_action,
                     opts,
                     on_iter,
                 )?;
@@ -551,12 +570,16 @@ impl PartitionStore {
                 end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
                 let start = start.freeze();
                 let end = end.freeze();
-                let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
+                let initial_action = match direction {
+                    ScanDirection::Forward => IterAction::Seek(start.clone()),
+                    ScanDirection::Backward => IterAction::SeekToLast,
+                };
+                let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start, end);
                 self.db.rocksdb().clone().run_background_iterator(
                     self.db.partition().cf_name().into(),
                     name,
                     priority,
-                    IterAction::Seek(start),
+                    initial_action,
                     opts,
                     on_iter,
                 )?;
