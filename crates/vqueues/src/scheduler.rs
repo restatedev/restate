@@ -144,11 +144,10 @@ pub enum ThrottleScope {
 pub struct Entry<Item> {
     pub item: Item,
     pub stats: WaitStats,
-    pub permit: Permit,
 }
 impl<Item> Entry<Item> {
-    pub fn split(self) -> (Item, WaitStats, Permit) {
-        (self.item, self.stats, self.permit)
+    pub fn split(self) -> (Item, WaitStats) {
+        (self.item, self.stats)
     }
 }
 
@@ -403,6 +402,16 @@ impl<S: VQueueStore> SchedulerService<S> {
             drr_scheduler.as_mut().on_inbox_event(vqueues, event)?;
         }
         Ok(())
+    }
+
+    /// Return a run permit for a given item hash if it was assigned by the scheduler and not yet
+    /// confirmed.
+    pub fn pop_permit(&mut self, item_hash: u64) -> Option<Permit> {
+        if let State::Active(ref mut drr_scheduler) = self.state {
+            drr_scheduler.as_mut().pop_permit(item_hash)
+        } else {
+            None
+        }
     }
 
     pub async fn schedule_next(

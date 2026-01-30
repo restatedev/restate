@@ -139,10 +139,12 @@ impl EligibilityTracker {
                 continue;
             };
 
-            let current_state = self
-                .states
-                .get_mut(handle)
-                .expect("eligible must have state");
+            let Some(current_state) = self.states.get_mut(handle) else {
+                // The vqueue is not eligible anymore. This can happen if the vqueue became dormant
+                // due to items being removed externally (killed, etc.)
+                self.ready_ring.pop_front();
+                continue;
+            };
 
             let meta = cache.get_vqueue(&qstate.qid).unwrap();
             match current_state {
