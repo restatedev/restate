@@ -7,6 +7,8 @@ This directory contains release notes for Restate, organized to track changes be
 ```
 release-notes/
 ├── README.md          # This file
+├── v1.6.0.md          # Consolidated release notes for v1.6.0
+├── v1.7.0.md          # (future releases follow the same pattern)
 └── unreleased/        # Release notes for changes not yet released
     └── *.md           # Individual release note files
 ```
@@ -58,30 +60,51 @@ When creating a new release:
 
 1. **Review all unreleased notes**: Check `unreleased/` for all pending release notes
 
-2. **Consolidate release notes**:
-   - Combine related changes if appropriate
-   - Edit for clarity and consistency
-   - Ensure proper categorization (Breaking Changes, New Features, Improvements, Bug Fixes)
+2. **Create a consolidated release notes file** (`v<version>.md`) with the following structure:
 
-3. **Create release announcement**: Use the consolidated notes to prepare:
-   - GitHub release notes
-   - Documentation updates
-   - Blog post content (if applicable)
+   ```markdown
+   # Restate v<version> Release Notes
 
-4. **Archive the notes**:
-   ```bash
-   # Option 1: Create a versioned archive
-   mkdir -p release-notes/v<version>
-   mv release-notes/unreleased/*.md release-notes/v<version>/
+   ## Highlights
+   - 3-5 bullet points summarizing the most important changes
 
-   # Option 2: Clear unreleased after incorporating into release
-   git rm release-notes/unreleased/*.md
+   ## Table of Contents
+   (Links to all sections below)
+
+   ## Breaking Changes
+   (Items sorted by impact, most impactful first)
+
+   ## Deprecations
+
+   ## New Features
+   (Items sorted by impact, most impactful first)
+
+   ## Improvements
+   ### Behavioral Changes
+   ### Observability
+   ### Stability and Security
+   ### CLI Improvements
+   ### Helm Chart
+
+   ## Bug Fixes
+   (Grouped by area: Kafka, Invocations, Memory, CLI, UI, Metadata, etc.)
    ```
 
-5. **Update the release notes in the release**: The final consolidated notes go into:
+3. **Consolidation guidelines**:
+   - Sort items by impact within each category (most impactful first)
+   - Preserve all migration guidance, configuration examples, and code snippets
+   - Keep all related issue/PR links
+   - For items spanning multiple categories (e.g., both breaking change and new feature), place in the primary category with full context
+
+4. **Delete the individual unreleased files** after consolidation:
+   ```bash
+   rm release-notes/unreleased/*.md
+   ```
+
+5. **Use the consolidated notes** to prepare:
    - GitHub release description
-   - CHANGELOG (if maintained)
-   - Documentation site
+   - Documentation updates
+   - Blog post content (if applicable)
 
 ## Guidelines
 

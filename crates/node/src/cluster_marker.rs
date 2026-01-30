@@ -30,7 +30,7 @@ const TMP_CLUSTER_MARKER_FILE_NAME: &str = ".tmp-cluster-marker";
 /// This information needs to be updated whenever we release a version that changes the
 /// compatible versions boundaries.
 const COMPATIBILITY_INFORMATION: CompatibilityInformation = CompatibilityInformation::new(
-    SemanticRestateVersion::new(1, 4, 0),
+    SemanticRestateVersion::new(1, 5, 0),
     SemanticRestateVersion::new(1, 5, 0),
 );
 
