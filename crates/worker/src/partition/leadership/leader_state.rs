@@ -75,7 +75,6 @@ pub struct LeaderState {
     pub timer_service: Pin<Box<TimerService>>,
     scheduler: SchedulerService<PartitionDb>,
     self_proposer: SelfProposer,
-    unconfirmed_scheduler_assignments: HashMap<u64, Permit>,
 
     awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
     awaiting_rpc_self_propose: FuturesUnordered<SelfAppendFuture>,
@@ -118,7 +117,6 @@ impl LeaderState {
             }),
             timer_service: Box::pin(timer_service),
             scheduler,
-            unconfirmed_scheduler_assignments: Default::default(),
             self_proposer,
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
@@ -283,11 +281,7 @@ impl LeaderState {
                         for (action, items) in decision.into_iter_per_action() {
                             let mut assignment = Assignment::with_capacity(&qid, items.len());
                             for entry in items.into_iter() {
-                                let (item, stats, permit) = entry.split();
-                                if !permit.is_empty() {
-                                    self.unconfirmed_scheduler_assignments
-                                        .insert(item.unique_hash(), permit);
-                                }
+                                let (item, stats) = entry.split();
                                 assignment.push(item, stats);
                             }
                             match action {
@@ -678,10 +672,12 @@ impl LeaderState {
                 invocation_target,
                 invoke_input_journal,
             } => {
-                let permit = self
-                    .unconfirmed_scheduler_assignments
-                    .remove(&item_hash)
-                    .expect("invoke invocations assigned by scheduler");
+                let permit = self.scheduler.pop_permit(item_hash).unwrap_or_else(|| {
+                    tracing::warn!(
+                        "Cannot find a permit for item hash {item_hash} in scheduler. Will not respect the invoker limit for this invocation"
+                    );
+                    Permit::new_empty()
+                });
                 invoker_tx
                     .vqueue_invoke(
                         partition_leader_epoch,

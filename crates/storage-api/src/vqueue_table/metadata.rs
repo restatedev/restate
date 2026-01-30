@@ -163,6 +163,7 @@ impl VQueueMeta {
 
     #[inline]
     fn apply_update(&mut self, update: &Update) -> anyhow::Result<()> {
+        debug_assert!(self.length >= self.total_waiting());
         let now = update.ts;
         // Note to future authors: This match needs to continue to work even when
         // processing old/deprecated/removed actions. Therefore, removed actions should
