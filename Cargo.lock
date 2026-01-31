@@ -8088,6 +8088,7 @@ dependencies = [
  "restate-storage-api",
  "restate-test-util",
  "restate-types",
+ "restate-vqueues",
  "restate-wal-protocol",
  "restate-worker",
  "restate-workspace-hack",

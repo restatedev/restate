@@ -23,6 +23,7 @@ restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true, features = ["test-util"] }
+restate-vqueues = { workspace = true }
 restate-wal-protocol = { workspace = true }
 restate-worker = { workspace = true }
 

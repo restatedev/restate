@@ -27,18 +27,21 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
+use restate_storage_api::{Storage, Transaction};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
 use restate_types::journal_v2::Entry;
 use restate_types::journal_v2::command::{Command as JournalCommand, OutputCommand, OutputResult};
+use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::timer::Timer;
+use restate_vqueues::VQueuesMetaMut;
 use restate_wal_protocol::Command;
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_worker::state_machine::{Action, StateMachine};
+use restate_worker::state_machine::{Action, ActionCollector, StateMachine};
 
 use crate::clock::SimulationClock;
 
@@ -203,7 +206,7 @@ pub struct PartitionSimulation<S> {
 #[allow(dead_code)]
 impl<S> PartitionSimulation<S>
 where
-    S: restate_storage_api::Transaction + ReadInvocationStatusTable + Send,
+    S: Storage + ReadInvocationStatusTable + Send,
 {
     /// Creates a new partition simulation.
     pub fn new(
@@ -430,6 +433,103 @@ where
         // - No orphaned invocations
         Ok(())
     }
+
+    /// Executes a single simulation step.
+    ///
+    /// This takes the next command from the queue (or advances time to fire a timer),
+    /// applies it to the state machine, and processes the resulting actions.
+    pub async fn step(&mut self) -> Result<StepResult, SimulationError> {
+        // If no pending commands, try to advance to the next timer
+        if self.pending_commands.is_empty() && !self.advance_to_next_timer() {
+            return Err(SimulationError::NoPendingWork);
+        }
+
+        // Get the next command
+        let command = self
+            .pending_commands
+            .pop_front()
+            .ok_or(SimulationError::NoPendingWork)?;
+
+        let time = self.clock.now();
+
+        // Create a transaction and apply the command
+        let mut transaction = self.storage.transaction();
+        let mut action_collector = ActionCollector::default();
+        let mut vqueues = VQueuesMetaMut::default();
+
+        self.state_machine
+            .apply(
+                command.clone(),
+                time,
+                Lsn::OLDEST,
+                &mut transaction,
+                &mut action_collector,
+                &mut vqueues,
+                true, // is_leader
+            )
+            .await?;
+
+        // Commit the transaction
+        transaction.commit().await?;
+
+        // Process actions to generate feedback commands
+        self.process_actions(&action_collector);
+
+        // Check invariants if enabled
+        if self.config.check_invariants {
+            self.check_invariants()?;
+        }
+
+        self.steps_executed += 1;
+
+        Ok(StepResult {
+            command,
+            time,
+            actions: action_collector,
+        })
+    }
+
+    /// Runs the simulation until completion or max steps reached.
+    ///
+    /// Returns the simulation outcome including total steps and any violations.
+    pub async fn run(&mut self) -> Result<SimulationOutcome, SimulationError> {
+        let mut violations = Vec::new();
+
+        while self.should_continue() {
+            match self.step().await {
+                Ok(_) => {}
+                Err(SimulationError::NoPendingWork) => break,
+                Err(SimulationError::Invariant(violation)) => {
+                    violations.push(violation);
+                    if self.config.check_invariants {
+                        // Stop on first invariant violation if checking is enabled
+                        break;
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(SimulationOutcome {
+            steps_executed: self.steps_executed,
+            final_time: self.clock.now(),
+            success: violations.is_empty(),
+            violations,
+        })
+    }
+}
+
+/// Errors that can occur during simulation.
+#[derive(Debug, thiserror::Error)]
+pub enum SimulationError {
+    #[error("State machine error: {0}")]
+    StateMachine(#[from] restate_worker::state_machine::Error),
+    #[error("Storage error: {0}")]
+    Storage(#[from] restate_storage_api::StorageError),
+    #[error("Invariant violation: {0}")]
+    Invariant(#[from] InvariantViolation),
+    #[error("No pending commands and no timers to fire")]
+    NoPendingWork,
 }
 
 /// An invariant violation detected during simulation.

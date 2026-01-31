@@ -31,5 +31,6 @@ mod partition;
 
 pub use clock::SimulationClock;
 pub use partition::{
-    InvokerBehavior, InvokerSimulator, PartitionSimulation, PartitionSimulationConfig, StepResult,
+    InvokerBehavior, InvokerSimulator, PartitionSimulation, PartitionSimulationConfig,
+    SimulationError, SimulationOutcome, StepResult,
 };
