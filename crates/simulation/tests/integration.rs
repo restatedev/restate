@@ -26,6 +26,10 @@ use restate_types::partitions::Partition;
 use restate_worker::state_machine::Action;
 
 /// Creates a test storage setup.
+///
+/// The `RocksDbManager` is a singleton that persists for the lifetime of the process.
+/// After calling `shutdown()`, no new DBs can be opened. Use `reset()` instead if you
+/// need to run multiple independent test scenarios within the same process.
 async fn create_test_storage() -> restate_partition_store::PartitionStore {
     RocksDbManager::init();
     let storage_options = StorageOptions::default();
@@ -46,7 +50,21 @@ async fn create_test_storage() -> restate_partition_store::PartitionStore {
         .unwrap()
 }
 
-/// Shuts down the test environment.
+/// Resets the RocksDB environment between test scenarios.
+///
+/// This closes all open databases but allows new ones to be opened afterward.
+/// Use this between independent test scenarios within the same test function.
+#[allow(dead_code)]
+async fn reset_test_env() {
+    RocksDbManager::get()
+        .reset()
+        .await
+        .expect("RocksDB reset failed");
+}
+
+/// Shuts down the test environment completely.
+///
+/// Call this only at the end of all tests - after this, no new DBs can be opened.
 async fn shutdown_test_env() {
     TaskCenter::shutdown_node("test complete", 0).await;
     RocksDbManager::get().shutdown().await;
@@ -54,8 +72,20 @@ async fn shutdown_test_env() {
 
 /// Main integration test that runs all simulation scenarios.
 ///
-/// Note: All RocksDB-dependent tests must be in a single test function
-/// because RocksDB is a singleton that cannot be restarted within a process.
+/// # Why tests are consolidated
+///
+/// The `RocksDbManager` is a process-level singleton (`static OnceLock`). Once `shutdown()` is
+/// called, it sets `shutting_down = true` and no new databases can be opened.
+///
+/// To run independent test scenarios within the same process, you have two options:
+///
+/// 1. **Consolidated tests** (current approach): Run all scenarios in one test function,
+///    sharing the same storage. This is simpler and matches the partition-store test pattern.
+///
+/// 2. **Independent scenarios with reset**: Between scenarios, call `reset()` instead of
+///    `shutdown()`. This closes all DBs but resets `shutting_down = false`, allowing new
+///    `PartitionStoreManager` instances to open fresh DBs. Note that you need a new
+///    `PartitionStoreManager` after reset since it caches DB handles.
 #[test(restate_core::test)]
 async fn test_partition_simulation() -> googletest::Result<()> {
     let storage = create_test_storage().await;
