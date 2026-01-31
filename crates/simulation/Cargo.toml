@@ -1,0 +1,49 @@
+[package]
+name = "restate-simulation"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Deterministic simulation testing framework for Restate"
+
+[features]
+default = []
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+# Restate crates
+restate-clock = { workspace = true }
+restate-invoker-api = { workspace = true }
+restate-partition-store = { workspace = true }
+restate-rocksdb = { workspace = true }
+restate-service-protocol = { workspace = true, features = ["codec"] }
+restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
+restate-storage-api = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
+restate-wal-protocol = { workspace = true }
+restate-worker = { workspace = true }
+
+# External dependencies
+bytes = { workspace = true }
+bytestring = { workspace = true }
+derive_more = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+restate-core = { workspace = true, features = ["test-util"] }
+restate-partition-store = { workspace = true, features = ["test-util"] }
+restate-rocksdb = { workspace = true, features = ["test-util"] }
+restate-test-util = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
+
+googletest = { workspace = true }
+test-log = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -75,6 +75,7 @@ restate-serde-util = { path = "crates/serde-util" }
 restate-server = { path = "server" }
 restate-lite = { path = "lite" }
 restate-service-client = { path = "crates/service-client" }
+restate-simulation = { path = "crates/simulation" }
 restate-service-protocol = { path = "crates/service-protocol" }
 restate-service-protocol-v4 = { path = "crates/service-protocol-v4" }
 restate-storage-api = { path = "crates/storage-api" }

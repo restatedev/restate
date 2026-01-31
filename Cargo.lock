@@ -8068,6 +8068,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-simulation"
+version = "1.6.1-dev"
+dependencies = [
+ "bytes",
+ "bytestring",
+ "derive_more",
+ "futures",
+ "googletest",
+ "parking_lot",
+ "rand 0.9.2",
+ "restate-clock",
+ "restate-core",
+ "restate-invoker-api",
+ "restate-partition-store",
+ "restate-rocksdb",
+ "restate-service-protocol",
+ "restate-service-protocol-v4",
+ "restate-storage-api",
+ "restate-test-util",
+ "restate-types",
+ "restate-wal-protocol",
+ "restate-worker",
+ "restate-workspace-hack",
+ "test-log",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "restate-storage-api"
 version = "1.6.1-dev"
 dependencies = [

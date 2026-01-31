@@ -64,6 +64,11 @@ pub use self::handle::*;
 pub use crate::subscription_controller::SubscriptionController;
 pub use crate::subscription_integration::SubscriptionControllerHandle;
 
+// Re-export state machine types for simulation testing
+pub mod state_machine {
+    pub use crate::partition::state_machine::{Action, ActionCollector, Error, StateMachine};
+}
+
 type PartitionProcessorBuilder = partition::PartitionProcessorBuilder<
     InvokerChannelServiceHandle<InvokerStorageReader<PartitionStore>>,
 >;

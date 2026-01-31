@@ -13,7 +13,7 @@ pub mod invoker_storage_reader;
 mod leadership;
 mod rpc;
 pub mod shuffle;
-mod state_machine;
+pub mod state_machine;
 pub mod types;
 
 use std::fmt::Debug;
