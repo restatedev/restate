@@ -14,7 +14,7 @@
 //! where actions emitted by the state machine (timer registrations, outbox messages)
 //! are fed back as commands.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::RangeInclusive;
 
 use bytes::Bytes;
@@ -24,12 +24,18 @@ use rand::{Rng, SeedableRng};
 
 use restate_invoker_api::{Effect, EffectKind, InvokeInputJournal};
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
+use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::outbox_table::OutboxMessage;
+use restate_storage_api::service_status_table::{
+    ReadVirtualObjectStatusTable, VirtualObjectStatus,
+};
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::{Storage, Transaction};
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
+use restate_types::errors::InvocationError;
+use restate_types::identifiers::{
+    DeploymentId, InvocationId, PartitionKey, ServiceId, WithPartitionKey,
+};
 use restate_types::invocation::{InvocationTarget, ServiceInvocation, Source};
 use restate_types::journal_v2::Entry;
 use restate_types::journal_v2::command::{Command as JournalCommand, OutputCommand, OutputResult};
@@ -44,6 +50,16 @@ use restate_wal_protocol::timer::TimerKeyValue;
 use restate_worker::state_machine::{Action, ActionCollector, StateMachine};
 
 use crate::clock::SimulationClock;
+
+/// Small key space for virtual object invocations to force key collisions.
+/// This is critical for testing VO exclusivity invariants.
+pub const VO_TEST_KEYS: &[&str] = &["key-a", "key-b", "key-c"];
+
+/// Default service name for test invocations.
+pub const VO_TEST_SERVICE: &str = "TestService";
+
+/// Default handler name for test invocations.
+pub const VO_TEST_HANDLER: &str = "handler";
 
 /// Configuration for a partition simulation.
 #[derive(Debug, Clone)]
@@ -84,6 +100,15 @@ pub enum InvokerBehavior {
         /// Maximum number of journal entries to generate.
         max_entries: usize,
     },
+    /// Probabilistic behavior: randomly choose success, failure, or timeout.
+    /// Timeout probability is the remainder (1.0 - success_rate - failure_rate).
+    /// Timeouts generate no effects, simulating an invoker that never responds.
+    Probabilistic {
+        /// Probability of success (0.0 - 1.0).
+        success_rate: f64,
+        /// Probability of failure (0.0 - 1.0).
+        failure_rate: f64,
+    },
     /// Custom behavior provided by the test.
     Custom(Box<dyn InvokerSimulator>),
 }
@@ -109,15 +134,8 @@ pub trait InvokerSimulator: std::fmt::Debug + Send + Sync {
 #[derive(Debug, Default)]
 pub struct ImmediateSuccessInvoker;
 
-impl InvokerSimulator for ImmediateSuccessInvoker {
-    fn on_invoke(
-        &mut self,
-        invocation_id: InvocationId,
-        _invocation_target: &InvocationTarget,
-        _journal: &InvokeInputJournal,
-        _rng: &mut StdRng,
-        _clock: &SimulationClock,
-    ) -> Vec<Command> {
+impl ImmediateSuccessInvoker {
+    fn generate_success(invocation_id: InvocationId) -> Vec<Command> {
         vec![
             // Pin deployment
             Command::InvokerEffect(Box::new(Effect {
@@ -148,6 +166,113 @@ impl InvokerSimulator for ImmediateSuccessInvoker {
                 kind: EffectKind::End,
             })),
         ]
+    }
+
+    fn generate_failure(invocation_id: InvocationId, error: InvocationError) -> Vec<Command> {
+        vec![
+            // Pin deployment first
+            Command::InvokerEffect(Box::new(Effect {
+                invocation_id,
+                kind: EffectKind::PinnedDeployment(PinnedDeployment {
+                    deployment_id: DeploymentId::default(),
+                    service_protocol_version: ServiceProtocolVersion::V5,
+                }),
+            })),
+            // Failed
+            Command::InvokerEffect(Box::new(Effect {
+                invocation_id,
+                kind: EffectKind::Failed(error),
+            })),
+        ]
+    }
+}
+
+impl InvokerSimulator for ImmediateSuccessInvoker {
+    fn on_invoke(
+        &mut self,
+        invocation_id: InvocationId,
+        _invocation_target: &InvocationTarget,
+        _journal: &InvokeInputJournal,
+        _rng: &mut StdRng,
+        _clock: &SimulationClock,
+    ) -> Vec<Command> {
+        Self::generate_success(invocation_id)
+    }
+}
+
+/// Invoker simulator that immediately fails invocations.
+#[derive(Debug)]
+pub struct ImmediateFailInvoker {
+    error_code: u16,
+    message: String,
+}
+
+impl ImmediateFailInvoker {
+    pub fn new(error_code: u16, message: String) -> Self {
+        Self {
+            error_code,
+            message,
+        }
+    }
+}
+
+impl InvokerSimulator for ImmediateFailInvoker {
+    fn on_invoke(
+        &mut self,
+        invocation_id: InvocationId,
+        _invocation_target: &InvocationTarget,
+        _journal: &InvokeInputJournal,
+        _rng: &mut StdRng,
+        _clock: &SimulationClock,
+    ) -> Vec<Command> {
+        let error = InvocationError::new(self.error_code, self.message.clone());
+        ImmediateSuccessInvoker::generate_failure(invocation_id, error)
+    }
+}
+
+/// Invoker simulator that randomly chooses between success, failure, and timeout.
+#[derive(Debug)]
+pub struct ProbabilisticInvoker {
+    success_rate: f64,
+    failure_rate: f64,
+}
+
+impl ProbabilisticInvoker {
+    pub fn new(success_rate: f64, failure_rate: f64) -> Self {
+        debug_assert!(
+            success_rate + failure_rate <= 1.0,
+            "success_rate + failure_rate must be <= 1.0"
+        );
+        Self {
+            success_rate,
+            failure_rate,
+        }
+    }
+}
+
+impl InvokerSimulator for ProbabilisticInvoker {
+    fn on_invoke(
+        &mut self,
+        invocation_id: InvocationId,
+        _invocation_target: &InvocationTarget,
+        _journal: &InvokeInputJournal,
+        rng: &mut StdRng,
+        _clock: &SimulationClock,
+    ) -> Vec<Command> {
+        let roll: f64 = rng.random();
+
+        if roll < self.success_rate {
+            // Success
+            ImmediateSuccessInvoker::generate_success(invocation_id)
+        } else if roll < self.success_rate + self.failure_rate {
+            // Failure
+            let error = InvocationError::new(500u16, "Simulated invoker failure");
+            ImmediateSuccessInvoker::generate_failure(invocation_id, error)
+        } else {
+            // Timeout - return no commands, simulating invoker that never responds.
+            // The invocation will remain active until explicitly aborted.
+            vec![]
+        }
     }
 }
 
@@ -201,12 +326,15 @@ pub struct PartitionSimulation<S> {
     active_invocations: HashSet<InvocationId>,
     /// Number of steps executed so far.
     steps_executed: usize,
+    /// Track VO keys we've seen for invariant checking.
+    /// Maps ServiceId to the invocation that should hold the lock.
+    vo_locks_expected: HashMap<ServiceId, InvocationId>,
 }
 
 #[allow(dead_code)]
 impl<S> PartitionSimulation<S>
 where
-    S: Storage + ReadInvocationStatusTable + Send,
+    S: Storage + ReadInvocationStatusTable + ReadVirtualObjectStatusTable + Send,
 {
     /// Creates a new partition simulation.
     pub fn new(
@@ -228,14 +356,18 @@ where
 
         let invoker: Box<dyn InvokerSimulator> = match invoker_behavior {
             InvokerBehavior::ImmediateSuccess => Box::new(ImmediateSuccessInvoker),
-            InvokerBehavior::ImmediateFail { .. } => {
-                // TODO: Implement failure invoker
-                Box::new(ImmediateSuccessInvoker)
-            }
+            InvokerBehavior::ImmediateFail {
+                error_code,
+                message,
+            } => Box::new(ImmediateFailInvoker::new(error_code, message)),
             InvokerBehavior::RandomJournal { .. } => {
                 // TODO: Implement random journal invoker
                 Box::new(ImmediateSuccessInvoker)
             }
+            InvokerBehavior::Probabilistic {
+                success_rate,
+                failure_rate,
+            } => Box::new(ProbabilisticInvoker::new(success_rate, failure_rate)),
             InvokerBehavior::Custom(invoker) => invoker,
         };
 
@@ -251,6 +383,7 @@ where
             deleted_timers: HashSet::new(),
             active_invocations: HashSet::new(),
             steps_executed: 0,
+            vo_locks_expected: HashMap::new(),
         }
     }
 
@@ -280,12 +413,39 @@ where
             .push_back(Command::Invoke(Box::new(invocation)));
     }
 
-    /// Creates a random invocation targeting this partition.
+    /// Creates a random invocation targeting this partition with a random key.
     pub fn random_invocation(&mut self) -> ServiceInvocation {
         let target = InvocationTarget::virtual_object(
-            "TestService",
+            VO_TEST_SERVICE,
             format!("key-{}", self.rng.random::<u32>()),
-            "handler",
+            VO_TEST_HANDLER,
+            restate_types::invocation::VirtualObjectHandlerType::Exclusive,
+        );
+        let invocation_id = InvocationId::generate(&target, None);
+        ServiceInvocation::initialize(invocation_id, target, Source::Ingress(Default::default()))
+    }
+
+    /// Creates a random invocation from a small key space to force collisions.
+    /// This is useful for testing VO exclusivity invariants.
+    pub fn random_vo_invocation(&mut self) -> ServiceInvocation {
+        let key_idx = self.rng.random_range(0..VO_TEST_KEYS.len());
+        let key = VO_TEST_KEYS[key_idx];
+        let target = InvocationTarget::virtual_object(
+            VO_TEST_SERVICE,
+            key,
+            VO_TEST_HANDLER,
+            restate_types::invocation::VirtualObjectHandlerType::Exclusive,
+        );
+        let invocation_id = InvocationId::generate(&target, None);
+        ServiceInvocation::initialize(invocation_id, target, Source::Ingress(Default::default()))
+    }
+
+    /// Creates an invocation for a specific VO key.
+    pub fn invocation_for_key(&mut self, key: &str) -> ServiceInvocation {
+        let target = InvocationTarget::virtual_object(
+            VO_TEST_SERVICE,
+            key,
+            VO_TEST_HANDLER,
             restate_types::invocation::VirtualObjectHandlerType::Exclusive,
         );
         let invocation_id = InvocationId::generate(&target, None);
@@ -425,12 +585,61 @@ where
     }
 
     /// Checks state machine invariants.
-    fn check_invariants(&self) -> Result<(), InvariantViolation> {
-        // TODO: Implement invariant checks
-        // - No duplicate journal entries
-        // - Valid state transitions
-        // - Proper sequence number ordering
-        // - No orphaned invocations
+    async fn check_invariants(&mut self) -> Result<(), InvariantViolation> {
+        self.check_vo_exclusivity().await
+    }
+
+    /// Checks the virtual object exclusivity invariant.
+    ///
+    /// For each VO key, verifies that:
+    /// 1. If locked, the lock holder is in an active state (Invoked/Suspended/Paused)
+    /// 2. No two invocations are simultaneously active for the same key
+    async fn check_vo_exclusivity(&mut self) -> Result<(), InvariantViolation> {
+        // Check each VO key we've touched
+        for key in VO_TEST_KEYS {
+            let service_id = ServiceId::new(VO_TEST_SERVICE, *key);
+
+            // Get the lock status from storage
+            let lock_status = self
+                .storage
+                .get_virtual_object_status(&service_id)
+                .await
+                .map_err(|e| InvariantViolation::Custom(format!("Storage error: {}", e)))?;
+
+            if let VirtualObjectStatus::Locked(locked_by) = lock_status {
+                // Verify the lock holder is in an active state
+                let invocation_status = self
+                    .storage
+                    .get_invocation_status(&locked_by)
+                    .await
+                    .map_err(|e| InvariantViolation::Custom(format!("Storage error: {}", e)))?;
+
+                let is_active = matches!(
+                    invocation_status,
+                    InvocationStatus::Invoked(_)
+                        | InvocationStatus::Suspended { .. }
+                        | InvocationStatus::Paused(_)
+                );
+
+                if !is_active {
+                    let status_name = match invocation_status {
+                        InvocationStatus::Scheduled(_) => "Scheduled",
+                        InvocationStatus::Inboxed(_) => "Inboxed",
+                        InvocationStatus::Invoked(_) => "Invoked",
+                        InvocationStatus::Suspended { .. } => "Suspended",
+                        InvocationStatus::Paused(_) => "Paused",
+                        InvocationStatus::Completed(_) => "Completed",
+                        InvocationStatus::Free => "Free",
+                    };
+                    return Err(InvariantViolation::VoLockHeldByNonActiveInvocation {
+                        service_id,
+                        locked_by,
+                        status: status_name.to_string(),
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -477,7 +686,7 @@ where
 
         // Check invariants if enabled
         if self.config.check_invariants {
-            self.check_invariants()?;
+            self.check_invariants().await?;
         }
 
         self.steps_executed += 1;
@@ -545,6 +754,23 @@ pub enum InvariantViolation {
     InvalidStateTransition {
         invocation_id: InvocationId,
         details: String,
+    },
+    #[error(
+        "VO lock held by non-active invocation: service={service_id:?}, \
+         locked_by={locked_by}, status={status}"
+    )]
+    VoLockHeldByNonActiveInvocation {
+        service_id: ServiceId,
+        locked_by: InvocationId,
+        status: String,
+    },
+    #[error(
+        "Multiple active invocations for same VO key: service={service_id:?}, \
+         invocations={invocations:?}"
+    )]
+    MultipleActiveInvocationsForVoKey {
+        service_id: ServiceId,
+        invocations: Vec<InvocationId>,
     },
     #[error("Invariant check failed: {0}")]
     Custom(String),
