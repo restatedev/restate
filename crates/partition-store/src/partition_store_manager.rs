@@ -14,7 +14,7 @@ use std::sync::{Arc, Weak};
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use tokio::sync::Mutex as AsyncMutex;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument};
 
 use restate_rocksdb::{CfPrefixPattern, DbSpecBuilder, RocksDb, RocksDbManager, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
@@ -251,37 +251,26 @@ impl PartitionStoreManager {
         // target-lsn target higher than our local state (probably due to seeing a log trim-gap).
         // **
 
-        // Attempt to get the latest available snapshot from the snapshot repository:
-        let snapshot = self
+        // Attempt to get a suitable snapshot from the repository:
+        let snapshot_result = self
             .snapshots
-            .download_latest_snapshot(partition.partition_id)
-            .await
-            .map_err(OpenError::Snapshot)?;
+            .download_snapshot(partition.partition_id, target_lsn)
+            .await;
 
-        match (snapshot, target_lsn) {
-            (None, None) => {
-                debug!("No snapshot found for partition, creating new partition store");
-                let db = cell.provision(&mut state_guard, rocksdb.clone()).await?;
-                Ok(PartitionStore::from(db))
-            }
-
-            (Some(snapshot), None) => {
-                // Based on the assumptions for calling this method, we should only reach this point if
-                // there is no existing store - we can import without first dropping the column family.
+        match (snapshot_result, target_lsn) {
+            (Ok(snapshot), None) => {
+                // Found a snapshot when we didn't require one - import it
                 info!("Found partition snapshot, restoring it");
                 let db = cell
                     .import_cf(&mut state_guard, snapshot, rocksdb.clone())
                     .await?;
-
                 Ok(PartitionStore::from(db))
             }
 
-            // Good snapshot
-            (Some(snapshot), Some(fast_forward_lsn))
-                if snapshot.min_applied_lsn >= fast_forward_lsn =>
-            {
+            (Ok(snapshot), Some(fast_forward_lsn)) => {
+                // Got a snapshot that meets the target LSN requirement
                 info!(
-                    latest_snapshot_lsn = %snapshot.min_applied_lsn,
+                    snapshot_lsn = %snapshot.min_applied_lsn,
                     %fast_forward_lsn,
                     "Found snapshot with LSN >= target LSN, dropping local partition store state",
                 );
@@ -291,22 +280,23 @@ impl PartitionStoreManager {
                     .await?;
                 Ok(PartitionStore::from(db))
             }
-            (maybe_snapshot, Some(fast_forward_lsn)) => {
-                // Play it safe and keep the partition store intact; we can't do much else at this
-                // point. We'll likely halt again as soon as the processor starts up.
+
+            (Err(_), None) => {
+                debug!("No snapshot found for partition, creating new partition store");
+                let db = cell.provision(&mut state_guard, rocksdb.clone()).await?;
+                Ok(PartitionStore::from(db))
+            }
+
+            (Err(err), Some(fast_forward_lsn)) => {
+                // We needed a snapshot but couldn't get one
                 let recovery_guide_msg = "The partition's log is trimmed to a point from which this processor can not resume. \
                 Visit https://docs.restate.dev/operate/clusters#handling-missing-snapshots \
                 to learn more about how to recover this processor.";
 
-                if let Some(snapshot) = maybe_snapshot {
-                    warn!(
-                        latest_snapshot_lsn = %snapshot.min_applied_lsn,
-                        %fast_forward_lsn,
-                        "The latest available snapshot is from an LSN before the target LSN! {}",
-                        recovery_guide_msg,
-                    );
-                    Err(OpenError::SnapshotUnsuitable)
-                } else if !self.snapshots.is_repository_configured() {
+                metrics::counter!(crate::metric_definitions::SNAPSHOT_FAST_FORWARD_FAILED)
+                    .increment(1);
+
+                if !self.snapshots.is_repository_configured() {
                     error!(
                         %fast_forward_lsn,
                         "A log trim gap was encountered, but no snapshot repository is configured! {}",
@@ -316,7 +306,8 @@ impl PartitionStoreManager {
                 } else {
                     error!(
                         %fast_forward_lsn,
-                        "A log trim gap was encountered, but no snapshot is available for this partition! {}",
+                        %err,
+                        "A log trim gap was encountered, but no suitable snapshot is available for this partition! {}",
                         recovery_guide_msg,
                     );
                     Err(OpenError::SnapshotRequired)

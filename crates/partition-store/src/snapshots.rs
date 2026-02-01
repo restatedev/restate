@@ -25,11 +25,13 @@ pub use self::leases::{
     SnapshotLeaseManager, SnapshotLeaseValue,
 };
 pub use self::metadata::*;
-pub use self::repository::{LeaseProvider, PartitionSnapshotStatus, SnapshotRepository};
+pub use self::repository::{
+    LeaseProvider, PartitionSnapshotStatus, SnapshotReference, SnapshotRepository,
+};
 pub use self::snapshot_task::*;
 
 use tokio::sync::Semaphore;
-use tracing::{debug, instrument};
+use tracing::{info, instrument, warn};
 
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, SnapshotId};
@@ -139,22 +141,60 @@ impl Snapshots {
     }
 
     #[instrument(level = "error", skip_all, fields(partition_id = %partition_id))]
-    pub async fn download_latest_snapshot(
+    pub async fn download_snapshot(
         &self,
         partition_id: PartitionId,
-    ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
-        // Attempt to get the latest available snapshot from the snapshot repository:
-        let snapshot = match &self.repository {
-            Some(repository) => {
-                debug!("Looking for partition snapshot from which to bootstrap partition store");
-                // todo(pavel): pass target LSN to repository
-                repository.get_latest(partition_id).await?
-            }
-            None => {
-                debug!("No snapshot repository configured");
-                None
-            }
+        target_lsn: Option<Lsn>,
+    ) -> anyhow::Result<LocalPartitionSnapshot> {
+        use crate::metric_definitions::{
+            SNAPSHOT_DOWNLOAD_DURATION, SNAPSHOT_DOWNLOAD_FAILED, SNAPSHOT_DOWNLOAD_FALLBACK,
         };
-        Ok(snapshot)
+
+        let Some(repository) = &self.repository else {
+            anyhow::bail!("No snapshot repository configured");
+        };
+
+        let start = std::time::Instant::now();
+        let candidates = repository
+            .get_snapshot_candidates(partition_id, target_lsn)
+            .await?;
+
+        if candidates.is_empty() {
+            anyhow::bail!("No snapshot candidates found");
+        }
+
+        let mut download_error: Option<anyhow::Error> = None;
+        for (i, snapshot_ref) in candidates.iter().enumerate() {
+            match repository.get_snapshot(partition_id, snapshot_ref).await {
+                Ok(snapshot) => {
+                    metrics::histogram!(SNAPSHOT_DOWNLOAD_DURATION)
+                        .record(start.elapsed().as_secs_f64());
+                    if i > 0 {
+                        metrics::counter!(SNAPSHOT_DOWNLOAD_FALLBACK).increment(1);
+                        info!(
+                            snapshot_id = %snapshot_ref.snapshot_id,
+                            attempt = i + 1,
+                            "Restored from fallback snapshot"
+                        );
+                    }
+                    return Ok(snapshot);
+                }
+                Err(err) => {
+                    warn!(
+                        snapshot_id = %snapshot_ref.snapshot_id,
+                        %err,
+                        remaining = candidates.len() - i - 1,
+                        "Snapshot download failed, trying next"
+                    );
+                    download_error = Some(err);
+                }
+            }
+        }
+
+        metrics::histogram!(SNAPSHOT_DOWNLOAD_DURATION).record(start.elapsed().as_secs_f64());
+        metrics::counter!(SNAPSHOT_DOWNLOAD_FAILED).increment(1);
+        Err(download_error
+            .unwrap_or_else(|| anyhow::anyhow!("No snapshot available"))
+            .context("all available snapshots failed to restore"))
     }
 }

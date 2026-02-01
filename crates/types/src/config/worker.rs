@@ -688,6 +688,17 @@ pub struct SnapshotsOptions {
     /// Default: `false`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experimental_orphan_cleanup: Option<bool>,
+
+    /// # Orphan minimum age
+    ///
+    /// Minimum age for files to be considered orphan candidates during repository scan.
+    /// Files younger than this are protected to avoid deleting in-flight uploads or
+    /// cross-region replication lagged files.
+    ///
+    /// Default: 24 hours
+    #[cfg(any(test, feature = "test-util"))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experimental_orphan_min_age: Option<FriendlyDuration>,
 }
 
 impl Default for SnapshotsOptions {
@@ -704,6 +715,8 @@ impl Default for SnapshotsOptions {
             experimental_snapshot_type: SnapshotType::default(),
             check_interval: None,
             experimental_orphan_cleanup: None,
+            #[cfg(any(test, feature = "test-util"))]
+            experimental_orphan_min_age: None,
         }
     }
 }
@@ -730,6 +743,12 @@ impl SnapshotsOptions {
 
     pub fn snapshots_dir(&self, partition_id: PartitionId) -> PathBuf {
         super::data_dir("db-snapshots").join(partition_id.to_string())
+    }
+
+    /// Returns the configured orphan min age for tests, or None to use the default (24 hours).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn orphan_min_age(&self) -> Option<Duration> {
+        self.experimental_orphan_min_age.map(|d| d.into())
     }
 }
 

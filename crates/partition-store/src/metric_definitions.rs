@@ -23,6 +23,10 @@ pub(crate) const SNAPSHOT_UPLOAD_BYTES: &str =
     "restate.partition_store.snapshots.upload.bytes.total";
 pub(crate) const SNAPSHOT_UPLOAD_BYTES_DEDUPLICATED: &str =
     "restate.partition_store.snapshots.upload.bytes.deduplicated.total";
+pub(crate) const SNAPSHOT_DOWNLOAD_FALLBACK: &str =
+    "restate.partition_store.snapshots.download.fallback.total";
+pub(crate) const SNAPSHOT_FAST_FORWARD_FAILED: &str =
+    "restate.partition_store.snapshots.fast_forward.failed.total";
 pub(crate) const SNAPSHOT_ORPHAN_SCAN_TOTAL: &str =
     "restate.partition_store.snapshots.orphan_scan.total";
 pub(crate) const SNAPSHOT_ORPHAN_SCAN_FAILED: &str =
@@ -71,6 +75,18 @@ pub(crate) fn describe_metrics() {
         SNAPSHOT_DOWNLOAD_FAILED,
         Unit::Count,
         "Number of failed partition snapshot download operations"
+    );
+
+    describe_counter!(
+        SNAPSHOT_DOWNLOAD_FALLBACK,
+        Unit::Count,
+        "Number of snapshot downloads that succeeded using a fallback (non-latest) snapshot"
+    );
+
+    describe_counter!(
+        SNAPSHOT_FAST_FORWARD_FAILED,
+        Unit::Count,
+        "Number of failed fast-forwards from trim gap (no suitable snapshot available)"
     );
 
     describe_counter!(

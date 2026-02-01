@@ -89,6 +89,7 @@ tonic = { workspace = true, features = ["transport"] }
 tracing-subscriber = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
 
