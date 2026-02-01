@@ -306,10 +306,10 @@ where
         let mut partition_table_version_watcher = metadata.watch(MetadataKind::PartitionTable);
         gauge!(NUM_PARTITIONS).set(self.partition_table.live_load().len() as f64);
 
-        let mut snapshot_check_interval = tokio::time::interval_at(
-            tokio::time::Instant::now() + Duration::from_secs(rand::rng().random_range(30..60)), // delay scheduled snapshots on startup
-            with_jitter(Duration::from_secs(1), 0.1),
-        );
+        let snapshots_config = &self.updateable_config.pinned().worker.snapshots;
+        let check_interval = with_jitter(snapshots_config.check_interval(), 0.1);
+        let mut snapshot_check_interval =
+            tokio::time::interval_at(tokio::time::Instant::now() + check_interval, check_interval);
         snapshot_check_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         let mut update_target_tail_lsns = tokio::time::interval(Duration::from_secs(1));
@@ -1003,7 +1003,13 @@ where
             });
 
         for partition_id in &unknown_latest_snapshot {
-            self.spawn_update_latest_snapshot(*partition_id);
+            // Skip if we already have a pending refresh for this partition
+            if !self
+                .pending_snapshot_status_refreshes
+                .contains(partition_id)
+            {
+                self.spawn_update_latest_snapshot(*partition_id);
+            }
         }
 
         // Limit the number of snapshots we schedule automatically
@@ -1116,7 +1122,18 @@ where
                 let jitter = if sender.is_some() {
                     Duration::ZERO
                 } else {
-                    Duration::from_millis(rand::rng().random_range(0..10_000))
+                    config
+                        .worker
+                        .snapshots
+                        .check_interval()
+                        .as_millis()
+                        .try_into()
+                        .map(|check_interval_ms: u64| {
+                            Duration::from_millis(
+                                rand::rng().random_range(0..=(check_interval_ms / 10)),
+                            )
+                        })
+                        .unwrap_or(Duration::from_secs(10))
                 };
                 let spawn_task_result = TaskCenter::spawn_unmanaged_child(
                     TaskKind::PartitionSnapshotProducer,
@@ -1165,7 +1182,6 @@ where
         if !self.pending_snapshot_status_refreshes.insert(partition_id) {
             return;
         }
-
         let psm = self.partition_store_manager.clone();
         self.asynchronous_operations
             .build_task()
