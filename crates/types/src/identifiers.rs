@@ -96,8 +96,6 @@ impl From<LeaderEpoch> for crate::protobuf::common::LeaderEpoch {
     derive_more::From,
     derive_more::Into,
     derive_more::Add,
-    derive_more::Display,
-    derive_more::Debug,
     derive_more::FromStr,
     serde::Serialize,
     serde::Deserialize,
@@ -106,8 +104,19 @@ impl From<LeaderEpoch> for crate::protobuf::common::LeaderEpoch {
 )]
 #[repr(transparent)]
 #[serde(transparent)]
-#[debug("{}", _0)]
 pub struct PartitionId(u16);
+
+impl std::fmt::Debug for PartitionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::fmt::Display for PartitionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 impl From<PartitionId> for u32 {
     fn from(value: PartitionId) -> Self {
@@ -134,6 +143,12 @@ impl PartitionId {
     #[inline]
     pub fn next(self) -> Self {
         Self(std::cmp::min(*Self::MAX, self.0.saturating_add(1)))
+    }
+
+    /// Returns a static string representation of this partition ID.
+    #[inline]
+    pub fn as_str(&self) -> &'static str {
+        crate::id_interning::id_to_str(self.0 as u64)
     }
 }
 
