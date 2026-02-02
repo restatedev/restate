@@ -40,16 +40,25 @@ pub use tail::*;
     Hash,
     Ord,
     PartialOrd,
-    derive_more::Debug,
-    derive_more::Display,
     derive_more::From,
     derive_more::Into,
     Serialize,
     Deserialize,
     BilrostNewType,
 )]
-#[debug("{}", _0)]
 pub struct LogId(u32);
+
+impl std::fmt::Debug for LogId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::fmt::Display for LogId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 impl LogId {
     pub const MAX: LogId = LogId(u32::MAX);
@@ -65,6 +74,12 @@ impl LogId {
     /// should be read from the partition table.
     pub fn default_for_partition(value: PartitionId) -> Self {
         LogId(u32::from(*value))
+    }
+
+    /// Returns a static string representation of this log ID.
+    #[inline]
+    pub fn as_str(&self) -> &'static str {
+        crate::id_interning::id_to_str(self.0 as u64)
     }
 }
 
