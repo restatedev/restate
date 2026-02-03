@@ -196,8 +196,11 @@ where
         )
         .await?;
 
-        let datafusion_remote_scanner =
-            RemoteQueryScannerServer::new(remote_scanner_manager, router_builder);
+        let datafusion_remote_scanner = RemoteQueryScannerServer::new(
+            storage_query_context.clone(),
+            remote_scanner_manager,
+            router_builder,
+        );
 
         Ok(Self {
             storage_query_context,

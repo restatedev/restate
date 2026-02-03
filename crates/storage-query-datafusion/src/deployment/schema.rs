@@ -29,5 +29,8 @@ define_table!(sys_deployment(
     min_service_protocol_version: DataType::UInt32,
 
     /// Maximum supported protocol version.
-    max_service_protocol_version: DataType::UInt32
+    max_service_protocol_version: DataType::UInt32,
+
+    /// List of service names registered by this deployment.
+    services: LargeUtf8List
 ));

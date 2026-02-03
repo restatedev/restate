@@ -19,6 +19,7 @@ use tracing::warn;
 use datafusion::catalog::TableProvider;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::TaskContext;
 use datafusion::execution::context::SQLOptions;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::SendableRecordBatchStream;
@@ -405,6 +406,10 @@ impl QueryContext {
         self.sql_options.verify_plan(&plan)?;
         let df = self.datafusion_context.execute_logical_plan(plan).await?;
         df.execute_stream().await
+    }
+
+    pub fn task_ctx(&self) -> Arc<TaskContext> {
+        self.datafusion_context.task_ctx()
     }
 }
 

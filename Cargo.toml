@@ -134,6 +134,7 @@ dashmap = { version = "6" }
 datafusion = { version = "51.0.0", default-features = false, features = [
     "crypto_expressions",
     "encoding_expressions",
+    "nested_expressions",
     "regex_expressions",
     "unicode_expressions",
     "recursive_protection",

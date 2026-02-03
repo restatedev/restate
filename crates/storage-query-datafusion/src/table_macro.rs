@@ -46,6 +46,9 @@ macro_rules! define_builder {
     (UInt32List) => {
         ::datafusion::arrow::array::ListBuilder<::datafusion::arrow::array::UInt32Builder>
     };
+    (LargeUtf8List) => {
+        ::datafusion::arrow::array::ListBuilder<::datafusion::arrow::array::LargeStringBuilder>
+    };
 }
 
 pub(crate) trait BuilderCapacity: datafusion::arrow::array::ArrayBuilder {
@@ -264,7 +267,10 @@ macro_rules! define_primitive_trait {
     };
     (UInt32List) => {
         impl IntoIterator<Item = Option<u32>>
-    }
+    };
+    (LargeUtf8List) => {
+        impl IntoIterator<Item = Option<impl AsRef<str>>>
+    };
 }
 
 pub static TIMEZONE_UTC: std::sync::LazyLock<std::sync::Arc<str>> =
@@ -309,6 +315,11 @@ macro_rules! define_data_type {
             ::datafusion::common::arrow::datatypes::Field::new("item", DataType::UInt32, true),
         ))
     };
+    (LargeUtf8List) => {
+        DataType::List(::datafusion::common::arrow::datatypes::FieldRef::new(
+            ::datafusion::common::arrow::datatypes::Field::new("item", DataType::LargeUtf8, true),
+        ))
+    };
 }
 
 #[cfg(feature = "table_docs")]
@@ -345,6 +356,9 @@ macro_rules! document_type {
     };
     (UInt32List) => {
         "UInt32 List"
+    };
+    (LargeUtf8List) => {
+        "Utf8 List"
     };
 }
 
