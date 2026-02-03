@@ -22,7 +22,9 @@ use tokio::time::Instant;
 use tracing::{info, trace, warn};
 
 use restate_futures_util::concurrency::Concurrency;
+use restate_futures_util::concurrency::Permit;
 use restate_storage_api::StorageError;
+use restate_storage_api::vqueue_table::VQueueEntry;
 use restate_storage_api::vqueue_table::VQueueStore;
 use restate_types::vqueue::VQueueId;
 
@@ -45,6 +47,8 @@ use super::vqueue_state::VQueueState;
 pub struct DRRScheduler<S: VQueueStore> {
     concurrency_limiter: Concurrency,
     global_throttling: Option<GlobalTokenBucket>,
+    /// Permits waiting for confirmation, rejection, or removal from the leader.
+    pending_permits: HashMap<u64, Permit>,
     // sorted by queue_id
     eligible: EligibilityTracker,
     /// Mapping of vqueue_id -> handle for active vqueues
@@ -107,6 +111,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
             storage,
             limit_qid_per_poll,
             max_items_per_decision,
+            pending_permits: Default::default(),
         }
     }
 
@@ -177,11 +182,16 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 }
                 Pop::Item {
                     action,
+                    permit,
                     entry,
                     updated_zt,
                 } => {
                     coop.made_progress();
                     items_collected += 1;
+                    if let Some(permit) = permit {
+                        this.pending_permits
+                            .insert(entry.item.unique_hash(), permit);
+                    }
                     decision.push(&qstate.qid, action, entry, updated_zt);
                     // We need to set the state so we check eligibility and setup
                     // necessary schedules when we poll the queue again.
@@ -218,6 +228,10 @@ impl<S: VQueueStore> DRRScheduler<S> {
             decision.report_metrics();
             Poll::Ready(Ok(decision))
         }
+    }
+
+    pub fn pop_permit(mut self: Pin<&mut Self>, item_hash: u64) -> Option<Permit> {
+        self.pending_permits.remove(&item_hash)
     }
 
     #[tracing::instrument(skip_all)]
@@ -266,6 +280,9 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 let Some(qstate) = self.q.get_mut(*handle) else {
                     return Ok(());
                 };
+                // Note: do not remove the permit here, we depend on the leader to pop it
+                // when it actually runs the item (e.g on VQInvoke action) which doesn't
+                // necessarily need to happen before we see this inbox event.
                 if qstate.remove_from_unconfirmed_assignments(item_hash) {
                     counter!(VQUEUE_RUN_CONFIRMED).increment(1);
 
@@ -289,6 +306,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 let config = vqueues.config_pool().find(&qid.parent);
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
+                self.pending_permits.remove(&item_hash);
                 if qstate.remove_from_unconfirmed_assignments(item_hash) {
                     counter!(VQUEUE_RUN_REJECTED).increment(1);
 
@@ -312,7 +330,15 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 let config = vqueues.config_pool().find(&qid.parent);
                 let meta = vqueues.get_vqueue(&qid).unwrap();
 
-                qstate.notify_removed(item_hash);
+                // If we have been holding a concurrency permit for this item, we release it.
+                self.pending_permits.remove(&item_hash);
+
+                if qstate.notify_removed(item_hash) {
+                    // if removal invalidates the head, we remove the item from eligibility tracker
+                    // this way we ensure that if it's (possibly) eligible, it will be forced
+                    // to be polled again (in refresh_membership)
+                    self.eligible.remove(*handle);
+                }
 
                 if qstate.is_dormant(meta, config) {
                     // retire the vqueue state
@@ -705,10 +731,22 @@ mod tests {
             scheduler.get_status(&qids[0], cache.view()).unwrap().status,
             SchedulingStatus::BlockedOnCapacity,
         );
-        // dropping the permit should release the token, we should get another item
-        drop(result);
-        // Second poll should return Pending since we're at capacity
-        let result2 = poll_scheduler(pin!(&mut scheduler), &cache);
+        // Pop the permit from the scheduler to release the concurrency token.
+        // In production, the leader calls pop_permit() when it actually runs the item.
+        let item_hash = result
+            .into_iter()
+            .flat_map(|(_, a)| a.into_iter_per_action())
+            .flat_map(|(_, items)| items)
+            .next()
+            .unwrap()
+            .item
+            .unique_hash();
+        let mut scheduler = pin!(scheduler);
+        let permit = scheduler.as_mut().pop_permit(item_hash);
+        assert!(permit.is_some());
+        drop(permit);
+        // Now we should be able to get another item
+        let result2 = poll_scheduler(scheduler.as_mut(), &cache);
         let Poll::Ready(Ok(result2)) = result2 else {
             panic!("expected Poll::Ready(Ok(decision))");
         };
@@ -1104,8 +1142,23 @@ mod tests {
         assert!(matches!(status.is_paused, IsPaused::No));
         assert_eq!(status.tokens_used, 1);
 
-        drop(decision);
-        let result = poll_scheduler(pin!(&mut scheduler), &cache);
+        // Pop the permit from the scheduler to release the concurrency token.
+        // Only inbox items acquire permits, running items yield without permits.
+        // The inbox item from qid2 is the only one that acquired a permit.
+        let inbox_item_hash = decision
+            .into_iter()
+            .flat_map(|(_, a)| a.into_iter_per_action())
+            .flat_map(|(_, items)| items)
+            .find(|e| e.item.priority.is_new())
+            .unwrap()
+            .item
+            .unique_hash();
+        let mut scheduler = pin!(scheduler);
+        let permit = scheduler.as_mut().pop_permit(inbox_item_hash);
+        assert!(permit.is_some());
+        drop(permit);
+
+        let result = poll_scheduler(scheduler.as_mut(), &cache);
         let Poll::Ready(Ok(decision)) = result else {
             panic!("expected decision");
         };
@@ -1121,7 +1174,7 @@ mod tests {
             SchedulingStatus::Empty
         );
         assert!(matches!(
-            poll_scheduler(pin!(&mut scheduler), &cache),
+            poll_scheduler(scheduler.as_mut(), &cache),
             Poll::Pending
         ));
     }
