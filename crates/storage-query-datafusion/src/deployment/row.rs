@@ -12,7 +12,11 @@ use super::schema::SysDeploymentBuilder;
 use restate_types::schema::deployment::{Deployment, DeploymentType};
 
 #[inline]
-pub(crate) fn append_deployment_row(builder: &mut SysDeploymentBuilder, deployment: Deployment) {
+pub(crate) fn append_deployment_row(
+    builder: &mut SysDeploymentBuilder,
+    deployment: Deployment,
+    service_names: impl IntoIterator<Item = impl AsRef<str>>,
+) {
     let mut row = builder.row();
     row.fmt_id(deployment.id);
 
@@ -34,4 +38,5 @@ pub(crate) fn append_deployment_row(builder: &mut SysDeploymentBuilder, deployme
             .unsigned_abs(),
     );
     row.max_service_protocol_version(deployment.supported_protocol_versions.end().unsigned_abs());
+    row.services(service_names.into_iter().map(|s| Some(s)));
 }
