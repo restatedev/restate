@@ -10,11 +10,11 @@
 
 ARG UPLOAD_DEBUGINFO=false
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.16.1 AS planner
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:main@sha256:3c27cc40c7ef24c9b13ab3a4ff5371e06a15a4e28fd364062c34a3766a96c726 AS planner
 COPY . .
 RUN just chef-prepare
 
-FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.16.1 AS base
+FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:main@sha256:3c27cc40c7ef24c9b13ab3a4ff5371e06a15a4e28fd364062c34a3766a96c726 AS base
 COPY --from=planner /restate/recipe.json recipe.json
 COPY justfile justfile
 
@@ -91,11 +91,9 @@ RUN --mount=type=secret,id=parca --mount=type=cache,target=/var/cache/sccache \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate-server target/restate-server && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restatectl target/restatectl && \
     mv target/$(just arch=$TARGETARCH libc=gnu print-target)/release/restate target/restate && \
-    $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --only-keep-debug target/restate-server target/restate-server.debug && \
-    $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restate-server && \
-    $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --add-gnu-debuglink=target/restate-server.debug target/restate-server && \
-    $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restatectl && \
-    $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restate && \
+    eu-strip --strip-debug -f target/restate-server.debug target/restate-server && \
+    eu-strip --strip-debug target/restatectl && \
+    eu-strip --strip-debug target/restate && \
     parca-debuginfo upload --store-address=grpc.polarsignals.com:443 --bearer-token-file=/run/secrets/parca target/restate-server.debug && \
     rm target/restate-server.debug
 RUN cp docker/scripts/download-restate-debug-symbols.sh target/ && \
