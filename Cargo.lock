@@ -1645,7 +1645,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8599749b6667e2f0c910c1d0dff6901163ff698a52d5a39720f61b5be4b20d3"
 dependencies = [
  "futures-core",
- "prost 0.14.1",
+ "prost",
  "prost-types",
  "tonic",
  "tonic-prost",
@@ -1666,7 +1666,7 @@ dependencies = [
  "humantime",
  "hyper-util",
  "parking_lot",
- "prost 0.14.1",
+ "prost",
  "prost-types",
  "serde",
  "serde_json",
@@ -2663,7 +2663,7 @@ dependencies = [
  "datafusion-physical-plan",
  "datafusion-proto-common",
  "object_store 0.12.4",
- "prost 0.14.1",
+ "prost",
 ]
 
 [[package]]
@@ -2674,7 +2674,7 @@ checksum = "3b6aef3d5e5c1d2bc3114c4876730cb76a9bdc5a8df31ef1b6db48f0c1671895"
 dependencies = [
  "arrow",
  "datafusion-common",
- "prost 0.14.1",
+ "prost",
 ]
 
 [[package]]
@@ -3147,7 +3147,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8acfe553027cd07fc5fafa81a84f19a7a87eaffaccd2162b6db05e8d6ce98084"
 dependencies = [
  "http 1.4.0",
- "prost 0.14.1",
+ "prost",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -4395,8 +4395,7 @@ checksum = "d75a2a4b1b190afb6f5425f10f6a8f959d2ea0b9c2b1d79553551850539e4674"
 [[package]]
 name = "jemalloc_pprof"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74ff642505c7ce8d31c0d43ec0e235c6fd4585d9b8172d8f9dd04d36590200b5"
+source = "git+https://github.com/restatedev/rust-jemalloc-pprof?branch=max-limit#f0ab24db48376cee26865ef076d1dc24d40e2fde"
 dependencies = [
  "anyhow",
  "libc",
@@ -4909,8 +4908,7 @@ dependencies = [
 [[package]]
 name = "mappings"
 version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db4d277bb50d4508057e7bddd7fcd19ef4a4cc38051b6a5a36868d75ae2cbeb9"
+source = "git+https://github.com/restatedev/rust-jemalloc-pprof?branch=max-limit#f0ab24db48376cee26865ef076d1dc24d40e2fde"
 dependencies = [
  "anyhow",
  "libc",
@@ -5115,7 +5113,7 @@ dependencies = [
  "http-body-util",
  "hyper 1.8.1",
  "hyper-util",
- "prost 0.14.1",
+ "prost",
  "restate-service-protocol-v4",
  "restate-types",
  "restate-workspace-hack",
@@ -5656,7 +5654,7 @@ dependencies = [
  "opentelemetry-http",
  "opentelemetry-proto",
  "opentelemetry_sdk",
- "prost 0.14.1",
+ "prost",
  "reqwest",
  "serde_json",
  "thiserror 2.0.17",
@@ -5675,7 +5673,7 @@ dependencies = [
  "const-hex",
  "opentelemetry",
  "opentelemetry_sdk",
- "prost 0.14.1",
+ "prost",
  "serde",
  "serde_json",
  "tonic",
@@ -6014,8 +6012,7 @@ dependencies = [
 [[package]]
 name = "pprof_util"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4429d44e5e2c8a69399fc0070379201eed018e3df61e04eb7432811df073c224"
+source = "git+https://github.com/restatedev/rust-jemalloc-pprof?branch=max-limit#f0ab24db48376cee26865ef076d1dc24d40e2fde"
 dependencies = [
  "anyhow",
  "backtrace",
@@ -6023,7 +6020,7 @@ dependencies = [
  "inferno 0.12.4",
  "num",
  "paste",
- "prost 0.13.4",
+ "prost",
 ]
 
 [[package]]
@@ -6173,22 +6170,12 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c0fef6c4230e4ccf618a35c59d7ede15dea37de8427500f50aff708806e42ec"
-dependencies = [
- "bytes",
- "prost-derive 0.13.4",
-]
-
-[[package]]
-name = "prost"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7231bd9b3d3d33c86b58adbac74b5ec0ad9f496b19d22801d773636feaa95f3d"
 dependencies = [
  "bytes",
- "prost-derive 0.14.1",
+ "prost-derive",
 ]
 
 [[package]]
@@ -6204,26 +6191,13 @@ dependencies = [
  "once_cell",
  "petgraph 0.6.5",
  "prettyplease",
- "prost 0.14.1",
+ "prost",
  "prost-types",
  "pulldown-cmark",
  "pulldown-cmark-to-cmark",
  "regex",
  "syn 2.0.111",
  "tempfile",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "157c5a9d7ea5c2ed2d9fb8f495b64759f7816c7eaea54ba3978f0d63000162e3"
-dependencies = [
- "anyhow",
- "itertools 0.13.0",
- "proc-macro2",
- "quote",
- "syn 2.0.111",
 ]
 
 [[package]]
@@ -6278,7 +6252,7 @@ version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9b4db3d6da204ed77bb26ba83b6122a73aeb2e87e25fbf7ad2e84c4ccbf8f72"
 dependencies = [
- "prost 0.14.1",
+ "prost",
 ]
 
 [[package]]
@@ -7018,7 +6992,7 @@ dependencies = [
  "paste",
  "pin-project",
  "pprof",
- "prost 0.14.1",
+ "prost",
  "rand 0.9.2",
  "restate-bifrost",
  "restate-clock",
@@ -7214,7 +7188,7 @@ dependencies = [
  "opentelemetry_sdk",
  "parking_lot",
  "pin-project-lite",
- "prost 0.14.1",
+ "prost",
  "prost-dto",
  "prost-types",
  "rand 0.9.2",
@@ -7599,7 +7573,7 @@ dependencies = [
  "futures",
  "googletest",
  "metrics",
- "prost 0.14.1",
+ "prost",
  "restate-bifrost",
  "restate-clock",
  "restate-core",
@@ -7625,7 +7599,7 @@ dependencies = [
 name = "restate-log-server-grpc"
 version = "1.6.1-dev"
 dependencies = [
- "prost 0.14.1",
+ "prost",
  "restate-types",
  "restate-workspace-hack",
  "tonic",
@@ -7684,7 +7658,7 @@ dependencies = [
  "futures",
  "googletest",
  "metrics",
- "prost 0.14.1",
+ "prost",
  "prost-dto",
  "protobuf",
  "raft",
@@ -7722,7 +7696,7 @@ dependencies = [
  "bytestring",
  "derive_more",
  "itertools 0.14.0",
- "prost 0.14.1",
+ "prost",
  "prost-dto",
  "restate-types",
  "restate-workspace-hack",
@@ -7743,7 +7717,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "metrics",
- "prost 0.14.1",
+ "prost",
  "restate-serde-util",
  "restate-time-util",
  "restate-types",
@@ -7858,7 +7832,7 @@ dependencies = [
  "object_store 0.13.0",
  "parking_lot",
  "paste",
- "prost 0.14.1",
+ "prost",
  "rand 0.9.2",
  "restate-clock",
  "restate-core",
@@ -7942,7 +7916,7 @@ dependencies = [
  "bytesize",
  "http 1.4.0",
  "http-serde",
- "prost 0.14.1",
+ "prost",
  "restate-workspace-hack",
  "schemars 1.2.0",
  "serde",
@@ -8054,7 +8028,7 @@ dependencies = [
  "http-body-util",
  "itertools 0.14.0",
  "paste",
- "prost 0.14.1",
+ "prost",
  "restate-errors",
  "restate-serde-util",
  "restate-service-client",
@@ -8082,7 +8056,7 @@ dependencies = [
  "jsonptr 0.7.1",
  "paste",
  "prettyplease",
- "prost 0.14.1",
+ "prost",
  "prost-build",
  "restate-errors",
  "restate-serde-util",
@@ -8108,7 +8082,7 @@ dependencies = [
  "derive_more",
  "futures",
  "opentelemetry",
- "prost 0.14.1",
+ "prost",
  "prost-build",
  "restate-clock",
  "restate-types",
@@ -8140,7 +8114,7 @@ dependencies = [
  "googletest",
  "itertools 0.14.0",
  "paste",
- "prost 0.14.1",
+ "prost",
  "restate-core",
  "restate-invoker-api",
  "restate-partition-store",
@@ -8167,7 +8141,7 @@ dependencies = [
  "bytestring",
  "googletest",
  "pretty_assertions",
- "prost 0.14.1",
+ "prost",
  "prost-types",
  "rand 0.9.2",
  "restate-workspace-hack",
@@ -8292,7 +8266,7 @@ dependencies = [
  "parking_lot",
  "paste",
  "prettyplease",
- "prost 0.14.1",
+ "prost",
  "prost-build",
  "prost-dto",
  "prost-types",
@@ -8422,7 +8396,7 @@ dependencies = [
  "opentelemetry",
  "parking_lot",
  "pin-project",
- "prost 0.14.1",
+ "prost",
  "rand 0.9.2",
  "restate-bifrost",
  "restate-clock",
@@ -8528,7 +8502,6 @@ dependencies = [
  "idna",
  "indexmap 2.12.0",
  "ipnet",
- "itertools 0.13.0",
  "itertools 0.14.0",
  "jemalloc_pprof",
  "lexical-parse-float",
@@ -8555,7 +8528,7 @@ dependencies = [
  "pprof",
  "pprof_util",
  "proc-macro2",
- "prost 0.14.1",
+ "prost",
  "prost-build",
  "prost-types",
  "protobuf",
@@ -10157,7 +10130,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66bd50ad6ce1252d87ef024b3d64fe4c3cf54a86fb9ef4c631fdd0ded7aeaa67"
 dependencies = [
  "bytes",
- "prost 0.14.1",
+ "prost",
  "tonic",
 ]
 
@@ -10183,7 +10156,7 @@ version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34da53e8387581d66db16ff01f98a70b426b091fdf76856e289d5c1bd386ed7b"
 dependencies = [
- "prost 0.14.1",
+ "prost",
  "prost-types",
  "tokio",
  "tokio-stream",
