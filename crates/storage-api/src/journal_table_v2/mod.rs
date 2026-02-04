@@ -28,7 +28,7 @@ pub trait ReadJournalTable {
     ) -> impl Future<Output = Result<Option<StoredRawEntry>>> + Send;
 
     fn get_journal(
-        &mut self,
+        &self,
         invocation_id: InvocationId,
         length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send>;
