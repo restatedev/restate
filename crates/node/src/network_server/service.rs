@@ -67,6 +67,7 @@ impl NetworkServer {
                 on(post_or_put, pprof::deactivate_heap),
             )
             .route("/debug/heap/purge", on(post_or_put, pprof::jemalloc_purge))
+            .route("/debug/heap/flamegraph", get(pprof::heap_flamegraph))
             .with_state(shared_state);
 
         server_builder.register_axum_routes(axum_router);
