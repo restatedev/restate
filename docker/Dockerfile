@@ -105,6 +105,7 @@ RUN cp docker/scripts/download-restate-debug-symbols.sh target/ && \
 FROM upload-$UPLOAD_DEBUGINFO AS upload
 
 # We do not need the Rust toolchain to run the server binary!
+# NOTE: When modifying this runtime stage, also update docker/Dockerfile.refresh to keep them in sync.
 FROM debian:trixie-slim AS runtime
 # useful for health checks
 RUN apt-get update && apt-get install --no-install-recommends -y jq curl && rm -rf /var/lib/apt/lists/*

@@ -98,6 +98,29 @@ jobs:
           echo Version: ${VERSION}
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      - name: Check if this is the latest version
+        id: is-latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT_VERSION="${{ steps.version.outputs.VERSION }}"
+
+          # Get all release tags and find the highest version (excluding prereleases)
+          LATEST_VERSION=$(gh api "repos/${{ github.repository }}/git/refs/tags" --jq \
+            '[.[] | .ref | select(startswith("refs/tags/v")) | ltrimstr("refs/tags/v") | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // empty')
+
+          echo "Current version: ${CURRENT_VERSION}"
+          echo "Latest version overall: ${LATEST_VERSION}"
+
+          # Compare versions - current should be >= latest to update the latest tag
+          if [[ "$CURRENT_VERSION" == "$LATEST_VERSION" ]] || [[ "$(printf '%s\n' "$CURRENT_VERSION" "$LATEST_VERSION" | sort -V | tail -1)" == "$CURRENT_VERSION" ]]; then
+            echo "is_latest=true" >> $GITHUB_OUTPUT
+            echo "This is the latest version - will update latest tag"
+          else
+            echo "is_latest=false" >> $GITHUB_OUTPUT
+            echo "This is not the latest version - will not update latest tag"
+          fi
+
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5
@@ -106,6 +129,8 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
             ${{ format('docker.io/{0}/{1}', env.REPOSITORY_OWNER, env.IMAGE_NAME) }}
 
+          flavor: |
+            latest=${{ steps.is-latest.outputs.is_latest == 'true' && 'true' || 'false' }}
           tags: |
             type=semver,pattern={{version}},value=${{ steps.version.outputs.VERSION }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.VERSION }}
