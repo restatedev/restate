@@ -1,0 +1,221 @@
+name: Refresh Docker Image
+
+on:
+  schedule:
+    # Run weekly on Mondays at 00:00 UTC
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+env:
+  GHCR_REGISTRY: ghcr.io
+  REPOSITORY_OWNER: ${{ github.repository_owner }}
+  IMAGE_NAME: restate
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine minor version from Cargo.toml
+        id: minor-version
+        run: |
+          # Extract minor version (e.g., "1.6" from "1.6.1-dev")
+          MINOR=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+).*/\1/')
+          echo "minor=${MINOR}" >> $GITHUB_OUTPUT
+          echo "Detected minor version: ${MINOR}"
+
+      - name: Get latest patch version for minor series
+        id: latest-patch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MINOR="${{ steps.minor-version.outputs.minor }}"
+
+          # Query GitHub for tags matching this minor series and get the latest
+          VERSION=$(gh api "repos/${{ github.repository }}/git/refs/tags" --jq \
+            "[.[] | .ref | select(startswith(\"refs/tags/v${MINOR}.\"))] | map(ltrimstr(\"refs/tags/v\")) | sort_by(split(\".\") | map(tonumber)) | last // empty")
+
+          if [[ -z "$VERSION" ]]; then
+            echo "No released version found for ${MINOR}.x series"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Latest patch version: ${VERSION}"
+          fi
+
+      - name: Check if source image exists
+        if: steps.latest-patch.outputs.skip != 'true'
+        id: source-check
+        run: |
+          VERSION="${{ steps.latest-patch.outputs.version }}"
+          SOURCE_IMAGE="${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}:${VERSION}"
+
+          if docker manifest inspect "${SOURCE_IMAGE}" > /dev/null 2>&1; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "image=${SOURCE_IMAGE}" >> $GITHUB_OUTPUT
+            echo "Source image exists: ${SOURCE_IMAGE}"
+          else
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Source image not found: ${SOURCE_IMAGE}"
+          fi
+
+      - name: Determine base image
+        if: steps.latest-patch.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true'
+        id: base-image
+        run: |
+          SOURCE_IMAGE="${{ steps.source-check.outputs.image }}"
+
+          # Try to get base image name from OCI label
+          BASE_NAME=$(docker buildx imagetools inspect "${SOURCE_IMAGE}" --raw | \
+            jq -r '.manifests[0].annotations["org.opencontainers.image.base.name"] // empty' 2>/dev/null || true)
+
+          # Fallback: parse from Dockerfile
+          if [[ -z "$BASE_NAME" ]]; then
+            BASE_NAME=$(grep 'FROM.*AS runtime' docker/Dockerfile | head -1 | awk '{print $2}')
+            echo "Base image from Dockerfile: ${BASE_NAME}"
+          else
+            echo "Base image from OCI label: ${BASE_NAME}"
+          fi
+
+          echo "name=${BASE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Check if base image has changed
+        if: steps.latest-patch.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true'
+        id: base-changed
+        run: |
+          SOURCE_IMAGE="${{ steps.source-check.outputs.image }}"
+          BASE_IMAGE="${{ steps.base-image.outputs.name }}"
+
+          # Get current base image digest
+          CURRENT_BASE_DIGEST=$(docker buildx imagetools inspect "${BASE_IMAGE}" --raw | \
+            jq -r '.manifests[] | select(.platform.architecture == "amd64") | .digest' 2>/dev/null | head -1 || true)
+
+          echo "Current base image digest: ${CURRENT_BASE_DIGEST}"
+
+          # Try to get the base digest from the existing image's OCI label
+          EXISTING_BASE_DIGEST=$(docker buildx imagetools inspect "${SOURCE_IMAGE}" --raw | \
+            jq -r '.manifests[0].annotations["org.opencontainers.image.base.digest"] // empty' 2>/dev/null || true)
+
+          echo "Existing base image digest: ${EXISTING_BASE_DIGEST}"
+
+          if [[ -n "$EXISTING_BASE_DIGEST" && "$CURRENT_BASE_DIGEST" == "$EXISTING_BASE_DIGEST" ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Base image unchanged - skipping refresh"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "current_digest=${CURRENT_BASE_DIGEST}" >> $GITHUB_OUTPUT
+            if [[ -z "$EXISTING_BASE_DIGEST" ]]; then
+              echo "No existing base digest label found - will rebuild"
+            else
+              echo "Base image changed - will rebuild"
+            fi
+          fi
+
+      - name: Set up Docker containerd snapshotter
+        if: steps.latest-patch.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
+        uses: docker/setup-docker-action@v4
+        with:
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      - name: Set up Docker Buildx
+        if: steps.latest-patch.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log into GitHub container registry
+        if: steps.latest-patch.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log into DockerHub
+        if: steps.latest-patch.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Determine if this is the latest version (for latest tag)
+        if: steps.latest-patch.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
+        id: is-latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT_VERSION="${{ steps.latest-patch.outputs.version }}"
+
+          # Get all release tags and find the highest version
+          LATEST_VERSION=$(gh api "repos/${{ github.repository }}/git/refs/tags" --jq \
+            '[.[] | .ref | select(startswith("refs/tags/v")) | ltrimstr("refs/tags/v") | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // empty')
+
+          echo "Current version: ${CURRENT_VERSION}"
+          echo "Latest version overall: ${LATEST_VERSION}"
+
+          if [[ "$CURRENT_VERSION" == "$LATEST_VERSION" ]]; then
+            echo "is_latest=true" >> $GITHUB_OUTPUT
+            echo "This is the latest version - will update latest tag"
+          else
+            echo "is_latest=false" >> $GITHUB_OUTPUT
+            echo "This is not the latest version - will not update latest tag"
+          fi
+
+      - name: Extract metadata (tags, labels) for Docker
+        if: steps.latest-patch.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
+            docker.io/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=${{ steps.is-latest.outputs.is_latest == 'true' && 'true' || 'false' }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.latest-patch.outputs.version }}
+            type=semver,pattern={{version}}-{{date 'YYYYMMDD'}},value=${{ steps.latest-patch.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.latest-patch.outputs.version }}
+          labels: |
+            org.opencontainers.image.base.name=${{ steps.base-image.outputs.name }}
+            org.opencontainers.image.base.digest=${{ steps.base-changed.outputs.current_digest }}
+
+      - name: Build and push refreshed Docker image
+        if: steps.latest-patch.outputs.skip != 'true' && steps.source-check.outputs.skip != 'true' && steps.base-changed.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.refresh
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            SOURCE_IMAGE=${{ steps.source-check.outputs.image }}
+            BASE_IMAGE=${{ steps.base-image.outputs.name }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Summary
+        run: |
+          if [[ "${{ steps.latest-patch.outputs.skip }}" == "true" ]]; then
+            echo "### Skipped: No released version found for ${{ steps.minor-version.outputs.minor }}.x series" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ steps.source-check.outputs.skip }}" == "true" ]]; then
+            echo "### Skipped: Source image not found" >> $GITHUB_STEP_SUMMARY
+          elif [[ "${{ steps.base-changed.outputs.skip }}" == "true" ]]; then
+            echo "### Skipped: Base image unchanged" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### Successfully refreshed Docker image" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Version**: ${{ steps.latest-patch.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Base image**: ${{ steps.base-image.outputs.name }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Updated latest tag**: ${{ steps.is-latest.outputs.is_latest }}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Tags pushed:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi

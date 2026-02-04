@@ -1,0 +1,35 @@
+# Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+# All rights reserved.
+#
+# Use of this software is governed by the Business Source License
+# included in the LICENSE file.
+#
+# As of the Change Date specified in that file, in accordance with
+# the Business Source License, use of this software will be governed
+# by the Apache License, Version 2.0.
+
+# Refreshes an existing Restate image with an updated base image to include
+# the latest security updates without rebuilding the binaries.
+#
+# Usage:
+#   docker buildx build \
+#     --build-arg SOURCE_IMAGE=ghcr.io/restatedev/restate:1.6.0 \
+#     --build-arg BASE_IMAGE=debian:trixie-slim \
+#     -f docker/Dockerfile.refresh .
+
+ARG SOURCE_IMAGE
+ARG BASE_IMAGE
+
+FROM ${SOURCE_IMAGE} AS source
+
+FROM ${BASE_IMAGE} AS runtime
+RUN apt-get update && apt-get install --no-install-recommends -y jq curl && rm -rf /var/lib/apt/lists/*
+COPY --from=source /NOTICE /NOTICE
+COPY --from=source /LICENSE /LICENSE
+COPY --from=source /etc/ssl /etc/ssl
+COPY --from=source /usr/local/bin/restate-server /usr/local/bin/
+COPY --from=source /usr/local/bin/restatectl /usr/local/bin/
+COPY --from=source /usr/local/bin/restate /usr/local/bin/
+COPY --from=source /usr/local/bin/download-restate-debug-symbols.sh /usr/local/bin/
+WORKDIR /
+ENTRYPOINT ["/usr/local/bin/restate-server"]
