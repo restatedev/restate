@@ -62,7 +62,7 @@ pub trait ReadJournalTable {
     ) -> impl Future<Output = Result<Option<JournalEntry>>> + Send;
 
     fn get_journal(
-        &mut self,
+        &self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send>;
