@@ -272,52 +272,76 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
+clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
+jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
+pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
+quick-xml = { version = "0.38", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
+time = { version = "0.3", default-features = false, features = ["wasm-bindgen"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
+clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "constructor", "debug", "deref", "deref_mut", "display", "eq", "error", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "mul", "mul_assign", "not", "sum", "try_from", "try_into", "try_unwrap", "unwrap"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
+jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
+pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
+quick-xml = { version = "0.38", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
+time = { version = "0.3", default-features = false, features = ["wasm-bindgen"] }
 
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
+clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
+jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
+pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
+quick-xml = { version = "0.38", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
+time = { version = "0.3", default-features = false, features = ["wasm-bindgen"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
+clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "constructor", "debug", "deref", "deref_mut", "display", "eq", "error", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "mul", "mul_assign", "not", "sum", "try_from", "try_into", "try_unwrap", "unwrap"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
+jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
+pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
+quick-xml = { version = "0.38", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
+time = { version = "0.3", default-features = false, features = ["wasm-bindgen"] }
 
 ### END HAKARI SECTION

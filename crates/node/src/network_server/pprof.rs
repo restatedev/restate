@@ -76,6 +76,52 @@ mod pprof {
         }
     }
 
+    /// Generates a heap flamegraph SVG.
+    ///
+    /// This endpoint is only available when the `heap-flamegraph` feature is enabled.
+    #[cfg(feature = "heap-flamegraph")]
+    pub async fn heap_flamegraph() -> Result<impl axum::response::IntoResponse, (StatusCode, String)>
+    {
+        use axum::body::Body;
+        use axum::http::header::CONTENT_TYPE;
+        use axum::response::Response;
+
+        match jemalloc_pprof::PROF_CTL.as_ref() {
+            Some(prof_ctl) => {
+                let mut prof_ctl = prof_ctl.lock().await;
+                if prof_ctl.activated() {
+                    let svg = prof_ctl
+                        .dump_flamegraph()
+                        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+                    Response::builder()
+                        .header(CONTENT_TYPE, "image/svg+xml")
+                        .body(Body::from(svg))
+                        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+                } else {
+                    Err((
+                        axum::http::StatusCode::PRECONDITION_FAILED,
+                        "Heap profiling not activated: first curl -XPUT :5122/debug/heap/activate\n"
+                            .into(),
+                    ))
+                }
+            }
+            None => Err((
+                axum::http::StatusCode::PRECONDITION_FAILED,
+                "Heap profiling not enabled: run with MALLOC_CONF=\"prof:true\"\n".into(),
+            )),
+        }
+    }
+
+    /// Stub for heap flamegraph when the feature is not enabled.
+    #[cfg(not(feature = "heap-flamegraph"))]
+    pub async fn heap_flamegraph() -> (StatusCode, String) {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            "Heap flamegraph is only available when the heap-flamegraph feature is enabled\n"
+                .into(),
+        )
+    }
+
     /// Result of a jemalloc purge operation
     #[derive(Debug, Serialize)]
     pub struct JemallocPurgeResult {
@@ -188,6 +234,13 @@ mod pprof {
         (
             axum::http::StatusCode::PRECONDITION_FAILED,
             "jemalloc purge is not available on MSVC targets\n".into(),
+        )
+    }
+
+    pub async fn heap_flamegraph() -> (StatusCode, String) {
+        (
+            axum::http::StatusCode::PRECONDITION_FAILED,
+            "Heap flamegraph is not available on MSVC targets\n".into(),
         )
     }
 }
