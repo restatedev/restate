@@ -3090,6 +3090,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_filter"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bf3c259d255ca70051b30e2e95b5446cdb8949ac4cd22c0d7fd634d89f568e2"
+dependencies = [
+ "log",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13c863f0904021b108aa8b2f55046443e6b1ebde8fd4a15c399893aae4fa069f"
+dependencies = [
+ "env_filter",
+ "log",
+]
+
+[[package]]
 name = "equator"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4228,6 +4247,28 @@ dependencies = [
  "num-format",
  "once_cell",
  "quick-xml 0.26.0",
+ "rgb",
+ "str_stack",
+]
+
+[[package]]
+name = "inferno"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d35223c50fdd26419a4ccea2c73be68bd2b29a3d7d6123ffe101c17f4c20a52a"
+dependencies = [
+ "ahash",
+ "clap",
+ "crossbeam-channel",
+ "crossbeam-utils",
+ "dashmap",
+ "env_logger",
+ "indexmap 2.12.0",
+ "itoa",
+ "log",
+ "num-format",
+ "once_cell",
+ "quick-xml 0.38.1",
  "rgb",
  "str_stack",
 ]
@@ -5972,7 +6013,7 @@ dependencies = [
  "cfg-if",
  "criterion",
  "findshlibs",
- "inferno",
+ "inferno 0.11.21",
  "libc",
  "log",
  "nix 0.26.4",
@@ -5991,7 +6032,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4429d44e5e2c8a69399fc0070379201eed018e3df61e04eb7432811df073c224"
 dependencies = [
  "anyhow",
+ "backtrace",
  "flate2",
+ "inferno 0.12.4",
  "num",
  "paste",
  "prost 0.13.4",
@@ -8501,6 +8544,7 @@ dependencies = [
  "ipnet",
  "itertools 0.13.0",
  "itertools 0.14.0",
+ "jemalloc_pprof",
  "lexical-parse-float",
  "lexical-parse-integer",
  "lexical-util",
@@ -8523,12 +8567,14 @@ dependencies = [
  "phf_shared",
  "portable-atomic",
  "pprof",
+ "pprof_util",
  "proc-macro2",
  "prost 0.14.1",
  "prost-build",
  "prost-types",
  "protobuf",
  "quanta",
+ "quick-xml 0.38.1",
  "quote",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -8552,6 +8598,7 @@ dependencies = [
  "stable_deref_trait",
  "syn 2.0.111",
  "sync_wrapper",
+ "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",
  "time",
  "tokio-rustls 0.26.4",
