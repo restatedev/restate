@@ -29,4 +29,11 @@ impl ReplyTracker {
     pub fn pop_rpc_sender(&self, id: &Tag) -> Option<RpcReplyTx> {
         self.rpcs.remove(id).map(|(_, v)| v)
     }
+
+    pub fn check_closed(&self) {
+        // closed senders can keep the receiving side's RawTask around, leading to a leak
+        self.rpcs
+            .iter_mut()
+            .for_each(|mut reply| reply.value_mut().check_closed());
+    }
 }

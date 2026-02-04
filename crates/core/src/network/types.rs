@@ -140,7 +140,7 @@ impl<O: RpcResponse> ReplyRx<O> {
     pub fn new() -> (RpcReplyTx, Self) {
         let (reply_sender, inner) = oneshot::channel();
         (
-            reply_sender,
+            RpcReplyTx::Sender(reply_sender),
             Self {
                 inner,
                 _marker: PhantomData,
@@ -167,7 +167,33 @@ impl<O: RpcResponse + Unpin> Future for ReplyRx<O> {
 /// Internal sender used to ship the response back to the caller.
 ///
 /// It's life is bound to the user holding on to the `ReplyRx`. This is the _dual_ of `ReplyRx`.
-pub(super) type RpcReplyTx = oneshot::Sender<RawRpcReply>;
+pub enum RpcReplyTx {
+    Sender(oneshot::Sender<RawRpcReply>),
+    Closed,
+}
+
+impl RpcReplyTx {
+    pub fn check_closed(&mut self) {
+        match self {
+            Self::Sender(sender) if sender.is_closed() => *self = Self::Closed,
+            _ => {}
+        }
+    }
+
+    pub fn send(self, t: RawRpcReply) -> Result<(), RawRpcReply> {
+        match self {
+            Self::Sender(sender) => sender.send(t),
+            Self::Closed => Err(t),
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        match self {
+            Self::Sender(sender) => sender.is_closed(),
+            Self::Closed => true,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RpcError {

@@ -155,6 +155,9 @@ impl ConnectionReactor {
 
         conn_tracker.connection_created(&self.connection, is_dedicated);
 
+        let mut close_check = tokio::time::interval(Duration::from_secs(60));
+        close_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
             let decision = match self.state {
                 State::Active => {
@@ -173,6 +176,10 @@ impl ConnectionReactor {
                         },
                         msg = incoming.next() => {
                             self.handle_message(msg).await
+                        }
+                        _ = close_check.tick() => {
+                            self.shared.reply_tracker.check_closed();
+                            Decision::Continue
                         }
                     }
                 }

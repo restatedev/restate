@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tracing::{Span, debug, info, trace, warn};
 
 use restate_types::GenerationalNodeId;
@@ -21,9 +21,9 @@ use restate_types::net::codec::{EncodeError, WireEncode};
 use restate_types::net::{RpcRequest, Service, ServiceTag, UnaryMessage};
 
 use super::io::{EgressMessage, SendToken, Sent};
-use super::{ConnectError, DiscoveryError, NetworkSender, RawRpcReply, ReplyRx, Swimlane};
+use super::{ConnectError, DiscoveryError, NetworkSender, ReplyRx, Swimlane};
 use crate::TaskCenterFutureExt;
-use crate::network::HandshakeError;
+use crate::network::{HandshakeError, RpcReplyTx};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub struct SendError<T>(pub T);
@@ -274,7 +274,7 @@ impl LazyConnection {
 
 enum OutgoingOp {
     CallRpc {
-        reply_sender: oneshot::Sender<RawRpcReply>,
+        reply_sender: RpcReplyTx,
         message: Box<dyn WireEncode + Send>,
         service_tag: ServiceTag,
         msg_type: &'static str,
