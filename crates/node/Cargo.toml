@@ -24,6 +24,9 @@ options_schema = [
 ]
 kafka-oidc = ["restate-worker/kafka-oidc"]
 test-util = ["restate-worker/test-util"]
+# Enables heap flamegraph generation via /debug/heap/flamegraph endpoint.
+# This feature requires debug symbols and adds the symbolize/flamegraph features to jemalloc_pprof.
+heap-flamegraph = ["jemalloc_pprof/flamegraph"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -77,7 +80,7 @@ tonic = { workspace = true, features = ["gzip", "zstd"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-jemalloc_pprof = "0.8.1"
+jemalloc_pprof = { version = "0.8.1", default-features = false }
 tikv-jemalloc-ctl = { workspace = true }
 tikv-jemalloc-sys = { workspace = true }
 
