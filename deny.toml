@@ -26,6 +26,8 @@ allow = [
     "MPL-2.0",
     "CC0-1.0",
     "Zlib",
+    "bzip2-1.0.6",
+    "CDDL-1.0",
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
 ]
@@ -34,13 +36,6 @@ allow = [
 # canonical license text of a valid SPDX license file.
 # [possible values: any between 0.0 and 1.0].
 confidence-threshold = 0.8
-
-[[licenses.exceptions]]
-# Ignore Unicode-DFS-2016 because we don't bundle the generated files from
-# the unicode-ident dependency. See https://github.com/dtolnay/unicode-ident/pull/9/files
-allow = ["Unicode-DFS-2016"]
-name = "unicode-ident"
-version = "1.0.6"
 
 [[licenses.exceptions]]
 # We are using inferno as part of the benchmarks crate that does not get released.
