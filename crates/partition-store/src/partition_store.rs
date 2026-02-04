@@ -16,8 +16,8 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
-use parking_lot::Mutex;
 use enum_map::Enum;
+use parking_lot::Mutex;
 use rocksdb::{
     BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, PrefixRange, ReadOptions,
     SnapshotWithThreadMode,
@@ -1214,10 +1214,9 @@ pub(crate) trait StorageAccess {
         let key_bytes = self.with_key_buffer(key.serialized_length(), |buf| {
             key.serialize_to(buf);
         });
-        let value_bytes = self
-            .try_with_value_buffer(0, |buf| {
-                StorageCodec::encode(value, buf).map_err(|e| StorageError::Generic(e.into()))
-            })?;
+        let value_bytes = self.try_with_value_buffer(0, |buf| {
+            StorageCodec::encode(value, buf).map_err(|e| StorageError::Generic(e.into()))
+        })?;
         self.put_cf(K::TABLE, key_bytes, value_bytes)
     }
 
@@ -1416,8 +1415,7 @@ mod tests {
 
         let mut partition_store_clone = partition_store.clone();
         // repeatable reads shouldn't see writes of concurrently finishing transactions
-        let mut read_txn =
-            partition_store.transaction_with_isolation(IsolationLevel::RepeatableReads);
+        let read_txn = partition_store.transaction_with_isolation(IsolationLevel::RepeatableReads);
 
         let value_a = read_txn.get_kv_raw(key_a.clone(), decode_u32)?;
 
