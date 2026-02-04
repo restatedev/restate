@@ -12,6 +12,7 @@ use std::ops::RangeInclusive;
 
 use futures::Stream;
 use futures_util::stream;
+use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table::{
@@ -25,10 +26,7 @@ use restate_types::identifiers::{
 
 use crate::TableKind::Journal;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-    TableScanIterationDecision, break_on_err,
-};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
 
 define_table_key!(
     Journal,
@@ -39,6 +37,43 @@ define_table_key!(
         journal_index: u32
     )
 );
+
+/// Lazy iterator over journal entries. Decodes entries on-demand from RocksDB.
+struct JournalEntryIter<'a, DB: DBAccess> {
+    iter: DBRawIteratorWithThreadMode<'a, DB>,
+    remaining: u32,
+}
+
+impl<'a, DB: DBAccess> JournalEntryIter<'a, DB> {
+    fn new(iter: DBRawIteratorWithThreadMode<'a, DB>, journal_length: EntryIndex) -> Self {
+        Self {
+            iter,
+            remaining: journal_length,
+        }
+    }
+}
+
+impl<DB: DBAccess> Iterator for JournalEntryIter<'_, DB> {
+    type Item = Result<(EntryIndex, JournalEntry)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        let (mut k, mut v) = self.iter.item()?;
+
+        let key_result =
+            JournalKey::deserialize_from(&mut k).map(|journal_key| journal_key.journal_index);
+
+        let entry_result = JournalEntry::decode(&mut v);
+
+        self.iter.next();
+        self.remaining -= 1;
+
+        Some(key_result.and_then(|key| entry_result.map(|entry| (key, entry))))
+    }
+}
 
 fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> JournalKey {
     JournalKey {
@@ -69,33 +104,22 @@ fn get_journal_entry<S: StorageAccess>(
     storage.get_value_proto(key)
 }
 
-fn get_journal<S: StorageAccess>(
-    storage: &mut S,
+fn get_journal<'a, S: StorageAccess>(
+    storage: &'a S,
     invocation_id: &InvocationId,
     journal_length: EntryIndex,
-) -> Result<Vec<Result<(EntryIndex, JournalEntry)>>> {
-    let _x = RocksDbPerfGuard::new("get-journal");
+) -> Result<JournalEntryIter<'a, S::DBAccess<'a>>> {
+    let _x = RocksDbPerfGuard::new("get-journal-iter-setup");
     let key = JournalKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
-    let mut n = 0;
-    storage.for_each_key_value_in_place(
-        TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), key),
-        move |mut k, mut v| {
-            let key =
-                JournalKey::deserialize_from(&mut k).map(|journal_key| journal_key.journal_index);
-            let entry = JournalEntry::decode(&mut v);
-            let result = key.and_then(|key| entry.map(|entry| (key, entry)));
+    let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
+        invocation_id.partition_key(),
+        key,
+    ))?;
 
-            n += 1;
-            if n < journal_length {
-                TableScanIterationDecision::Emit(result)
-            } else {
-                TableScanIterationDecision::BreakWith(result)
-            }
-        },
-    )
+    Ok(JournalEntryIter::new(iter, journal_length))
 }
 
 fn delete_journal<S: StorageAccess>(
