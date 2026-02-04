@@ -252,12 +252,10 @@ impl ScanVQueueTable for PartitionDb {
 impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     fn update_vqueue(&mut self, qid: &VQueueId, updates: &VQueueMetaUpdates) {
         let key_buffer = MetaKey::from(*qid).to_bytes();
-        let value_buf = {
-            let value_buf = self.cleared_value_buffer_mut(updates.encoded_len());
+        let value_buf = self.with_value_buffer(updates.encoded_len(), |buf| {
             // unwrap is safe because we know the buffer is big enough.
-            updates.encode(value_buf).unwrap();
-            value_buf.split()
-        };
+            updates.encode(buf).unwrap();
+        });
 
         self.raw_merge_cf(KeyKind::VQueueMeta, key_buffer, value_buf);
     }
@@ -348,19 +346,17 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             created_at: card.created_at,
         };
 
-        let value_buf = {
-            let header_len = header.encoded_len();
-            let header_len = header_len + bilrost::encoding::encoded_len_varint(header_len as u64);
+        let header_len = header.encoded_len();
+        let header_len = header_len + bilrost::encoding::encoded_len_varint(header_len as u64);
 
-            let state_len = state.encoded_len();
-            let state_len = state_len + bilrost::encoding::encoded_len_varint(state_len as u64);
+        let state_len = state.encoded_len();
+        let state_len = state_len + bilrost::encoding::encoded_len_varint(state_len as u64);
 
-            let value_buf = self.cleared_value_buffer_mut(header_len + state_len);
+        let value_buf = self.with_value_buffer(header_len + state_len, |buf| {
             // unwrap is safe because we know the buffer is big enough.
-            header.encode_length_delimited(value_buf).unwrap();
-            state.encode_length_delimited(value_buf).unwrap();
-            value_buf.split()
-        };
+            header.encode_length_delimited(buf).unwrap();
+            state.encode_length_delimited(buf).unwrap();
+        });
 
         self.raw_put_cf(KeyKind::VQueueEntryState, key_buffer, value_buf);
     }
@@ -386,25 +382,21 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     ) where
         E: Message,
     {
-        let key_buffer = self.cleared_key_buffer_mut(ItemsKey::serialized_length_fixed());
+        let key = self.with_key_buffer(ItemsKey::serialized_length_fixed(), |buf| {
+            ItemsKey {
+                partition_key: qid.partition_key,
+                parent: qid.parent,
+                instance: qid.instance,
+                created_at,
+                kind,
+                id: *id,
+            }
+            .serialize_to(buf);
+        });
 
-        ItemsKey {
-            partition_key: qid.partition_key,
-            parent: qid.parent,
-            instance: qid.instance,
-            created_at,
-            kind,
-            id: *id,
-        }
-        .serialize_to(key_buffer);
-
-        let key = key_buffer.split();
-
-        let value_buffer = self.cleared_value_buffer_mut(item.encoded_len());
-
-        item.encode(value_buffer)
-            .expect("enough space to encode item");
-        let value = value_buffer.split();
+        let value = self.with_value_buffer(item.encoded_len(), |buf| {
+            item.encode(buf).expect("enough space to encode item");
+        });
 
         self.raw_put_cf(KeyKind::VQueueItems, key, value);
     }
@@ -416,19 +408,17 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         kind: EntryKind,
         id: &EntryId,
     ) {
-        let key_buffer = self.cleared_key_buffer_mut(ItemsKey::serialized_length_fixed());
-
-        ItemsKey {
-            partition_key: qid.partition_key,
-            parent: qid.parent,
-            instance: qid.instance,
-            created_at,
-            kind,
-            id: *id,
-        }
-        .serialize_to(key_buffer);
-
-        let key = key_buffer.split();
+        let key = self.with_key_buffer(ItemsKey::serialized_length_fixed(), |buf| {
+            ItemsKey {
+                partition_key: qid.partition_key,
+                parent: qid.parent,
+                instance: qid.instance,
+                created_at,
+                kind,
+                id: *id,
+            }
+            .serialize_to(buf);
+        });
 
         self.raw_delete_cf(KeyKind::VQueueItems, key);
     }
@@ -566,19 +556,17 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
     where
         E: OwnedMessage,
     {
-        let key_buffer = self.cleared_value_buffer_mut(ItemsKey::serialized_length_fixed());
-
-        ItemsKey {
-            partition_key: qid.partition_key,
-            parent: qid.parent,
-            instance: qid.instance,
-            created_at,
-            kind,
-            id: *id,
-        }
-        .serialize_to(key_buffer);
-
-        let key = key_buffer.split();
+        let key = self.with_key_buffer(ItemsKey::serialized_length_fixed(), |buf| {
+            ItemsKey {
+                partition_key: qid.partition_key,
+                parent: qid.parent,
+                instance: qid.instance,
+                created_at,
+                kind,
+                id: *id,
+            }
+            .serialize_to(buf);
+        });
 
         let Some(raw_value) = self.get(ItemsKey::TABLE, key)? else {
             return Ok(None);

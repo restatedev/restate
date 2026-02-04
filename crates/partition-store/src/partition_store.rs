@@ -16,6 +16,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use bytes::Bytes;
 use bytes::BytesMut;
+use parking_lot::Mutex;
 use enum_map::Enum;
 use rocksdb::{
     BoundColumnFamily, DBPinnableSlice, DBRawIteratorWithThreadMode, PrefixRange, ReadOptions,
@@ -191,8 +192,14 @@ impl TableKind {
 
 pub struct PartitionStore {
     db: PartitionDb,
-    key_buffer: BytesMut,
-    value_buffer: BytesMut,
+    /// Key buffer for serializing keys. Uses interior mutability to allow
+    /// read operations to take `&self` instead of `&mut self`.
+    ///
+    /// TODO: Measure the performance impact of Mutex<BytesMut> compared to
+    /// UnsafeCell<BytesMut>. If benchmarks show significant overhead, we may
+    /// need to reconsider using UnsafeCell with appropriate safety guarantees.
+    key_buffer: Mutex<BytesMut>,
+    value_buffer: Mutex<BytesMut>,
 }
 
 impl std::fmt::Debug for PartitionStore {
@@ -200,8 +207,8 @@ impl std::fmt::Debug for PartitionStore {
         f.debug_struct("PartitionStore")
             .field("partition_id", &self.db.partition().partition_id)
             .field("cf", &self.db.partition().cf_name())
-            .field("key_buffer", &self.key_buffer.len())
-            .field("value_buffer", &self.value_buffer.len())
+            .field("key_buffer", &self.key_buffer.lock().len())
+            .field("value_buffer", &self.value_buffer.lock().len())
             .finish()
     }
 }
@@ -210,8 +217,8 @@ impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
             db: self.db.clone(),
-            key_buffer: BytesMut::default(),
-            value_buffer: BytesMut::default(),
+            key_buffer: Mutex::new(BytesMut::default()),
+            value_buffer: Mutex::new(BytesMut::default()),
         }
     }
 }
@@ -226,8 +233,8 @@ impl PartitionStore {
     pub(crate) fn new(db: PartitionDb) -> Self {
         Self {
             db,
-            key_buffer: BytesMut::new(),
-            value_buffer: BytesMut::new(),
+            key_buffer: Mutex::new(BytesMut::new()),
+            value_buffer: Mutex::new(BytesMut::new()),
         }
     }
 
@@ -616,8 +623,10 @@ impl PartitionStore {
             write_batch_with_index: rocksdb::WriteBatchWithIndex::new(0, true),
             data_cf_handle,
             rocksdb: self.db.rocksdb(),
-            key_buffer: &mut self.key_buffer,
-            value_buffer: &mut self.value_buffer,
+            // Borrow buffers from PartitionStore to avoid allocation per transaction.
+            // Interior mutability allows read operations to take &self.
+            key_buffer: &self.key_buffer,
+            value_buffer: &self.value_buffer,
             meta: self.db.partition(),
             snapshot,
         }
@@ -738,17 +747,39 @@ impl StorageAccess for PartitionStore {
     }
 
     #[inline]
-    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
-        self.key_buffer.clear();
-        self.key_buffer.reserve(min_size);
-        &mut self.key_buffer
+    fn with_key_buffer<F>(&self, min_size: usize, f: F) -> Bytes
+    where
+        F: FnOnce(&mut BytesMut),
+    {
+        let mut guard = self.key_buffer.lock();
+        guard.clear();
+        guard.reserve(min_size);
+        f(&mut guard);
+        guard.split().freeze()
     }
 
     #[inline]
-    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
-        self.value_buffer.clear();
-        self.value_buffer.reserve(min_size);
-        &mut self.value_buffer
+    fn with_value_buffer<F>(&self, min_size: usize, f: F) -> Bytes
+    where
+        F: FnOnce(&mut BytesMut),
+    {
+        let mut guard = self.value_buffer.lock();
+        guard.clear();
+        guard.reserve(min_size);
+        f(&mut guard);
+        guard.split().freeze()
+    }
+
+    #[inline]
+    fn try_with_value_buffer<F, E>(&self, min_size: usize, f: F) -> std::result::Result<Bytes, E>
+    where
+        F: FnOnce(&mut BytesMut) -> std::result::Result<(), E>,
+    {
+        let mut guard = self.value_buffer.lock();
+        guard.clear();
+        guard.reserve(min_size);
+        f(&mut guard)?;
+        Ok(guard.split().freeze())
     }
 
     #[inline]
@@ -822,8 +853,17 @@ pub struct PartitionStoreTransaction<'a> {
     write_batch_with_index: rocksdb::WriteBatchWithIndex,
     rocksdb: &'a Arc<RocksDb>,
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
-    key_buffer: &'a mut BytesMut,
-    value_buffer: &'a mut BytesMut,
+    /// Key buffer for serializing keys. Borrowed from PartitionStore to avoid
+    /// allocation per transaction. Uses interior mutability to allow read
+    /// operations to take `&self` instead of `&mut self`, enabling multiple
+    /// concurrent iterators from the same transaction.
+    ///
+    /// TODO: Measure the performance impact of Mutex<BytesMut> compared to
+    /// UnsafeCell<BytesMut>. If benchmarks show significant overhead, we may
+    /// need to reconsider using UnsafeCell with appropriate safety guarantees.
+    key_buffer: &'a Mutex<BytesMut>,
+    /// Value buffer for serializing values. Borrowed from PartitionStore.
+    value_buffer: &'a Mutex<BytesMut>,
     snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
 }
 
@@ -1019,17 +1059,39 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
     }
 
     #[inline]
-    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
-        self.key_buffer.clear();
-        self.key_buffer.reserve(min_size);
-        self.key_buffer
+    fn with_key_buffer<F>(&self, min_size: usize, f: F) -> Bytes
+    where
+        F: FnOnce(&mut BytesMut),
+    {
+        let mut guard = self.key_buffer.lock();
+        guard.clear();
+        guard.reserve(min_size);
+        f(&mut guard);
+        guard.split().freeze()
     }
 
     #[inline]
-    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut {
-        self.value_buffer.clear();
-        self.value_buffer.reserve(min_size);
-        self.value_buffer
+    fn with_value_buffer<F>(&self, min_size: usize, f: F) -> Bytes
+    where
+        F: FnOnce(&mut BytesMut),
+    {
+        let mut guard = self.value_buffer.lock();
+        guard.clear();
+        guard.reserve(min_size);
+        f(&mut guard);
+        guard.split().freeze()
+    }
+
+    #[inline]
+    fn try_with_value_buffer<F, E>(&self, min_size: usize, f: F) -> std::result::Result<Bytes, E>
+    where
+        F: FnOnce(&mut BytesMut) -> std::result::Result<(), E>,
+    {
+        let mut guard = self.value_buffer.lock();
+        guard.clear();
+        guard.reserve(min_size);
+        f(&mut guard)?;
+        Ok(guard.split().freeze())
     }
 
     #[inline]
@@ -1083,9 +1145,24 @@ pub(crate) trait StorageAccess {
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>>;
 
-    fn cleared_key_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
+    /// Provides access to a cleared key buffer with at least `min_size` capacity,
+    /// calls the closure to serialize into it, then splits and freezes the result.
+    /// Takes `&self` to allow interior mutability, enabling multiple concurrent reads.
+    fn with_key_buffer<F>(&self, min_size: usize, f: F) -> Bytes
+    where
+        F: FnOnce(&mut BytesMut);
 
-    fn cleared_value_buffer_mut(&mut self, min_size: usize) -> &mut BytesMut;
+    /// Provides access to a cleared value buffer with at least `min_size` capacity,
+    /// calls the closure to serialize into it, then splits and freezes the result.
+    /// Takes `&self` to allow interior mutability, enabling multiple concurrent reads.
+    fn with_value_buffer<F>(&self, min_size: usize, f: F) -> Bytes
+    where
+        F: FnOnce(&mut BytesMut);
+
+    /// Like `with_value_buffer` but allows the closure to return an error.
+    fn try_with_value_buffer<F, E>(&self, min_size: usize, f: F) -> std::result::Result<Bytes, E>
+    where
+        F: FnOnce(&mut BytesMut) -> std::result::Result<(), E>;
 
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>>;
 
@@ -1110,11 +1187,10 @@ pub(crate) trait StorageAccess {
 
     #[inline]
     fn put_kv_raw<K: TableKey, V: AsRef<[u8]>>(&mut self, key: K, value: V) -> Result<()> {
-        let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
-        key.serialize_to(key_buffer);
-        let key_buffer = key_buffer.split();
-
-        self.put_cf(K::TABLE, key_buffer, value)
+        let key_bytes = self.with_key_buffer(key.serialized_length(), |buf| {
+            key.serialize_to(buf);
+        });
+        self.put_cf(K::TABLE, key_bytes, value)
     }
 
     #[inline]
@@ -1135,28 +1211,26 @@ pub(crate) trait StorageAccess {
         key: K,
         value: &V,
     ) -> Result<()> {
-        let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
-        key.serialize_to(key_buffer);
-        let key_buffer = key_buffer.split();
-
-        let value_buffer = self.cleared_value_buffer_mut(0);
-        StorageCodec::encode(value, value_buffer).map_err(|e| StorageError::Generic(e.into()))?;
-        let value_buffer = value_buffer.split();
-
-        self.put_cf(K::TABLE, key_buffer, value_buffer)
+        let key_bytes = self.with_key_buffer(key.serialized_length(), |buf| {
+            key.serialize_to(buf);
+        });
+        let value_bytes = self
+            .try_with_value_buffer(0, |buf| {
+                StorageCodec::encode(value, buf).map_err(|e| StorageError::Generic(e.into()))
+            })?;
+        self.put_cf(K::TABLE, key_bytes, value_bytes)
     }
 
     #[inline]
     fn delete_key<K: TableKey>(&mut self, key: &K) -> Result<()> {
-        let buffer = self.cleared_key_buffer_mut(key.serialized_length());
-        key.serialize_to(buffer);
-        let buffer = buffer.split();
-
-        self.delete_cf(K::TABLE, buffer)
+        let key_bytes = self.with_key_buffer(key.serialized_length(), |buf| {
+            key.serialize_to(buf);
+        });
+        self.delete_cf(K::TABLE, key_bytes)
     }
 
     #[inline]
-    fn get_value_proto<K, V>(&mut self, key: K) -> Result<Option<V>>
+    fn get_value_proto<K, V>(&self, key: K) -> Result<Option<V>>
     where
         K: TableKey,
         V: PartitionStoreProtobufValue,
@@ -1173,16 +1247,16 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn get_value_storage_codec<K, V>(&mut self, key: K) -> Result<Option<V>>
+    fn get_value_storage_codec<K, V>(&self, key: K) -> Result<Option<V>>
     where
         K: TableKey,
         V: StorageDecode,
     {
-        let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
-        key.serialize_to(&mut buf);
-        let buf = buf.split();
+        let key_bytes = self.with_key_buffer(key.serialized_length(), |buf| {
+            key.serialize_to(buf);
+        });
 
-        self.get(K::TABLE, &buf)?
+        self.get(K::TABLE, &key_bytes)?
             .map(|value| {
                 let mut slice = value.as_ref();
                 StorageCodec::decode(&mut slice)
@@ -1195,18 +1269,18 @@ pub(crate) trait StorageAccess {
     /// This means that that you might not get the latest value, but the value that was
     /// persisted (flushed) at the time of the call.
     #[inline]
-    fn get_durable_value<K, V>(&mut self, key: K) -> Result<Option<V>>
+    fn get_durable_value<K, V>(&self, key: K) -> Result<Option<V>>
     where
         K: TableKey,
         V: PartitionStoreProtobufValue,
         <<V as PartitionStoreProtobufValue>::ProtobufType as TryInto<V>>::Error:
             Into<anyhow::Error>,
     {
-        let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
-        key.serialize_to(&mut buf);
-        let buf = buf.split();
+        let key_bytes = self.with_key_buffer(key.serialized_length(), |buf| {
+            key.serialize_to(buf);
+        });
 
-        match self.get_durable(K::TABLE, &buf) {
+        match self.get_durable(K::TABLE, &key_bytes) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
 
@@ -1221,7 +1295,7 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn get_first_blocking<K, F, R>(&mut self, scan: TableScan<K>, f: F) -> Result<R>
+    fn get_first_blocking<K, F, R>(&self, scan: TableScan<K>, f: F) -> Result<R>
     where
         K: TableKeyPrefix,
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
@@ -1231,19 +1305,19 @@ pub(crate) trait StorageAccess {
     }
 
     #[inline]
-    fn get_kv_raw<K, F, R>(&mut self, key: K, f: F) -> Result<R>
+    fn get_kv_raw<K, F, R>(&self, key: K, f: F) -> Result<R>
     where
         K: TableKey,
         F: FnOnce(&[u8], Option<&[u8]>) -> Result<R>,
     {
-        let mut buf = self.cleared_key_buffer_mut(key.serialized_length());
-        key.serialize_to(&mut buf);
-        let buf = buf.split();
+        let key_bytes = self.with_key_buffer(key.serialized_length(), |buf| {
+            key.serialize_to(buf);
+        });
 
-        match self.get(K::TABLE, &buf) {
+        match self.get(K::TABLE, &key_bytes) {
             Ok(value) => {
                 let slice = value.as_ref().map(|v| v.as_ref());
-                f(&buf, slice)
+                f(&key_bytes, slice)
             }
             Err(err) => Err(err),
         }
