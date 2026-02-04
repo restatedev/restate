@@ -166,8 +166,6 @@ impl From<u64> for GenerationalNodeId {
     Hash,
     derive_more::From,
     derive_more::Into,
-    derive_more::Display,
-    derive_more::Debug,
     serde::Serialize,
     serde::Deserialize,
     BilrostNewType,
@@ -176,9 +174,19 @@ impl From<u64> for GenerationalNodeId {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(transparent))]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
-#[display("N{}", _0)]
-#[debug("N{}", _0)]
 pub struct PlainNodeId(u32);
+
+impl std::fmt::Debug for PlainNodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::fmt::Display for PlainNodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 impl FromStr for PlainNodeId {
     type Err = MalformedPlainNodeId;
@@ -326,6 +334,16 @@ impl PlainNodeId {
     pub fn next(mut self) -> Self {
         self.0 += 1;
         self
+    }
+
+    /// Returns a static string representation of this node ID.
+    ///
+    /// Format: "N{id}" (e.g., "N0", "N1", "N1024").
+    /// This is a zero-allocation operation for IDs 0-1024 (compile-time generated strings).
+    /// IDs beyond 1024 are lazily cached on first access.
+    #[inline]
+    pub fn as_str(&self) -> &'static str {
+        crate::id_interning::node_id_to_str(self.0)
     }
 }
 

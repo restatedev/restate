@@ -87,7 +87,55 @@ fn main() -> std::io::Result<()> {
     let contents =
         prettyplease::unparse(&syn::parse2::<syn::File>(type_space.to_stream()).unwrap());
 
-    std::fs::write(out_dir.join("endpoint_manifest.rs"), contents)
+    std::fs::write(out_dir.join("endpoint_manifest.rs"), contents)?;
+
+    // Generate short ID strings
+    generate_short_id_strings(&out_dir)
+}
+
+/// Generates compile-time string representations for short IDs commonly used in metric labels.
+fn generate_short_id_strings(out_dir: &Path) -> std::io::Result<()> {
+    use std::fmt::Write;
+
+    const MAX_PRECOMPUTED: u32 = 1025; // 0..=1024
+
+    let mut code = String::new();
+
+    // Plain numeric strings for PartitionId and LogId
+    writeln!(
+        code,
+        "/// Pre-computed string representations for short IDs (0-1024)."
+    )
+    .unwrap();
+    writeln!(code, "/// Generated at build time for zero-cost lookup.").unwrap();
+    writeln!(
+        code,
+        "pub(crate) static SHORT_ID_STRINGS: [&str; {MAX_PRECOMPUTED}] = ["
+    )
+    .unwrap();
+    for i in 0..MAX_PRECOMPUTED {
+        writeln!(code, "    \"{i}\",").unwrap();
+    }
+    writeln!(code, "];").unwrap();
+    writeln!(code).unwrap();
+
+    // N-prefixed strings for PlainNodeId (Display format)
+    writeln!(
+        code,
+        "/// Pre-computed N-prefixed strings for PlainNodeId labels (N0-N1024)."
+    )
+    .unwrap();
+    writeln!(
+        code,
+        "pub(crate) static NODE_ID_STRINGS: [&str; {MAX_PRECOMPUTED}] = ["
+    )
+    .unwrap();
+    for i in 0..MAX_PRECOMPUTED {
+        writeln!(code, "    \"N{i}\",").unwrap();
+    }
+    writeln!(code, "];").unwrap();
+
+    std::fs::write(out_dir.join("short_id_strings.rs"), code)
 }
 
 fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {

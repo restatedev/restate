@@ -11,6 +11,7 @@
 //! This crate contains the core types used by various Restate components.
 
 mod base62_util;
+mod id_interning;
 mod id_util;
 mod macros;
 mod node_id;
