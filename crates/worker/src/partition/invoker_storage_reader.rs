@@ -82,7 +82,7 @@ where
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
             // Try to read first from journal table v2
             let entries = journal_table_v2::ReadJournalTable::get_journal(
-                &mut self.txn,
+                &self.txn,
                 *invocation_id,
                 invoked_status.journal_metadata.length,
             )?
@@ -125,7 +125,7 @@ where
                         false,
                     ),
                     journal_table_v1::ReadJournalTable::get_journal(
-                        &mut self.txn,
+                        &self.txn,
                         invocation_id,
                         invoked_status.journal_metadata.length,
                     )?
