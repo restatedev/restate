@@ -20,7 +20,7 @@ use opentelemetry::propagation::TextMapPropagator;
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use strum::IntoEnumIterator as _;
 use tokio::sync::oneshot;
-use tokio::time::Sleep;
+use tokio::time::{MissedTickBehavior, Sleep};
 use tracing::{Instrument, Span, debug, info, trace, warn};
 
 use restate_futures_util::overdue::OverdueLoggingExt;
@@ -30,6 +30,7 @@ use restate_types::net::ServiceTag;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
+use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::{Version, Versioned};
 
@@ -47,6 +48,10 @@ use crate::network::{
 use crate::{Metadata, ShutdownError, TaskCenter, TaskContext, TaskId, TaskKind};
 
 use super::DrainReason;
+
+/// Interval at which we run garbage collection on the reply tracker to remove
+/// entries where the caller has dropped their receiver.
+const RPC_GC_INTERVAL: Duration = Duration::from_secs(5);
 
 enum Decision {
     Continue,
@@ -153,6 +158,10 @@ impl ConnectionReactor {
         Span::current().record("task_id", tracing::field::display(current_task.id()));
         let mut cancellation = std::pin::pin!(current_task.cancellation_token().cancelled());
 
+        // Set up periodic garbage collection for the reply tracker
+        let mut gc_interval = tokio::time::interval(with_jitter(RPC_GC_INTERVAL, 0.2));
+        gc_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         conn_tracker.connection_created(&self.connection, is_dedicated);
 
         loop {
@@ -171,6 +180,10 @@ impl ConnectionReactor {
                             }
                             // we only drain the connection if we were the initiators of the termination
                         },
+                        _ = gc_interval.tick() => {
+                            self.shared.reply_tracker.gc();
+                            Decision::Continue
+                        },
                         msg = incoming.next() => {
                             self.handle_message(msg).await
                         }
@@ -183,6 +196,10 @@ impl ConnectionReactor {
                         () = drain_timeout => {
                             debug!("Drain timed out, closing connection");
                             Decision::Drop
+                        },
+                        _ = gc_interval.tick() => {
+                            self.shared.reply_tracker.gc();
+                            Decision::Continue
                         },
                         msg = incoming.next() => {
                             self.handle_message(msg).await
