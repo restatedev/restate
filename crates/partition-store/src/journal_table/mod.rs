@@ -157,7 +157,7 @@ impl ReadJournalTable for PartitionStore {
     }
 
     fn get_journal(
-        &mut self,
+        &self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send> {
@@ -212,7 +212,7 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
     }
 
     fn get_journal(
-        &mut self,
+        &self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send> {

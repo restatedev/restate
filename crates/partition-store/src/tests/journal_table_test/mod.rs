@@ -70,7 +70,7 @@ fn populate_data<T: WriteJournalTable>(txn: &mut T) {
         .unwrap();
 }
 
-async fn get_entire_journal<T: ReadJournalTable>(txn: &mut T) {
+async fn get_entire_journal<T: ReadJournalTable>(txn: &T) {
     let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 5).unwrap());
     let mut count = 0;
     while (journal.next().await).is_some() {
@@ -80,7 +80,7 @@ async fn get_entire_journal<T: ReadJournalTable>(txn: &mut T) {
     assert_eq!(count, 5);
 }
 
-async fn get_subset_of_a_journal<T: ReadJournalTable>(txn: &mut T) {
+async fn get_subset_of_a_journal<T: ReadJournalTable>(txn: &T) {
     let mut journal = pin!(txn.get_journal(&MOCK_INVOCATION_ID_1, 2).unwrap());
     let mut count = 0;
     while (journal.next().await).is_some() {

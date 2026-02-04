@@ -490,7 +490,7 @@ mod tests {
         }
 
         fn get_journal(
-            &mut self,
+            &self,
             invocation_id: InvocationId,
             length: EntryIndex,
         ) -> restate_storage_api::Result<
@@ -560,7 +560,7 @@ mod tests {
         }
 
         fn get_journal(
-            &mut self,
+            &self,
             invocation_id: &InvocationId,
             journal_length: EntryIndex,
         ) -> restate_storage_api::Result<
