@@ -80,7 +80,8 @@ tonic = { workspace = true, features = ["gzip", "zstd"] }
 tracing = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-jemalloc_pprof = { version = "0.8.1", default-features = false, features = ["symbolize"] }
+# forked version while we wait for an upstream release of https://github.com/polarsignals/rust-jemalloc-pprof/pull/31
+jemalloc_pprof = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["symbolize"] }
 tikv-jemalloc-ctl = { workspace = true }
 tikv-jemalloc-sys = { workspace = true }
 

@@ -69,7 +69,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools = { version = "0.14" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
@@ -192,7 +192,7 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2" }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools = { version = "0.14" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
@@ -268,12 +268,13 @@ clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
-jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
+jemalloc_pprof = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
-pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
+pprof_util = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph"] }
+prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.38", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
@@ -287,13 +288,13 @@ crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "constructor", "debug", "deref", "deref_mut", "display", "eq", "error", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "mul", "mul_assign", "not", "sum", "try_from", "try_into", "try_unwrap", "unwrap"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
-itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
+jemalloc_pprof = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
-pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
+pprof_util = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph"] }
+prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.38", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
@@ -306,11 +307,12 @@ clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
-jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
+jemalloc_pprof = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
-pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
+pprof_util = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph"] }
+prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.38", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
@@ -324,12 +326,12 @@ crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "constructor", "debug", "deref", "deref_mut", "display", "eq", "error", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "mul", "mul_assign", "not", "sum", "try_from", "try_into", "try_unwrap", "unwrap"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
-itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
-jemalloc_pprof = { version = "0.8", default-features = false, features = ["flamegraph", "symbolize"] }
+jemalloc_pprof = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 nix = { version = "0.30", features = ["signal"] }
 num = { version = "0.4" }
-pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
+pprof_util = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph"] }
+prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
 quick-xml = { version = "0.38", features = ["overlapped-lists", "serialize"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
