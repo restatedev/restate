@@ -3642,10 +3642,6 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-dependencies = [
- "ahash",
- "allocator-api2",
-]
 
 [[package]]
 name = "hashbrown"
@@ -5848,16 +5844,7 @@ version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
 dependencies = [
- "phf_shared 0.12.1",
-]
-
-[[package]]
-name = "phf_shared"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
-dependencies = [
- "siphasher",
+ "phf_shared",
 ]
 
 [[package]]
@@ -8491,7 +8478,6 @@ dependencies = [
  "getrandom 0.2.15",
  "getrandom 0.3.4",
  "half",
- "hashbrown 0.14.5",
  "hashbrown 0.16.1",
  "hdrhistogram",
  "hex",
@@ -8524,7 +8510,6 @@ dependencies = [
  "once_cell",
  "opentelemetry",
  "opentelemetry_sdk",
- "phf_shared 0.11.3",
  "portable-atomic",
  "pprof",
  "pprof_util",
@@ -8536,8 +8521,6 @@ dependencies = [
  "quanta",
  "quick-xml 0.38.1",
  "quote",
- "rand 0.8.5",
- "rand_core 0.6.4",
  "rdkafka",
  "rdkafka-sys",
  "regex",
