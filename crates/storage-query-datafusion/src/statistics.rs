@@ -133,10 +133,11 @@ impl TableStatisticsBuilder {
 fn partition_key_column_statistics(row_count: Precision<usize>) -> ColumnStatistics {
     ColumnStatistics {
         null_count: Precision::Exact(0),
-        max_value: Precision::Inexact(ScalarValue::Null),
-        min_value: Precision::Inexact(ScalarValue::Null),
+        max_value: Precision::Absent,
+        min_value: Precision::Absent,
         sum_value: Precision::Absent,
         distinct_count: row_count,
+        byte_size: Precision::Absent,
     }
 }
 
@@ -147,6 +148,7 @@ fn primary_key_column_statistics(row_count: Precision<usize>) -> ColumnStatistic
         min_value: Precision::Inexact(ScalarValue::Null),
         sum_value: Precision::Absent,
         distinct_count: row_count,
+        byte_size: Precision::Absent,
     }
 }
 
@@ -157,5 +159,6 @@ fn foreign_key_column_statistics(foreign_row_estimate: Precision<usize>) -> Colu
         min_value: Precision::Inexact(ScalarValue::Null),
         sum_value: Precision::Absent,
         distinct_count: foreign_row_estimate,
+        byte_size: Precision::Absent,
     }
 }
