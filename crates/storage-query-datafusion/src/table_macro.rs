@@ -123,7 +123,10 @@ macro_rules! define_fmt {
                 use std::fmt::Write;
                 let _ = write!(builder, "{d}");
                 builder.append_value("");
-                self.flags.$element = true;
+                if !self.flags.$element {
+                    self.flags.$element = true;
+                    self.flags.written_count += 1;
+                }
             }
         }
     };
@@ -134,7 +137,10 @@ macro_rules! define_fmt {
                 use std::fmt::Write;
                 let _ = write!(builder, "{d}");
                 builder.append_value("");
-                self.flags.$element = true;
+                if !self.flags.$element {
+                    self.flags.$element = true;
+                    self.flags.written_count += 1;
+                }
             }
         }
     };
@@ -382,6 +388,7 @@ macro_rules! document_type {
 /// ```ignore
 /// pub struct UserBuilder {
 ///     rows_inserted_so_far: usize,
+///     projected_count: u16,
 ///     projected_schema: SchemaRef,
 ///     arrays: UserArrayBuilder,
 /// }
@@ -397,6 +404,7 @@ macro_rules! document_type {
 /// }
 /// #[derive(Default)]
 /// struct UserRowBuilderFlags {
+///     written_count: u16,
 ///     name: bool,
 ///     age: bool,
 ///     secret: bool,
@@ -407,7 +415,10 @@ macro_rules! document_type {
 ///     pub fn name(&mut self, value: impl AsRef<str>) {
 ///         if let Some(builder) = self.builder.arrays.name.as_mut() {
 ///             builder.append_value(value);
-///             self.flags.name = true;
+///             if !self.flags.name {
+///                 self.flags.name = true;
+///                 self.flags.written_count += 1;
+///             }
 ///         }
 ///     }
 ///     #[inline]
@@ -416,71 +427,34 @@ macro_rules! document_type {
 ///             use std::fmt::Write;
 ///             let _ = builder.write_fmt(core::format_args!("{d}"));
 ///             builder.append_value("");
-///             self.flags.name = true;
+///             if !self.flags.name {
+///                 self.flags.name = true;
+///                 self.flags.written_count += 1;
+///             }
 ///         }
 ///     }
 ///     #[inline]
 ///     pub fn is_name_defined(&self) -> bool {
 ///         self.builder.arrays.name.is_some()
 ///     }
-///     #[inline]
-///     pub fn age(&mut self, value: u32) {
-///         if let Some(builder) = self.builder.arrays.age.as_mut() {
-///             builder.append_value(value);
-///             self.flags.age = true;
-///         }
-///     }
 ///
 ///     #[inline]
 ///     pub fn is_age_defined(&self) -> bool {
 ///         self.builder.arrays.age.is_some()
 ///     }
-///     #[inline]
-///     pub fn secret(&mut self, value: impl AsRef<[u8]>) {
-///         if let Some(builder) = self.builder.arrays.secret.as_mut() {
-///             builder.append_value(value);
-///             self.flags.secret = true;
-///         }
-///     }
-///     #[inline]
-///     pub fn is_secret_defined(&self) -> bool {
-///         self.builder.arrays.secret.is_some()
-///     }
-///     #[inline]
-///     pub fn birth_date(&mut self, value: i64) {
-///         if let Some(builder) = self.builder.arrays.birth_date.as_mut() {
-///             builder.append_value(value);
-///             self.flags.birth_date = true;
-///         }
-///     }
-///
-///     #[inline]
-///     pub fn is_birth_date_defined(&self) -> bool {
-///         self.builder.arrays.birth_date.is_some()
-///     }
+///     // ...
 /// }
 /// impl<'a> Drop for UserRowBuilder<'a> {
 ///     fn drop(&mut self) {
+///         if self.flags.written_count == self.builder.projected_count {
+///             return;
+///         }
 ///         if let Some(e) = self.builder.arrays.name.as_mut() {
 ///             if (!self.flags.name) {
 ///                 e.append_null();
 ///             }
 ///         }
-///         if let Some(e) = self.builder.arrays.age.as_mut() {
-///             if (!self.flags.age) {
-///                 e.append_null();
-///             }
-///         }
-///         if let Some(e) = self.builder.arrays.secret.as_mut() {
-///             if (!self.flags.secret) {
-///                 e.append_null();
-///             }
-///         }
-///         if let Some(e) = self.builder.arrays.birth_date.as_mut() {
-///             if (!self.flags.birth_date) {
-///                 e.append_null();
-///             }
-///         }
+///         // ...
 ///     }
 /// }
 /// impl UserArrayBuilder {
@@ -552,8 +526,10 @@ macro_rules! document_type {
 /// }
 /// impl UserBuilder {
 ///     pub fn new(projected_schema: &Schema) -> Self {
+///         let projected_count = projected_schema.fields().len() as u16;
 ///         Self {
 ///             rows_inserted_so_far: 0,
+///             projected_count,
 ///             arrays: UserArrayBuilder::new(&projected_schema),
 ///             projected_schema,
 ///         }
@@ -616,6 +592,7 @@ macro_rules! define_table {
 
         pub struct [< $table_name:camel Builder >] {
             rows_inserted_so_far: usize,
+            projected_count: u16,
             projected_schema: ::datafusion::arrow::datatypes::SchemaRef,
             arrays: [< $table_name:camel ArrayBuilder >],
         }
@@ -634,6 +611,7 @@ macro_rules! define_table {
 
         #[derive(Default)]
         struct [< $table_name:camel RowBuilderFlags >] {
+            written_count: u16,
             $($element : bool, )+
         }
         // --------------------------------------------------------------------------
@@ -649,7 +627,10 @@ macro_rules! define_table {
                         pub fn $element(&mut self, value: define_primitive_trait!($ty)) {
                             if let Some(builder) = self.builder.arrays.$element.as_mut() {
                                 builder.append_value(value);
-                                self.flags.$element = true;
+                                if !self.flags.$element {
+                                    self.flags.$element = true;
+                                    self.flags.written_count += 1;
+                                }
                             }
                         }
 
@@ -668,6 +649,10 @@ macro_rules! define_table {
         impl<'a> Drop for [< $table_name:camel RowBuilder >]<'a> {
 
             fn drop(&mut self) {
+                 // Fast path: all projected fields were written
+                 if self.flags.written_count == self.builder.projected_count {
+                     return;
+                 }
 
                  $(
                         if let Some(e) = self.builder.arrays.$element.as_mut() {
@@ -764,8 +749,10 @@ macro_rules! define_table {
         #[allow(clippy::all)]
         impl $crate::table_util::Builder for [< $table_name:camel Builder >] {
             fn new(projected_schema: ::datafusion::arrow::datatypes::SchemaRef) -> Self {
+                let projected_count = projected_schema.fields().len() as u16;
                 Self {
                     rows_inserted_so_far: 0,
+                    projected_count,
                     arrays:  [< $table_name:camel ArrayBuilder >]::new(&projected_schema),
                     projected_schema,
                 }
