@@ -9,10 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::iter::Empty;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, stream};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
@@ -22,7 +23,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
-use restate_invoker_api::invocation_reader::{EagerState, JournalEntry};
+use restate_invoker_api::invocation_reader::{
+    EagerState, InvocationReaderTransaction, JournalEntry,
+};
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -31,6 +34,7 @@ use restate_service_protocol::message::{
 };
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_types::errors::InvocationError;
+use restate_types::identifiers::ServiceId;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::EntryType;
@@ -58,8 +62,8 @@ const GATEWAY_ERRORS_CODES: [http::StatusCode; 3] = [
 ];
 
 /// Runs the interaction between the server and the service endpoint.
-pub struct ServiceProtocolRunner<'a, IR, EE, DMR> {
-    invocation_task: &'a mut InvocationTask<IR, EE, DMR>,
+pub struct ServiceProtocolRunner<'a, EE, DMR> {
+    invocation_task: &'a mut InvocationTask<EE, DMR>,
 
     service_protocol_version: ServiceProtocolVersion,
 
@@ -71,12 +75,12 @@ pub struct ServiceProtocolRunner<'a, IR, EE, DMR> {
     next_journal_index: EntryIndex,
 }
 
-impl<'a, IR, EE, DMR> ServiceProtocolRunner<'a, IR, EE, DMR>
+impl<'a, EE, DMR> ServiceProtocolRunner<'a, EE, DMR>
 where
     EE: EntryEnricher,
 {
     pub fn new(
-        invocation_task: &'a mut InvocationTask<IR, EE, DMR>,
+        invocation_task: &'a mut InvocationTask<EE, DMR>,
         service_protocol_version: ServiceProtocolVersion,
     ) -> Self {
         let encoder = Encoder::new(service_protocol_version);
@@ -95,16 +99,22 @@ where
         }
     }
 
-    pub async fn run<JournalStream, StateIter>(
+    /// Run the service protocol interaction.
+    ///
+    /// # Arguments
+    /// * `keyed_service_id` - If `Some`, eager state loading is enabled and we'll read/send
+    ///   state for this service upfront. If `None`, lazy state is used (either because this
+    ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
+    pub async fn run<Txn>(
         mut self,
+        mut txn: Txn,
         journal_metadata: JournalMetadata,
+        keyed_service_id: Option<ServiceId>,
+        cached_journal_items: Option<Vec<JournalEntry>>,
         deployment: Deployment,
-        journal_stream: JournalStream,
-        state_iter: EagerState<StateIter>,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = JournalEntry> + Unpin,
-        StateIter: Iterator<Item = (Bytes, Bytes)>,
+        Txn: InvocationReaderTransaction,
     {
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
@@ -140,7 +150,7 @@ where
         // We send this with every journal entry to correctly link new spans generated from journal entries.
         let service_invocation_span_context = journal_metadata.span_context;
 
-        // Prepare the request and send start message
+        // Prepare the request
         let (mut http_stream_tx, request) = Self::prepare_request(
             path,
             deployment,
@@ -149,25 +159,64 @@ where
             &service_invocation_span_context,
         );
 
-        crate::shortcircuit!(
-            self.write_start(
-                &mut http_stream_tx,
-                journal_size,
-                state_iter,
-                self.invocation_task.retry_count_since_last_stored_entry,
-                journal_metadata.last_modification_date.elapsed()
-            )
-            .await
-        );
-
         // Initialize the response stream state
         let mut http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
 
-        // Execute the replay
-        crate::shortcircuit!(
-            self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
+        // === Replay phase (transaction alive) ===
+        {
+            // Read state if needed
+            let state_iter = if let Some(ref service_id) = keyed_service_id {
+                crate::shortcircuit!(
+                    txn.read_state(service_id)
+                        .await
+                        .map_err(|e| InvokerError::StateReader(e.into()))
+                        .map(|s| s.map(itertools::Either::Left))
+                )
+            } else {
+                EagerState::<Empty<_>>::default().map(itertools::Either::Right)
+            };
+
+            // Send start message with state
+            crate::shortcircuit!(
+                self.write_start(
+                    &mut http_stream_tx,
+                    journal_size,
+                    state_iter,
+                    self.invocation_task.retry_count_since_last_stored_entry,
+                    journal_metadata.last_modification_date.elapsed()
+                )
                 .await
-        );
+            );
+
+            // Read journal stream (or use cached)
+            if let Some(items) = cached_journal_items {
+                let journal_stream = stream::iter(items);
+                // Execute the replay
+                crate::shortcircuit!(
+                    self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
+                        .await
+                );
+            } else {
+                let journal_stream = crate::shortcircuit!(
+                    txn.read_journal(
+                        &self.invocation_task.invocation_id,
+                        journal_size,
+                        journal_metadata.using_journal_table_v2,
+                    )
+                    .await
+                    .map_err(|e| InvokerError::JournalReader(e.into()))
+                );
+                // Execute the replay
+                crate::shortcircuit!(
+                    self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
+                        .await
+                );
+            }
+        }
+        // === End replay phase - streams dropped, transaction can be dropped ===
+
+        // Transaction dropped - RocksDB snapshot released!
+        drop(txn);
 
         // Check all the entries have been replayed
         debug_assert_eq!(self.next_journal_index, journal_size);
