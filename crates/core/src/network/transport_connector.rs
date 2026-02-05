@@ -185,7 +185,7 @@ pub mod test_util {
             let welcome = Welcome::new(peer_node_id, selected_protocol_version, hello.direction());
 
             shared
-                .unbounded_send(EgressMessage::Message(welcome.into(), None))
+                .unbounded_send(EgressMessage::Message(welcome.into()))
                 .unwrap();
 
             let connection =

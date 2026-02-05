@@ -19,7 +19,6 @@ use std::sync::Arc;
 use metrics::counter;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tracing::Span;
 use tracing::debug;
 
 use restate_types::GenerationalNodeId;
@@ -304,7 +303,6 @@ impl Connection {
                     swimlane,
                 )
                 .into(),
-                Some(Span::current()),
             ))
             .unwrap();
 
