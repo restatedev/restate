@@ -99,7 +99,7 @@ RUN --mount=type=secret,id=parca --mount=type=cache,target=/var/cache/sccache \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restatectl && \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restate && \
     sha256sum target/restate-server.debug && \
-    # $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --remove-section '.note.ABI-tag' --remove-section '.note.package' target/restate-server.debug && \
+    $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --remove-section '.note.ABI-tag' --remove-section '.note.package' target/restate-server.debug && \
     sha256sum target/restate-server.debug && \
     parca-debuginfo upload --store-address=grpc.polarsignals.com:443 --bearer-token-file=/run/secrets/parca --no-extract --type=debuginfo target/restate-server.debug && \
     sha256sum target/restate-server.debug && \
