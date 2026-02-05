@@ -11,7 +11,6 @@
 use datafusion::{
     arrow::datatypes::SchemaRef,
     common::{ColumnStatistics, Statistics, stats::Precision},
-    scalar::ScalarValue,
 };
 
 pub(super) const DEPLOYMENT_ROW_ESTIMATE: RowEstimate = RowEstimate::Tiny;
