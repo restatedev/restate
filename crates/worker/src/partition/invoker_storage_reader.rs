@@ -64,15 +64,20 @@ impl<Storage> InvocationReaderTransaction for InvokerStorageReaderTransaction<'_
 where
     Storage: restate_storage_api::Storage + 'static,
 {
-    type JournalStream =
-        stream::Iter<IntoIter<restate_invoker_api::invocation_reader::JournalEntry>>;
-    type StateIter = IntoIter<(Bytes, Bytes)>;
+    type JournalStream<'a>
+        = stream::Iter<IntoIter<restate_invoker_api::invocation_reader::JournalEntry>>
+    where
+        Self: 'a;
+    type StateIter<'a>
+        = IntoIter<(Bytes, Bytes)>
+    where
+        Self: 'a;
     type Error = InvokerStorageReaderError;
 
-    async fn read_journal(
+    async fn read_journal_metadata(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> Result<Option<(JournalMetadata, Self::JournalStream)>, Self::Error> {
+    ) -> Result<Option<JournalMetadata>, Self::Error> {
         let invocation_status = self.txn.get_invocation_status(invocation_id).await?;
 
         let random_seed = invocation_status
@@ -80,86 +85,70 @@ where
             .unwrap_or_else(|| invocation_id.to_random_seed());
 
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
-            // Try to read first from journal table v2
-            let entries = journal_table_v2::ReadJournalTable::get_journal(
-                &self.txn,
-                *invocation_id,
+            // Check if using journal v2 by seeing if v2 has any entries
+            let mut journal_v2_stream =
+                std::pin::pin!(journal_table_v2::ReadJournalTable::get_journal(
+                    &self.txn,
+                    *invocation_id,
+                    1, // Just check first entry to determine version
+                )?);
+            let using_v2 = journal_v2_stream.next().await.transpose()?.is_some();
+
+            Ok(Some(JournalMetadata::new(
                 invoked_status.journal_metadata.length,
-            )?
-            .map(|entry| {
-                entry
-                    .map_err(InvokerStorageReaderError::Storage)
-                    .map(|(_, entry)| {
-                        restate_invoker_api::invocation_reader::JournalEntry::JournalV2(entry)
-                    })
-            })
-            // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
-            // collecting the stream because we cannot keep the transaction open
-            .try_collect::<Vec<_>>()
-            .await?;
-
-            let (journal_metadata, journal_stream) = if !entries.is_empty() {
-                // We got the journal, good to go
-                (
-                    JournalMetadata::new(
-                        invoked_status.journal_metadata.length,
-                        invoked_status.journal_metadata.span_context,
-                        invoked_status.pinned_deployment,
-                        invoked_status.timestamps.modification_time(),
-                        random_seed,
-                        true,
-                    ),
-                    entries,
-                )
-            } else {
-                // todo remove once we no longer support journal v1: https://github.com/restatedev/restate/issues/3184
-                // We didn't read a thing from journal table v2 -> we need to read journal v1
-                (
-                    JournalMetadata::new(
-                        // Use entries len here, because we might be filtering out events
-                        invoked_status.journal_metadata.length,
-                        invoked_status.journal_metadata.span_context,
-                        invoked_status.pinned_deployment,
-                        invoked_status.timestamps.modification_time(),
-                        random_seed,
-                        false,
-                    ),
-                    journal_table_v1::ReadJournalTable::get_journal(
-                        &self.txn,
-                        invocation_id,
-                        invoked_status.journal_metadata.length,
-                    )?
-                    .map(|entry| {
-                        entry.map_err(InvokerStorageReaderError::Storage).map(
-                            |(_, journal_entry)| match journal_entry {
-                                journal_table_v1::JournalEntry::Entry(entry) => {
-                                    restate_invoker_api::invocation_reader::JournalEntry::JournalV1(
-                                        entry.erase_enrichment(),
-                                    )
-                                }
-                                journal_table_v1::JournalEntry::Completion(_) => {
-                                    panic!("should only read entries when reading the journal")
-                                }
-                            },
-                        )
-                    })
-                    // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
-                    // collecting the stream because we cannot keep the transaction open
-                    .try_collect::<Vec<_>>()
-                    .await?,
-                )
-            };
-
-            Ok(Some((journal_metadata, stream::iter(journal_stream))))
+                invoked_status.journal_metadata.span_context,
+                invoked_status.pinned_deployment,
+                invoked_status.timestamps.modification_time(),
+                random_seed,
+                using_v2,
+            )))
         } else {
             Ok(None)
         }
     }
 
+    async fn read_journal(
+        &mut self,
+        invocation_id: &InvocationId,
+        length: restate_types::identifiers::EntryIndex,
+        using_journal_table_v2: bool,
+    ) -> Result<Self::JournalStream<'_>, Self::Error> {
+        // TODO: Step 6 will make this truly lazy by returning the iterator directly
+        // For now, we still collect into Vec to maintain compatibility
+        let entries: Vec<_> = if using_journal_table_v2 {
+            journal_table_v2::ReadJournalTable::get_journal(&self.txn, *invocation_id, length)?
+                .map_ok(|(_, entry)| {
+                    restate_invoker_api::invocation_reader::JournalEntry::JournalV2(entry)
+                })
+                .map_err(InvokerStorageReaderError::Storage)
+                .try_collect()
+                .await?
+        } else {
+            // todo remove once we no longer support journal v1: https://github.com/restatedev/restate/issues/3184
+            journal_table_v1::ReadJournalTable::get_journal(&self.txn, invocation_id, length)?
+                .map_ok(|(_, journal_entry)| match journal_entry {
+                    journal_table_v1::JournalEntry::Entry(entry) => {
+                        restate_invoker_api::invocation_reader::JournalEntry::JournalV1(
+                            entry.erase_enrichment(),
+                        )
+                    }
+                    journal_table_v1::JournalEntry::Completion(_) => {
+                        panic!("should only read entries when reading the journal")
+                    }
+                })
+                .map_err(InvokerStorageReaderError::Storage)
+                .try_collect()
+                .await?
+        };
+
+        Ok(stream::iter(entries))
+    }
+
     async fn read_state(
         &mut self,
         service_id: &ServiceId,
-    ) -> Result<EagerState<Self::StateIter>, Self::Error> {
+    ) -> Result<EagerState<Self::StateIter<'_>>, Self::Error> {
+        // TODO: Step 6 will make this truly lazy by returning the iterator directly
         let user_states = self
             .txn
             .get_all_user_states_for_service(service_id)?
