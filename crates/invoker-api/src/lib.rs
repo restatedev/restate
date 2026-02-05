@@ -58,31 +58,37 @@ pub mod test_util {
     pub struct EmptyStorageReaderTransaction;
 
     impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
-        type JournalStream = futures::stream::Empty<JournalEntry>;
-        type StateIter = std::iter::Empty<(Bytes, Bytes)>;
+        type JournalStream<'a> = futures::stream::Empty<JournalEntry>;
+        type StateIter<'a> = std::iter::Empty<(Bytes, Bytes)>;
         type Error = Infallible;
+
+        async fn read_journal_metadata(
+            &mut self,
+            _invocation_id: &InvocationId,
+        ) -> Result<Option<JournalMetadata>, Self::Error> {
+            Ok(Some(JournalMetadata::new(
+                0,
+                ServiceInvocationSpanContext::empty(),
+                None,
+                MillisSinceEpoch::UNIX_EPOCH,
+                0,
+                true,
+            )))
+        }
 
         async fn read_journal(
             &mut self,
-            _fid: &InvocationId,
-        ) -> Result<Option<(JournalMetadata, Self::JournalStream)>, Self::Error> {
-            Ok(Some((
-                JournalMetadata::new(
-                    0,
-                    ServiceInvocationSpanContext::empty(),
-                    None,
-                    MillisSinceEpoch::UNIX_EPOCH,
-                    0,
-                    true,
-                ),
-                futures::stream::empty(),
-            )))
+            _invocation_id: &InvocationId,
+            _length: EntryIndex,
+            _using_journal_table_v2: bool,
+        ) -> Result<Self::JournalStream<'_>, Self::Error> {
+            Ok(futures::stream::empty())
         }
 
         async fn read_state(
             &mut self,
             _service_id: &ServiceId,
-        ) -> Result<EagerState<Self::StateIter>, Self::Error> {
+        ) -> Result<EagerState<Self::StateIter<'_>>, Self::Error> {
             Ok(EagerState::new_complete(empty()))
         }
     }

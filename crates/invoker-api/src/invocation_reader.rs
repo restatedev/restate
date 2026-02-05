@@ -75,25 +75,38 @@ pub trait InvocationReader {
 ///
 /// Important: Implementations must ensure that all read methods return consistent results.
 pub trait InvocationReaderTransaction {
-    type JournalStream: Stream<Item = JournalEntry> + Unpin + Send + 'static;
-    type StateIter: Iterator<Item = (Bytes, Bytes)> + Send + 'static;
+    type JournalStream<'a>: Stream<Item = JournalEntry> + Unpin + Send
+    where
+        Self: 'a;
+    type StateIter<'a>: Iterator<Item = (Bytes, Bytes)> + Send
+    where
+        Self: 'a;
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Read the journal for the given invocation id.
+    /// Read only the journal metadata for the given invocation id.
+    ///
+    /// Returns `None` when either the invocation was not found, or the invocation
+    /// is not in `Invoked` state.
+    fn read_journal_metadata(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> impl Future<Output = Result<Option<JournalMetadata>, Self::Error>> + Send;
+
+    /// Read the journal stream for replay.
     ///
     /// The returned journal **MUST** not return events.
-    ///
-    /// Returns `None` when either the invocation was not found, or the invocation is not in `Invoked` state.
     fn read_journal<'a>(
         &'a mut self,
-        fid: &'a InvocationId,
-    ) -> impl Future<Output = Result<Option<(JournalMetadata, Self::JournalStream)>, Self::Error>> + Send;
+        invocation_id: &InvocationId,
+        length: EntryIndex,
+        using_journal_table_v2: bool,
+    ) -> impl Future<Output = Result<Self::JournalStream<'a>, Self::Error>> + Send;
 
     /// Read the state for the given service id.
     fn read_state<'a>(
         &'a mut self,
         service_id: &'a ServiceId,
-    ) -> impl Future<Output = Result<EagerState<Self::StateIter>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<EagerState<Self::StateIter<'a>>, Self::Error>> + Send;
 }
 
 /// Container for the eager state returned by [`StateReader`]
