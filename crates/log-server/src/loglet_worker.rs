@@ -13,7 +13,7 @@ use std::pin::Pin;
 use futures::future::OptionFuture;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tracing::{Instrument, debug, error, instrument, trace, trace_span, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 use restate_core::network::{Incoming, Rpc, ServiceMessage, Verdict};
 use restate_core::task_center::TaskGuard;
@@ -183,9 +183,7 @@ impl<S: LogStore> LogletWorker<S> {
             }
             // STORE
             ServiceMessage::Rpc(message) if msg.msg_type() == Store::TYPE => {
-                let mut msg = message.into_typed::<Store>();
-                let span = trace_span!("LogServer: store");
-                msg.follow_from_sender_for(&span);
+                let msg = message.into_typed::<Store>();
                 let peer = msg.peer();
 
                 let (reciprocal, msg) = msg.split();
@@ -211,30 +209,26 @@ impl<S: LogStore> LogletWorker<S> {
                     let local_tail_watch = self.loglet_state.get_local_tail_watch();
                     let global_tail = self.loglet_state.get_global_tail_tracker();
                     let loglet_id = self.loglet_id;
-                    in_flight_stores.spawn(Box::pin(
-                        async move {
-                            // wait for log store to finish
-                            let res = store_token.await;
-                            trace!(%loglet_id, %first_offset, "Store completed; responding to sequencer");
-                            match res {
-                                Ok(_) => {
-                                    // advance local-tail
-                                    local_tail_watch.notify_offset_update(future_last_committed);
-                                    // ignoring the error if we couldn't send the response
-                                    let msg =
-                                        Stored::new(*local_tail_watch.get(), global_tail.get())
-                                            .with_status(status);
-                                    reciprocal.send(msg);
-                                }
-                                Err(e) => {
-                                    // log-store in failsafe mode and cannot process stores anymore.
-                                    warn!(?e, "Log-store is in failsafe mode, dropping store");
-                                    reciprocal.send(Stored::empty());
-                                }
+                    in_flight_stores.spawn(Box::pin(async move {
+                        // wait for log store to finish
+                        let res = store_token.await;
+                        trace!(%loglet_id, %first_offset, "Store completed; responding to sequencer");
+                        match res {
+                            Ok(_) => {
+                                // advance local-tail
+                                local_tail_watch.notify_offset_update(future_last_committed);
+                                // ignoring the error if we couldn't send the response
+                                let msg = Stored::new(*local_tail_watch.get(), global_tail.get())
+                                    .with_status(status);
+                                reciprocal.send(msg);
+                            }
+                            Err(e) => {
+                                // log-store in failsafe mode and cannot process stores anymore.
+                                warn!(?e, "Log-store is in failsafe mode, dropping store");
+                                reciprocal.send(Stored::empty());
                             }
                         }
-                        .instrument(span),
-                    ));
+                    }));
                 } else {
                     // we didn't store, let's respond immediately with status
                     let msg = Stored::new(
