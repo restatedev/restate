@@ -25,7 +25,7 @@ pub trait ReadStateTable {
     ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
 
     fn get_all_user_states_for_service(
-        &mut self,
+        &self,
         service_id: &ServiceId,
     ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send>;
 }
