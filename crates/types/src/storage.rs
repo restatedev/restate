@@ -19,6 +19,7 @@ use chrono::Utc;
 use downcast_rs::{DowncastSync, impl_downcast};
 
 use restate_encoding::{BilrostAs, NetSerde};
+use restate_memory::EstimatedMemorySize;
 
 use crate::errors::GenericError;
 use crate::journal_v2::raw::{RawEntry, RawEntryError, TryFromEntry};
@@ -221,8 +222,8 @@ impl Default for PolyBytes {
 // implement NetSerde for PolyBytes manually
 impl NetSerde for PolyBytes {}
 
-impl PolyBytes {
-    pub fn estimated_encode_size(&self) -> usize {
+impl EstimatedMemorySize for PolyBytes {
+    fn estimated_memory_size(&self) -> usize {
         match self {
             PolyBytes::Bytes(bytes) => bytes.len(),
             PolyBytes::Both(_, bytes) => bytes.len(),
@@ -233,6 +234,12 @@ impl PolyBytes {
                 2_048 // 2KiB
             }
         }
+    }
+}
+
+impl PolyBytes {
+    pub fn estimated_encode_size(&self) -> usize {
+        self.estimated_memory_size()
     }
 
     #[tracing::instrument(skip_all)]

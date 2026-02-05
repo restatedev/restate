@@ -1,0 +1,16 @@
+[package]
+name = "restate-memory"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+bytes = { workspace = true }
