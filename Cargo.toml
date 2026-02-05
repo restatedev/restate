@@ -62,6 +62,7 @@ restate-invoker-impl = { path = "crates/invoker-impl" }
 restate-local-cluster-runner = { path = "crates/local-cluster-runner" }
 restate-log-server = { path = "crates/log-server" }
 restate-log-server-grpc = { path = "crates/log-server-grpc" }
+restate-memory = { path = "crates/memory" }
 restate-metadata-providers = { path = "crates/metadata-providers" }
 restate-metadata-server = { path = "crates/metadata-server" }
 restate-metadata-server-grpc = { path = "crates/metadata-server-grpc" }
