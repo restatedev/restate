@@ -14,6 +14,17 @@
 
 set -euo pipefail
 
-echo "Downloading debug symbols for restate-server BUILD_ID to /usr/local/bin/.debug"
-mkdir -p /usr/local/bin/.debug/
-curl --compressed -sL https://4bafe29d-dd3e-4c65-ba1d-54be833b2b69.debuginfod.polarsignals.com/buildid/BUILD_ID/debuginfo -o /usr/local/bin/.debug/restate-server.debug
+# The docker image has a symlink from /usr/local/bin/.debug/restate-server.debug -> /tmp/.debug/restate-server.debug
+# We determine the debug symbols directory based on writability (/usr/local/bin may be read only)
+# First try to remove the symlink - if this fails, the filesystem is read-only
+if rm -f /usr/local/bin/.debug/restate-server.debug 2>/dev/null; then
+    DEBUG_DIR="/usr/local/bin/.debug"
+else
+    # Symlink can't be overwritten, try to write to /tmp instead
+    DEBUG_DIR="/tmp/.debug"
+    mkdir -p "$DEBUG_DIR"
+fi
+
+echo "Downloading debug symbols for restate-server BUILD_ID to $DEBUG_DIR"
+
+curl --compressed -sL https://4bafe29d-dd3e-4c65-ba1d-54be833b2b69.debuginfod.polarsignals.com/buildid/BUILD_ID/debuginfo -o "$DEBUG_DIR/restate-server.debug"
