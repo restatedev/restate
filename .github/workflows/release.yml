@@ -403,6 +403,7 @@ jobs:
     # publish jobs get escalated permissions
     permissions:
       "contents": "read"
+      "id-token": "write"
       "packages": "read"
 
   custom-release-notes:

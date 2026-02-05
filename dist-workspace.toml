@@ -49,6 +49,7 @@ pull-requests = "write"
 [dist.github-custom-job-permissions.npm]
 packages = "read"
 contents = "read"
+id-token = "write"
 
 [dist.github-custom-job-permissions.helm]
 packages = "write"
