@@ -69,6 +69,11 @@ pub mod clock {
     pub use restate_clock::*;
 }
 
+// Re-export restate-memory crate for memory management utilities.
+pub mod memory {
+    pub use restate_memory::*;
+}
+
 // Re-export metrics' SharedString (Space-efficient Cow + RefCounted variant)
 pub type SharedString = metrics::SharedString;
 

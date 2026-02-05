@@ -3959,17 +3959,14 @@ pub mod v1 {
         }
 
         impl<'a> InvocationStatusV2Lazy<'a> {
-            pub fn decode(
-                mut buf: &'a [u8],
-            ) -> Result<InvocationStatusV2Lazy<'a>, prost::DecodeError> {
-                let mut message = InvocationStatusV2Lazy::default();
+            pub fn merge(&mut self, mut buf: &'a [u8]) -> Result<(), prost::DecodeError> {
                 let ctx = prost::encoding::DecodeContext::default();
                 while !buf.is_empty() {
                     let (tag, wire_type) = prost::encoding::decode_key(&mut buf)?;
-                    message.merge_field(tag, wire_type, &mut buf, ctx.clone())?;
+                    self.merge_field(tag, wire_type, &mut buf, ctx.clone())?;
                 }
 
-                Ok(message)
+                Ok(())
             }
 
             fn merge_field<'b>(

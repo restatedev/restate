@@ -107,6 +107,9 @@ FROM upload-$UPLOAD_DEBUGINFO AS upload
 FROM debian:trixie-slim AS runtime
 # useful for health checks
 RUN apt-get update && apt-get install --no-install-recommends -y jq curl && rm -rf /var/lib/apt/lists/*
+# Create symlink for debug symbols fallback path (for read-only /usr/local/bin scenarios)
+RUN mkdir -p /usr/local/bin/.debug && \
+    ln -s /tmp/.debug/restate-server.debug /usr/local/bin/.debug/restate-server.debug
 COPY --from=upload /restate/NOTICE /NOTICE
 COPY --from=upload /restate/LICENSE /LICENSE
 # copy OS roots
