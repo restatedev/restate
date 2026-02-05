@@ -71,7 +71,7 @@ struct StatusScanner;
 
 impl ScanLocalPartition for StatusScanner {
     type Builder = SysInvocationStatusBuilder;
-    type Item<'a> = (InvocationId, InvocationStatusV2Lazy<'a>);
+    type Item<'a> = (InvocationId, &'a InvocationStatusV2Lazy<'a>);
     type ConversionError = ConversionError;
 
     fn for_each_row<
