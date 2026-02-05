@@ -16,6 +16,7 @@ use tokio::sync::{oneshot, watch};
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+use restate_memory::EstimatedMemorySize;
 use restate_types::GenerationalNodeId;
 use restate_types::net::codec::{WireDecode, WireEncode};
 use restate_types::net::{ProtocolVersion, Service, UnaryMessage, WatchResponse};
@@ -255,6 +256,27 @@ impl<S> Incoming<RawSvcRpc<S>> {
     }
 }
 
+impl EstimatedMemorySize for Incoming<RawRpc> {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.inner.payload.estimated_memory_size()
+    }
+}
+
+impl<S> EstimatedMemorySize for Incoming<RawSvcRpc<S>> {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.inner.payload.estimated_memory_size()
+    }
+}
+
+impl<S> EstimatedMemorySize for Incoming<Rpc<S>> {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.inner.payload.estimated_memory_size()
+    }
+}
+
 impl Incoming<RawRpc> {
     pub fn msg_type(&self) -> &str {
         &self.inner.msg_type
@@ -336,6 +358,27 @@ impl<S> Incoming<RawSvcUnary<S>> {
     }
 }
 
+impl EstimatedMemorySize for Incoming<RawUnary> {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.inner.payload.estimated_memory_size()
+    }
+}
+
+impl<S> EstimatedMemorySize for Incoming<RawSvcUnary<S>> {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.inner.payload.estimated_memory_size()
+    }
+}
+
+impl<S> EstimatedMemorySize for Incoming<Unary<S>> {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.inner.payload.estimated_memory_size()
+    }
+}
+
 impl Incoming<RawUnary> {
     pub fn msg_type(&self) -> &str {
         &self.inner.msg_type
@@ -404,6 +447,27 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
 impl Incoming<RawWatch> {
     pub fn msg_type(&self) -> &str {
         &self.inner.msg_type
+    }
+}
+
+impl EstimatedMemorySize for Incoming<RawWatch> {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.inner.payload.estimated_memory_size()
+    }
+}
+
+impl<S> EstimatedMemorySize for Incoming<RawSvcWatch<S>> {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.inner.payload.estimated_memory_size()
+    }
+}
+
+impl<S> EstimatedMemorySize for Incoming<Watch<S>> {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.inner.payload.estimated_memory_size()
     }
 }
 
