@@ -55,7 +55,7 @@ async fn point_lookup<T: ReadStateTable>(table: &mut T) {
     assert_eq!(result, Some(Bytes::from_static(b"v1")));
 }
 
-async fn prefix_scans<T: ReadStateTable>(table: &mut T) {
+async fn prefix_scans<T: ReadStateTable>(table: &T) {
     let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
     let result = table.get_all_user_states_for_service(service_id).unwrap();
 
@@ -88,7 +88,7 @@ async fn verify_delete<T: ReadStateTable>(table: &mut T) {
     assert!(result.is_none());
 }
 
-async fn verify_prefix_scan_after_delete<T: ReadStateTable>(table: &mut T) {
+async fn verify_prefix_scan_after_delete<T: ReadStateTable>(table: &T) {
     let service_id = &ServiceId::with_partition_key(1337, "svc-1", "key-1");
     let result = table.get_all_user_states_for_service(service_id).unwrap();
 
