@@ -177,7 +177,7 @@ pub mod test_util {
             if hello.cluster_name != nodes_config.cluster_name() {
                 return Err(HandshakeError::Failed("cluster name mismatch".to_owned()).into());
             }
-            let peer_metadata = PeerMetadataVersion::from(header.clone());
+            let peer_metadata = PeerMetadataVersion::from(header);
 
             let selected_protocol_version = negotiate_protocol_version(&hello)?;
 
