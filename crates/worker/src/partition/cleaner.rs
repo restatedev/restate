@@ -12,7 +12,6 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use futures::{Stream, StreamExt};
-use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_types::errors::ConversionError;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -123,40 +122,66 @@ where
         let mut purged_invocation_count = 0;
         let mut purged_journal_count = 0;
 
-        let invocations_stream = self
-            .storage
-            .filter_map_invocation_status_lazy(read_expired)?;
-        tokio::pin!(invocations_stream);
+        let now = SystemTime::now();
 
-        while let Some(expired_invocation) = invocations_stream
+        let effects_stream = self
+            .storage
+            .filter_map_invocation_status_lazy(move |(invocation_id, invocation_status_v2_lazy)| {
+                let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
+                    invocation_status_v2_lazy.inner.status()
+                else {
+                    return Ok(None);
+                };
+
+                let Some(completed_time) = invocation_status_v2_lazy.inner.completed_transition_time else {
+                    // If completed time is unavailable, the invocation is on the old invocation table,
+                    //  thus it will be cleaned up with the old timer.
+                    return Ok(None);
+                };
+                let completed_time = restate_types::time::MillisSinceEpoch::new(completed_time);
+
+                let completion_retention_duration =
+                    invocation_status_v2_lazy.completion_retention_duration()?;
+
+                // Check if the invocation status itself has expired
+                if let Some(status_expiration_time) =
+                    SystemTime::from(completed_time).checked_add(completion_retention_duration)
+                    && now >= status_expiration_time
+                {
+                    return Ok(Some(CleanerEffect::PurgeInvocation(invocation_id)));
+                }
+
+                // We don't cleanup the status yet, let's check if there's a journal to cleanup
+                // When length != 0 it means that the purge journal feature was activated from the SDK side (through annotations and the new manifest),
+                // or from the relative experimental feature in the Admin API. In this case, the user opted-in this feature and it can't go back to 1.3
+                if invocation_status_v2_lazy.inner.journal_length != 0 {
+                    let journal_retention_duration = invocation_status_v2_lazy.journal_retention_duration()?;
+
+                    if let Some(journal_expiration_time) =
+                        SystemTime::from(completed_time).checked_add(journal_retention_duration)
+                        && now >= journal_expiration_time
+                    {
+                        return Ok(Some(CleanerEffect::PurgeJournal(invocation_id)));
+                    }
+                }
+
+                Result::<Option<_>, ConversionError>::Ok(None)
+            })?;
+        tokio::pin!(effects_stream);
+
+        while let Some(effect) = effects_stream
             .next()
             .await
             .transpose()
             .context("Cannot read the next expired item of the invocation status table")?
         {
-            if expired_invocation.invocation_expired {
-                tx.send(CleanerEffect::PurgeInvocation(
-                    expired_invocation.invocation_id,
-                ))
-                .await
-                .context("Cannot append to bifrost purge invocation")?;
-
-                purged_invocation_count += 1;
-                continue;
+            match &effect {
+                CleanerEffect::PurgeInvocation(_) => purged_invocation_count += 1,
+                CleanerEffect::PurgeJournal(_) => purged_journal_count += 1,
             }
-
-            // We don't cleanup the status yet, let's check if there's a journal to cleanup
-            // When length != 0 it means that the purge journal feature was activated from the SDK side (through annotations and the new manifest),
-            // or from the relative experimental feature in the Admin API. In this case, the user opted-in this feature and it can't go back to 1.3
-            if expired_invocation.journal_expired {
-                tx.send(CleanerEffect::PurgeJournal(
-                    expired_invocation.invocation_id,
-                ))
+            tx.send(effect)
                 .await
-                .context("Cannot append to bifrost purge journal")?;
-                purged_journal_count += 1;
-                continue;
-            }
+                .context("Cannot send cleaner effect")?;
         }
 
         debug!(
@@ -169,67 +194,6 @@ where
 
         Ok(())
     }
-}
-
-struct ExpiredInvocation {
-    invocation_id: InvocationId,
-    invocation_expired: bool,
-    journal_expired: bool,
-}
-
-fn read_expired<'a>(
-    (invocation_id, invocation_status_v2_lazy): (InvocationId, &'a InvocationStatusV2Lazy<'a>),
-) -> Result<Option<ExpiredInvocation>, ConversionError> {
-    let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
-        invocation_status_v2_lazy.inner.status()
-    else {
-        return Ok(None);
-    };
-
-    let Some(completed_time) = invocation_status_v2_lazy.inner.completed_transition_time else {
-        // If completed time is unavailable, the invocation is on the old invocation table,
-        //  thus it will be cleaned up with the old timer.
-        return Ok(None);
-    };
-
-    let completed_time = restate_types::time::MillisSinceEpoch::new(completed_time);
-    let now = SystemTime::now();
-
-    let completion_retention_duration =
-        invocation_status_v2_lazy.completion_retention_duration()?;
-
-    let invocation_expired = if let Some(status_expiration_time) =
-        SystemTime::from(completed_time).checked_add(completion_retention_duration)
-    {
-        now >= status_expiration_time
-    } else {
-        false
-    };
-
-    let journal_expired = if invocation_status_v2_lazy.inner.journal_length != 0 {
-        let journal_retention_duration = invocation_status_v2_lazy.journal_retention_duration()?;
-
-        if let Some(journal_expiration_time) =
-            SystemTime::from(completed_time).checked_add(journal_retention_duration)
-        {
-            now >= journal_expiration_time
-        } else {
-            // If sum overflow, then the cleanup time lies far enough in the future
-            false
-        }
-    } else {
-        false
-    };
-
-    if !invocation_expired && !journal_expired {
-        return Ok(None);
-    }
-
-    Ok(Some(ExpiredInvocation {
-        invocation_id,
-        invocation_expired,
-        journal_expired,
-    }))
 }
 
 #[cfg(test)]
