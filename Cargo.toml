@@ -99,7 +99,7 @@ restate-workspace-hack = "0.0.1"
 ahash = "0.8.12"
 anyhow = "1.0.100"
 arc-swap = "1.8"
-arrow = { version = "57.1.0", default-features = false }
+arrow = { version = "57.2.0", default-features = false }
 assert2 = "0.3.16"
 async-channel = "2.5.0"
 async-trait = "0.1.89"
@@ -281,6 +281,8 @@ path = "workspace-hack"
 # The fixes are based on rust-sasl v0.1.22.
 # Todo: Upstream changes and get rid of patch
 sasl2-sys = { git = "https://github.com/restatedev/rust-sasl", rev = "d3e87c54e87327ddbd226881d7546ab7696bf683" }
+datafusion = { git = "https://github.com/restatedev/datafusion", branch = "dev" }
+datafusion-proto = { git = "https://github.com/restatedev/datafusion", branch = "dev" }
 
 [profile.release]
 opt-level = 3
