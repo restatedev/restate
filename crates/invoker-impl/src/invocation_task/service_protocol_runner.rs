@@ -157,6 +157,7 @@ where
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             &service_invocation_span_context,
+            self.invocation_task.service_protocol_channel_size,
         );
 
         // Initialize the response stream state
@@ -260,9 +261,9 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
+        channel_size: usize,
     ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
-        // Just an arbitrary buffering size
-        let (http_stream_tx, http_stream_rx) = mpsc::channel(10);
+        let (http_stream_tx, http_stream_rx) = mpsc::channel(channel_size);
         let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
 
         let service_protocol_header_value =

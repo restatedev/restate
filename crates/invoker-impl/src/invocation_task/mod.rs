@@ -200,6 +200,7 @@ pub(super) struct InvocationTask<EE, DMR> {
     eager_state_size_limit: Option<usize>,
     message_size_warning: NonZeroUsize,
     message_size_limit: NonZeroUsize,
+    service_protocol_channel_size: usize,
     retry_count_since_last_stored_entry: u32,
 
     // Invoker tx/rx
@@ -261,6 +262,7 @@ where
         eager_state_size_limit: Option<usize>,
         message_size_warning: NonZeroUsize,
         message_size_limit: NonZeroUsize,
+        service_protocol_channel_size: usize,
         retry_count_since_last_stored_entry: u32,
         entry_enricher: EE,
         deployment_metadata_resolver: Live<Schemas>,
@@ -283,6 +285,7 @@ where
             invoker_rx,
             message_size_limit,
             message_size_warning,
+            service_protocol_channel_size,
             retry_count_since_last_stored_entry,
             action_token_bucket,
         }
