@@ -11,10 +11,7 @@
 use std::marker::PhantomData;
 
 use bytes::Bytes;
-use opentelemetry::Context;
 use tokio::sync::{oneshot, watch};
-use tracing::Span;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use restate_memory::EstimatedMemorySize;
 use restate_types::GenerationalNodeId;
@@ -32,7 +29,6 @@ pub struct Incoming<M> {
     inner: M,
     peer: GenerationalNodeId,
     metadata_version: PeerMetadataVersion,
-    parent_context: Option<Context>,
 }
 
 impl<M> Incoming<M> {
@@ -41,14 +37,12 @@ impl<M> Incoming<M> {
         inner: M,
         peer: GenerationalNodeId,
         metadata_version: PeerMetadataVersion,
-        parent_context: Option<Context>,
     ) -> Self {
         Self {
             protocol_version,
             inner,
             peer,
             metadata_version,
-            parent_context,
         }
     }
 
@@ -60,40 +54,6 @@ impl<M> Incoming<M> {
     /// The sender's node-id if known
     pub fn peer(&self) -> GenerationalNodeId {
         self.peer
-    }
-
-    /// Returns an open telemetry Context which is
-    /// traced over from the sender of the message
-    pub fn parent_context(&self) -> Option<&Context> {
-        self.parent_context.as_ref()
-    }
-
-    /// A shortcut to set current tracing [`Span`] parent
-    /// to remote caller span context
-    ///
-    /// This only works on the first call. Subsequent calls
-    /// has no effect on the current [`Span`].
-    ///
-    /// If you need to create `parallel` spans for the same
-    /// incoming message, use [`Self::parent_context()`] instead
-    pub fn follow_from_sender(&mut self) {
-        if let Some(context) = self.parent_context.take() {
-            let _ = Span::current().set_parent(context);
-        }
-    }
-
-    /// A shortcut to set given [`Span`] parent
-    /// to remote caller span context
-    ///
-    /// This only works on the first call. Subsequent calls
-    /// has no effect on the current [`Span`].
-    ///
-    /// If you need to create `parallel` spans for the same
-    /// incoming message, use [`Self::parent_context()`] instead
-    pub fn follow_from_sender_for(&mut self, span: &Span) {
-        if let Some(context) = self.parent_context.take() {
-            let _ = span.set_parent(context);
-        }
     }
 }
 
@@ -122,7 +82,6 @@ pub struct Oneshot<O: RpcResponse> {
 
 pub struct ReplyEnvelope {
     pub(crate) body: rpc_reply::Body,
-    pub(crate) span: Span,
 }
 // one-shot rpc reply
 pub(crate) struct RpcReplyPort(oneshot::Sender<ReplyEnvelope>);
@@ -251,7 +210,6 @@ impl<S> Incoming<RawSvcRpc<S>> {
         let status = rpc_reply::Status::from(status);
         let _ = self.inner.reply_port.0.send(ReplyEnvelope {
             body: rpc_reply::Body::Status(status.into()),
-            span: Span::current(),
         });
     }
 }
@@ -296,7 +254,6 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
-            parent_context: raw.parent_context,
         }
     }
 
@@ -339,7 +296,6 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
             protocol_version: self.protocol_version,
             peer: self.peer,
             metadata_version: self.metadata_version,
-            parent_context: self.parent_context,
         }
     }
 }
@@ -397,7 +353,6 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
-            parent_context: raw.parent_context,
         }
     }
 
@@ -439,7 +394,6 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
             protocol_version: self.protocol_version,
             peer: self.peer,
             metadata_version: self.metadata_version,
-            parent_context: self.parent_context,
         }
     }
 }
@@ -498,7 +452,6 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
-            parent_context: raw.parent_context,
         }
     }
 
@@ -552,7 +505,6 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
             protocol_version: self.protocol_version,
             peer: self.peer,
             metadata_version: self.metadata_version,
-            parent_context: self.parent_context,
         }
     }
 }
@@ -697,7 +649,6 @@ impl<O: RpcResponse + WireEncode> Reciprocal<Oneshot<O>> {
             .0
             .send(ReplyEnvelope {
                 body: rpc_reply::Body::Payload(reply),
-                span: Span::current(),
             })
             .map_err(|_| ConnectionClosed)
     }
@@ -714,7 +665,6 @@ impl<O: RpcResponse + WireEncode> Reciprocal<Oneshot<O>> {
         let status = rpc_reply::Status::from(v);
         let _ = self.reply_port.inner.0.send(ReplyEnvelope {
             body: rpc_reply::Body::Status(status.into()),
-            span: Span::current(),
         });
     }
 }
