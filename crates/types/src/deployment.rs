@@ -84,6 +84,12 @@ pub mod metadata {
         display: &'static str,
     }
 
+    impl MetadataKey {
+        pub fn key(&self) -> &'static str {
+            self.key
+        }
+    }
+
     impl fmt::Display for MetadataKey {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             write!(f, "{}", self.display)
