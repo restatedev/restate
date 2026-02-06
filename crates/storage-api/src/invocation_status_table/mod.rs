@@ -792,11 +792,6 @@ pub trait ReadInvocationStatusTable {
 }
 
 pub trait ScanInvocationStatusTable {
-    fn scan_invocation_statuses(
-        &self,
-        range: RangeInclusive<PartitionKey>,
-    ) -> Result<impl Stream<Item = Result<(InvocationId, InvocationStatus)>> + Send>;
-
     fn for_each_invocation_status_lazy<
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
@@ -810,6 +805,20 @@ pub trait ScanInvocationStatusTable {
         range: RangeInclusive<PartitionKey>,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
+
+    fn filter_map_invocation_status_lazy<
+        O: Send + 'static,
+        E: Into<anyhow::Error>,
+        F: for<'a> FnMut(
+                (InvocationId, &'a InvocationStatusV2Lazy<'a>),
+            ) -> std::result::Result<Option<O>, E>
+            + Send
+            + Sync
+            + 'static,
+    >(
+        &self,
+        f: F,
+    ) -> Result<impl Stream<Item = Result<O>> + Send>;
 
     fn scan_invoked_invocations(
         &self,
