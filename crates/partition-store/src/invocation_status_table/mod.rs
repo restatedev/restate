@@ -12,7 +12,8 @@ use std::ffi::CStr;
 use std::ops::{ControlFlow, RangeInclusive};
 use std::sync::atomic::Ordering;
 
-use futures::Stream;
+use futures::{FutureExt, Stream};
+use restate_core::ShutdownError;
 use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
@@ -223,14 +224,25 @@ impl ScanInvocationStatusTable for PartitionStore {
         }
         let mut filtered = Filtered(0);
 
-        let new_status_keys = self
-            .iterator_for_each(
+        let scan = |name, priority, scan, read_options, f| -> Result<_, ShutdownError> {
+            if std::env::var("REVERSE_SCAN").is_ok_and(|v| v == "0") {
+                Ok(self
+                    .iterator_for_each(name, priority, scan, read_options, f)?
+                    .left_future())
+            } else {
+                Ok(self
+                    .iterator_for_each_reversed(name, priority, scan, read_options, f)?
+                    .right_future())
+            }
+        };
+
+        let new_status_keys = scan(
                 "df-for-each-invocation-status",
                 Priority::Low,
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
                 read_options,
                 {
-                    move |(mut key, mut value)| {
+                    move |(mut key, mut value): (&[u8], &[u8])| {
                         let status_key =
                             break_on_err(InvocationStatusKey::deserialize_from(&mut key))?;
 

@@ -27,6 +27,7 @@ pub enum Disposition {
 #[derive(Default, Clone, Eq, PartialEq)]
 pub enum IterAction {
     Seek(Bytes),
+    SeekToPrev(Bytes),
     Prev,
     Next,
     #[default]
@@ -73,6 +74,7 @@ where
             } => {
                 match next_step {
                     IterAction::Seek(items) => iterator.seek(items),
+                    IterAction::SeekToPrev(items) => iterator.seek_for_prev(items),
                     IterAction::Prev => iterator.prev(),
                     IterAction::Next => iterator.next(),
                     IterAction::SeekToFirst => iterator.seek_to_first(),
