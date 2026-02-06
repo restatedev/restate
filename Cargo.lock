@@ -7628,6 +7628,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-memory"
+version = "1.6.1-dev"
+dependencies = [
+ "bytes",
+ "restate-workspace-hack",
+]
+
+[[package]]
 name = "restate-metadata-providers"
 version = "1.6.1-dev"
 dependencies = [
@@ -8297,6 +8305,7 @@ dependencies = [
  "restate-clock",
  "restate-encoding",
  "restate-errors",
+ "restate-memory",
  "restate-serde-util",
  "restate-test-util",
  "restate-time-util",
