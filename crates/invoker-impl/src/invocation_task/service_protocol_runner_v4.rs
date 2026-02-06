@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::{Stream, StreamExt, TryStreamExt, stream};
+use futures::{Stream, StreamExt, stream};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -64,7 +64,7 @@ use crate::error::{
 };
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
-    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
+    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
     invocation_id_to_header_value, service_protocol_version_to_header_value,
 };
 
@@ -535,19 +535,13 @@ where
         S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
         E: std::error::Error + Send + Sync + 'static,
     {
-        // Collect state if present, mapping to StateEntry while collecting
-        let (partial_state, state_map) = if let Some(state) = state {
-            let is_partial = state.is_partial();
-            let entries: Vec<StateEntry> = state
-                .into_inner()
-                .map_ok(|(key, value)| StateEntry { key, value })
-                .try_collect()
-                .await
-                .map_err(|e| InvokerError::StateReader(e.into()))?;
-            (is_partial, entries)
-        } else {
-            (true, Vec::new())
-        };
+        // Collect state entries with size limit
+        let (partial_state, raw_entries) =
+            collect_eager_state(state, self.invocation_task.eager_state_size_limit).await?;
+        let state_map: Vec<StateEntry> = raw_entries
+            .into_iter()
+            .map(|(key, value)| StateEntry { key, value })
+            .collect();
 
         // Send the invoke frame
         self.write(
