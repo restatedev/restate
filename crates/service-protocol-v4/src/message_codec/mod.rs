@@ -19,6 +19,7 @@ mod header;
 
 pub use encoding::{Decoder, Encoder, EncodingError};
 pub use header::MessageHeader;
+pub use proto::start_message::StateEntry;
 use restate_types::journal_v2::{
     CommandIndex, CommandType, CompletionType, EntryType, NotificationType,
 };
@@ -384,7 +385,7 @@ impl Message {
         key: Option<Bytes>,
         known_entries: u32,
         partial_state: bool,
-        state_map_entries: impl IntoIterator<Item = (Bytes, Bytes)>,
+        state_map: Vec<proto::start_message::StateEntry>,
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
         random_seed: u64,
@@ -394,10 +395,7 @@ impl Message {
             debug_id,
             known_entries,
             partial_state,
-            state_map: state_map_entries
-                .into_iter()
-                .map(|(key, value)| proto::start_message::StateEntry { key, value })
-                .collect(),
+            state_map,
             key: key
                 .and_then(|b| String::from_utf8(b.to_vec()).ok())
                 .unwrap_or_default(),
