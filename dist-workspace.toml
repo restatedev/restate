@@ -73,8 +73,8 @@ host = "aarch64-apple-darwin"
 
 [dist.github-custom-runners.aarch64-unknown-linux-musl]
 runner = "warp-ubuntu-latest-arm64-32x"
-container = { image = "ghcr.io/restatedev/dev-tools", host = "aarch64-unknown-linux-musl" }
+container = { image = "ghcr.io/restatedev/dev-tools:1.16.1", host = "aarch64-unknown-linux-musl" }
 
 [dist.github-custom-runners.x86_64-unknown-linux-musl ]
 runner = "warp-ubuntu-latest-x64-32x"
-container = { image = "ghcr.io/restatedev/dev-tools", host = "x86_64-unknown-linux-musl" }
+container = { image = "ghcr.io/restatedev/dev-tools:1.16.1", host = "x86_64-unknown-linux-musl" }

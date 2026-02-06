@@ -10,6 +10,7 @@
 
 ARG UPLOAD_DEBUGINFO=false
 
+# NB this version is also pinned in dist-workspace.toml for release binary builds
 FROM --platform=$BUILDPLATFORM ghcr.io/restatedev/dev-tools:1.16.1 AS planner
 COPY . .
 RUN just chef-prepare
