@@ -82,7 +82,6 @@ pub struct WorkerOptions {
     /// and including the "durability point".
     ///
     /// Since v1.4.2 (not compatible with earlier versions)
-    #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub durability_mode: Option<DurabilityMode>,
     /// # Delayed log trimming
@@ -98,7 +97,6 @@ pub struct WorkerOptions {
     /// cover the time needed for the snapshot repository (i.e. S3) to replicate the snapshot
     /// across regions (typically a few seconds, but can be longer. Check S3's guidelines and
     /// cross-region replication SLA for more information).
-    #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(default, skip_serializing_if = "FriendlyDuration::is_zero")]
     trim_delay_interval: FriendlyDuration,
 
@@ -146,7 +144,9 @@ impl Default for WorkerOptions {
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
             snapshots: SnapshotsOptions::default(),
-            trim_delay_interval: FriendlyDuration::ZERO,
+            // 10 minutes delayed trimming by default to give time for followers to catch up
+            // to the new durable LSN before observing the trim gap.
+            trim_delay_interval: FriendlyDuration::from_secs(10 * 60),
             durability_mode: None,
             shuffle: IngestionOptions {
                 inflight_memory_budget: NonZeroByteCount::new(
