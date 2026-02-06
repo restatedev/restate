@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::pin::Pin;
+
 use bytes::Bytes;
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{Stream, StreamExt, TryStreamExt};
+
 use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction,
+    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
 use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
-use restate_types::identifiers::InvocationId;
-use restate_types::identifiers::ServiceId;
-use std::vec::IntoIter;
+use restate_types::identifiers::{InvocationId, ServiceId};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InvokerStorageReaderError {
@@ -65,11 +66,11 @@ where
     Storage: restate_storage_api::Storage + 'static,
 {
     type JournalStream<'a>
-        = stream::Iter<IntoIter<restate_invoker_api::invocation_reader::JournalEntry>>
+        = Pin<Box<dyn Stream<Item = Result<JournalEntry, Self::Error>> + Send + 'a>>
     where
         Self: 'a;
-    type StateIter<'a>
-        = IntoIter<(Bytes, Bytes)>
+    type StateStream<'a>
+        = Pin<Box<dyn Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send + 'a>>
     where
         Self: 'a;
     type Error = InvokerStorageReaderError;
@@ -107,54 +108,47 @@ where
         }
     }
 
-    async fn read_journal(
-        &mut self,
+    fn read_journal(
+        &self,
         invocation_id: &InvocationId,
         length: restate_types::identifiers::EntryIndex,
         using_journal_table_v2: bool,
     ) -> Result<Self::JournalStream<'_>, Self::Error> {
-        // TODO: Step 6 will make this truly lazy by returning the iterator directly
-        // For now, we still collect into Vec to maintain compatibility
-        let entries: Vec<_> = if using_journal_table_v2 {
-            journal_table_v2::ReadJournalTable::get_journal(&self.txn, *invocation_id, length)?
-                .map_ok(|(_, entry)| {
-                    restate_invoker_api::invocation_reader::JournalEntry::JournalV2(entry)
-                })
-                .map_err(InvokerStorageReaderError::Storage)
-                .try_collect()
-                .await?
+        if using_journal_table_v2 {
+            let journal_entries =
+                journal_table_v2::ReadJournalTable::get_journal(&self.txn, *invocation_id, length)?;
+            Ok(Box::pin(journal_entries.map(|result| {
+                result
+                    .map(|(_, entry)| JournalEntry::JournalV2(entry))
+                    .map_err(InvokerStorageReaderError::Storage)
+            })))
         } else {
             // todo remove once we no longer support journal v1: https://github.com/restatedev/restate/issues/3184
-            journal_table_v1::ReadJournalTable::get_journal(&self.txn, invocation_id, length)?
-                .map_ok(|(_, journal_entry)| match journal_entry {
-                    journal_table_v1::JournalEntry::Entry(entry) => {
-                        restate_invoker_api::invocation_reader::JournalEntry::JournalV1(
-                            entry.erase_enrichment(),
-                        )
-                    }
-                    journal_table_v1::JournalEntry::Completion(_) => {
-                        panic!("should only read entries when reading the journal")
-                    }
-                })
-                .map_err(InvokerStorageReaderError::Storage)
-                .try_collect()
-                .await?
-        };
-
-        Ok(stream::iter(entries))
+            let journal_entries =
+                journal_table_v1::ReadJournalTable::get_journal(&self.txn, invocation_id, length)?;
+            Ok(Box::pin(journal_entries.map(|result| {
+                result
+                    .map(|(_, journal_entry)| match journal_entry {
+                        journal_table_v1::JournalEntry::Entry(entry) => {
+                            JournalEntry::JournalV1(entry.erase_enrichment())
+                        }
+                        journal_table_v1::JournalEntry::Completion(_) => {
+                            panic!("should only read entries when reading the journal")
+                        }
+                    })
+                    .map_err(InvokerStorageReaderError::Storage)
+            })))
+        }
     }
 
-    async fn read_state(
-        &mut self,
+    fn read_state(
+        &self,
         service_id: &ServiceId,
-    ) -> Result<EagerState<Self::StateIter<'_>>, Self::Error> {
-        // TODO: Step 6 will make this truly lazy by returning the iterator directly
-        let user_states = self
+    ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error> {
+        let stream = self
             .txn
             .get_all_user_states_for_service(service_id)?
-            .try_collect::<Vec<_>>()
-            .await?;
-
-        Ok(EagerState::new_complete(user_states.into_iter()))
+            .map_err(InvokerStorageReaderError::Storage);
+        Ok(EagerState::new_complete(Box::pin(stream)))
     }
 }

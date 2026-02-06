@@ -39,7 +39,6 @@ pub mod test_util {
     use restate_types::time::MillisSinceEpoch;
     use restate_types::vqueue::VQueueId;
     use std::convert::Infallible;
-    use std::iter::empty;
     use std::marker::PhantomData;
     use std::ops::RangeInclusive;
     use tokio::sync::mpsc::Sender;
@@ -58,8 +57,8 @@ pub mod test_util {
     pub struct EmptyStorageReaderTransaction;
 
     impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
-        type JournalStream<'a> = futures::stream::Empty<JournalEntry>;
-        type StateIter<'a> = std::iter::Empty<(Bytes, Bytes)>;
+        type JournalStream<'a> = futures::stream::Empty<Result<JournalEntry, Self::Error>>;
+        type StateStream<'a> = futures::stream::Empty<Result<(Bytes, Bytes), Self::Error>>;
         type Error = Infallible;
 
         async fn read_journal_metadata(
@@ -76,8 +75,8 @@ pub mod test_util {
             )))
         }
 
-        async fn read_journal(
-            &mut self,
+        fn read_journal(
+            &self,
             _invocation_id: &InvocationId,
             _length: EntryIndex,
             _using_journal_table_v2: bool,
@@ -85,11 +84,11 @@ pub mod test_util {
             Ok(futures::stream::empty())
         }
 
-        async fn read_state(
-            &mut self,
+        fn read_state(
+            &self,
             _service_id: &ServiceId,
-        ) -> Result<EagerState<Self::StateIter<'_>>, Self::Error> {
-            Ok(EagerState::new_complete(empty()))
+        ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error> {
+            Ok(EagerState::new_complete(futures::stream::empty()))
         }
     }
 

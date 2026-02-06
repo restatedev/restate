@@ -147,11 +147,11 @@ impl ReadJournalTable for PartitionStore {
         get_journal_entry(self, invocation_id, journal_index)
     }
 
-    fn get_journal(
-        &self,
+    fn get_journal<'a>(
+        &'a self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send + 'a> {
         self.assert_partition_key(invocation_id)?;
         Ok(stream::iter(get_journal(
             self,
@@ -202,11 +202,11 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
         get_journal_entry(self, invocation_id, journal_index)
     }
 
-    fn get_journal(
-        &self,
+    fn get_journal<'a>(
+        &'a self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send + 'a> {
         self.assert_partition_key(invocation_id)?;
         Ok(stream::iter(get_journal(
             self,
