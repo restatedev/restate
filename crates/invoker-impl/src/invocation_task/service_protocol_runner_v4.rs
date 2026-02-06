@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -17,7 +18,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::{Stream, StreamExt, stream};
+use futures::{Stream, StreamExt, TryStreamExt, stream};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -36,7 +37,7 @@ use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
-    Decoder, Encoder, Message, MessageHeader, MessageType, proto,
+    Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
 };
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
@@ -115,7 +116,7 @@ where
     ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
     pub async fn run<Txn>(
         mut self,
-        mut txn: Txn,
+        txn: Txn,
         journal_metadata: JournalMetadata,
         keyed_service_id: Option<ServiceId>,
         cached_journal_items: Option<Vec<JournalEntry>>,
@@ -182,16 +183,14 @@ where
 
         // === Replay phase (transaction alive) ===
         {
-            // Read state if needed
-            let state_iter = if let Some(ref service_id) = keyed_service_id {
-                crate::shortcircuit!(
+            // Read state if needed (state is collected for the START message)
+            let state = if let Some(ref service_id) = keyed_service_id {
+                Some(crate::shortcircuit!(
                     txn.read_state(service_id)
-                        .await
                         .map_err(|e| InvokerError::StateReader(e.into()))
-                        .map(|s| s.map(itertools::Either::Left))
-                )
+                ))
             } else {
-                EagerState::<std::iter::Empty<_>>::default().map(itertools::Either::Right)
+                None
             };
 
             // Send start message with state
@@ -199,7 +198,7 @@ where
                 self.write_start(
                     &mut http_stream_tx,
                     journal_size,
-                    state_iter,
+                    state,
                     self.invocation_task.retry_count_since_last_stored_entry,
                     journal_metadata.last_modification_date.elapsed(),
                     journal_metadata.random_seed
@@ -209,7 +208,7 @@ where
 
             // Read journal stream (or use cached)
             if let Some(items) = cached_journal_items {
-                let journal_stream = stream::iter(items);
+                let journal_stream = stream::iter(items.into_iter().map(Ok::<_, Infallible>));
                 // Execute the replay
                 crate::shortcircuit!(
                     self.replay_loop(
@@ -227,7 +226,6 @@ where
                         journal_size,
                         journal_metadata.using_journal_table_v2,
                     )
-                    .await
                     .map_err(|e| InvokerError::JournalReader(e.into()))
                 );
                 // Execute the replay
@@ -359,7 +357,7 @@ where
     // --- Loops
 
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
-    async fn replay_loop<JournalStream, S>(
+    async fn replay_loop<JournalStream, S, E>(
         &mut self,
         http_stream_tx: &mut InvokerRequestStreamSender,
         http_stream_rx: &mut S,
@@ -367,8 +365,9 @@ where
         expected_entries_count: u32,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = JournalEntry> + Unpin,
+        JournalStream: Stream<Item = Result<JournalEntry, E>> + Unpin,
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
+        E: std::error::Error + Send + Sync + 'static,
     {
         let mut journal_stream = journal_stream.fuse();
         let mut got_headers = false;
@@ -394,11 +393,11 @@ where
                 },
                 opt_je = journal_stream.next() => {
                     match opt_je {
-                        Some(JournalEntry::JournalV2(entry)) => {
+                        Some(Ok(JournalEntry::JournalV2(entry))) => {
                             sent_entries += 1;
                             crate::shortcircuit!(self.write_entry(http_stream_tx, entry.inner).await);
                         }
-                        Some(JournalEntry::JournalV1(old_entry)) => {
+                        Some(Ok(JournalEntry::JournalV1(old_entry))) => {
                             sent_entries += 1;
                             if let journal::Entry::Input(input_entry) = crate::shortcircuit!(old_entry.deserialize_entry::<ProtobufRawEntryCodec>()) {
                                 crate::shortcircuit!(self.write_entry(
@@ -413,6 +412,9 @@ where
                                 panic!("This is unexpected, when an entry is stored with journal v1, only input entry is allowed!")
                             }
                         },
+                        Some(Err(e)) => {
+                            return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
+                        }
                         None => {
                             // Let's verify if we sent all the entries we promised, otherwise the stream will hang in a bad way!
                             if sent_entries < expected_entries_count {
@@ -518,16 +520,32 @@ where
 
     // --- Read and write methods
 
-    async fn write_start<I: Iterator<Item = (Bytes, Bytes)>>(
+    async fn write_start<S, E>(
         &mut self,
         http_stream_tx: &mut InvokerRequestStreamSender,
         journal_size: u32,
-        state_entries: EagerState<I>,
+        state: Option<EagerState<S>>,
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
         random_seed: u64,
-    ) -> Result<(), InvokerError> {
-        let is_partial = state_entries.is_partial();
+    ) -> Result<(), InvokerError>
+    where
+        S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        // Collect state if present, mapping to StateEntry while collecting
+        let (partial_state, state_map) = if let Some(state) = state {
+            let is_partial = state.is_partial();
+            let entries: Vec<StateEntry> = state
+                .into_inner()
+                .map_ok(|(key, value)| StateEntry { key, value })
+                .try_collect()
+                .await
+                .map_err(|e| InvokerError::StateReader(e.into()))?;
+            (is_partial, entries)
+        } else {
+            (true, Vec::new())
+        };
 
         // Send the invoke frame
         self.write(
@@ -540,8 +558,8 @@ where
                     .key()
                     .map(|bs| bs.as_bytes().clone()),
                 journal_size,
-                is_partial,
-                state_entries,
+                partial_state,
+                state_map,
                 retry_count_since_last_stored_entry,
                 duration_since_last_stored_entry,
                 random_seed,
