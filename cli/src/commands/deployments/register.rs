@@ -763,7 +763,7 @@ fn infer_deployment_metadata_from_environment(metadata: &mut HashMap<String, Str
                 if let Ok(env_value) = std::env::var($env_name) && !env_value.is_empty() {
                     // Write it only if missing.
                     // This lets users overwrite these values if they want to.
-                    metadata.entry($metadata.to_string()).or_insert(env_value);
+                    metadata.entry($metadata.key().to_string()).or_insert(env_value);
                 }
             })*
         };
