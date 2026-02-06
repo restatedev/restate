@@ -32,20 +32,17 @@ enum Swimlane {
 // -------------------------------------
 //
 message Header {
-  reserved 1, 2;
+  reserved 1, 2, 7;
   // -- Removed in v1.5.0
   // uint64 msg_id = 1;
   // uint64 in_response_to = 2;
+  // -- Removed in v1.5.1
+  // optional SpanContext span_context = 7;
 
   uint32 my_nodes_config_version = 3;
   uint32 my_logs_version = 4;
   uint32 my_schema_version = 5;
   uint32 my_partition_table_version = 6;
-  optional SpanContext span_context = 7;
-}
-
-message SpanContext {
-  map<string, string> fields = 1;
 }
 
 // direction is defined from the lens of the connection initiator

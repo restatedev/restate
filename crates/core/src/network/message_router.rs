@@ -321,7 +321,6 @@ impl<S: Service> ServiceMessage<S> {
             raw_rpc,
             from_peer,
             peer_metadata.unwrap_or_default(),
-            None,
         );
 
         tokio::spawn(async move {
@@ -360,14 +359,6 @@ impl<S: Service> ServiceMessage<S> {
             Self::Rpc(i) => i.sort_code(),
             Self::Watch(i) => i.sort_code(),
             Self::Unary(i) => i.sort_code(),
-        }
-    }
-
-    pub fn follow_from_sender(&mut self) {
-        match self {
-            Self::Rpc(i) => i.follow_from_sender(),
-            Self::Watch(i) => i.follow_from_sender(),
-            Self::Unary(i) => i.follow_from_sender(),
         }
     }
 
@@ -558,16 +549,13 @@ where
                 }
                 Some(msg) = rx.next() => {
                     match msg {
-                        ServiceMessage::Rpc(mut message) => {
-                            message.follow_from_sender();
+                        ServiceMessage::Rpc(message) => {
                             self.inner.on_rpc(message).await;
                         }
-                        ServiceMessage::Watch(mut message) => {
-                            message.follow_from_sender();
+                        ServiceMessage::Watch(message) => {
                             self.inner.on_watch(message).await;
                         }
-                        ServiceMessage::Unary(mut message) => {
-                            message.follow_from_sender();
+                        ServiceMessage::Unary(message) => {
                             self.inner.on_unary(message).await;
                         }
                     }

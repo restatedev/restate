@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
-use tracing::{Span, debug, info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use restate_types::GenerationalNodeId;
 use restate_types::net::ProtocolVersion;
@@ -213,7 +213,6 @@ impl LazyConnection {
             service_tag: M::Service::TAG,
             msg_type: M::TYPE,
             sort_code,
-            span: Span::current(),
         });
 
         Ok(reply)
@@ -265,7 +264,6 @@ impl LazyConnection {
             service_tag: M::Service::TAG,
             msg_type: M::TYPE,
             sort_code,
-            span: Span::current(),
         });
 
         Ok(reply)
@@ -279,7 +277,6 @@ enum OutgoingOp {
         service_tag: ServiceTag,
         msg_type: &'static str,
         sort_code: Option<u64>,
-        span: Span,
     },
     Unary {
         notifier: Sent,
@@ -302,13 +299,11 @@ impl OutgoingOp {
                 service_tag,
                 msg_type,
                 sort_code,
-                span,
             } => {
                 let payload = message.encode_to_bytes(protocol_version)?;
                 Ok(EgressMessage::RpcCall {
                     payload,
                     reply_sender,
-                    span: Some(span),
                     sort_code,
                     service_tag,
                     msg_type,

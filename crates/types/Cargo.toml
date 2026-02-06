@@ -26,6 +26,7 @@ restate-base64-util = { workspace = true }
 restate-clock = { workspace = true, features = ["prost-types", "jiff", "hlc"] }
 restate-encoding = { workspace = true }
 restate-errors = { workspace = true }
+restate-memory = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
 restate-time-util = { workspace = true, features = ["serde", "serde_with"] }

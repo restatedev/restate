@@ -15,16 +15,13 @@ use std::task::{Context, Poll, ready};
 
 use bytes::Bytes;
 use futures::{FutureExt, Stream};
-use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
-use restate_types::net::codec::EncodeError;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{Span, trace};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing::trace;
 
 use restate_types::Versioned;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
+use restate_types::net::codec::EncodeError;
 use restate_types::net::{ProtocolVersion, RpcRequest, Service, ServiceTag, UnaryMessage};
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
@@ -36,7 +33,7 @@ use super::{EgressSender, SendToken};
 use crate::Metadata;
 use crate::network::protobuf::network::{self, Datagram};
 use crate::network::protobuf::network::{
-    Header, Message, SpanContext, message, message::Body, message::ConnectionControl,
+    Header, Message, message, message::Body, message::ConnectionControl,
 };
 use crate::network::{ReplyRx, RpcReplyTx};
 
@@ -80,7 +77,7 @@ pub enum EgressMessage {
     /// by sender
     #[cfg(feature = "test-util")]
     RawMessage(Message),
-    UnaryMessage(Body, Option<Span>),
+    UnaryMessage(Body),
     Unary {
         service_tag: ServiceTag,
         msg_type: &'static str,
@@ -97,13 +94,12 @@ pub enum EgressMessage {
         payload: Bytes,
         reply_sender: RpcReplyTx,
         sort_code: Option<u64>,
-        span: Option<Span>,
         version: ProtocolVersion,
         #[cfg(feature = "test-util")]
         header: Option<Header>,
     },
     /// An egress body to send to peer, header is populated by egress stream
-    Message(Body, Option<Span>),
+    Message(Body),
     /// A signal to close the bounded stream. The inner stream cannot receive further messages but
     /// we'll continue to drain all buffered messages before dropping.
     Close(DrainReason),
@@ -121,7 +117,6 @@ impl EgressMessage {
             EgressMessage::RpcCall {
                 payload,
                 reply_sender,
-                span: Some(Span::current()),
                 sort_code,
                 service_tag: M::Service::TAG,
                 msg_type: M::TYPE,
@@ -146,7 +141,6 @@ impl EgressMessage {
             EgressMessage::RpcCall {
                 payload,
                 reply_sender,
-                span: Some(Span::current()),
                 sort_code,
                 service_tag: M::Service::TAG,
                 msg_type: M::TYPE,
@@ -244,7 +238,6 @@ pub struct EgressStream {
     /// stream.
     drop_notification: Option<oneshot::Sender<Infallible>>,
     metadata_cache: MetadataVersionCache,
-    context_propagator: TraceContextPropagator,
     /// Did we send out a RequestStreamDrained signal to peer or not?
     sent_request_stream_drained: bool,
     /// Did we send out a ResponseStreamDrained signal to peer or not?
@@ -282,7 +275,6 @@ impl EgressStream {
                 reply_tracker: reply_tracker.clone(),
                 drop_notification: Some(drop_tx),
                 metadata_cache: MetadataVersionCache::new(),
-                context_propagator: Default::default(),
                 sent_request_stream_drained: false,
                 sent_response_stream_drained: false,
             },
@@ -311,7 +303,7 @@ impl EgressStream {
         self.state = State::Draining;
     }
 
-    fn fill_header(&mut self, header: &mut Header, span: Option<Span>) {
+    fn fill_header(&mut self, header: &mut Header) {
         header.my_nodes_config_version = self
             .metadata_cache
             .nodes_config
@@ -331,13 +323,6 @@ impl EgressStream {
             .live_load()
             .version()
             .into();
-        if let Some(span) = span {
-            let context = span.context();
-            let mut span_context = SpanContext::default();
-            self.context_propagator
-                .inject_context(&context, &mut span_context);
-            header.span_context = Some(span_context);
-        }
     }
 
     fn make_drained_message(&mut self, signal: message::Signal) -> Message {
@@ -346,7 +331,7 @@ impl EgressStream {
             signal: signal.into(),
             message: String::new(),
         };
-        self.fill_header(&mut header, None);
+        self.fill_header(&mut header);
         Message {
             header: Some(header),
             body: Some(control.into()),
@@ -361,18 +346,18 @@ impl EgressStream {
         match entry {
             #[cfg(feature = "test-util")]
             Poll::Ready(Some(EgressMessage::RawMessage(msg))) => Decision::Ready(msg),
-            Poll::Ready(Some(EgressMessage::Message(body, span))) => {
+            Poll::Ready(Some(EgressMessage::Message(body))) => {
                 let mut header = Header::default();
-                self.fill_header(&mut header, span);
+                self.fill_header(&mut header);
                 let msg = Message {
                     header: Some(header),
                     body: Some(body),
                 };
                 Decision::Ready(msg)
             }
-            Poll::Ready(Some(EgressMessage::UnaryMessage(body, span))) => {
+            Poll::Ready(Some(EgressMessage::UnaryMessage(body))) => {
                 let mut header = Header::default();
-                self.fill_header(&mut header, span);
+                self.fill_header(&mut header);
                 let msg = Message {
                     header: Some(header),
                     body: Some(body),
@@ -390,7 +375,7 @@ impl EgressStream {
                     header: custom_header,
             })) => {
                 let mut header = Header::default();
-                self.fill_header(&mut header, None);
+                self.fill_header(&mut header);
                 #[cfg(feature = "test-util")]
                 let header = custom_header.unwrap_or(header);
                 let body = Datagram {
@@ -417,7 +402,6 @@ impl EgressStream {
                 service_tag,
                 sort_code,
                 reply_sender,
-                span,
                 version: _,
                 #[cfg(feature = "test-util")]
                     header: custom_header,
@@ -430,7 +414,7 @@ impl EgressStream {
                 }
 
                 let mut header = Header::default();
-                self.fill_header(&mut header, span);
+                self.fill_header(&mut header);
                 #[cfg(feature = "test-util")]
                 let header = custom_header.unwrap_or(header);
 
@@ -466,7 +450,7 @@ impl EgressStream {
                 // already enqueued messages.
                 self.stop_external_senders();
                 let mut header = Header::default();
-                self.fill_header(&mut header, None);
+                self.fill_header(&mut header);
                 let msg = Message {
                     header: Some(header),
                     body: Some(reason.into()),

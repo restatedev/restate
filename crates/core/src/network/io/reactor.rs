@@ -16,8 +16,6 @@ use enum_map::{EnumMap, enum_map};
 use futures::future::OptionFuture;
 use futures::{Stream, StreamExt};
 use metrics::counter;
-use opentelemetry::propagation::TextMapPropagator;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
 use strum::IntoEnumIterator as _;
 use tokio::sync::oneshot;
 use tokio::time::{MissedTickBehavior, Sleep};
@@ -72,7 +70,6 @@ pub struct ConnectionReactor {
     state: State,
     connection: Connection,
     shared: super::Shared,
-    context_propagator: TraceContextPropagator,
     seen_versions: Option<MetadataVersions>,
     router: Arc<MessageRouter>,
 }
@@ -85,7 +82,6 @@ impl ConnectionReactor {
         peer_metadata: Option<PeerMetadataVersion>,
         router: Arc<MessageRouter>,
     ) -> Self {
-        let context_propagator = TraceContextPropagator::default();
         let mut seen_versions = MetadataVersions::new(Metadata::current());
         if let Some(peer_metadata) = peer_metadata {
             seen_versions.notify(peer_metadata, &connection);
@@ -94,7 +90,6 @@ impl ConnectionReactor {
             state: State::Active,
             connection,
             shared,
-            context_propagator,
             seen_versions: Some(seen_versions),
             router,
         }
@@ -336,10 +331,6 @@ impl ConnectionReactor {
                     return Decision::Continue;
                 };
                 let target_service = rpc_call.service();
-                let parent_context = header
-                    .span_context
-                    .as_ref()
-                    .map(|span_ctx| self.context_propagator.extract(span_ctx));
 
                 let encoded_len = rpc_call.payload.len();
                 let (reply_port, reply_rx) = RpcReplyPort::new();
@@ -354,7 +345,6 @@ impl ConnectionReactor {
                     raw_rpc,
                     self.connection.peer,
                     PeerMetadataVersion::from(header),
-                    parent_context,
                 );
                 trace!(
                     peer = %self.connection.peer(),
@@ -384,10 +374,6 @@ impl ConnectionReactor {
             Body::Datagram(Datagram {
                 datagram: Some(datagram::Datagram::Unary(unary)),
             }) => {
-                let parent_context = header
-                    .span_context
-                    .as_ref()
-                    .map(|span_ctx| self.context_propagator.extract(span_ctx));
                 let metadata_versions = PeerMetadataVersion::from(header);
                 let target = unary.service();
                 let encoded_len = unary.payload.len();
@@ -400,7 +386,6 @@ impl ConnectionReactor {
                     },
                     self.connection.peer(),
                     metadata_versions,
-                    parent_context,
                 );
                 trace!("Received Unary call: {target}::{}", incoming.msg_type());
 
@@ -463,7 +448,7 @@ impl ConnectionReactor {
                     let datagram = Body::Datagram(Datagram {
                         datagram: Some(msg.flip().into()),
                     });
-                    let _ = tx.unbounded_send(EgressMessage::Message(datagram, None));
+                    let _ = tx.unbounded_send(EgressMessage::Message(datagram));
                 }
                 Decision::Continue
             }
@@ -488,7 +473,7 @@ fn send_rpc_error(tx: &super::UnboundedEgressSender, err: RouterError, id: u64) 
         datagram: Some(body.into()),
     });
 
-    let _ = tx.unbounded_send(EgressMessage::Message(datagram, None));
+    let _ = tx.unbounded_send(EgressMessage::Message(datagram));
 }
 
 /// A task to ship the reply or an error back to the caller
@@ -507,10 +492,7 @@ fn spawn_rpc_responder(
                         trace!(rpc_id = %id, "Sending RPC response to caller");
                         let body = RpcReply { id, body: Some(envelope.body) };
                         let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
-                        let _ = tx.unbounded_send(EgressMessage::Message(
-                            datagram,
-                            Some(envelope.span),
-                        ));
+                        let _ = tx.unbounded_send(EgressMessage::Message(datagram));
                         // todo(asoli): here is a good place to measure total rpc
                         // processing time.
                     }
@@ -519,10 +501,7 @@ fn spawn_rpc_responder(
                         trace!(rpc_id = %id, "RPC was dropped, sending dropped notification to caller");
                         let body = RpcReply { id, body: Some(rpc_reply::Body::Status(rpc_reply::Status::Dropped.into())), };
                         let datagram = Body::Datagram(Datagram { datagram: Some(body.into())});
-                        let _ = tx.unbounded_send(EgressMessage::Message(
-                            datagram,
-                            None,
-                        ));
+                        let _ = tx.unbounded_send(EgressMessage::Message(datagram));
                     }
                 }
             }
