@@ -470,8 +470,28 @@ impl PartitionStore {
         scan: TableScan<K>,
         f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+        self.iterator_for_each_internal(name, priority, scan, IterationDirection::Forward, f)
+    }
+
+    pub fn iterator_for_each_reversed<K: TableKey>(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        scan: TableScan<K>,
+        f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+        self.iterator_for_each_internal(name, priority, scan, IterationDirection::Reverse, f)
+    }
+
+    fn iterator_for_each_internal<K: TableKey>(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        scan: TableScan<K>,
+        iteration_direction: IterationDirection,
+        f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
-        let iteration_direction = IterationDirection::Forward;
         let on_iter = Self::iterator_step_for_each(tx, iteration_direction, f);
         self.run_iterator_internal(name, priority, scan, iteration_direction, on_iter)?;
         Ok(async {
