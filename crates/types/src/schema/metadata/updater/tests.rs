@@ -2217,7 +2217,7 @@ mod endpoint_manifest_options_propagation {
             eq(InvocationAttemptOptions {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(60)),
-                enable_lazy_state: None,
+                eager_state_size_limit: None,
             })
         )
     }
@@ -2242,7 +2242,7 @@ mod endpoint_manifest_options_propagation {
             eq(InvocationAttemptOptions {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(30)),
-                enable_lazy_state: None,
+                eager_state_size_limit: None,
             })
         )
     }

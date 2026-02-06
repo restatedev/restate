@@ -318,7 +318,22 @@ pub struct InvokerOptions {
     /// Number of concurrent invocations that can be processed by the invoker.
     concurrent_invocations_limit: Option<NonZeroUsize>,
 
+    /// # Eager state size limit
+    ///
+    /// Maximum total size (in bytes) of state entries to send eagerly in the StartMessage.
+    /// When the total size of state entries exceeds this limit, only a partial state is sent
+    /// and the service will fetch remaining state lazily using GetEagerState commands.
+    ///
+    /// Set to `0` to disable eager state entirely (equivalent to enabling lazy state).
+    ///
+    /// This helps reduce memory pressure on deployments for services with large state.
+    /// If unset, defaults to `message-size-limit` (clamped to that value if set higher).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eager_state_size_limit: Option<ByteCount>,
+
     // -- Private config options (not exposed in the schema)
+    /// Deprecated: Use `eager_state_size_limit` with a value of `0` instead.
+    /// When true, treated as `eager_state_size_limit = 0` (no eager state).
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub disable_eager_state: bool,
@@ -380,11 +395,39 @@ impl InvokerOptions {
         }
     }
 
+    /// Resolved eager state size limit in bytes. After `merge()`, this is guaranteed
+    /// to be clamped to the message size limit. `0` means eager state is disabled.
+    pub fn eager_state_size_limit(&self) -> usize {
+        self.eager_state_size_limit
+            .map(|v| v.as_usize())
+            .unwrap_or(self.message_size_limit().get())
+    }
+
     pub(crate) fn merge(&mut self, opts: &NetworkingOptions) {
         self.message_size_limit = Some(
             self.message_size_limit
                 .map(|limit| limit.min(opts.message_size_limit))
                 .unwrap_or(opts.message_size_limit),
+        );
+
+        // Fuse deprecated disable_eager_state into eager_state_size_limit
+        if self.disable_eager_state {
+            if self.eager_state_size_limit.is_some_and(|v| v.as_u64() > 0) {
+                warn!(
+                    "Both 'disable-eager-state' and 'eager-state-size-limit' are set; \
+                     'eager-state-size-limit' takes precedence. \
+                     'disable-eager-state' is deprecated, use 'eager-state-size-limit = \"0\"' instead."
+                );
+            } else if self.eager_state_size_limit.is_none() {
+                self.eager_state_size_limit = Some(ByteCount::ZERO);
+            }
+        }
+
+        // Clamp eager_state_size_limit to the resolved message_size_limit
+        self.eager_state_size_limit = Some(
+            self.eager_state_size_limit
+                .map(|limit| limit.min(opts.message_size_limit.into()))
+                .unwrap_or(opts.message_size_limit.into()),
         );
     }
 }
@@ -401,6 +444,7 @@ impl Default for InvokerOptions {
             message_size_limit: None,
             tmp_dir: None,
             concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
+            eager_state_size_limit: None,
             disable_eager_state: false,
             invocation_throttling: None,
             action_throttling: None,
