@@ -12,7 +12,7 @@ use std::mem::ManuallyDrop;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::arrow::compute::filter_record_batch;
+use datafusion::arrow::compute::{SortOptions, filter_record_batch};
 use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::cast::as_boolean_array;
@@ -51,6 +51,21 @@ pub(crate) fn make_ordering(columns: Vec<Arc<dyn PhysicalExpr>>) -> Vec<Physical
         .map(|expr| PhysicalSortExpr {
             expr,
             options: Default::default(),
+        })
+        .collect()
+}
+
+pub(crate) fn make_decending_ordering(
+    columns: Vec<Arc<dyn PhysicalExpr>>,
+) -> Vec<PhysicalSortExpr> {
+    columns
+        .into_iter()
+        .map(|expr| PhysicalSortExpr {
+            expr,
+            options: SortOptions {
+                descending: true,
+                nulls_first: false,
+            },
         })
         .collect()
 }
