@@ -38,7 +38,6 @@ bilrost = { version = "0.1014", features = ["bytestring", "smallvec"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
-bzip2-sys = { version = "0.1", default-features = false, features = ["static"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "wasmbind"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
@@ -56,7 +55,6 @@ futures-executor = { version = "0.3" }
 futures-sink = { version = "0.3" }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 gardal = { version = "0.0.1-alpha.9", features = ["async"] }
-getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown = { version = "0.16" }
@@ -160,7 +158,6 @@ bilrost = { version = "0.1014", features = ["bytestring", "smallvec"] }
 byteorder = { version = "1" }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
-bzip2-sys = { version = "0.1", default-features = false, features = ["static"] }
 cc = { version = "1", default-features = false, features = ["parallel"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "wasmbind"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
@@ -179,7 +176,6 @@ futures-executor = { version = "0.3" }
 futures-sink = { version = "0.3" }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 gardal = { version = "0.0.1-alpha.9", features = ["async"] }
-getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std", "wasm_js"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown = { version = "0.16" }
@@ -267,6 +263,7 @@ bitflags = { version = "2", default-features = false, features = ["std"] }
 clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
+getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 jemalloc_pprof = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
@@ -286,6 +283,7 @@ clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "constructor", "debug", "deref", "deref_mut", "display", "eq", "error", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "mul", "mul_assign", "not", "sum", "try_from", "try_into", "try_unwrap", "unwrap"] }
+getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 jemalloc_pprof = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
@@ -304,6 +302,7 @@ bitflags = { version = "2", default-features = false, features = ["std"] }
 clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
+getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 jemalloc_pprof = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
@@ -322,6 +321,7 @@ clap = { version = "4" }
 crossterm = { version = "0.29" }
 derive_more = { version = "2", features = ["full"] }
 derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "constructor", "debug", "deref", "deref_mut", "display", "eq", "error", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "mul", "mul_assign", "not", "sum", "try_from", "try_into", "try_unwrap", "unwrap"] }
+getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["webpki-tokio"] }
 jemalloc_pprof = { git = "https://github.com/restatedev/rust-jemalloc-pprof", branch = "max-limit", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
