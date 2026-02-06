@@ -21,7 +21,7 @@ use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, StreamExt};
 use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
@@ -29,9 +29,11 @@ use metrics::histogram;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
-use tracing::instrument;
+use tracing::{debug, instrument};
 
-use restate_invoker_api::invocation_reader::{InvocationReader, InvocationReaderTransaction};
+use restate_invoker_api::invocation_reader::{
+    EagerState, InvocationReader, InvocationReaderTransaction,
+};
 use restate_invoker_api::{EntryEnricher, InvokeInputJournal};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
@@ -80,6 +82,58 @@ const SERVICE_PROTOCOL_VERSION_V6: HeaderValue =
 
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
+
+/// Collects state entries from an [`EagerState`] stream, respecting an optional size limit.
+///
+/// Returns a tuple of `(is_partial, entries)` where:
+/// - `is_partial` is true if the state was already partial or if collection stopped due to size limit
+/// - `entries` contains the collected `(key, value)` pairs
+///
+/// TODO: It would be better to estimate state size before reading, so we can
+/// send no state entries directly instead of reading until we exceed the limit.
+async fn collect_eager_state<S, E>(
+    state: Option<EagerState<S>>,
+    size_limit: Option<usize>,
+) -> Result<(bool, Vec<(Bytes, Bytes)>), InvokerError>
+where
+    S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let Some(state) = state else {
+        return Ok((true, Vec::new()));
+    };
+
+    let mut is_partial = state.is_partial();
+    let mut entries = Vec::new();
+    let mut total_size: usize = 0;
+
+    let mut stream = std::pin::pin!(state.into_inner());
+    while let Some(result) = stream.next().await {
+        let (key, value) = result.map_err(|e| InvokerError::StateReader(e.into()))?;
+        let entry_size = key.len() + value.len();
+
+        // Check if adding this entry would exceed the limit
+        if let Some(limit) = size_limit
+            && total_size.saturating_add(entry_size) > limit
+        {
+            // We've hit the limit - mark as partial and stop
+            debug!(
+                "Eager state size limit reached ({} bytes, limit: {} bytes), \
+                 sending partial state with {} entries",
+                total_size,
+                limit,
+                entries.len()
+            );
+            is_partial = true;
+            break;
+        }
+
+        total_size = total_size.saturating_add(entry_size);
+        entries.push((key, value));
+    }
+
+    Ok((is_partial, entries))
+}
 
 pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
@@ -143,6 +197,7 @@ pub(super) struct InvocationTask<EE, DMR> {
     inactivity_timeout: Duration,
     abort_timeout: Duration,
     disable_eager_state: bool,
+    eager_state_size_limit: Option<usize>,
     message_size_warning: NonZeroUsize,
     message_size_limit: NonZeroUsize,
     retry_count_since_last_stored_entry: u32,
@@ -203,6 +258,7 @@ where
         default_inactivity_timeout: Duration,
         default_abort_timeout: Duration,
         disable_eager_state: bool,
+        eager_state_size_limit: Option<usize>,
         message_size_warning: NonZeroUsize,
         message_size_limit: NonZeroUsize,
         retry_count_since_last_stored_entry: u32,
@@ -220,6 +276,7 @@ where
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
             disable_eager_state,
+            eager_state_size_limit,
             entry_enricher,
             schemas: deployment_metadata_resolver,
             invoker_tx,
