@@ -102,14 +102,14 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
 
     populate_data(&mut txn);
     point_lookup(&mut txn).await;
-    prefix_scans(&mut txn).await;
+    prefix_scans(&txn).await;
     deletes(&mut txn);
 
     txn.commit().await.expect("should not fail");
 
     let mut txn = rocksdb.transaction();
     verify_delete(&mut txn).await;
-    verify_prefix_scan_after_delete(&mut txn).await;
+    verify_prefix_scan_after_delete(&txn).await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
