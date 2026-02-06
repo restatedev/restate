@@ -146,6 +146,7 @@ where
                     opts.inactivity_timeout.into(),
                     opts.abort_timeout.into(),
                     opts.disable_eager_state,
+                    opts.eager_state_size_limit.map(|v| v.as_usize()),
                     opts.message_size_warning.as_non_zero_usize(),
                     opts.message_size_limit(),
                     retry_count_since_last_stored_entry,
