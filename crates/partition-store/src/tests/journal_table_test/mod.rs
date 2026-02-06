@@ -139,8 +139,8 @@ async fn journal_tests() {
     let mut txn = rocksdb.transaction();
 
     populate_data(&mut txn);
-    get_entire_journal(&mut txn).await;
-    get_subset_of_a_journal(&mut txn).await;
+    get_entire_journal(&txn).await;
+    get_subset_of_a_journal(&txn).await;
     point_lookups(&mut txn).await;
     delete_journal(&mut txn);
 
