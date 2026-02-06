@@ -11,7 +11,9 @@
 use std::sync::Arc;
 
 use bytes::BytesMut;
+
 use restate_encoding::NetSerde;
+use restate_memory::EstimatedMemorySize;
 
 use crate::storage::{PolyBytes, StorageCodec, StorageDecode, StorageDecodeError, StorageEncode};
 use crate::time::NanosSinceEpoch;
@@ -129,6 +131,13 @@ impl Record {
             },
         };
         Ok(decoded)
+    }
+}
+
+impl EstimatedMemorySize for Record {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        self.body.estimated_memory_size()
     }
 }
 
