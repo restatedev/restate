@@ -69,6 +69,7 @@ pub const INVOKER_CONCURRENCY_SLOTS_ACQUIRED: &str = "restate.invoker.concurrenc
 pub const INVOKER_CONCURRENCY_SLOTS_RELEASED: &str = "restate.invoker.concurrency_slots.released";
 pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
+pub const INVOKER_EAGER_STATE_TRUNCATED: &str = "restate.invoker.eager_state_truncated.total";
 
 pub const TASK_OP_STARTED: &str = "started";
 pub const TASK_OP_SUSPENDED: &str = "suspended";
@@ -110,5 +111,11 @@ pub(crate) fn describe_metrics() {
         INVOKER_TASK_DURATION,
         Unit::Seconds,
         "Time taken to complete an invoker task"
+    );
+
+    describe_counter!(
+        INVOKER_EAGER_STATE_TRUNCATED,
+        Unit::Count,
+        "Number of invocations where eager state was truncated due to size limit"
     );
 }

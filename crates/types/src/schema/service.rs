@@ -557,6 +557,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
+
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),

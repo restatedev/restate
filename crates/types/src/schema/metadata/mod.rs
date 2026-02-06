@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
 
-use restate_serde_util::MapAsVecItem;
+use restate_serde_util::{ByteCount, MapAsVecItem};
 use restate_time_util::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
@@ -750,14 +750,21 @@ impl InvocationTargetResolver for Schema {
         let service_revision = deployment.services.get(service_name)?;
         let handler = service_revision.handlers.get(handler_name)?;
 
+        let enable_lazy_state = handler
+            .enable_lazy_state
+            .or(service_revision.enable_lazy_state);
+        let eager_state_size_limit = if enable_lazy_state == Some(true) {
+            Some(ByteCount::ZERO)
+        } else {
+            None
+        };
+
         Some(InvocationAttemptOptions {
             abort_timeout: handler.abort_timeout.or(service_revision.abort_timeout),
             inactivity_timeout: handler
                 .inactivity_timeout
                 .or(service_revision.inactivity_timeout),
-            enable_lazy_state: handler
-                .enable_lazy_state
-                .or(service_revision.enable_lazy_state),
+            eager_state_size_limit,
         })
     }
 

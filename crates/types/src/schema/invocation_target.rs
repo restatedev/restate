@@ -8,19 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::invocation::{
-    InvocationRetention, InvocationTargetType, ServiceType, WorkflowHandlerType,
-};
+use std::str::FromStr;
+use std::time::Duration;
+use std::{cmp, fmt};
 
-use crate::identifiers::DeploymentId;
-use crate::retries::RetryIter;
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
-use std::time::Duration;
-use std::{cmp, fmt};
+
+use restate_serde_util::ByteCount;
+
+use crate::identifiers::DeploymentId;
+use crate::invocation::{
+    InvocationRetention, InvocationTargetType, ServiceType, WorkflowHandlerType,
+};
+use crate::retries::RetryIter;
 
 pub const DEFAULT_IDEMPOTENCY_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
 pub const DEFAULT_WORKFLOW_COMPLETION_RETENTION: Duration = Duration::from_secs(60 * 60 * 24);
@@ -123,7 +126,10 @@ impl InvocationTargetMetadata {
 pub struct InvocationAttemptOptions {
     pub abort_timeout: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
-    pub enable_lazy_state: Option<bool>,
+    /// Per-handler/service override for the eager state size limit.
+    /// `Some(ByteCount::ZERO)` means no eager state (equivalent to lazy state).
+    /// `None` means no per-handler override (use server default).
+    pub eager_state_size_limit: Option<ByteCount>,
 }
 
 // --- Input rules

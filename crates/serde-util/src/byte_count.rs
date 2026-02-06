@@ -221,6 +221,12 @@ impl<const CAN_BE_ZERO: bool> From<ByteCount<CAN_BE_ZERO>> for u64 {
     }
 }
 
+impl From<ByteCount<false>> for ByteCount<true> {
+    fn from(value: ByteCount<false>) -> Self {
+        Self(value.0)
+    }
+}
+
 impl<const CAN_BE_ZERO: bool> Serialize for ByteCount<CAN_BE_ZERO> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

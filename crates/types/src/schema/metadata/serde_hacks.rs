@@ -504,6 +504,7 @@ mod conversions {
                             abort_timeout: handler.abort_timeout,
                             documentation: handler.documentation,
                             enable_lazy_state: handler.enable_lazy_state,
+
                             metadata: handler.metadata,
                             retry_policy_initial_interval: None,
                             retry_policy_exponentiation_factor: None,
@@ -528,6 +529,7 @@ mod conversions {
                         inactivity_timeout: service.inactivity_timeout,
                         abort_timeout: service.abort_timeout,
                         enable_lazy_state: service.enable_lazy_state,
+
                         retry_policy_initial_interval: None,
                         retry_policy_exponentiation_factor: None,
                         retry_policy_max_attempts: None,
@@ -616,6 +618,7 @@ mod conversions {
                                 inactivity_timeout: handler.inactivity_timeout,
                                 abort_timeout: handler.abort_timeout,
                                 enable_lazy_state: handler.enable_lazy_state,
+
                                 public: handler.public.unwrap_or(service.public),
                                 input_description: handler.input_rules.to_string(),
                                 output_description: handler.output_rules.to_string(),
@@ -723,6 +726,7 @@ mod conversions {
                                 inactivity_timeout: handler.inactivity_timeout,
                                 abort_timeout: handler.abort_timeout,
                                 enable_lazy_state: handler.enable_lazy_state,
+
                                 documentation: handler.documentation.clone(),
                                 metadata: handler.metadata.clone(),
                             },
@@ -745,6 +749,7 @@ mod conversions {
                             inactivity_timeout: service.inactivity_timeout,
                             abort_timeout: service.abort_timeout,
                             enable_lazy_state: service.enable_lazy_state,
+
                             documentation: service.documentation.clone(),
                             metadata: service.metadata.clone(),
                         },
