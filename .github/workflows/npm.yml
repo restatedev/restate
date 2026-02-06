@@ -17,6 +17,7 @@ env:
 jobs:
   publish-npm-binaries:
     permissions:
+      id-token: write # Required for trusted publishing
       contents: read
       packages: read
     runs-on: warp-ubuntu-latest-x64-2x
@@ -49,7 +50,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.x"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: "Download GitHub Artifacts"
@@ -97,10 +98,13 @@ jobs:
           npm publish --access public --tag "${tag}"
           popd || exit 1
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ""
 
   publish-npm-base:
     needs: publish-npm-binaries
+    permissions:
+      id-token: write # Required for trusted publishing
+      contents: read
     runs-on: warp-ubuntu-latest-x64-2x
     strategy:
       matrix:
@@ -117,7 +121,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22.x"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish to npm
@@ -148,4 +152,4 @@ jobs:
           npm publish --access public --tag "${tag}"
           popd || exit 1
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ""
