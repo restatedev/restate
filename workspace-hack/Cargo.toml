@@ -84,8 +84,6 @@ num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
-opentelemetry = { version = "0.31" }
-opentelemetry_sdk = { version = "0.31", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 portable-atomic = { version = "1" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
@@ -207,8 +205,6 @@ num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
-opentelemetry = { version = "0.31" }
-opentelemetry_sdk = { version = "0.31", features = ["experimental_trace_batch_span_processor_with_async_runtime", "rt-tokio"] }
 portable-atomic = { version = "1" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }

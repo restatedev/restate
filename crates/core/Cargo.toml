@@ -47,8 +47,6 @@ hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["server-graceful", "server"] }
 itertools = { workspace = true }
 metrics = { workspace = true }
-opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 prost = { workspace = true }
@@ -68,7 +66,6 @@ tonic-reflection = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true, features = ["trace"] }
 tracing = { workspace = true }
-tracing-opentelemetry = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }
