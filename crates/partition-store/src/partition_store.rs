@@ -189,6 +189,13 @@ impl TableKind {
     }
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Default)]
+pub enum IterationDirection {
+    #[default]
+    Forward,
+    Reverse,
+}
+
 pub struct PartitionStore {
     db: PartitionDb,
     key_buffer: BytesMut,
@@ -412,9 +419,14 @@ impl PartitionStore {
     #[allow(clippy::type_complexity)]
     fn iterator_step_for_each(
         tx: oneshot::Sender<StorageError>,
+        iteration_direction: IterationDirection,
         mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
     ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
         let mut tx = Some(tx);
+        let iter_action = match iteration_direction {
+            IterationDirection::Forward => IterAction::Next,
+            IterationDirection::Reverse => IterAction::Prev,
+        };
         move |item| {
             let mut must_send = |v| match tx.take() {
                 Some(tx) => tx.send(v),
@@ -430,7 +442,7 @@ impl PartitionStore {
                             IterAction::Stop
                         }
                         // the channel is not closed yet, keep iterating
-                        Some(_) => IterAction::Next,
+                        Some(_) => iter_action.clone(),
                         None => panic!("Iterator continued after IterAction::Stop"),
                     },
                     ControlFlow::Break(Ok(())) => {
@@ -459,8 +471,9 @@ impl PartitionStore {
         f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_for_each(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        let iteration_direction = IterationDirection::Forward;
+        let on_iter = Self::iterator_step_for_each(tx, iteration_direction, f);
+        self.run_iterator_internal(name, priority, scan, iteration_direction, on_iter)?;
         Ok(async {
             match rx.await {
                 Ok(storage_err) => Err(storage_err),
@@ -481,7 +494,8 @@ impl PartitionStore {
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_map(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        let iterator_direction = IterationDirection::Forward;
+        self.run_iterator_internal(name, priority, scan, iterator_direction, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -494,7 +508,8 @@ impl PartitionStore {
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_filter_map(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        let iterator_direction = IterationDirection::Forward;
+        self.run_iterator_internal(name, priority, scan, iterator_direction, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -503,9 +518,16 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
+        iteration_direction: IterationDirection,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
         let scan: PhysicalScan = scan.into();
+        if iteration_direction == IterationDirection::Reverse
+            && matches!(scan, PhysicalScan::Prefix(_, _, _))
+        {
+            // TODO:
+            todo!("Reverse iteration for prefix scan is not yet implemented")
+        };
         match scan {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
                 assert!(table.has_key_kind(&prefix));
@@ -525,12 +547,16 @@ impl PartitionStore {
                 assert!(table.has_key_kind(&start));
                 let start = start.freeze();
                 let end = end.freeze();
-                let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
+                let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end.clone());
+                let initial_action = match iteration_direction {
+                    IterationDirection::Forward => IterAction::Seek(start),
+                    IterationDirection::Reverse => IterAction::SeekToPrev(end),
+                };
                 self.db.rocksdb().clone().run_background_iterator(
                     self.db.partition().cf_name().as_ref().into(),
                     name,
                     priority,
-                    IterAction::Seek(start),
+                    initial_action,
                     opts,
                     on_iter,
                 )?;
@@ -551,12 +577,17 @@ impl PartitionStore {
                 end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
                 let start = start.freeze();
                 let end = end.freeze();
-                let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
+                let opts =
+                    self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end.clone());
+                let initial_action = match iteration_direction {
+                    IterationDirection::Forward => IterAction::Seek(start),
+                    IterationDirection::Reverse => IterAction::SeekToPrev(end),
+                };
                 self.db.rocksdb().clone().run_background_iterator(
                     self.db.partition().cf_name().into(),
                     name,
                     priority,
-                    IterAction::Seek(start),
+                    initial_action,
                     opts,
                     on_iter,
                 )?;
