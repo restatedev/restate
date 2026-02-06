@@ -540,7 +540,9 @@ mod test {
         async fn on_rpc(&mut self, message: Incoming<RawSvcRpc<Self::Service>>) {
             if message.msg_type() == Append::TYPE {
                 let msg = message.into_typed::<Append>();
-                let (reciprocal, msg) = msg.split();
+                let Some((reciprocal, msg)) = msg.split() else {
+                    return;
+                };
                 let last_offset = self
                     .offset
                     .fetch_add(msg.payloads.len() as u32, Ordering::Relaxed);

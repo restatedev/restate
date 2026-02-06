@@ -197,6 +197,9 @@ message WatchUpdate {
     // Message type was unrecognized by the receiver
     // Request has not been processed
     MESSAGE_UNRECOGNIZED = 7;
+    // Message type was recognized but payload was invalid or failed to decode
+    // Request has not been processed 
+    INVALID_PAYLOAD = 8;
   }
 
   enum End {
@@ -256,6 +259,9 @@ message RpcReply {
     // Message type was unrecognized by the receiver
     // Request has not been processed
     MESSAGE_UNRECOGNIZED = 7;
+    // Message type was recognized but payload was invalid or failed to decode
+    // Request has not been processed 
+    INVALID_PAYLOAD = 8;
   }
 
   // correlates the reply to the original request
