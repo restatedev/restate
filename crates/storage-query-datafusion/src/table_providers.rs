@@ -171,7 +171,7 @@ where
             .try_extract(filters)
             .map_err(|e| DataFusionError::External(e.into()))?;
 
-        let physical_partitions: Vec<(PartitionId, Partition)> = self
+        let mut physical_partitions: Vec<(PartitionId, Partition)> = self
             .partition_selector
             .get_live_partitions()
             .await
@@ -212,6 +212,10 @@ where
                 }
             })
             .collect();
+
+        if !self.is_ascending_order {
+            physical_partitions.reverse();
+        }
 
         let target_partitions = state.config().target_partitions();
         let logical_partitions =
