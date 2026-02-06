@@ -158,10 +158,10 @@ impl ReadStateTable for PartitionStore {
         get_user_state(self, service_id, state_key)
     }
 
-    fn get_all_user_states_for_service(
-        &self,
+    fn get_all_user_states_for_service<'a>(
+        &'a self,
         service_id: &ServiceId,
-    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a> {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
             self, service_id,
@@ -204,10 +204,10 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         get_user_state(self, service_id, state_key)
     }
 
-    fn get_all_user_states_for_service(
-        &self,
+    fn get_all_user_states_for_service<'a>(
+        &'a self,
         service_id: &ServiceId,
-    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a> {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
             self, service_id,

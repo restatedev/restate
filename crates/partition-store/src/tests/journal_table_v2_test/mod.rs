@@ -226,8 +226,8 @@ async fn test_sleep_journal() {
     let mut txn = rocksdb.transaction();
 
     populate_sleep_journal(&mut txn);
-    get_entire_sleep_journal(&mut txn).await;
-    get_subset_of_a_journal(&mut txn).await;
+    get_entire_sleep_journal(&txn).await;
+    get_subset_of_a_journal(&txn).await;
     check_sleep_completion_index(&mut txn).await;
     check_sleep_notification_index(&mut txn).await;
 

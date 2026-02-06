@@ -24,10 +24,12 @@ pub trait ReadStateTable {
         state_key: impl AsRef<[u8]> + Send,
     ) -> impl Future<Output = Result<Option<Bytes>>> + Send;
 
-    fn get_all_user_states_for_service(
-        &self,
+    /// Returns a lazy stream over all user states for the given service.
+    /// The stream borrows from `self` only, not from `service_id`.
+    fn get_all_user_states_for_service<'a>(
+        &'a self,
         service_id: &ServiceId,
-    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send>;
+    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a>;
 }
 
 pub trait ScanStateTable {

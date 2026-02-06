@@ -75,10 +75,10 @@ pub trait InvocationReader {
 ///
 /// Important: Implementations must ensure that all read methods return consistent results.
 pub trait InvocationReaderTransaction {
-    type JournalStream<'a>: Stream<Item = JournalEntry> + Unpin + Send
+    type JournalStream<'a>: Stream<Item = Result<JournalEntry, Self::Error>> + Unpin + Send
     where
         Self: 'a;
-    type StateIter<'a>: Iterator<Item = (Bytes, Bytes)> + Send
+    type StateStream<'a>: Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send
     where
         Self: 'a;
     type Error: std::error::Error + Send + Sync + 'static;
@@ -95,70 +95,53 @@ pub trait InvocationReaderTransaction {
     /// Read the journal stream for replay.
     ///
     /// The returned journal **MUST** not return events.
-    fn read_journal<'a>(
-        &'a mut self,
+    /// This method returns a lazy stream that reads entries on-demand from storage.
+    fn read_journal(
+        &self,
         invocation_id: &InvocationId,
         length: EntryIndex,
         using_journal_table_v2: bool,
-    ) -> impl Future<Output = Result<Self::JournalStream<'a>, Self::Error>> + Send;
+    ) -> Result<Self::JournalStream<'_>, Self::Error>;
 
     /// Read the state for the given service id.
-    fn read_state<'a>(
-        &'a mut self,
-        service_id: &'a ServiceId,
-    ) -> impl Future<Output = Result<EagerState<Self::StateIter<'a>>, Self::Error>> + Send;
+    /// Returns a stream of state entries that can be collected by the caller.
+    fn read_state(
+        &self,
+        service_id: &ServiceId,
+    ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error>;
 }
 
-/// Container for the eager state returned by [`StateReader`]
-pub struct EagerState<I> {
-    iterator: I,
+/// Container for the state returned by [`InvocationReaderTransaction::read_state`].
+/// Contains a stream of state entries and a flag indicating if the state is partial.
+pub struct EagerState<S> {
+    stream: S,
     partial: bool,
 }
 
-impl<I: Default> Default for EagerState<I> {
-    fn default() -> Self {
+impl<S> EagerState<S> {
+    /// Create an [`EagerState`] where the provided stream contains only a subset of entries of the given service instance.
+    pub fn new_partial(stream: S) -> Self {
         Self {
-            iterator: I::default(),
-            partial: true,
-        }
-    }
-}
-
-impl<I> EagerState<I> {
-    /// Create an [`EagerState`] where the provided iterator contains only a subset of entries of the given service instance.
-    pub fn new_partial(iterator: I) -> Self {
-        Self {
-            iterator,
+            stream,
             partial: true,
         }
     }
 
-    /// Create an [`EagerState`] where the provided iterator contains all the set of entries of the given service instance.
-    pub fn new_complete(iterator: I) -> Self {
+    /// Create an [`EagerState`] where the provided stream contains all the set of entries of the given service instance.
+    pub fn new_complete(stream: S) -> Self {
         Self {
-            iterator,
+            stream,
             partial: false,
         }
     }
 
-    /// If true, it is not guaranteed the iterator will return all the entries for the given service instance.
+    /// If true, it is not guaranteed the stream will return all the entries for the given service instance.
     pub fn is_partial(&self) -> bool {
         self.partial
     }
 
-    pub fn map<U, F: FnOnce(I) -> U>(self, f: F) -> EagerState<U> {
-        EagerState {
-            iterator: f(self.iterator),
-            partial: self.partial,
-        }
-    }
-}
-
-impl<I: Iterator<Item = (Bytes, Bytes)>> IntoIterator for EagerState<I> {
-    type Item = (Bytes, Bytes);
-    type IntoIter = I;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iterator
+    /// Consume the container and return the inner stream.
+    pub fn into_inner(self) -> S {
+        self.stream
     }
 }
