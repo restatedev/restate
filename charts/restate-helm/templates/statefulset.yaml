@@ -54,7 +54,7 @@ spec:
           args:
             {{- toYaml . | nindent 12 }}
           {{- end}}
-          image: {{ .Values.image.repository }}:{{ include "restate.tag" . }}
+          image: {{ include "restate.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
