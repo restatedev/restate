@@ -36,6 +36,7 @@ pub mod table_docs;
 mod table_macro;
 mod table_providers;
 mod table_util;
+mod udfs;
 
 use std::sync::Arc;
 
