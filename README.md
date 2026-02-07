@@ -104,7 +104,7 @@ The basic primitives Restate offers to simplify application development are the 
 
 ## Contributing
 
-We’re excited if you join the Restate community and start contributing!
+We're excited if you join the Restate community and start contributing!
 Whether it is feature requests, bug reports, ideas & feedback or PRs, we appreciate any and all contributions.
 We know that your time is precious and, therefore, deeply value any effort to contribute!
 
@@ -127,3 +127,255 @@ For SDK compatibility, refer to the supported version matrix in the respective R
 ### Building Restate locally
 
 In order to build Restate locally [follow the build instructions](https://github.com/restatedev/restate/blob/main/docs/dev/local-development.md#building-restate).
+
+## Repository Architecture & Code Layout
+
+> **Why this matters**: Restate's codebase is a *mono-repo* with ~100 crates. Understanding how they map to the architectural concepts in the [official docs](https://docs.restate.dev/references/architecture/) will make navigation and contribution painless.
+
+### High-level view
+
+```mermaid
+graph TD
+    A["External Clients"] -->|HTTP / gRPC / Kafka| I(Ingress)
+    I -->|forward invocations| W(Workers)
+    W -->|append events| L[Distributed Log (Bifrost)]
+    L --> LS(Log Servers)
+    subgraph ControlPlane
+        MS(Metadata Server)
+    end
+    MS -- cluster metadata --> W
+    MS -- log placement --> LS
+    MS -- membership & roles --> I
+```
+
+* **Metadata Server** – cluster membership & configuration  → [`crates/metadata-server`](crates/metadata-server/)
+* **Distributed Log (Bifrost)** – virtual-consensus log  → [`crates/bifrost`](crates/bifrost/)  
+  *Log storage is provided by* **Log Servers** → [`crates/log-server`](crates/log-server/)
+* **Workers / Partition-Processors** – execute user code & manage state  → [`crates/worker`](crates/worker/)
+* **Ingress** – entry point for HTTP & Kafka traffic  → [`crates/ingress-http`](crates/ingress-http/) / [`crates/ingress-kafka`](crates/ingress-kafka/)
+
+These roles are assembled into a single binary – **`restate-server`** – found in [`server/`](server/).
+
+### Workspace map
+
+```mermaid
+flowchart LR
+    subgraph Binaries
+        CLI([cli/ – restate CLI])
+        SRV([server/ – restate-server])
+    end
+    subgraph CoreLibs
+        CORE([crates/core])
+        TYPES([crates/types])
+        ERR([crates/errors])
+    end
+    subgraph ControlPlane
+        META([crates/metadata-server])
+        ADMIN([crates/admin \n + admin-rest-model])
+    end
+    subgraph LogLayer
+        BIF([crates/bifrost])
+        LOGS([crates/log-server])
+        WAL([crates/wal-protocol])
+    end
+    subgraph Execution
+        WRK([crates/worker])
+        INV([crates/invoker-impl])
+    end
+    subgraph Ingress
+        HTTP([crates/ingress-http])
+        KAF([crates/ingress-kafka])
+    end
+    CLI-->CORE
+    SRV-->CORE
+    WRK-->CORE
+    INV-->WRK
+    WRK-->BIF
+    BIF-->LOGS
+    META-->LOGS
+    META-->WRK
+    HTTP-->WRK
+    KAF-->WRK
+```
+
+> Tip: **use `cargo tree -p <crate>`** to explore fine-grained dependencies.
+
+### Directory cheatsheet
+
+| Path | What you'll find | When to look here |
+|------|-----------------|-------------------|
+| `server/` | Main binary; composes roles based on CLI flags & `server.yaml` | Launching Restate locally / debugging startup |
+| `cli/` | Dev/ops companion CLI (`restate`) | Automating admin tasks & queries |
+| `crates/core/` | Task runtime, networking, common types | Shared infra used by most crates |
+| `crates/metadata-server/` | Raft-backed metadata store | Cluster bootstrap & reconfiguration |
+| `crates/bifrost/` | Virtual-consensus distributed log | Control plane & clients for interacting with Bifrost |
+| `crates/log-server/` | Log segment persistence (RocksDB, object-store) | Durability and replication tuning |
+| `crates/worker/` | Partition processors & state machines | Business-logic execution |
+| `crates/ingress-http/` | HTTP ingress | Endpoint for receiving HTTP requests |
+| `crates/ingress-kafka/` | Kafka ingress connector | Kafka ingress connector |
+| `crates/partition-store/` | RocksDB backed state store | State of the partition processors (materialized view of log) |
+
+*(See `workspace-hack/` for dependency graph workarounds, and `tools/` for misc utilities.)*
+
+### Getting around the codebase
+
+1. **Start with the binary** – [`server/src/main.rs`](server/src/main.rs) shows how roles are wired.
+2. **Follow the role** you're interested in using links above.
+3. **Search logs** – Run `rg "TODO:"` to find open questions & easy issues.
+4. **Run integration tests** – `cargo test -p server -- --nocapture` spins up an in-proc cluster.
+
+### Contributing workflow
+
+* Format & lint: `cargo fmt && cargo clippy --all-targets`.
+* Feature flags follow `crate-name/feature` convention – check each `Cargo.toml`.
+* Docs live under [`docs/`](docs/) – update when changing public behaviour.
+
+---
+
+Happy hacking! 🎉
+
+## Deep-dive by Role
+
+Below we drill into each major role, call out its key crates/modules, and show how they talk to each other at runtime.
+
+### 1. Metadata Server (Control Plane)
+
+| Location | Purpose |
+|----------|---------|
+| [`crates/metadata-server/src`](crates/metadata-server/src/) | Raft-backed key–value store containing **NodesConfiguration**, partition layout, log placement, and feature flags |
+| [`crates/metadata-server-grpc`](crates/metadata-server-grpc/) | gRPC bindings (auto-generated & service stubs) |
+| [`crates/metadata-providers/`](crates/metadata-providers/) | Client abstraction – in-process, replicated, or mock |
+| [`crates/admin`](crates/admin/) | Admin API that exposes CRUD operations over metadata |
+
+Key modules worth opening:
+* [`grpc/mod.rs`](crates/metadata-server/src/grpc) – transport adaptor.
+* [`raft/`](crates/metadata-server/src/raft) – Raft state-machine, snapshot logic, and membership changes.
+* [`local/`](crates/metadata-server/src/local) – non-clustered single-process implementation useful for unit tests.
+
+Practical rabbit-hole: start at 
+```20:35:crates/metadata-server/src/lib.rs
+pub async fn create_metadata_server_and_client(...) -> anyhow::Result<...>
+```
+that wires the store and returns a typed client — that's the entry-point other services use.
+
+### 2. Distributed Log – Bifrost & Log Servers
+
+| Location | Purpose |
+|----------|---------|
+| [`crates/bifrost`](crates/bifrost/) | Virtual-consensus layer: leader election, quorum writes, segment sealing |
+| [`crates/log-server`](crates/log-server/) | Persists segments to RocksDB or remote object store |
+| [`crates/wal-protocol`](crates/wal-protocol/) | Protobuf definition of the write-ahead log records |
+
+Open [`crates/log-server/src/service.rs`](crates/log-server/src/service.rs) to see the **gRPC service** handling `AppendSegment` & `FetchSegment`.
+
+### 3. Workers & Partition Processors
+
+| Location | Purpose |
+|----------|---------|
+| [`crates/worker`](crates/worker/) | Top-level service spawning partition processors, snapshotter, Kafka ingress, and query engine |
+| [`crates/partition-store`](crates/partition-store/) | RocksDB backed storage for invocation journals & KV state |
+| [`crates/invoker-impl`](crates/invoker-impl/) | Runs user code via language-specific SDK contracts |
+| [`crates/timer`](crates/timer/) & [`timer-queue`](crates/timer-queue/) | Durable timers |
+
+Focus modules:
+* `partition/partition_processor.rs` – orchestrates Durable Execution state machine.
+* `subscription_controller` – coordinates push notifications to Kafka / HTTP.
+
+### 4. Ingress Layer
+
+| Location | Purpose |
+|----------|---------|
+| [`crates/ingress-http`](crates/ingress-http/) | JSON & Protobuf endpoints; path routing; auth middleware |
+| [`crates/ingress-kafka`](crates/ingress-kafka/) | Streams Kafka records into invocations |
+
+Diagram linking ingress to worker is already shown above.
+
+### 5. CLI & Tooling
+
+| Path | Notes |
+|------|------|
+| [`cli/`](cli/) | End-user CLI (Rust + clap) – interacts with Admin API & SQL engine |
+| [`tools/xtask`](tools/xtask/) | Dev helper for release automation |
+| [`npm/restate/`](npm/restate/) | Thin node wrapper around Rust CLI for npx installs |
+
+---
+
+## Runtime Request Flow (Sequence)  
+*(HTTP request → durable execution → result)*
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant HTTP as HTTP-Ingress
+    participant Worker
+    participant Bifrost
+    participant LogS as Log-Server
+    participant Meta as Metadata
+
+    Client->>HTTP: POST /invoke
+    HTTP->>Meta: resolve partition(key)
+    Meta-->>HTTP: partition = 42 leader = W1
+    HTTP->>Worker: gRPC Invoke(partition 42)
+    Worker->>Bifrost: Append(LogEntry)
+    Bifrost->>LogS: persist segment
+    Note right of Worker: Durable Execution ↩<br/>state machine resumes/parks
+    Bifrost-->>Worker: Commit ack (index)
+    Worker-->>HTTP: 200 OK / 202 Accepted
+```
+
+---
+
+## Protobuf & API Surface
+
+All cross-service contracts live under `protobuf/` directories next to their crates. To regenerate: `cargo xtask proto-gen`.
+
+Major schema folders:
+* [`crates/core/protobuf`](crates/core/protobuf/) – cluster-control RPCs
+* [`service-protocol/`](service-protocol/) – public invocation wire-format (v3/v4 coexist)
+* [`crates/log-server/protobuf`](crates/log-server/protobuf/) – WAL gRPC
+
+REST & Admin OpenAPI spec is generated on the fly by [`crates/admin-rest-model`](crates/admin-rest-model/).
+
+---
+
+## Testing, CI & Benchmarks
+
+1. **Unit tests** live next to code (guarded by `#[cfg(test)]`).
+2. **Integration tests** in [`server/tests`](server/tests) spin up multi-node clusters; run with `cargo nextest run -p server`.
+3. **Benchmarks** under [`benchmarks/`](benchmarks/) and crate-specific `benches/` folders use Criterion. Example: `cargo bench -p bifrost`.
+4. **Static analysis**: `cargo clippy --workspace --all-targets --all-features` (CI gate).
+5. **MIRI & Loom** are configured for concurrency bugs (`scripts/ci-*`).
+
+---
+
+## Building, Running & Hacking
+
+```bash
+# Build everything (optimised dev profile)
+cargo build --workspace
+
+# Start a single-node dev cluster
+cargo run -p server -- start --demo
+
+# Spawn 3-node cluster using docker-compose
+cd docker && docker compose up
+
+# SQL Introspection
+restate sql "SELECT * FROM invocations LIMIT 10;"
+```
+
+*Configuration files* live in [`charts/restate-helm/templates`](charts/restate-helm/templates) and are reused by `docker/` images.
+
+---
+
+## How to Add a New Crate / Feature
+
+1. Put new crate under `crates/` – keep name kebab-cased.  
+2. Add to `workspace.members` in root `Cargo.toml`.  
+3. If it's a role service, expose a `Service` struct implementing `run(self) -> anyhow::Result<()>`.
+4. Wire it in `server/src/main.rs` behind a feature flag.
+5. Add docs & an entry in this README table. ✔️
+
+---
+
+*(If this README feels long – skim headings first, then deep-dive where needed!)*
