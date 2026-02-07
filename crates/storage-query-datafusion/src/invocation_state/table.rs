@@ -16,6 +16,7 @@ use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
+use datafusion::physical_plan::metrics::Time;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 use tokio::sync::mpsc::Sender;
@@ -100,6 +101,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         _predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
+        _elapsed_compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let status = self.status_handle.clone();
         let partition_store_manager = self.partition_store_manager.clone();
