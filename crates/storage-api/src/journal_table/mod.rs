@@ -61,11 +61,13 @@ pub trait ReadJournalTable {
         journal_index: u32,
     ) -> impl Future<Output = Result<Option<JournalEntry>>> + Send;
 
-    fn get_journal(
-        &mut self,
+    /// Returns a lazy stream over journal entries.
+    /// The stream borrows from `self` only, not from `invocation_id`.
+    fn get_journal<'a>(
+        &'a self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send>;
+    ) -> Result<impl Stream<Item = Result<(EntryIndex, JournalEntry)>> + Send + 'a>;
 }
 
 pub trait ScanJournalTable {

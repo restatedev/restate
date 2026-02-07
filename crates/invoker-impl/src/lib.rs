@@ -146,17 +146,18 @@ where
                     opts.inactivity_timeout.into(),
                     opts.abort_timeout.into(),
                     opts.disable_eager_state,
+                    opts.eager_state_size_limit.map(|v| v.as_usize()),
                     opts.message_size_warning.as_non_zero_usize(),
                     opts.message_size_limit(),
+                    opts.service_protocol_channel_size.get(),
                     retry_count_since_last_stored_entry,
-                    storage_reader,
                     self.entry_enricher.clone(),
                     self.schemas.clone(),
                     invoker_tx,
                     invoker_rx,
                     self.action_token_bucket.clone(),
                 )
-                .run(input_journal),
+                .run(input_journal, storage_reader),
             )
             .expect("to spawn invocation task")
     }

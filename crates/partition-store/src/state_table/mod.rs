@@ -14,6 +14,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
+use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
@@ -22,8 +23,10 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::TableKind::State;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, break_on_err};
-use crate::{TableScan, TableScanIterationDecision};
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
+    TableScanIterationDecision, break_on_err,
+};
 
 define_table_key!(
     State,
@@ -49,6 +52,28 @@ fn write_state_entry_key(service_id: &ServiceId, state_key: impl AsRef<[u8]>) ->
 #[inline]
 fn user_state_key_from_slice(mut key: &[u8]) -> Result<Bytes> {
     Ok(StateKey::deserialize_from(&mut key)?.state_key)
+}
+
+/// Lazy iterator over state entries. Decodes entries on-demand from RocksDB.
+struct StateEntryIter<'a, DB: DBAccess> {
+    iter: DBRawIteratorWithThreadMode<'a, DB>,
+}
+
+impl<'a, DB: DBAccess> StateEntryIter<'a, DB> {
+    fn new(iter: DBRawIteratorWithThreadMode<'a, DB>) -> Self {
+        Self { iter }
+    }
+}
+
+impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
+    type Item = Result<(Bytes, Bytes)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (k, v) = self.iter.item()?;
+        let result = decode_user_state_key_value(k, v);
+        self.iter.next();
+        Some(result)
+    }
 }
 
 fn put_user_state<S: StorageAccess>(
@@ -99,20 +124,22 @@ fn get_user_state<S: StorageAccess>(
     storage.get_kv_raw(key, move |_k, v| Ok(v.map(Bytes::copy_from_slice)))
 }
 
-fn get_all_user_states_for_service<S: StorageAccess>(
-    storage: &mut S,
+fn get_all_user_states_for_service<'a, S: StorageAccess>(
+    storage: &'a S,
     service_id: &ServiceId,
-) -> Result<Vec<Result<(Bytes, Bytes)>>> {
-    let _x = RocksDbPerfGuard::new("get-all-user-state");
+) -> Result<StateEntryIter<'a, S::DBAccess<'a>>> {
+    let _x = RocksDbPerfGuard::new("get-all-user-state-iter-setup");
     let key = StateKey::builder()
         .partition_key(service_id.partition_key())
         .service_name(service_id.service_name.clone())
         .service_key(service_id.key.clone());
 
-    storage.for_each_key_value_in_place(
-        TableScan::SinglePartitionKeyPrefix(service_id.partition_key(), key),
-        |k, v| TableScanIterationDecision::Emit(decode_user_state_key_value(k, v)),
-    )
+    let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
+        service_id.partition_key(),
+        key,
+    ))?;
+
+    Ok(StateEntryIter::new(iter))
 }
 
 impl ReadStateTable for PartitionStore {
@@ -125,10 +152,10 @@ impl ReadStateTable for PartitionStore {
         get_user_state(self, service_id, state_key)
     }
 
-    fn get_all_user_states_for_service(
-        &mut self,
+    fn get_all_user_states_for_service<'a>(
+        &'a self,
         service_id: &ServiceId,
-    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a> {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
             self, service_id,
@@ -171,10 +198,10 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         get_user_state(self, service_id, state_key)
     }
 
-    fn get_all_user_states_for_service(
-        &mut self,
+    fn get_all_user_states_for_service<'a>(
+        &'a self,
         service_id: &ServiceId,
-    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send> {
+    ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a> {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
             self, service_id,
