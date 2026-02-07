@@ -15,14 +15,13 @@ use super::Notification;
 
 use std::collections::HashSet;
 use std::convert::Infallible;
-use std::iter::Empty;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use futures::{FutureExt, Stream, future, stream};
+use futures::{FutureExt, Stream};
 use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
@@ -32,9 +31,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::instrument;
 
-use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction,
-};
+use restate_invoker_api::invocation_reader::{InvocationReader, InvocationReaderTransaction};
 use restate_invoker_api::{EntryEnricher, InvokeInputJournal};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
@@ -135,7 +132,7 @@ type InvokerBodyStream =
 type InvokerRequestStreamSender = mpsc::Sender<Result<Frame<Bytes>, Infallible>>;
 
 /// Represents an open invocation stream
-pub(super) struct InvocationTask<IR, EE, DMR> {
+pub(super) struct InvocationTask<EE, DMR> {
     // Shared client
     client: ServiceClient,
 
@@ -151,7 +148,6 @@ pub(super) struct InvocationTask<IR, EE, DMR> {
     retry_count_since_last_stored_entry: u32,
 
     // Invoker tx/rx
-    invocation_reader: IR,
     entry_enricher: EE,
     schemas: Live<DMR>,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -193,9 +189,8 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<IR, EE, Schemas> InvocationTask<IR, EE, Schemas>
+impl<EE, Schemas> InvocationTask<EE, Schemas>
 where
-    IR: InvocationReader + Clone + Send + Sync + 'static,
     EE: EntryEnricher,
     Schemas: DeploymentResolver + InvocationTargetResolver,
 {
@@ -211,7 +206,6 @@ where
         message_size_warning: NonZeroUsize,
         message_size_limit: NonZeroUsize,
         retry_count_since_last_stored_entry: u32,
-        invocation_reader: IR,
         entry_enricher: EE,
         deployment_metadata_resolver: Live<Schemas>,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
@@ -226,7 +220,6 @@ where
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
             disable_eager_state,
-            invocation_reader,
             entry_enricher,
             schemas: deployment_metadata_resolver,
             invoker_tx,
@@ -251,10 +244,15 @@ where
         ),
         skip_all,
     )]
-    pub async fn run(mut self, input_journal: InvokeInputJournal) {
+    pub async fn run<IR>(mut self, input_journal: InvokeInputJournal, mut invocation_reader: IR)
+    where
+        IR: InvocationReader,
+    {
         let start = Instant::now();
         // Execute the task
-        let terminal_state = self.select_protocol_version_and_run(input_journal).await;
+        let terminal_state = self
+            .select_protocol_version_and_run(input_journal, &mut invocation_reader)
+            .await;
 
         // Sanity check of the final state
         let inner = match terminal_state {
@@ -272,26 +270,28 @@ where
             .record(start.elapsed());
     }
 
-    async fn select_protocol_version_and_run(
+    async fn select_protocol_version_and_run<IR>(
         &mut self,
         input_journal: InvokeInputJournal,
-    ) -> TerminalLoopState<()> {
-        let mut txn = self.invocation_reader.transaction();
-        // Resolve journal and its metadata
-        let (journal_metadata, journal_stream) = match input_journal {
+        invocation_reader: &mut IR,
+    ) -> TerminalLoopState<()>
+    where
+        IR: InvocationReader,
+    {
+        let mut txn = invocation_reader.transaction();
+
+        // Get journal metadata and cached items (if any)
+        let (journal_metadata, cached_journal_items) = match input_journal {
             InvokeInputJournal::NoCachedJournal => {
-                let (journal_meta, journal_stream) = shortcircuit!(
-                    txn.read_journal(&self.invocation_id)
+                let metadata = shortcircuit!(
+                    txn.read_journal_metadata(&self.invocation_id)
                         .await
                         .map_err(|e| InvokerError::JournalReader(e.into()))
                         .and_then(|opt| opt.ok_or_else(|| InvokerError::NotInvoked))
                 );
-                (journal_meta, future::Either::Left(journal_stream))
+                (metadata, None)
             }
-            InvokeInputJournal::CachedJournal(journal_meta, journal_items) => (
-                journal_meta,
-                future::Either::Right(stream::iter(journal_items)),
-            ),
+            InvokeInputJournal::CachedJournal(metadata, items) => (metadata, Some(items)),
         };
 
         // Resolve the deployment metadata
@@ -368,23 +368,6 @@ where
             self.abort_timeout = abort_timeout;
         }
 
-        // Read eager state, if needed
-        let state_iter = if let Some(keyed_service_id) =
-            self.invocation_target.as_keyed_service_id()
-            && invocation_attempt_options.enable_lazy_state != Some(true)
-            && !self.disable_eager_state
-        {
-            // only for keyed service
-            shortcircuit!(
-                txn.read_state(&keyed_service_id)
-                    .await
-                    .map_err(|e| InvokerError::StateReader(e.into()))
-                    .map(|r| r.map(itertools::Either::Left))
-            )
-        } else {
-            EagerState::<Empty<_>>::default().map(itertools::Either::Right)
-        };
-
         if chosen_service_protocol_version < ServiceProtocolVersion::V4
             && journal_metadata.using_journal_table_v2
         {
@@ -395,8 +378,15 @@ where
             )));
         }
 
-        // No need to read from Rocksdb anymore
-        drop(txn);
+        // Determine if we need to read state
+        let keyed_service_id = if self.invocation_target.as_keyed_service_id().is_some()
+            && invocation_attempt_options.enable_lazy_state != Some(true)
+            && !self.disable_eager_state
+        {
+            self.invocation_target.as_keyed_service_id()
+        } else {
+            None
+        };
 
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
             PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
@@ -408,7 +398,13 @@ where
             let service_protocol_runner =
                 ServiceProtocolRunner::new(self, chosen_service_protocol_version);
             service_protocol_runner
-                .run(journal_metadata, deployment, journal_stream, state_iter)
+                .run(
+                    txn,
+                    journal_metadata,
+                    keyed_service_id,
+                    cached_journal_items,
+                    deployment,
+                )
                 .await
         } else {
             // Protocol runner for service protocol v4+
@@ -417,14 +413,20 @@ where
                 chosen_service_protocol_version,
             );
             service_protocol_runner
-                .run(journal_metadata, deployment, journal_stream, state_iter)
+                .run(
+                    txn,
+                    journal_metadata,
+                    keyed_service_id,
+                    cached_journal_items,
+                    deployment,
+                )
                 .await
         }
     }
 }
 
-impl<IR, EE, DMR> InvocationTask<IR, EE, DMR> {
-    fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
+impl<EE, Schemas> InvocationTask<EE, Schemas> {
+    pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             invocation_id: self.invocation_id,

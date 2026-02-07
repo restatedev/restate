@@ -8,18 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::pin::Pin;
+
 use bytes::Bytes;
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{Stream, StreamExt, TryStreamExt};
+
 use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction,
+    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
 use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
-use restate_types::identifiers::InvocationId;
-use restate_types::identifiers::ServiceId;
-use std::vec::IntoIter;
+use restate_types::identifiers::{InvocationId, ServiceId};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InvokerStorageReaderError {
@@ -64,15 +65,20 @@ impl<Storage> InvocationReaderTransaction for InvokerStorageReaderTransaction<'_
 where
     Storage: restate_storage_api::Storage + 'static,
 {
-    type JournalStream =
-        stream::Iter<IntoIter<restate_invoker_api::invocation_reader::JournalEntry>>;
-    type StateIter = IntoIter<(Bytes, Bytes)>;
+    type JournalStream<'a>
+        = Pin<Box<dyn Stream<Item = Result<JournalEntry, Self::Error>> + Send + 'a>>
+    where
+        Self: 'a;
+    type StateStream<'a>
+        = Pin<Box<dyn Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send + 'a>>
+    where
+        Self: 'a;
     type Error = InvokerStorageReaderError;
 
-    async fn read_journal(
+    async fn read_journal_metadata(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> Result<Option<(JournalMetadata, Self::JournalStream)>, Self::Error> {
+    ) -> Result<Option<JournalMetadata>, Self::Error> {
         let invocation_status = self.txn.get_invocation_status(invocation_id).await?;
 
         let random_seed = invocation_status
@@ -80,92 +86,69 @@ where
             .unwrap_or_else(|| invocation_id.to_random_seed());
 
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
-            // Try to read first from journal table v2
-            let entries = journal_table_v2::ReadJournalTable::get_journal(
-                &mut self.txn,
-                *invocation_id,
+            // Check if using journal v2 by seeing if v2 has any entries
+            let mut journal_v2_stream =
+                std::pin::pin!(journal_table_v2::ReadJournalTable::get_journal(
+                    &self.txn,
+                    *invocation_id,
+                    1, // Just check first entry to determine version
+                )?);
+            let using_v2 = journal_v2_stream.next().await.transpose()?.is_some();
+
+            Ok(Some(JournalMetadata::new(
                 invoked_status.journal_metadata.length,
-            )?
-            .map(|entry| {
-                entry
-                    .map_err(InvokerStorageReaderError::Storage)
-                    .map(|(_, entry)| {
-                        restate_invoker_api::invocation_reader::JournalEntry::JournalV2(entry)
-                    })
-            })
-            // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
-            // collecting the stream because we cannot keep the transaction open
-            .try_collect::<Vec<_>>()
-            .await?;
-
-            let (journal_metadata, journal_stream) = if !entries.is_empty() {
-                // We got the journal, good to go
-                (
-                    JournalMetadata::new(
-                        invoked_status.journal_metadata.length,
-                        invoked_status.journal_metadata.span_context,
-                        invoked_status.pinned_deployment,
-                        invoked_status.timestamps.modification_time(),
-                        random_seed,
-                        true,
-                    ),
-                    entries,
-                )
-            } else {
-                // todo remove once we no longer support journal v1: https://github.com/restatedev/restate/issues/3184
-                // We didn't read a thing from journal table v2 -> we need to read journal v1
-                (
-                    JournalMetadata::new(
-                        // Use entries len here, because we might be filtering out events
-                        invoked_status.journal_metadata.length,
-                        invoked_status.journal_metadata.span_context,
-                        invoked_status.pinned_deployment,
-                        invoked_status.timestamps.modification_time(),
-                        random_seed,
-                        false,
-                    ),
-                    journal_table_v1::ReadJournalTable::get_journal(
-                        &mut self.txn,
-                        invocation_id,
-                        invoked_status.journal_metadata.length,
-                    )?
-                    .map(|entry| {
-                        entry.map_err(InvokerStorageReaderError::Storage).map(
-                            |(_, journal_entry)| match journal_entry {
-                                journal_table_v1::JournalEntry::Entry(entry) => {
-                                    restate_invoker_api::invocation_reader::JournalEntry::JournalV1(
-                                        entry.erase_enrichment(),
-                                    )
-                                }
-                                journal_table_v1::JournalEntry::Completion(_) => {
-                                    panic!("should only read entries when reading the journal")
-                                }
-                            },
-                        )
-                    })
-                    // TODO: Update invoker to maintain transaction while reading the journal stream: See https://github.com/restatedev/restate/issues/275
-                    // collecting the stream because we cannot keep the transaction open
-                    .try_collect::<Vec<_>>()
-                    .await?,
-                )
-            };
-
-            Ok(Some((journal_metadata, stream::iter(journal_stream))))
+                invoked_status.journal_metadata.span_context,
+                invoked_status.pinned_deployment,
+                invoked_status.timestamps.modification_time(),
+                random_seed,
+                using_v2,
+            )))
         } else {
             Ok(None)
         }
     }
 
-    async fn read_state(
-        &mut self,
+    fn read_journal(
+        &self,
+        invocation_id: &InvocationId,
+        length: restate_types::identifiers::EntryIndex,
+        using_journal_table_v2: bool,
+    ) -> Result<Self::JournalStream<'_>, Self::Error> {
+        if using_journal_table_v2 {
+            let journal_entries =
+                journal_table_v2::ReadJournalTable::get_journal(&self.txn, *invocation_id, length)?;
+            Ok(Box::pin(journal_entries.map(|result| {
+                result
+                    .map(|(_, entry)| JournalEntry::JournalV2(entry))
+                    .map_err(InvokerStorageReaderError::Storage)
+            })))
+        } else {
+            // todo remove once we no longer support journal v1: https://github.com/restatedev/restate/issues/3184
+            let journal_entries =
+                journal_table_v1::ReadJournalTable::get_journal(&self.txn, invocation_id, length)?;
+            Ok(Box::pin(journal_entries.map(|result| {
+                result
+                    .map(|(_, journal_entry)| match journal_entry {
+                        journal_table_v1::JournalEntry::Entry(entry) => {
+                            JournalEntry::JournalV1(entry.erase_enrichment())
+                        }
+                        journal_table_v1::JournalEntry::Completion(_) => {
+                            panic!("should only read entries when reading the journal")
+                        }
+                    })
+                    .map_err(InvokerStorageReaderError::Storage)
+            })))
+        }
+    }
+
+    fn read_state(
+        &self,
         service_id: &ServiceId,
-    ) -> Result<EagerState<Self::StateIter>, Self::Error> {
-        let user_states = self
+    ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error> {
+        let stream = self
             .txn
             .get_all_user_states_for_service(service_id)?
-            .try_collect::<Vec<_>>()
-            .await?;
-
-        Ok(EagerState::new_complete(user_states.into_iter()))
+            .map_err(InvokerStorageReaderError::Storage);
+        Ok(EagerState::new_complete(Box::pin(stream)))
     }
 }
