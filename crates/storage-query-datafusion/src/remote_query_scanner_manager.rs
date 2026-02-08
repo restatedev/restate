@@ -18,6 +18,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::SendableRecordBatchStream;
 
 use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::metrics::Time;
 use restate_core::Metadata;
 use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
@@ -184,6 +185,7 @@ impl ScanPartition for RemotePartitionsScanner {
         predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
+        elapsed_compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         match self.manager.get_partition_target_node(partition_id)? {
             PartitionLocation::Local => {
@@ -197,6 +199,7 @@ impl ScanPartition for RemotePartitionsScanner {
                     predicate,
                     batch_size,
                     limit,
+                    elapsed_compute,
                 )?)
             }
             PartitionLocation::Remote { node_id } => Ok(remote_scan_as_datafusion_stream(

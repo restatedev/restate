@@ -16,6 +16,7 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::metrics::Time;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, warn};
@@ -92,6 +93,7 @@ impl ScannerTask {
             request
                 .limit
                 .map(|limit| usize::try_from(limit).expect("limit to fit in a usize")),
+            Time::new(),
         )?;
 
         let (tx, rx) = mpsc::unbounded_channel();

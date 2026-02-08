@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 use std::any::Any;
-use std::fmt::{Debug, Formatter};
+use std::fmt::{self, Debug, Display, Formatter};
 use std::ops::RangeInclusive;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
@@ -23,12 +25,15 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::filter_pushdown::{
     FilterPushdownPhase, FilterPushdownPropagation, PushedDown,
 };
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet, Time,
+};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, PlanProperties,
     SendableRecordBatchStream,
 };
-use futures::stream::{self, StreamExt, TryStreamExt};
+use futures::stream::{self, Stream, StreamExt, TryStreamExt};
 
 use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::partition_table::Partition;
@@ -38,6 +43,7 @@ use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyEx
 use crate::table_util::{find_sort_columns, make_ordering};
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
+    #[allow(clippy::too_many_arguments)]
     fn scan_partition(
         &self,
         partition_id: PartitionId,
@@ -46,6 +52,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
+        elapsed_compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream>;
 }
 
@@ -236,6 +243,7 @@ where
             scanner: self.partition_scanner.clone(),
             plan,
             statistics: self.statistics.clone().project(projection),
+            metrics: ExecutionPlanMetricsSet::new(),
         }))
     }
 
@@ -265,6 +273,7 @@ struct PartitionedExecutionPlan<T> {
     scanner: T,
     plan: PlanProperties,
     statistics: Statistics,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl<T> ExecutionPlan for PartitionedExecutionPlan<T>
@@ -320,6 +329,8 @@ where
         partition: usize,
         context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+
         let physical_partitions = self
             .logical_partitions
             .get(partition)
@@ -334,6 +345,7 @@ where
                 let limit = self.limit;
                 let predicate = self.predicate.clone();
                 let batch_size = context.session_config().batch_size();
+                let elapsed_compute = baseline_metrics.elapsed_compute().clone();
                 move |(partition_id, partition)| {
                     scanner
                         .scan_partition(
@@ -343,16 +355,26 @@ where
                             predicate.clone(),
                             batch_size,
                             limit,
+                            elapsed_compute.clone(),
                         )
                         .map_err(|e| DataFusionError::External(e.into()))
                 }
             })
             .try_flatten();
 
+        let metered = MeteredStream {
+            inner: sequential_scanners_stream,
+            baseline_metrics,
+        };
+
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.projected_schema.clone(),
-            sequential_scanners_stream,
+            metered,
         )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 
     fn handle_child_pushdown_result(
@@ -403,10 +425,36 @@ where
     fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "PartitionedExecutionPlan({:?})", self.scanner)
+                write!(
+                    f,
+                    "PartitionedExecutionPlan: scanner={:?}, partitions={}, projection=[{}]",
+                    self.scanner,
+                    self.logical_partitions.len(),
+                    ProjectedColumns(&self.projected_schema),
+                )?;
+                if let Some(predicate) = &self.predicate {
+                    write!(f, ", predicate={predicate}")?;
+                }
+                if let Some(limit) = self.limit {
+                    write!(f, ", limit={limit}")?;
+                }
+                Ok(())
             }
             DisplayFormatType::TreeRender => {
-                write!(f, "PartitionedExecutionPlan\nscanner={:?}", self.scanner)
+                writeln!(f, "scanner={:?}", self.scanner)?;
+                writeln!(f, "partitions={}", self.logical_partitions.len())?;
+                writeln!(
+                    f,
+                    "projection=[{}]",
+                    ProjectedColumns(&self.projected_schema)
+                )?;
+                if let Some(predicate) = &self.predicate {
+                    writeln!(f, "predicate={predicate}")?;
+                }
+                if let Some(limit) = self.limit {
+                    writeln!(f, "limit={limit}")?;
+                }
+                Ok(())
             }
         }
     }
@@ -504,6 +552,7 @@ struct GenericExecutionPlan {
     filters: Vec<Expr>,
     plan_properties: PlanProperties,
     statistics: Statistics,
+    metrics: ExecutionPlanMetricsSet,
 }
 
 impl GenericExecutionPlan {
@@ -530,6 +579,7 @@ impl GenericExecutionPlan {
             filters: filters.to_vec(),
             plan_properties,
             statistics,
+            metrics: ExecutionPlanMetricsSet::new(),
         }
     }
 }
@@ -570,16 +620,31 @@ impl ExecutionPlan for GenericExecutionPlan {
 
     fn execute(
         &self,
-        _partition: usize,
+        partition: usize,
         context: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
-        let stream = self.scanner.scan(
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+
+        let inner = self.scanner.scan(
             self.projected_schema.clone(),
             &self.filters,
             context.session_config().batch_size(),
             self.limit,
         );
-        Ok(stream)
+
+        let metered = MeteredStream {
+            inner,
+            baseline_metrics,
+        };
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.projected_schema.clone(),
+            metered,
+        )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 
     fn statistics(&self) -> datafusion::error::Result<Statistics> {
@@ -595,11 +660,88 @@ impl DisplayAs for GenericExecutionPlan {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "GenericExecutionPlan()",)
+                write!(
+                    f,
+                    "GenericExecutionPlan: scanner={:?}, projection=[{}]",
+                    self.scanner,
+                    ProjectedColumns(&self.projected_schema),
+                )?;
+                if !self.filters.is_empty() {
+                    write!(f, ", filters=[{}]", ExprList(&self.filters))?;
+                }
+                if let Some(limit) = self.limit {
+                    write!(f, ", limit={limit}")?;
+                }
+                Ok(())
             }
             DisplayFormatType::TreeRender => {
-                write!(f, "GenericExecutionPlan()",)
+                writeln!(f, "scanner={:?}", self.scanner)?;
+                writeln!(
+                    f,
+                    "projection=[{}]",
+                    ProjectedColumns(&self.projected_schema)
+                )?;
+                if !self.filters.is_empty() {
+                    writeln!(f, "filters=[{}]", ExprList(&self.filters))?;
+                }
+                if let Some(limit) = self.limit {
+                    writeln!(f, "limit={limit}")?;
+                }
+                Ok(())
             }
         }
+    }
+}
+
+/// Display helper: comma-separated column names from a schema.
+struct ProjectedColumns<'a>(&'a SchemaRef);
+
+impl Display for ProjectedColumns<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for field in self.0.fields() {
+            if !first {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", field.name())?;
+            first = false;
+        }
+        Ok(())
+    }
+}
+
+/// Display helper: comma-separated logical expressions.
+struct ExprList<'a>(&'a [Expr]);
+
+impl Display for ExprList<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for expr in self.0 {
+            if !first {
+                write!(f, ", ")?;
+            }
+            write!(f, "{expr}")?;
+            first = false;
+        }
+        Ok(())
+    }
+}
+
+/// Stream wrapper that records [`BaselineMetrics`] using [`BaselineMetrics::record_poll`].
+struct MeteredStream<S> {
+    inner: S,
+    baseline_metrics: BaselineMetrics,
+}
+
+impl<S> Stream for MeteredStream<S>
+where
+    S: Stream<Item = datafusion::common::Result<datafusion::arrow::record_batch::RecordBatch>>
+        + Unpin,
+{
+    type Item = datafusion::common::Result<datafusion::arrow::record_batch::RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let poll = self.inner.poll_next_unpin(cx);
+        self.baseline_metrics.record_poll(poll)
     }
 }
