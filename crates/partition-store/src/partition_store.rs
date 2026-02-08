@@ -971,6 +971,7 @@ impl Transaction for PartitionStoreTransaction<'_> {
                 self.write_batch_with_index,
             )
             .await
+            .map(|_| ())
             .map_err(|error| StorageError::Generic(error.into()))
     }
 }
