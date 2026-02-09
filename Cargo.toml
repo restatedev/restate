@@ -214,7 +214,7 @@ rlimit = { version = "0.10.2" }
 rocksdb = { version = "0.45.0", package = "rust-rocksdb", features = [
     "multi-threaded-cf",
     "jemalloc",
-], git = "https://github.com/restatedev/rust-rocksdb", rev = "baaa733a94e2b590e20761a4de371cb367eeda51" }
+], git = "https://github.com/pcholakov/rust-rocksdb", rev = "04a51d528dcb5693c46c1df913c857d33ead2e89" }
 rstest = "0.26.1"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
 schemars = { version = "1.2", features = ["bytes1"] }

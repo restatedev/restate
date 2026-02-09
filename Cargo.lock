@@ -1097,7 +1097,7 @@ dependencies = [
  "bitflags 2.10.0",
  "cexpr",
  "clang-sys",
- "itertools 0.13.0",
+ "itertools 0.10.5",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -4743,7 +4743,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -8452,6 +8452,7 @@ dependencies = [
  "idna",
  "indexmap 2.13.0",
  "ipnet",
+ "itertools 0.10.5",
  "itertools 0.14.0",
  "jemalloc_pprof",
  "lexical-parse-float",
@@ -8658,7 +8659,7 @@ dependencies = [
 [[package]]
 name = "rust-librocksdb-sys"
 version = "0.41.0+10.9.1"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=baaa733a94e2b590e20761a4de371cb367eeda51#baaa733a94e2b590e20761a4de371cb367eeda51"
+source = "git+https://github.com/pcholakov/rust-rocksdb?rev=04a51d528dcb5693c46c1df913c857d33ead2e89#04a51d528dcb5693c46c1df913c857d33ead2e89"
 dependencies = [
  "bindgen",
  "bzip2-sys",
@@ -8674,7 +8675,7 @@ dependencies = [
 [[package]]
 name = "rust-rocksdb"
 version = "0.45.0"
-source = "git+https://github.com/restatedev/rust-rocksdb?rev=baaa733a94e2b590e20761a4de371cb367eeda51#baaa733a94e2b590e20761a4de371cb367eeda51"
+source = "git+https://github.com/pcholakov/rust-rocksdb?rev=04a51d528dcb5693c46c1df913c857d33ead2e89#04a51d528dcb5693c46c1df913c857d33ead2e89"
 dependencies = [
  "libc",
  "parking_lot",
