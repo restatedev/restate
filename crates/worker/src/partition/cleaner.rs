@@ -12,6 +12,7 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use futures::{Stream, StreamExt};
+use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusLazyFilter;
 use restate_types::errors::ConversionError;
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -126,7 +127,7 @@ where
 
         let effects_stream = self
             .storage
-            .filter_map_invocation_status_lazy(move |(invocation_id, invocation_status_v2_lazy)| {
+            .filter_map_invocation_status_lazy(InvocationStatusLazyFilter::completed(), move |(invocation_id, invocation_status_v2_lazy)| {
                 let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
                     invocation_status_v2_lazy.inner.status()
                 else {
@@ -206,7 +207,9 @@ mod tests {
     use googletest::prelude::*;
     use prost::Message;
     use restate_storage_api::invocation_status_table::InvokedInvocationStatusLite;
-    use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+    use restate_storage_api::protobuf_types::v1::lazy::{
+        InvocationStatusLazyFilter, InvocationStatusV2Lazy,
+    };
     use restate_storage_api::{StorageError, protobuf_types};
     use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey};
     use restate_types::time::MillisSinceEpoch;
@@ -236,6 +239,7 @@ mod tests {
         >(
             &self,
             _: RangeInclusive<PartitionKey>,
+            _: InvocationStatusLazyFilter,
             _: F,
         ) -> restate_storage_api::Result<impl Future<Output = restate_storage_api::Result<()>> + Send>
         {
@@ -256,6 +260,7 @@ mod tests {
                 + 'static,
         >(
             &self,
+            _: InvocationStatusFilter,
             mut f: F,
         ) -> restate_storage_api::Result<impl Stream<Item = restate_storage_api::Result<O>> + Send>
         {

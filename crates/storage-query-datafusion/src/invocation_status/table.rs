@@ -84,7 +84,7 @@ impl ScanLocalPartition for StatusScanner {
         range: RangeInclusive<PartitionKey>,
         f: F,
     ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
-        partition_store.for_each_invocation_status_lazy(range, f)
+        partition_store.for_each_invocation_status_lazy(range, Default::default(), f)
     }
 
     fn append_row<'a>(
