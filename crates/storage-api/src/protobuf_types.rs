@@ -3950,6 +3950,20 @@ pub mod v1 {
         }
 
         impl StatusFilter {
+            pub fn all() -> Self {
+                Self {
+                    set: EnumSet::empty(),
+                    negate: true,
+                }
+            }
+
+            pub fn none() -> Self {
+                Self {
+                    set: EnumSet::empty(),
+                    negate: true,
+                }
+            }
+
             pub fn include(status: InvocationStatusDiscriminants) -> Self {
                 Self {
                     set: enum_set!(status),
