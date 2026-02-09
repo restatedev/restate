@@ -260,7 +260,7 @@ mod tests {
                 + 'static,
         >(
             &self,
-            _: InvocationStatusFilter,
+            _: InvocationStatusLazyFilter,
             mut f: F,
         ) -> restate_storage_api::Result<impl Stream<Item = restate_storage_api::Result<O>> + Send>
         {

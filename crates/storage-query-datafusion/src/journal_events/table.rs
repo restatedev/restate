@@ -55,6 +55,7 @@ impl ScanLocalPartition for JournalEventsScanner {
     type Builder = SysJournalEventsBuilder;
     type Item<'a> = (InvocationId, EventView);
     type ConversionError = std::convert::Infallible;
+    type Filter = ();
 
     fn for_each_row<
         F: for<'a> FnMut(
@@ -66,6 +67,7 @@ impl ScanLocalPartition for JournalEventsScanner {
     >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
+        _filter: (),
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         partition_store.for_each_journal_event(range, move |item| f(item).map_break(Result::unwrap))

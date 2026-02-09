@@ -57,6 +57,7 @@ impl ScanLocalPartition for InboxScanner {
     type Builder = SysInboxBuilder;
     type Item<'a> = SequenceNumberInboxEntry;
     type ConversionError = std::convert::Infallible;
+    type Filter = ();
 
     fn for_each_row<
         F: for<'a> FnMut(
@@ -68,6 +69,7 @@ impl ScanLocalPartition for InboxScanner {
     >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
+        _filter: (),
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         partition_store.for_each_inbox(range, move |item| f(item).map_break(Result::unwrap))

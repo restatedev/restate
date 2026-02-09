@@ -32,6 +32,11 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     type Builder: crate::table_util::Builder + Send;
     type Item<'a>: Send;
     type ConversionError;
+    type Filter: Default + Send + Sync + 'static;
+
+    fn create_filter(_predicate: &Arc<dyn PhysicalExpr>) -> Self::Filter {
+        Self::Filter::default()
+    }
 
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
@@ -41,6 +46,7 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
+        filter: Self::Filter,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>;
 
@@ -101,9 +107,11 @@ where
             // timer starts on first row, stops on scanner drop
             let mut elapsed_compute = ElapsedCompute::new(elapsed_compute);
 
+            let filter = predicate.as_ref().map(S::create_filter).unwrap_or_default();
+
             let mut batch_sender = BatchSender::new(projection, tx, predicate, batch_size, limit);
 
-            S::for_each_row(&partition_store, range, move |row| {
+            S::for_each_row(&partition_store, range, filter, move |row| {
                 elapsed_compute.start();
                 match S::append_row(batch_sender.builder_mut(), row) {
                     Ok(()) => {}

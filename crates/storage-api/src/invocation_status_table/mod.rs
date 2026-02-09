@@ -11,6 +11,7 @@
 use std::collections::HashSet;
 use std::future::Future;
 use std::ops::{ControlFlow, RangeInclusive};
+use std::str::FromStr;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -394,11 +395,11 @@ pub enum InvocationStatusDiscriminants {
     Completed,
 }
 
-impl TryFrom<&str> for InvocationStatusDiscriminants {
-    type Error = ();
+impl FromStr for InvocationStatusDiscriminants {
+    type Err = ();
 
-    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
-        Ok(match value {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s {
             "scheduled" => Self::Scheduled,
             "inboxed" => Self::Inboxed,
             "invoked" => Self::Invoked,

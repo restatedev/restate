@@ -66,6 +66,7 @@ impl ScanLocalPartition for JournalScanner {
     type Builder = SysJournalBuilder;
     type Item<'a> = (JournalEntryId, ScannedEntry);
     type ConversionError = std::convert::Infallible;
+    type Filter = ();
 
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
@@ -75,6 +76,7 @@ impl ScanLocalPartition for JournalScanner {
     >(
         partition_store: &PartitionStore,
         range: RangeInclusive<PartitionKey>,
+        _filter: (),
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         // these two iterators can run concurrently in theory.
