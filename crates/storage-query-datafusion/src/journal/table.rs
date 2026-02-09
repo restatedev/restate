@@ -10,19 +10,21 @@
 
 use std::fmt::Debug;
 use std::ops::ControlFlow;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::journal_table::JournalEntry;
-use restate_storage_api::journal_table::ScanJournalTable;
-use restate_storage_api::journal_table_v2::ScanJournalTable as ScanJournalTableV2;
-use restate_types::identifiers::{JournalEntryId, PartitionKey};
+use restate_storage_api::journal_table::{ScanJournalTable, ScanJournalTableRange};
+use restate_storage_api::journal_table_v2::{
+    ScanJournalTable as ScanJournalTableV2, ScanJournalTableRange as ScanJournalTableRangeV2,
+};
+use restate_types::identifiers::JournalEntryId;
 use restate_types::storage::StoredRawEntry;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::InvocationIdFilter;
 use crate::journal::row::{append_journal_row, append_journal_row_v2};
 use crate::journal::schema::{SysJournalBuilder, sys_journal_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -66,6 +68,7 @@ impl ScanLocalPartition for JournalScanner {
     type Builder = SysJournalBuilder;
     type Item<'a> = (JournalEntryId, ScannedEntry);
     type ConversionError = std::convert::Infallible;
+    type Filter = InvocationIdFilter;
 
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
@@ -74,7 +77,7 @@ impl ScanLocalPartition for JournalScanner {
             + 'static,
     >(
         partition_store: &PartitionStore,
-        range: RangeInclusive<PartitionKey>,
+        filter: InvocationIdFilter,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         // these two iterators can run concurrently in theory.
@@ -87,7 +90,7 @@ impl ScanLocalPartition for JournalScanner {
             let mut f_v1 = Some(Arc::new(tokio::sync::Mutex::new(f)));
             let mut f_v2 = f_v1.clone();
 
-            let v1 = ScanJournalTable::for_each_journal(partition_store, range.clone(), {
+            let v1 = ScanJournalTable::for_each_journal(partition_store, filter.clone().into(), {
                 let mut f_locked = None;
                 move |(id, entry)| {
                     let f = f_locked.get_or_insert_with(|| {
@@ -99,7 +102,7 @@ impl ScanLocalPartition for JournalScanner {
                 }
             })?;
 
-            let v2 = ScanJournalTableV2::for_each_journal(partition_store, range, {
+            let v2 = ScanJournalTableV2::for_each_journal(partition_store, filter.into(), {
                 let mut f_locked = None;
                 move |(id, entry)| {
                     let f = f_locked.get_or_insert_with(|| {
@@ -135,5 +138,25 @@ impl ScanLocalPartition for JournalScanner {
         }
 
         Ok(())
+    }
+}
+
+impl From<InvocationIdFilter> for ScanJournalTableRange {
+    fn from(value: InvocationIdFilter) -> Self {
+        if let Some(invocation_ids) = value.invocation_ids {
+            ScanJournalTableRange::InvocationId(invocation_ids)
+        } else {
+            ScanJournalTableRange::PartitionKey(value.partition_keys)
+        }
+    }
+}
+
+impl From<InvocationIdFilter> for ScanJournalTableRangeV2 {
+    fn from(value: InvocationIdFilter) -> Self {
+        if let Some(invocation_ids) = value.invocation_ids {
+            ScanJournalTableRangeV2::InvocationId(invocation_ids)
+        } else {
+            ScanJournalTableRangeV2::PartitionKey(value.partition_keys)
+        }
     }
 }

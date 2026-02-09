@@ -61,6 +61,7 @@ impl ScanLocalPartition for VirtualObjectStatusScanner {
     type Builder = SysKeyedServiceStatusBuilder;
     type Item<'a> = (ServiceId, VirtualObjectStatus);
     type ConversionError = std::convert::Infallible;
+    type Filter = RangeInclusive<PartitionKey>;
 
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>

@@ -9,16 +9,18 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::journal_events::{EventView, ScanJournalEventsTable};
-use restate_types::identifiers::{InvocationId, PartitionKey};
+use restate_storage_api::journal_events::{
+    EventView, ScanJournalEventsTable, ScanJournalEventsTableRange,
+};
+use restate_types::identifiers::InvocationId;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::InvocationIdFilter;
 use crate::journal_events::row::append_journal_event_row;
 use crate::journal_events::schema::{SysJournalEventsBuilder, sys_journal_events_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -55,6 +57,7 @@ impl ScanLocalPartition for JournalEventsScanner {
     type Builder = SysJournalEventsBuilder;
     type Item<'a> = (InvocationId, EventView);
     type ConversionError = std::convert::Infallible;
+    type Filter = InvocationIdFilter;
 
     fn for_each_row<
         F: for<'a> FnMut(
@@ -65,10 +68,11 @@ impl ScanLocalPartition for JournalEventsScanner {
             + 'static,
     >(
         partition_store: &PartitionStore,
-        range: RangeInclusive<PartitionKey>,
+        range: InvocationIdFilter,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_journal_event(range, move |item| f(item).map_break(Result::unwrap))
+        partition_store
+            .for_each_journal_event(range.into(), move |item| f(item).map_break(Result::unwrap))
     }
 
     fn append_row<'a>(
@@ -77,5 +81,15 @@ impl ScanLocalPartition for JournalEventsScanner {
     ) -> Result<(), Self::ConversionError> {
         append_journal_event_row(row_builder, value.0, value.1);
         Ok(())
+    }
+}
+
+impl From<InvocationIdFilter> for ScanJournalEventsTableRange {
+    fn from(value: InvocationIdFilter) -> Self {
+        if let Some(invocation_ids) = value.invocation_ids {
+            ScanJournalEventsTableRange::InvocationId(invocation_ids)
+        } else {
+            ScanJournalEventsTableRange::PartitionKey(value.partition_keys)
+        }
     }
 }

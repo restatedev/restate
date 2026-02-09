@@ -10,17 +10,22 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Debug, Formatter};
+use std::ops::RangeInclusive;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Context;
 use datafusion::common::ScalarValue;
 use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::split_conjunction;
+use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
 
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
+
+use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
 pub trait PartitionKeyExtractor: Send + Sync + 'static + Debug {
     fn try_extract(
@@ -223,6 +228,65 @@ fn extract_column_literal<'a>(
     Some((col, lit))
 }
 
+#[derive(Debug, Clone)]
+pub struct InvocationIdFilter {
+    pub partition_keys: RangeInclusive<PartitionKey>,
+    pub invocation_ids: Option<RangeInclusive<InvocationId>>,
+}
+
+impl ScanLocalPartitionFilter for InvocationIdFilter {
+    fn new(range: RangeInclusive<PartitionKey>, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        if let Some(predicate) = predicate
+            && let Ok(predicate) = snapshot_physical_expr(predicate)
+        {
+            for conjunct in split_conjunction(&predicate) {
+                if let Some(invocation_ids) =
+                    parse_invocation_id_range("id", range.clone(), conjunct)
+                {
+                    return Self {
+                        partition_keys: range,
+                        invocation_ids: Some(invocation_ids),
+                    };
+                }
+            }
+        }
+
+        Self {
+            partition_keys: range,
+            invocation_ids: None,
+        }
+    }
+}
+
+fn parse_invocation_id_range(
+    column_name: &str,
+    range: RangeInclusive<PartitionKey>,
+    predicate: &Arc<dyn PhysicalExpr>,
+) -> Option<RangeInclusive<InvocationId>> {
+    let in_list = InList::parse(predicate, 5)?;
+
+    if in_list.col.name() != column_name {
+        return None;
+    }
+
+    let mut invocation_ids: Option<RangeInclusive<InvocationId>> = None;
+    for literal in in_list.list {
+        let str = literal.try_as_str()??;
+        let invocation_id = InvocationId::from_str(str).ok()?;
+
+        if range.contains(&invocation_id.partition_key()) {
+            if let Some(invocation_ids) = &mut invocation_ids {
+                *invocation_ids = (*invocation_ids.start()).min(invocation_id)
+                    ..=(*invocation_ids.end()).max(invocation_id);
+            } else {
+                invocation_ids = Some(invocation_id..=invocation_id)
+            }
+        }
+    }
+
+    invocation_ids
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -231,10 +295,13 @@ mod tests {
     use datafusion::physical_plan::PhysicalExpr;
     use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
 
-    use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
+    use restate_types::identifiers::{InvocationId, PartitionKey, ServiceId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
 
-    use crate::filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+    use crate::filter::{
+        FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor,
+    };
+    use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
     fn col(name: &str) -> Arc<dyn PhysicalExpr> {
         Arc::new(Column::new(name, 0))
@@ -264,6 +331,26 @@ mod tests {
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
         let schema = Schema::new(vec![Field::new(col_name, DataType::LargeUtf8, true)]);
         Arc::new(InListExpr::try_new(col(col_name), list, false, &schema).expect("valid in-list"))
+    }
+
+    fn and(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            left,
+            datafusion::logical_expr::Operator::And,
+            right,
+        ))
+    }
+
+    const FULL_RANGE: std::ops::RangeInclusive<PartitionKey> = 0..=PartitionKey::MAX;
+
+    fn make_invocation_id(key: &str) -> InvocationId {
+        let target = InvocationTarget::virtual_object(
+            "svc",
+            key,
+            "handler",
+            VirtualObjectHandlerType::Exclusive,
+        );
+        InvocationId::generate(&target, None)
     }
 
     #[test]
@@ -395,18 +482,11 @@ mod tests {
     fn test_invocation_id() {
         let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
 
-        let invocation_target = InvocationTarget::virtual_object(
-            "counter",
-            "key-2",
-            "count",
-            VirtualObjectHandlerType::Exclusive,
-        );
-        let invocation_id = InvocationId::generate(&invocation_target, None);
+        let invocation_id = make_invocation_id("key-2");
         let expected_key = invocation_id.partition_key();
-        let column_value = invocation_id.to_string();
 
         let got_keys = extractor
-            .try_extract(&[eq(col("id"), utf8_lit(column_value))])
+            .try_extract(&[eq(col("id"), utf8_lit(invocation_id.to_string()))])
             .expect("extract")
             .expect("to find a value");
 
@@ -418,22 +498,8 @@ mod tests {
     fn test_multiple_invocation_ids() {
         let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
 
-        let invocation_target_1 = InvocationTarget::virtual_object(
-            "counter",
-            "key-1",
-            "add",
-            VirtualObjectHandlerType::Exclusive,
-        );
-
-        let invocation_target_2 = InvocationTarget::virtual_object(
-            "counter",
-            "key-2",
-            "count",
-            VirtualObjectHandlerType::Exclusive,
-        );
-
-        let invocation_id_1 = InvocationId::generate(&invocation_target_1, None);
-        let invocation_id_2 = InvocationId::generate(&invocation_target_2, None);
+        let invocation_id_1 = make_invocation_id("key-1");
+        let invocation_id_2 = make_invocation_id("key-2");
         let expected_key_1 = invocation_id_1.partition_key();
         let expected_key_2 = invocation_id_2.partition_key();
 
@@ -458,14 +524,7 @@ mod tests {
     fn test_invalid_in_list() {
         let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
 
-        let invocation_target = InvocationTarget::virtual_object(
-            "counter",
-            "key-1",
-            "add",
-            VirtualObjectHandlerType::Exclusive,
-        );
-
-        let invocation_id = InvocationId::generate(&invocation_target, None);
+        let invocation_id = make_invocation_id("key-1");
 
         // An OR where one side has a non-literal (column) should not be extractable
         let got_keys = extractor
@@ -476,5 +535,88 @@ mod tests {
             .expect("extract");
 
         assert_eq!(None, got_keys);
+    }
+
+    #[test]
+    fn invocation_id_filter_single_eq() {
+        let id = make_invocation_id("key-1");
+        let predicate = eq(col("id"), utf8_lit(id.to_string()));
+
+        let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
+
+        let range = filter.invocation_ids.expect("should extract range");
+        assert_eq!(*range.start(), id);
+        assert_eq!(*range.end(), id);
+    }
+
+    #[test]
+    fn invocation_id_filter_in_list() {
+        let id1 = make_invocation_id("key-1");
+        let id2 = make_invocation_id("key-2");
+        let predicate = in_list(
+            "id",
+            vec![utf8_lit(id1.to_string()), utf8_lit(id2.to_string())],
+        );
+
+        let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
+
+        let range = filter.invocation_ids.expect("should extract range");
+        assert_eq!(*range.start(), id1.min(id2));
+        assert_eq!(*range.end(), id1.max(id2));
+    }
+
+    #[test]
+    fn invocation_id_filter_excludes_out_of_range() {
+        let id = make_invocation_id("key-1");
+        let pk = id.partition_key();
+        let narrow_range = if pk > 0 { 0..=(pk - 1) } else { 1..=1 };
+
+        let predicate = eq(col("id"), utf8_lit(id.to_string()));
+        let filter = InvocationIdFilter::new(narrow_range, Some(predicate));
+
+        assert!(filter.invocation_ids.is_none());
+    }
+
+    #[test]
+    fn invocation_id_filter_and_conjunction() {
+        let id = make_invocation_id("key-1");
+        // id = '...' AND other_col = 'foo' — should find the id conjunct
+        let predicate = and(
+            eq(col("id"), utf8_lit(id.to_string())),
+            eq(col("other_col"), utf8_lit("foo")),
+        );
+
+        let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
+
+        let range = filter
+            .invocation_ids
+            .expect("should extract from conjunction");
+        assert_eq!(*range.start(), id);
+        assert_eq!(*range.end(), id);
+    }
+
+    #[test]
+    fn invocation_id_filter_wrong_column() {
+        let id = make_invocation_id("key-1");
+        let predicate = eq(col("not_id"), utf8_lit(id.to_string()));
+
+        let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
+        assert!(filter.invocation_ids.is_none());
+    }
+
+    #[test]
+    fn invocation_id_filter_no_predicate() {
+        let filter = InvocationIdFilter::new(FULL_RANGE, None);
+
+        assert!(filter.invocation_ids.is_none());
+        assert_eq!(filter.partition_keys, FULL_RANGE);
+    }
+
+    #[test]
+    fn invocation_id_filter_invalid_id() {
+        let predicate = eq(col("id"), utf8_lit("not-a-valid-invocation-id"));
+
+        let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
+        assert!(filter.invocation_ids.is_none());
     }
 }

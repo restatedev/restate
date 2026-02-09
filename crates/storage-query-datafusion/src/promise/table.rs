@@ -55,6 +55,7 @@ impl ScanLocalPartition for PromiseScanner {
     type Builder = SysPromiseBuilder;
     type Item<'a> = OwnedPromiseRow;
     type ConversionError = std::convert::Infallible;
+    type Filter = RangeInclusive<PartitionKey>;
 
     fn for_each_row<
         F: for<'a> FnMut(

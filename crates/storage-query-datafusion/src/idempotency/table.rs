@@ -57,6 +57,7 @@ impl ScanLocalPartition for IdempotencyScanner {
     type Builder = SysIdempotencyBuilder;
     type Item<'a> = (IdempotencyId, IdempotencyMetadata);
     type ConversionError = std::convert::Infallible;
+    type Filter = RangeInclusive<PartitionKey>;
 
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>

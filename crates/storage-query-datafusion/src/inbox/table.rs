@@ -57,6 +57,7 @@ impl ScanLocalPartition for InboxScanner {
     type Builder = SysInboxBuilder;
     type Item<'a> = SequenceNumberInboxEntry;
     type ConversionError = std::convert::Infallible;
+    type Filter = RangeInclusive<PartitionKey>;
 
     fn for_each_row<
         F: for<'a> FnMut(

@@ -791,6 +791,12 @@ pub trait ReadInvocationStatusTable {
     ) -> impl Future<Output = Result<InvocationStatus>> + Send;
 }
 
+#[derive(Debug, Clone)]
+pub enum ScanInvocationStatusTableRange {
+    PartitionKey(RangeInclusive<PartitionKey>),
+    InvocationId(RangeInclusive<InvocationId>),
+}
+
 pub trait ScanInvocationStatusTable {
     fn for_each_invocation_status_lazy<
         E: Into<anyhow::Error>,
@@ -802,7 +808,7 @@ pub trait ScanInvocationStatusTable {
             + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: ScanInvocationStatusTableRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 
