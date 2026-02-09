@@ -15,6 +15,7 @@ use std::ops::RangeInclusive;
 use anyhow::anyhow;
 use futures::Stream;
 use futures_util::stream;
+use rocksdb::ReadOptions;
 
 use crate::TableKind::Journal;
 use crate::keys::{KeyKind, TableKey, define_table_key};
@@ -363,6 +364,7 @@ impl ScanJournalTable for PartitionStore {
             "df-v2-journal",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<JournalKey>(range),
+            ReadOptions::default(),
             move |(mut key, mut value)| {
                 let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
                 let journal_entry = break_on_err(

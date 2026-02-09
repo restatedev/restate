@@ -12,6 +12,7 @@ use std::ops::RangeInclusive;
 
 use bytes::Bytes;
 use bytestring::ByteString;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::promise_table::{
@@ -108,6 +109,7 @@ impl ScanPromiseTable for PartitionStore {
             "df-promise",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<PromiseKey>(range),
+            ReadOptions::default(),
             move |(mut k, mut v)| {
                 let key = break_on_err(PromiseKey::deserialize_from(&mut k))?;
                 let metadata = break_on_err(Promise::decode(&mut v))?;

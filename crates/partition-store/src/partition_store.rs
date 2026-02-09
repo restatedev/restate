@@ -261,23 +261,30 @@ impl PartitionStore {
         self.db.table_cf_handle(table_kind)
     }
 
-    fn new_prefix_iterator_opts(&self, _key_kind: KeyKind, prefix: Bytes) -> ReadOptions {
-        let mut opts = ReadOptions::default();
+    fn apply_prefix_iterator_opts(
+        &self,
+        opts: &mut ReadOptions,
+        _key_kind: KeyKind,
+        prefix: Bytes,
+    ) {
         opts.set_prefix_same_as_start(true);
-        opts.set_iterate_range(PrefixRange(prefix.clone()));
+        opts.set_iterate_range(PrefixRange(prefix));
         opts.set_async_io(true);
         opts.set_total_order_seek(false);
-        opts
     }
 
-    fn new_range_iterator_opts(&self, scan_mode: ScanMode, from: Bytes, to: Bytes) -> ReadOptions {
-        let mut opts = ReadOptions::default();
+    fn apply_range_iterator_opts(
+        &self,
+        opts: &mut ReadOptions,
+        scan_mode: ScanMode,
+        from: Bytes,
+        to: Bytes,
+    ) {
         // todo: use auto_prefix_mode, at the moment, rocksdb doesn't expose this through the C
         // binding.
         opts.set_total_order_seek(scan_mode == ScanMode::TotalOrder);
         opts.set_iterate_range(from..to);
         opts.set_async_io(true);
-        opts
     }
 
     #[track_caller]
@@ -290,7 +297,8 @@ impl PartitionStore {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
                 assert!(table.has_key_kind(&prefix));
                 let prefix = prefix.freeze();
-                let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
+                let mut opts = ReadOptions::default();
+                self.apply_prefix_iterator_opts(&mut opts, key_kind, prefix.clone());
                 let table = self.table_handle(table);
                 let mut it = self
                     .db
@@ -305,7 +313,8 @@ impl PartitionStore {
                 assert!(table.has_key_kind(&start));
                 let start = start.freeze();
                 let end = end.freeze();
-                let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
+                let mut opts = ReadOptions::default();
+                self.apply_range_iterator_opts(&mut opts, scan_mode, start.clone(), end);
                 let table = self.table_handle(table);
                 let mut it = self
                     .db
@@ -332,7 +341,8 @@ impl PartitionStore {
                 end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
                 let start = start.freeze();
                 let end = end.freeze();
-                let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
+                let mut opts = ReadOptions::default();
+                self.apply_range_iterator_opts(&mut opts, ScanMode::TotalOrder, start.clone(), end);
                 let table = self.table_handle(table);
                 let mut it = self
                     .db
@@ -456,11 +466,12 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
+        read_options: ReadOptions,
         f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
         let on_iter = Self::iterator_step_for_each(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, scan, read_options, on_iter)?;
         Ok(async {
             match rx.await {
                 Ok(storage_err) => Err(storage_err),
@@ -477,11 +488,12 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
+        read_options: ReadOptions,
         f: impl Fn((&[u8], &[u8])) -> Result<O> + Send + 'static,
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_map(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, scan, read_options, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -490,11 +502,12 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
+        read_options: ReadOptions,
         f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
     ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_filter_map(tx, f);
-        self.run_iterator_internal(name, priority, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, scan, read_options, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -503,37 +516,23 @@ impl PartitionStore {
         name: &'static str,
         priority: Priority,
         scan: TableScan<K>,
+        mut read_options: ReadOptions,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
         let scan: PhysicalScan = scan.into();
-        match scan {
+        let seek = match scan {
             PhysicalScan::Prefix(table, key_kind, prefix) => {
                 assert!(table.has_key_kind(&prefix));
                 let prefix = prefix.freeze();
-                let opts = self.new_prefix_iterator_opts(key_kind, prefix.clone());
-                self.db.rocksdb().clone().run_background_iterator(
-                    // todo(asoli): Pass an owned cf handle instead of name
-                    self.db.partition().cf_name().into(),
-                    name,
-                    priority,
-                    IterAction::Seek(prefix),
-                    opts,
-                    on_iter,
-                )?;
+                self.apply_prefix_iterator_opts(&mut read_options, key_kind, prefix.clone());
+                prefix
             }
             PhysicalScan::RangeExclusive(table, _key_kind, scan_mode, start, end) => {
                 assert!(table.has_key_kind(&start));
                 let start = start.freeze();
                 let end = end.freeze();
-                let opts = self.new_range_iterator_opts(scan_mode, start.clone(), end);
-                self.db.rocksdb().clone().run_background_iterator(
-                    self.db.partition().cf_name().as_ref().into(),
-                    name,
-                    priority,
-                    IterAction::Seek(start),
-                    opts,
-                    on_iter,
-                )?;
+                self.apply_range_iterator_opts(&mut read_options, scan_mode, start.clone(), end);
+                start
             }
             PhysicalScan::RangeOpen(_table, _key_kind, start) => {
                 // We delayed the generate the synthetic iterator upper bound until this point
@@ -551,17 +550,23 @@ impl PartitionStore {
                 end[..kind_upper_bound.len()].copy_from_slice(&kind_upper_bound);
                 let start = start.freeze();
                 let end = end.freeze();
-                let opts = self.new_range_iterator_opts(ScanMode::TotalOrder, start.clone(), end);
-                self.db.rocksdb().clone().run_background_iterator(
-                    self.db.partition().cf_name().into(),
-                    name,
-                    priority,
-                    IterAction::Seek(start),
-                    opts,
-                    on_iter,
-                )?;
+                self.apply_range_iterator_opts(
+                    &mut read_options,
+                    ScanMode::TotalOrder,
+                    start.clone(),
+                    end,
+                );
+                start
             }
-        }
+        };
+        self.db.rocksdb().clone().run_background_iterator(
+            self.db.partition().cf_name().into(),
+            name,
+            priority,
+            IterAction::Seek(seek),
+            read_options,
+            on_iter,
+        )?;
         Ok(())
     }
 

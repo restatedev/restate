@@ -12,6 +12,7 @@ use std::ops::RangeInclusive;
 
 use futures::Stream;
 use futures_util::stream;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table::{
@@ -149,6 +150,7 @@ impl ScanJournalTable for PartitionStore {
             "df-v1-journal",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<JournalKey>(range),
+            ReadOptions::default(),
             move |(mut key, mut value)| {
                 let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
                 let journal_entry = break_on_err(JournalEntry::decode(&mut value))?;

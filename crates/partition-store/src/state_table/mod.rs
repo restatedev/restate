@@ -14,6 +14,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
@@ -148,6 +149,7 @@ impl ScanStateTable for PartitionStore {
             "df-user-state",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<StateKey>(range),
+            ReadOptions::default(),
             move |(mut key, value)| {
                 let row_key = break_on_err(StateKey::deserialize_from(&mut key))?;
                 let (partition_key, service_name, service_key, state_key) = row_key.split();

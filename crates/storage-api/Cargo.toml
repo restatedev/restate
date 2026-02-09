@@ -26,6 +26,7 @@ enumset = { workspace = true }
 futures = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }
+rocksdb = { workspace = true }
 serde = { workspace = true }
 smallvec = { workspace = true }
 static_assertions = { workspace = true }

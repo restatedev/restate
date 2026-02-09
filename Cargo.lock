@@ -8038,6 +8038,7 @@ dependencies = [
  "restate-clock",
  "restate-types",
  "restate-workspace-hack",
+ "rust-rocksdb",
  "serde",
  "smallvec",
  "static_assertions",

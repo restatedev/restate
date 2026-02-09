@@ -13,6 +13,7 @@ use std::ops::ControlFlow;
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::inbox_table::{
@@ -110,6 +111,7 @@ impl ScanInboxTable for PartitionStore {
             "df-inbox",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<InboxKey>(range),
+            ReadOptions::default(),
             move |(mut key, mut value)| {
                 let key = break_on_err(InboxKey::deserialize_from(&mut key))?;
                 let inbox_entry = break_on_err(InboxEntry::decode(&mut value))?;
