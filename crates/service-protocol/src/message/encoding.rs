@@ -36,9 +36,12 @@ pub enum EncodingError {
 
 // --- Input message encoder
 
-pub struct Encoder {
-    arena: BytesMut,
-}
+// TODO: To reduce allocation overhead for small messages (completions, acks), we could
+//  re-introduce a small bounded arena (e.g. 4-8 KiB) that is reused across encode calls.
+//  The key constraint is that it must not grow unbounded — the previous arena retained the
+//  high-water-mark capacity (up to 32 MiB) for the entire invocation lifetime, wasting
+//  memory across thousands of concurrent long-lived invocations. See #4364.
+pub struct Encoder;
 
 impl Encoder {
     pub fn new(service_protocol_version: ServiceProtocolVersion) -> Self {
@@ -47,37 +50,26 @@ impl Encoder {
             ServiceProtocolVersion::Unspecified,
             "A protocol version should be specified"
         );
-        Self {
-            arena: BytesMut::with_capacity(1024),
-        }
+        Self
     }
 
-    /// Encodes a message to bytes
+    /// Encodes a message to bytes.
+    ///
+    /// Each call allocates a right-sized buffer for the message. This avoids retaining a
+    /// high-water-mark arena that would hold memory for the lifetime of the encoder — which
+    /// matters when thousands of long-lived invocations each encoded one large message during
+    /// replay but only send small completions/acks afterwards.
     pub fn encode(&mut self, msg: ProtocolMessage) -> Bytes {
-        self.arena.reserve(self.encoded_len(&msg));
-        self.encode_to_arena(msg).expect(
+        let len = 8 + msg.encoded_len();
+        let mut buf = BytesMut::with_capacity(len);
+        let header = generate_header(&msg);
+        buf.put_u64(header.into());
+        encode_msg(&msg, &mut buf).expect(
             "Encoding messages should be infallible, \
             this error indicates a bug in the invoker code. \
             Please contact the Restate developers.",
         );
-        self.arena.split().freeze()
-    }
-
-    /// Includes header len
-    pub fn encoded_len(&self, msg: &ProtocolMessage) -> usize {
-        8 + msg.encoded_len()
-    }
-
-    #[inline(always)]
-    fn encode_to_arena(&mut self, msg: ProtocolMessage) -> Result<(), prost::EncodeError> {
-        let header = generate_header(&msg);
-        self.arena.put_u64(header.into());
-
-        // Note:
-        // prost::EncodeError can be triggered only by a buffer smaller than required,
-        // but because we create the buffer a couple of lines above using the size computed by prost,
-        // this can happen only if there is a very bad bug in prost.
-        encode_msg(&msg, &mut self.arena)
+        buf.freeze()
     }
 }
 
