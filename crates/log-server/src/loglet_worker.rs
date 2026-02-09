@@ -18,6 +18,7 @@ use tracing::{debug, error, instrument, trace, warn};
 use restate_core::network::{Incoming, Rpc, ServiceMessage, Verdict};
 use restate_core::task_center::TaskGuard;
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
+use restate_memory::MemoryReservation;
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::{RpcRequest, UnaryMessage, log_server::*};
@@ -186,7 +187,7 @@ impl<S: LogStore> LogletWorker<S> {
                 let msg = message.into_typed::<Store>();
                 let peer = msg.peer();
 
-                let (reciprocal, msg) = msg.split();
+                let (reciprocal, msg, reservation) = msg.split_with_reservation();
                 let first_offset = msg.first_offset;
                 // this message might be telling us about a higher `known_global_tail`
                 self.loglet_state
@@ -200,6 +201,7 @@ impl<S: LogStore> LogletWorker<S> {
                         staging_local_tail,
                         next_ok_offset,
                         sealing_in_progress,
+                        reservation,
                     )
                     .await;
                 // if this store is complete, the last committed is updated to this value.
@@ -320,6 +322,7 @@ impl<S: LogStore> LogletWorker<S> {
         staging_local_tail: &mut LogletOffset,
         next_ok_offset: LogletOffset,
         sealing_in_progress: &bool,
+        reservation: MemoryReservation,
     ) -> (Status, Option<AsyncToken>) {
         // Is this a sealed loglet?
         if !body.flags.contains(StoreFlags::IgnoreSeal) && self.loglet_state.is_sealed() {
@@ -392,7 +395,7 @@ impl<S: LogStore> LogletWorker<S> {
         // exhausted.
         match self
             .log_store
-            .enqueue_store(body, set_sequencer_in_metadata)
+            .enqueue_store(body, set_sequencer_in_metadata, reservation)
             .await
         {
             Ok(store_token) => {

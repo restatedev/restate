@@ -12,10 +12,17 @@
 //!
 //! We maintain a stream per message type for fine-grain per-message-type control over the queue
 //! depth, head-of-line blocking issues, and priority of consumption.
+//!
+//! Both data and metadata services use memory-metered channels for admission control.
+//! When memory limits are exceeded, incoming messages are rejected with load shedding
+//! rather than blocking the sender. This prevents memory ballooning when downstream
+//! processing (e.g., RocksDB writes) is stalling.
 use std::collections::hash_map;
+use std::num::NonZeroUsize;
 
 use ahash::{HashMap, HashMapExt};
 use anyhow::Context;
+use restate_memory::MemoryPool;
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::trace;
@@ -49,14 +56,19 @@ impl RequestPump {
         mut configuration: Live<Configuration>,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        let queue_length = configuration
-            .live_load()
-            .log_server
-            .incoming_network_queue_length
-            .into();
-        // We divide requests into two priority categories.
-        let data_svc_rx = router_builder.register_service(queue_length, BackPressureMode::PushBack);
-        let info_svc_rx = router_builder.register_service(queue_length, BackPressureMode::PushBack);
+        let config = configuration.live_load();
+
+        // Create memory pools for admission control with Lossy backpressure mode.
+        // When memory is exhausted, requests are rejected immediately (load shedding)
+        // rather than queuing which could cause unbounded memory growth.
+        let data_pool = MemoryPool::with_capacity(config.log_server.data_service_memory_limit);
+        // 2MiB for all metadata requests of all loglets
+        let meta_pool = MemoryPool::with_capacity(NonZeroUsize::new(2 * 1024 * 1024).unwrap());
+
+        // todo(asoli): Consider making this push-back
+        let data_svc_rx = router_builder.register_service(data_pool, BackPressureMode::Lossy);
+        let info_svc_rx = router_builder.register_service(meta_pool, BackPressureMode::Lossy);
+
         Self {
             _configuration: configuration,
             data_svc_rx,

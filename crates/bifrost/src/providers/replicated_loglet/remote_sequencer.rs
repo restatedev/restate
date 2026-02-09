@@ -493,8 +493,9 @@ mod test {
 
     use restate_core::{
         TestCoreEnv, TestCoreEnvBuilder,
-        network::{FailingConnector, Handler, Incoming, RawSvcRpc, Verdict},
+        network::{BackPressureMode, FailingConnector, Handler, Incoming, RawSvcRpc, Verdict},
     };
+    use restate_memory::MemoryPool;
     use restate_types::{
         GenerationalNodeId,
         logs::{LogId, LogletOffset, Record, SequenceNumber, TailOffsetWatch, TailState},
@@ -564,13 +565,12 @@ mod test {
     async fn create_test_env(
         sequencer_handler: SequencerMockHandler,
     ) -> TestCoreEnv<FailingConnector> {
+        // Original: buffer_size=10, BackPressureMode::PushBack
+        // Using a small pool for tests (~10KB)
+        let pool = MemoryPool::new(10 * 1024);
         let builder = TestCoreEnvBuilder::with_incoming_only_connector()
             .add_mock_nodes_config()
-            .register_buffered_service(
-                10,
-                restate_core::network::BackPressureMode::PushBack,
-                sequencer_handler,
-            );
+            .register_buffered_service(pool, BackPressureMode::PushBack, sequencer_handler);
 
         builder.build().await
     }

@@ -16,8 +16,11 @@ use dashmap::DashMap;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-use restate_core::network::{Buffered, MessageRouterBuilder, Networking, TransportConnect};
+use restate_core::network::{
+    BackPressureMode, Buffered, MessageRouterBuilder, Networking, TransportConnect,
+};
 use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt, TaskKind, my_node_id};
+use restate_memory::MemoryPool;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::{
     Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
@@ -53,11 +56,15 @@ impl<T: TransportConnect> Factory<T> {
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
         // Handling Sequencer(s) incoming data requests
-        let data_request_pump = router_builder
-            .register_buffered_service(128, restate_core::network::BackPressureMode::PushBack);
-
-        let info_request_pump = router_builder
-            .register_buffered_service(128, restate_core::network::BackPressureMode::PushBack);
+        // Original: buffer_size=128, BackPressureMode::PushBack for both services
+        // TODO: Consider adding config options for these services' memory limits.
+        let data_pool = MemoryPool::new(32 * 1024 * 1024); // 32MiB for all sequencers
+        // Estimated meta message size ~30B
+        let meta_pool = MemoryPool::new(512 * 1024); // 64KiB
+        let data_request_pump =
+            router_builder.register_buffered_service(data_pool, BackPressureMode::PushBack);
+        let info_request_pump =
+            router_builder.register_buffered_service(meta_pool, BackPressureMode::PushBack);
 
         Self {
             networking,

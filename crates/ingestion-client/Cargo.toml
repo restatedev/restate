@@ -25,6 +25,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 googletest = { workspace = true }
+restate-memory = { workspace = true }
 test-log = { workspace = true }
 
 restate-core = { workspace = true, features = ["test-util"] }

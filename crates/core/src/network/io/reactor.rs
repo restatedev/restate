@@ -32,9 +32,13 @@ use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::{Version, Versioned};
 
+use restate_memory::MemoryReservation;
+
 use crate::network::incoming::{RawRpc, RawUnary, RpcReplyPort};
 use crate::network::io::EgressMessage;
-use crate::network::metric_definitions::NETWORK_MESSAGE_RECEIVED_BYTES;
+use crate::network::metric_definitions::{
+    NETWORK_MESSAGE_RECEIVED_BYTES, NETWORK_MESSAGE_RECEIVED_DROPPED_BYTES,
+};
 use crate::network::protobuf::network::message::{Body, Signal};
 use crate::network::protobuf::network::{Datagram, RpcReply, datagram, rpc_reply};
 use crate::network::protobuf::network::{Header, Message};
@@ -332,13 +336,14 @@ impl ConnectionReactor {
                 };
                 let target_service = rpc_call.service();
 
-                let encoded_len = rpc_call.payload.len();
+                let encoded_len = rpc_call.payload.len() as u64;
                 let (reply_port, reply_rx) = RpcReplyPort::new();
                 let raw_rpc = RawRpc {
                     reply_port,
                     payload: rpc_call.payload,
                     sort_code: rpc_call.sort_code,
                     msg_type: rpc_call.msg_type,
+                    reservation: MemoryReservation::unlinked(),
                 };
                 let incoming = Incoming::new(
                     self.connection.protocol_version,
@@ -352,22 +357,21 @@ impl ConnectionReactor {
                     "Received RPC call: {target_service}::{}",
                     incoming.msg_type()
                 );
+
                 // ship to the service router, dropping the reply port will close the responder
                 // task.
                 match tokio::task::unconstrained(self.router.call_rpc(target_service, incoming))
                     .await
                 {
-                    Ok(()) => { /* spawn reply task */ }
+                    Ok(()) => {
+                        counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target_service.as_str_name()).increment(encoded_len);
+                        spawn_rpc_responder(tx.clone(), rpc_call.id, reply_rx, target_service);
+                    }
                     Err(err) => {
                         send_rpc_error(tx, err, rpc_call.id);
+                        counter!(NETWORK_MESSAGE_RECEIVED_DROPPED_BYTES, "target" => target_service.as_str_name()).increment(encoded_len);
                     }
                 }
-
-                counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target_service.as_str_name())
-                    .increment(encoded_len as u64);
-
-                spawn_rpc_responder(tx.clone(), rpc_call.id, reply_rx, target_service);
-
                 Decision::Continue
             }
             // UNARY MESSAGE
@@ -376,13 +380,14 @@ impl ConnectionReactor {
             }) => {
                 let metadata_versions = PeerMetadataVersion::from(header);
                 let target = unary.service();
-                let encoded_len = unary.payload.len();
+                let encoded_len = unary.payload.len() as u64;
                 let incoming = Incoming::new(
                     self.connection.protocol_version,
                     RawUnary {
                         payload: unary.payload,
                         sort_code: unary.sort_code,
                         msg_type: unary.msg_type,
+                        reservation: MemoryReservation::unlinked(),
                     },
                     self.connection.peer(),
                     metadata_versions,
@@ -392,7 +397,7 @@ impl ConnectionReactor {
                 let _ = tokio::task::unconstrained(self.router.call_unary(target, incoming)).await;
 
                 counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target.as_str_name())
-                    .increment(encoded_len as u64);
+                    .increment(encoded_len);
                 Decision::Continue
             }
             // RPC REPLY

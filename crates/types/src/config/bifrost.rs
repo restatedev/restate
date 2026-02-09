@@ -298,6 +298,12 @@ pub struct ReplicatedLogletOptions {
     /// Timeout waiting on log server response
     pub log_server_rpc_timeout: NonZeroFriendlyDuration,
 
+    /// Log Server Store timeout
+    ///
+    /// How long does the sequencer wait for a log-server to confirm a store message during an
+    /// append wave.
+    pub log_server_store_timeout: NonZeroFriendlyDuration,
+
     /// Log Server RPC retry policy
     ///
     /// Retry policy for log server RPCs
@@ -375,7 +381,8 @@ impl Default for ReplicatedLogletOptions {
                 NonZeroUsize::new(32 * 1024).expect("Non zero number"),
             ),
             log_server_rpc_timeout: NonZeroFriendlyDuration::from_millis_unchecked(2000),
-
+            // 2 minutes. Consider changing if we implemented a non-flood spread selector.
+            log_server_store_timeout: NonZeroFriendlyDuration::from_millis_unchecked(120000),
             log_server_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,
