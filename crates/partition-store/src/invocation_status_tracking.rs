@@ -16,6 +16,7 @@ use rocksdb::table_properties::{
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
+use restate_storage_api::protobuf_types::v1::invocation_status_v2::Status;
 use restate_types::storage::StorageCodecKind;
 
 use crate::keys::KeyKind;
@@ -30,24 +31,30 @@ pub const INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY: &CStr =
 pub const INVOCATION_STATUS_MAX_CREATION_TIME_PROPERTY: &CStr =
     c"invocation_status_max_creation_time";
 
+/// User-collected table property key indicating whether every `InvocationStatus` row in the
+/// SST file has `Completed` status. Value is `"true"` or `"false"`.
+pub const INVOCATION_STATUS_ALL_COMPLETED_PROPERTY: &CStr = c"invocation_status_all_completed";
+
+/// Protobuf field number for `status` in `InvocationStatusV2`.
+const STATUS_FIELD_TAG: u32 = 1;
 /// Protobuf field number for `creation_time` in `InvocationStatusV2`.
 const CREATION_TIME_FIELD_TAG: u32 = 5;
-
 /// Protobuf field number for `modification_time` in `InvocationStatusV2`.
 const MODIFICATION_TIME_FIELD_TAG: u32 = 6;
 
-/// Collects the maximum `creation_time` and `modification_time` of `InvocationStatus` rows
-/// written to an SST file.
+/// Collects per-SST metadata for `InvocationStatus` rows: maximum `creation_time`,
+/// maximum `modification_time`, and whether all rows are `Completed`.
 ///
-/// Timestamps are extracted from the protobuf values themselves, so they reflect the true
-/// times regardless of when the SST was created (flush or compaction).
+/// Fields are extracted from the raw protobuf values, so they reflect the true
+/// values regardless of when the SST was created (flush or compaction).
 ///
-/// If any InvocationStatus row fails to parse, the collector is poisoned and no properties
-/// are emitted for this SST, since the tracked max would be unreliable.
+/// If any row fails to parse, the collector is poisoned and no properties are
+/// emitted for this SST, since the tracked metadata would be unreliable.
 #[derive(Default)]
 pub(crate) struct InvocationStatusCollector {
     max_modification_time: Option<u64>,
     max_creation_time: Option<u64>,
+    all_completed: Option<bool>,
     /// Set to true if any InvocationStatus value failed to parse. When poisoned,
     /// no properties are emitted in `finish()`.
     poisoned: bool,
@@ -73,14 +80,15 @@ impl TablePropertiesCollector for InvocationStatusCollector {
 
         let start = Instant::now();
 
-        match extract_timestamps(value) {
-            Some(timestamps) => {
-                self.max_creation_time = self.max_creation_time.max(timestamps.creation_time);
-                self.max_modification_time =
-                    self.max_modification_time.max(timestamps.modification_time);
+        match extract_fields(value) {
+            Some(fields) => {
+                self.max_creation_time = self.max_creation_time.max(Some(fields.creation_time));
+                self.max_modification_time = self
+                    .max_modification_time
+                    .max(Some(fields.modification_time));
+                *self.all_completed.get_or_insert(true) &= fields.completed;
             }
             None => {
-                // if we couldn't extract the timestamps, our max is now unreliable
                 self.poisoned = true;
             }
         }
@@ -95,6 +103,7 @@ impl TablePropertiesCollector for InvocationStatusCollector {
             debug!(
                 max_creation_time = ?self.max_creation_time,
                 max_modification_time = ?self.max_modification_time,
+                all_completed = ?self.all_completed,
                 elapsed = ?self.elapsed,
                 "InvocationStatusCollector added properties to SST"
             );
@@ -109,6 +118,12 @@ impl TablePropertiesCollector for InvocationStatusCollector {
                 self.properties.push((
                     CString::from(INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY),
                     CString::new(mod_time.to_string()).unwrap(),
+                ));
+            }
+            if let Some(all_completed) = self.all_completed {
+                self.properties.push((
+                    CString::from(INVOCATION_STATUS_ALL_COMPLETED_PROPERTY),
+                    CString::new(all_completed.to_string()).unwrap(),
                 ));
             }
         }
@@ -141,19 +156,20 @@ impl TablePropertiesCollectorFactory for InvocationStatusCollectorFactory {
     }
 }
 
-struct ExtractedTimestamps {
-    creation_time: Option<u64>,
-    modification_time: Option<u64>,
+struct ExtractedFields {
+    completed: bool,
+    creation_time: u64,
+    modification_time: u64,
 }
 
-/// Extract `creation_time` (field 5) and `modification_time` (field 6) from a raw
-/// InvocationStatus value.
+/// Extract `status` (field 1), `creation_time` (field 5), and `modification_time` (field 6)
+/// from a raw `InvocationStatus` value.
 ///
-/// The value must have a 1-byte storage codec prefix (validated as [`StorageCodecKind::Protobuf`])
-/// followed by protobuf data. Returns `None` and logs a warning if the value cannot be parsed.
-fn extract_timestamps(value: &[u8]) -> Option<ExtractedTimestamps> {
+/// The value must have a 1-byte [`StorageCodecKind::Protobuf`] prefix followed by protobuf
+/// data. Returns `None` and logs a warning if the value cannot be parsed.
+fn extract_fields(value: &[u8]) -> Option<ExtractedFields> {
     if value.is_empty() {
-        warn!("Cannot extract InvocationStatus timestamps: empty value");
+        warn!("Cannot extract InvocationStatus fields: empty value");
         return None;
     }
 
@@ -163,7 +179,7 @@ fn extract_timestamps(value: &[u8]) -> Option<ExtractedTimestamps> {
         Err(_) => {
             warn!(
                 codec_byte = value[0],
-                "Cannot extract InvocationStatus timestamps: unknown storage codec kind"
+                "Cannot extract InvocationStatus fields: unknown storage codec kind"
             );
             return None;
         }
@@ -171,56 +187,66 @@ fn extract_timestamps(value: &[u8]) -> Option<ExtractedTimestamps> {
     if codec != StorageCodecKind::Protobuf {
         warn!(
             %codec,
-            "Cannot extract InvocationStatus timestamps: unexpected storage codec kind"
+            "Cannot extract InvocationStatus fields: unexpected storage codec kind"
         );
         return None;
     }
 
     let mut buf: &[u8] = &value[1..];
-    let mut result = ExtractedTimestamps {
-        creation_time: None,
-        modification_time: None,
-    };
+    let mut status = None;
+    let mut creation_time = None;
+    let mut modification_time = None;
 
     let ctx = prost::encoding::DecodeContext::default();
     while !buf.is_empty() {
         let (tag, wire_type) = match prost::encoding::decode_key(&mut buf) {
             Ok(v) => v,
             Err(err) => {
-                warn!(%err, "Cannot extract InvocationStatus timestamps: failed to decode protobuf key");
+                warn!(%err, "Cannot extract InvocationStatus fields: failed to decode protobuf key");
                 return None;
             }
         };
-        if tag == CREATION_TIME_FIELD_TAG {
+        if tag == STATUS_FIELD_TAG
+            || tag == CREATION_TIME_FIELD_TAG
+            || tag == MODIFICATION_TIME_FIELD_TAG
+        {
             match prost::encoding::decode_varint(&mut buf) {
-                Ok(v) => result.creation_time = Some(v),
+                Ok(v) => match tag {
+                    STATUS_FIELD_TAG => status = Some(v as i32),
+                    CREATION_TIME_FIELD_TAG => creation_time = Some(v),
+                    MODIFICATION_TIME_FIELD_TAG => modification_time = Some(v),
+                    _ => unreachable!(),
+                },
                 Err(err) => {
-                    warn!(%err, "Cannot extract InvocationStatus timestamps: failed to decode creation_time");
-                    return None;
-                }
-            }
-        } else if tag == MODIFICATION_TIME_FIELD_TAG {
-            match prost::encoding::decode_varint(&mut buf) {
-                Ok(v) => result.modification_time = Some(v),
-                Err(err) => {
-                    warn!(%err, "Cannot extract InvocationStatus timestamps: failed to decode modification_time");
+                    warn!(%err, tag, "Cannot extract InvocationStatus fields: failed to decode varint");
                     return None;
                 }
             }
         } else if let Err(err) = prost::encoding::skip_field(wire_type, tag, &mut buf, ctx.clone())
         {
-            warn!(%err, tag, "Cannot extract InvocationStatus timestamps: failed to skip protobuf field");
+            warn!(%err, tag, "Cannot extract InvocationStatus fields: failed to skip protobuf field");
             return None;
         }
 
-        if result.creation_time.is_some() && result.modification_time.is_some() {
-            // This is not allowed the protobuf wire spec (we should use the last fields we find),
-            // but it is a significant speedup.
-            return Some(result);
+        if let Some(status) = status
+            && let Some(creation_time) = creation_time
+            && let Some(modification_time) = modification_time
+        {
+            return Some(ExtractedFields {
+                completed: status == Status::Completed as i32,
+                creation_time,
+                modification_time,
+            });
         }
     }
 
-    Some(result)
+    warn!(
+        ?status,
+        ?creation_time,
+        ?modification_time,
+        "Cannot extract InvocationStatus fields: not all fields are present"
+    );
+    None
 }
 
 #[cfg(test)]
@@ -229,7 +255,8 @@ mod tests {
     use rocksdb::table_properties::{EntryType, TablePropertiesCollector};
 
     use restate_storage_api::invocation_status_table::{
-        InvocationStatus, PreFlightInvocationMetadata, ScheduledInvocation, StatusTimestamps,
+        CompletedInvocation, InvocationStatus, PreFlightInvocationMetadata, ScheduledInvocation,
+        StatusTimestamps,
     };
     use restate_storage_api::protobuf_types::{
         PartitionStoreProtobufValue, ProtobufStorageWrapper,
@@ -261,6 +288,27 @@ mod tests {
         buf
     }
 
+    fn encode_completed_invocation_status(
+        creation_time_millis: u64,
+        mod_time_millis: u64,
+    ) -> BytesMut {
+        let mut completed = CompletedInvocation::mock_neo();
+        completed.timestamps = StatusTimestamps::new(
+            creation_time_millis.into(),
+            mod_time_millis.into(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let status = InvocationStatus::Completed(completed);
+
+        let proto: <InvocationStatus as PartitionStoreProtobufValue>::ProtobufType = status.into();
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&ProtobufStorageWrapper(proto), &mut buf).unwrap();
+        buf
+    }
+
     fn inv_status_key_bytes() -> BytesMut {
         let key = InvocationStatusKey {
             partition_key: 42 as PartitionKey,
@@ -272,22 +320,24 @@ mod tests {
     }
 
     #[test]
-    fn extract_and_collect_timestamps() {
+    fn extract_and_collect_fields() {
         let creation_a: u64 = 1700000000000;
         let mod_a: u64 = 1700000010000;
         let creation_b: u64 = 1700000050000;
         let mod_b: u64 = 1700000099000;
 
-        // Verify extraction from encoded protobuf
+        // Verify extraction from encoded protobuf (Scheduled status)
         let value_a = encode_invocation_status(creation_a, mod_a);
-        let ts_a = extract_timestamps(&value_a).unwrap();
-        assert_eq!(ts_a.creation_time, Some(creation_a));
-        assert_eq!(ts_a.modification_time, Some(mod_a));
+        let fields_a = extract_fields(&value_a).unwrap();
+        assert!(!fields_a.completed);
+        assert_eq!(fields_a.creation_time, creation_a);
+        assert_eq!(fields_a.modification_time, mod_a);
 
         let value_b = encode_invocation_status(creation_b, mod_b);
-        let ts_b = extract_timestamps(&value_b).unwrap();
-        assert_eq!(ts_b.creation_time, Some(creation_b));
-        assert_eq!(ts_b.modification_time, Some(mod_b));
+        let fields_b = extract_fields(&value_b).unwrap();
+        assert!(!fields_b.completed);
+        assert_eq!(fields_b.creation_time, creation_b);
+        assert_eq!(fields_b.modification_time, mod_b);
 
         // Verify collector tracks the max across multiple entries
         let mut collector = InvocationStatusCollector::default();
@@ -301,6 +351,8 @@ mod tests {
             .unwrap();
         assert_eq!(collector.max_creation_time, Some(creation_b));
         assert_eq!(collector.max_modification_time, Some(mod_b));
+        // Both entries are Scheduled, so all_completed is false
+        assert_eq!(collector.all_completed, Some(false));
 
         // Non-invocation-status keys are ignored
         collector
@@ -316,9 +368,9 @@ mod tests {
         assert_eq!(collector.max_creation_time, Some(creation_b));
         assert_eq!(collector.max_modification_time, Some(mod_b));
 
-        // Properties are emitted
+        // Properties are emitted (creation_time, modification_time, all_completed)
         let props: Vec<_> = collector.finish().unwrap().into_iter().collect();
-        assert_eq!(props.len(), 2);
+        assert_eq!(props.len(), 3);
     }
 
     #[test]
@@ -347,11 +399,52 @@ mod tests {
     }
 
     #[test]
+    fn all_completed_when_only_completed_rows() {
+        let key_buf = inv_status_key_bytes();
+        let mut collector = InvocationStatusCollector::default();
+
+        let value_a = encode_completed_invocation_status(1700000000000, 1700000010000);
+        let fields_a = extract_fields(&value_a).unwrap();
+        assert!(fields_a.completed);
+
+        collector
+            .add_user_key(&key_buf, &value_a, EntryType::EntryPut, 0, 0)
+            .unwrap();
+        let value_b = encode_completed_invocation_status(1700000050000, 1700000099000);
+        collector
+            .add_user_key(&key_buf, &value_b, EntryType::EntryPut, 0, 0)
+            .unwrap();
+
+        assert_eq!(collector.all_completed, Some(true));
+
+        let props: Vec<_> = collector.finish().unwrap().into_iter().collect();
+        assert_eq!(props.len(), 3);
+    }
+
+    #[test]
+    fn not_all_completed_with_mixed_statuses() {
+        let key_buf = inv_status_key_bytes();
+        let mut collector = InvocationStatusCollector::default();
+
+        let completed = encode_completed_invocation_status(1700000000000, 1700000010000);
+        collector
+            .add_user_key(&key_buf, &completed, EntryType::EntryPut, 0, 0)
+            .unwrap();
+        assert_eq!(collector.all_completed, Some(true));
+
+        let scheduled = encode_invocation_status(1700000050000, 1700000099000);
+        collector
+            .add_user_key(&key_buf, &scheduled, EntryType::EntryPut, 0, 0)
+            .unwrap();
+        assert_eq!(collector.all_completed, Some(false));
+    }
+
+    #[test]
     fn extract_returns_none_for_invalid_data() {
-        assert!(extract_timestamps(b"").is_none());
+        assert!(extract_fields(b"").is_none());
         // Invalid codec prefix (0 is not a valid StorageCodecKind)
-        assert!(extract_timestamps(b"\x00").is_none());
+        assert!(extract_fields(b"\x00").is_none());
         // Wrong codec kind (FlexbuffersSerde = 2)
-        assert!(extract_timestamps(b"\x02").is_none());
+        assert!(extract_fields(b"\x02").is_none());
     }
 }
