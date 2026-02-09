@@ -194,7 +194,7 @@ jobs:
             latest=${{ steps.is-latest.outputs.is_latest == 'true' && 'true' || 'false' }}
           tags: |
             type=semver,pattern={{version}},value=${{ steps.latest-patch.outputs.version }}
-            type=semver,pattern={{version}}-{{date 'YYYYMMDD'}},value=${{ steps.latest-patch.outputs.version }}
+            type=semver,pattern={{version}},value=${{ steps.latest-patch.outputs.version }},suffix=-{{date 'YYYYMMDD'}}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.latest-patch.outputs.version }}
           labels: |
             org.opencontainers.image.base.name=${{ steps.base-image.outputs.name }}

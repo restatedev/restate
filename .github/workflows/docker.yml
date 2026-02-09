@@ -212,7 +212,7 @@ jobs:
           tags: |
             type=ref,event=branch
             type=semver,pattern={{version}}
-            type=semver,pattern={{version}}-{{date 'YYYYMMDD'}}
+            type=semver,pattern={{version}},suffix=-{{date 'YYYYMMDD'}}
             type=semver,pattern={{major}}.{{minor}}
           labels: |
             org.opencontainers.image.base.name=${{ steps.base-image.outputs.name }}
