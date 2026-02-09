@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ffi::CStr;
 use std::ops::ControlFlow;
 use std::sync::atomic::Ordering;
 
@@ -30,7 +31,8 @@ use tracing::debug;
 
 use crate::TableScan::FullScanPartitionKeyRange;
 use crate::invocation_status_tracking::{
-    INVOCATION_STATUS_MAX_CREATION_TIME_PROPERTY, INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY,
+    INVOCATION_STATUS_ALL_COMPLETED_PROPERTY, INVOCATION_STATUS_MAX_CREATION_TIME_PROPERTY,
+    INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY,
 };
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::scan::TableScan;
@@ -172,41 +174,55 @@ impl ScanInvocationStatusTable for PartitionStore {
 
         debug!(?lazy_filter, "Starting invocation_status scan");
         let mut read_options = ReadOptions::default();
-        if (lazy_filter.created_after.is_some() || lazy_filter.modified_after.is_some())
-            && !std::env::var("TABLE_FILTER").is_ok_and(|v| v == "0")
-        {
+        if !lazy_filter.is_empty() && !std::env::var("TABLE_FILTER").is_ok_and(|v| v == "0") {
             read_options.set_table_filter({
                 let lazy_filter = lazy_filter.clone();
                 move |table_properties| {
-                    let parse_time = |property| {
+                    let parse_property = |property: &CStr| -> Option<&str> {
                         table_properties
                             .get_user_collected_property(property)
-                            .and_then(|time| time.to_str().ok())
-                            .and_then(|time| time.parse::<u64>().ok())
+                            .and_then(|v| v.to_str().ok())
                     };
+
+                    // If this SST contains only completed invocations, skip it when the
+                    // filter does not accept Completed status.
+                    if !lazy_filter
+                        .statuses
+                        .contains(InvocationStatusDiscriminants::Completed)
+                        && parse_property(INVOCATION_STATUS_ALL_COMPLETED_PROPERTY)
+                            .is_some_and(|v| v == "true")
+                    {
+                        debug!(
+                            statuses = ?lazy_filter.statuses,
+                            "Filtered out invocation_status sst (all_completed)"
+                        );
+                        return false;
+                    }
 
                     if let Some(modified_after) = &lazy_filter.modified_after
                         && let Some(max_modification_time) =
-                            parse_time(INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY)
+                            parse_property(INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY)
+                                .and_then(|v| v.parse::<u64>().ok())
                         && let modified_after = modified_after.load(Ordering::Relaxed)
                         && max_modification_time < modified_after
                     {
                         debug!(
                             max_modification_time,
-                            modified_after, "Filtered out invocation_status sst"
+                            modified_after, "Filtered out invocation_status sst (modified_at)"
                         );
                         return false;
                     }
 
                     if let Some(created_after) = &lazy_filter.created_after
                         && let Some(max_creation_time) =
-                            parse_time(INVOCATION_STATUS_MAX_CREATION_TIME_PROPERTY)
+                            parse_property(INVOCATION_STATUS_MAX_CREATION_TIME_PROPERTY)
+                                .and_then(|v| v.parse::<u64>().ok())
                         && let created_after = created_after.load(Ordering::Relaxed)
                         && max_creation_time < created_after
                     {
                         debug!(
                             max_creation_time,
-                            created_after, "Filtered out invocation_status sst"
+                            created_after, "Filtered out invocation_status sst (created_at)"
                         );
                         return false;
                     }
