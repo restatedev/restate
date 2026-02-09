@@ -16,6 +16,7 @@ use tokio::sync::oneshot;
 use tokio_stream::StreamExt;
 use tracing::{debug, info, trace};
 
+use restate_memory::MemoryPool;
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::live::Pinned;
 use restate_types::logs::metadata::Logs;
@@ -30,10 +31,12 @@ use restate_types::{Version, Versioned};
 
 use super::MetadataBuilder;
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
+
 use crate::cancellation_watcher;
 use crate::metadata::update_task::GlobalMetadataUpdateTask;
 use crate::network::{
-    MessageRouterBuilder, Oneshot, Reciprocal, ServiceMessage, ServiceReceiver, Verdict,
+    BackPressureMode, MessageRouterBuilder, Oneshot, Reciprocal, ServiceMessage, ServiceReceiver,
+    Verdict,
 };
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
@@ -106,8 +109,10 @@ impl MetadataManager {
     }
 
     pub fn register_in_message_router(&mut self, sr_builder: &mut MessageRouterBuilder) {
-        self.service_op_rx =
-            sr_builder.register_service(10, crate::network::BackPressureMode::Lossy);
+        // Original: buffer_size=10, BackPressureMode::Lossy
+        // TODO: Consider adding a config option for metadata service memory limit.
+        let pool = MemoryPool::new(12 * 1024 * 1024); // 12MiB
+        self.service_op_rx = sr_builder.register_service(pool, BackPressureMode::Lossy);
     }
 
     pub fn metadata(&self) -> &Metadata {
