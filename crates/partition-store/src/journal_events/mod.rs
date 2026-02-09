@@ -10,6 +10,7 @@
 
 use futures::Stream;
 use futures_util::stream;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_events::{
@@ -197,6 +198,7 @@ impl ScanJournalEventsTable for PartitionStore {
             "df-journal-events",
             Priority::Low,
             scan,
+            ReadOptions::default(),
             move |(mut key, mut value)| {
                 let event_key = break_on_err(JournalEventKey::deserialize_from(&mut key))?;
                 let (pk, inv_uuid, event_type, timestamp, _) = event_key.split();

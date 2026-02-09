@@ -11,6 +11,7 @@
 use std::ops::ControlFlow;
 
 use futures::Stream;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
@@ -124,6 +125,7 @@ impl ScanInvocationStatusTable for PartitionStore {
             "scan-all-invoked",
             Priority::High,
             FullScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range().clone()),
+            ReadOptions::default(),
             read_invoked_full_invocation_id,
         )
         .map_err(|_| StorageError::OperationalError)
@@ -163,11 +165,13 @@ impl ScanInvocationStatusTable for PartitionStore {
             }
         };
 
+        let read_options = ReadOptions::default();
         let new_status_keys = self
             .iterator_for_each(
                 "df-for-each-invocation-status",
                 Priority::Low,
                 scan,
+                read_options,
                 {
                     move |(mut key, mut value)| {
                         let status_key =
@@ -234,6 +238,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(
                     self.partition_key_range().clone(),
                 ),
+                ReadOptions::default(),
                 {
                     move |(mut key, mut value)| {
                         let status_key = InvocationStatusKey::deserialize_from(&mut key)?;
