@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::ControlFlow;
+use std::sync::atomic::Ordering;
 
 use futures::Stream;
 use rocksdb::ReadOptions;
@@ -25,8 +26,12 @@ use restate_storage_api::protobuf_types::v1::lazy::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
+use tracing::debug;
 
 use crate::TableScan::FullScanPartitionKeyRange;
+use crate::invocation_status_tracking::{
+    INVOCATION_STATUS_MAX_CREATION_TIME_PROPERTY, INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY,
+};
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::scan::TableScan;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
@@ -165,7 +170,65 @@ impl ScanInvocationStatusTable for PartitionStore {
             }
         };
 
-        let read_options = ReadOptions::default();
+        debug!(?lazy_filter, "Starting invocation_status scan");
+        let mut read_options = ReadOptions::default();
+        if (lazy_filter.created_after.is_some() || lazy_filter.modified_after.is_some())
+            && !std::env::var("TABLE_FILTER").is_ok_and(|v| v == "0")
+        {
+            read_options.set_table_filter({
+                let lazy_filter = lazy_filter.clone();
+                move |table_properties| {
+                    let parse_time = |property| {
+                        table_properties
+                            .get_user_collected_property(property)
+                            .and_then(|time| time.to_str().ok())
+                            .and_then(|time| time.parse::<u64>().ok())
+                    };
+
+                    if let Some(modified_after) = &lazy_filter.modified_after
+                        && let Some(max_modification_time) =
+                            parse_time(INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY)
+                        && let modified_after = modified_after.load(Ordering::Relaxed)
+                        && max_modification_time < modified_after
+                    {
+                        debug!(
+                            max_modification_time,
+                            modified_after, "Filtered out invocation_status sst"
+                        );
+                        return false;
+                    }
+
+                    if let Some(created_after) = &lazy_filter.created_after
+                        && let Some(max_creation_time) =
+                            parse_time(INVOCATION_STATUS_MAX_CREATION_TIME_PROPERTY)
+                        && let created_after = created_after.load(Ordering::Relaxed)
+                        && max_creation_time < created_after
+                    {
+                        debug!(
+                            max_creation_time,
+                            created_after, "Filtered out invocation_status sst"
+                        );
+                        return false;
+                    }
+
+                    true
+                }
+            });
+        }
+
+        struct Filtered(u64);
+        impl Drop for Filtered {
+            fn drop(&mut self) {
+                debug!("Filtered out {} invocation_status rows", self.0)
+            }
+        }
+        impl Filtered {
+            fn inc(&mut self) {
+                self.0 += 1;
+            }
+        }
+        let mut filtered = Filtered(0);
+
         let new_status_keys = self
             .iterator_for_each(
                 "df-for-each-invocation-status",
@@ -196,6 +259,8 @@ impl ScanInvocationStatusTable for PartitionStore {
                         let matched = break_on_err(inv_status_v2_lazy.merge_with_filter(value, &lazy_filter).map_err(|e| StorageError::Conversion(e.into())))?;
 
                         if !matched {
+                            filtered.inc();
+
                             return ControlFlow::Continue(());
                         }
 
