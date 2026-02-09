@@ -92,7 +92,8 @@ impl LogStore for RocksDbLogStore {
                 batch,
             )
             .await
-            .map_err(RocksDbLogStoreError::from)?;
+            .map(|_| ())
+            .map_err(|(e, _)| RocksDbLogStoreError::from(e))?;
         Ok(())
     }
 
