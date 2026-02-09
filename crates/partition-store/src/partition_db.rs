@@ -30,6 +30,7 @@ use restate_types::partitions::{CfName, Partition};
 
 use crate::TableKind;
 use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};
+use crate::invocation_status_tracking::InvocationStatusCollectorFactory;
 use crate::keys::KeyKind;
 use crate::memory::MemoryBudget;
 use crate::snapshots::LocalPartitionSnapshot;
@@ -569,6 +570,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
 
         // Always collect applied LSN table properties in partition store CFs
         cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
+        cf_options.add_table_properties_collector_factory(InvocationStatusCollectorFactory);
 
         // -- Initial Memory Configuration --
         let memtables_budget = self.memory_budget.current_per_partition_budget();
