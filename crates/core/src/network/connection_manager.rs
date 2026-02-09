@@ -661,6 +661,9 @@ mod tests {
     };
     use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 
+    use restate_memory::MemoryPool;
+
+    use crate::network::BackPressureMode;
     use crate::network::MessageRouterBuilder;
     use crate::network::ServiceMessage;
     use crate::network::Swimlane;
@@ -861,10 +864,10 @@ mod tests {
         let metadata = Metadata::current();
 
         let mut incoming_router = MessageRouterBuilder::default();
-        let metadata_manager_rx = incoming_router.register_service::<MetadataManagerService>(
-            10,
-            crate::network::BackPressureMode::PushBack,
-        );
+        // Original: buffer_size=10, BackPressureMode::Lossy (from metadata manager)
+        let pool = MemoryPool::new(10 * 1024); // 10KB
+        let metadata_manager_rx = incoming_router
+            .register_service::<MetadataManagerService>(pool, BackPressureMode::Lossy);
 
         let mut metadata_manager_rx = metadata_manager_rx.start();
 

@@ -21,9 +21,10 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
+use tracing::{info, trace};
 use triomphe::Arc;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::{ByteCount, NonZeroByteCount};
 
 /// A memory pool that tracks and limits memory usage.
 ///
@@ -153,8 +154,16 @@ impl MemoryPool {
                 loop {
                     future.as_mut().enable();
                     if let Some(reservation) = self.try_reserve(size) {
+                        trace!(
+                            "Memory pool is available, reserving {}",
+                            ByteCount::from(size)
+                        );
                         return reservation;
                     }
+                    info!(
+                        "Waiting for memory pool to become available, requesting {}",
+                        ByteCount::from(size)
+                    );
                     future.as_mut().await;
                     future.set(inner.notify.notified());
                 }

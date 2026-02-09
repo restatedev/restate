@@ -20,6 +20,7 @@ use restate_core::network::{
     BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver, Verdict,
 };
 use restate_core::{cancellation_watcher, my_node_id};
+use restate_memory::MemoryPool;
 use restate_types::net::RpcRequest;
 use restate_types::net::remote_query_scanner::{
     RemoteDataFusionService, RemoteQueryScannerClose, RemoteQueryScannerClosed,
@@ -45,7 +46,10 @@ impl RemoteQueryScannerServer {
         remote_scanner_manager: RemoteScannerManager,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        let network_rx = router_builder.register_service(64, BackPressureMode::PushBack);
+        // Original: buffer_size=64, BackPressureMode::PushBack
+        // TODO: Consider adding a config option for this service's memory limit.
+        let pool = MemoryPool::new(2 * 1024 * 1024); // 2MiB
+        let network_rx = router_builder.register_service(pool, BackPressureMode::PushBack);
 
         Self {
             query_context,

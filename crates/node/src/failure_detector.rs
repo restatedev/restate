@@ -30,6 +30,7 @@ use restate_core::{
     task_center::TaskCenterMonitoring,
     worker_api::ProcessorsManagerHandle,
 };
+use restate_memory::MemoryPool;
 use restate_types::health::NodeStatus;
 use restate_types::live::LiveLoad;
 use restate_types::net::RpcRequest;
@@ -68,7 +69,10 @@ impl<T: NetworkSender> FailureDetector<T> {
         replica_set_states: PartitionReplicaSetStates,
         processor_manager_handle: Option<ProcessorsManagerHandle>,
     ) -> Self {
-        let gossip_svc_rx = router_builder.register_service(128, BackPressureMode::Lossy);
+        // Original: buffer_size=128, BackPressureMode::Lossy
+        // TODO: Consider adding a config option for gossip service memory limit.
+        let gossip_svc_rx =
+            router_builder.register_service(MemoryPool::new(1024 * 1024), BackPressureMode::Lossy);
         let mut gossip_interval = tokio::time::interval(*opts.gossip_tick_interval);
         gossip_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 

@@ -17,6 +17,7 @@ restate-serde-util = { workspace = true }
 
 bytes = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
+tracing = { workspace = true }
 triomphe = { workspace = true }
 
 [dev-dependencies]
