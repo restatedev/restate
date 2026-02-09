@@ -1,0 +1,8 @@
+{
+  "securityContext": {
+    "runAsUser": 0,
+    "capabilities": {
+      "add": ["NET_RAW", "SETPCAP"]
+    }
+  }
+}

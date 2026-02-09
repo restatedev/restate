@@ -4030,7 +4030,7 @@ pub mod v1 {
                 }
             }
 
-            fn check(&self, status: InvocationStatusDiscriminants) -> bool {
+            pub fn check(&self, status: InvocationStatusDiscriminants) -> bool {
                 self.set.contains(status) != self.negate
             }
         }
