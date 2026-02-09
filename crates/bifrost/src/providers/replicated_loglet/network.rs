@@ -92,7 +92,7 @@ impl<T: TransportConnect> SequencerDataRpcHandler<T> {
     )]
     async fn handle_append(&mut self, incoming: Incoming<Rpc<Append>>) {
         let peer_logs_version = incoming.metadata_version().get(MetadataKind::Logs);
-        let (reciprocal, append) = incoming.split();
+        let (reciprocal, append, mem_reservation) = incoming.split_with_reservation();
 
         let loglet = match get_loglet(&self.provider, peer_logs_version, &append.header).await {
             Ok(loglet) => loglet,
