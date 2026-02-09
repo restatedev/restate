@@ -29,7 +29,7 @@ use restate_types::time::MillisSinceEpoch;
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
-use crate::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use crate::protobuf_types::v1::lazy::{InvocationStatusLazyFilter, InvocationStatusV2Lazy};
 
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
@@ -384,15 +384,43 @@ impl InvocationStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(enumset::EnumSetType, Debug)]
 pub enum InvocationStatusDiscriminants {
     Scheduled,
     Inboxed,
     Invoked,
     Suspended,
     Paused,
-    Killed,
     Completed,
+}
+
+impl TryFrom<&str> for InvocationStatusDiscriminants {
+    type Error = ();
+
+    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+        Ok(match value {
+            "scheduled" => Self::Scheduled,
+            "inboxed" => Self::Inboxed,
+            "invoked" => Self::Invoked,
+            "suspended" => Self::Suspended,
+            "paused" => Self::Paused,
+            "completed" => Self::Completed,
+            _ => return Err(()),
+        })
+    }
+}
+
+impl AsRef<str> for InvocationStatusDiscriminants {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Scheduled => "scheduled",
+            Self::Inboxed => "inboxed",
+            Self::Invoked => "invoked",
+            Self::Suspended => "suspended",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+        }
+    }
 }
 
 /// Metadata associated with a journal
@@ -803,6 +831,7 @@ pub trait ScanInvocationStatusTable {
     >(
         &self,
         range: RangeInclusive<PartitionKey>,
+        filter: InvocationStatusLazyFilter,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 
@@ -817,6 +846,7 @@ pub trait ScanInvocationStatusTable {
             + 'static,
     >(
         &self,
+        filter: InvocationStatusLazyFilter,
         f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send>;
 

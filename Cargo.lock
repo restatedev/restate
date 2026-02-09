@@ -8030,6 +8030,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "derive_more",
+ "enumset",
  "futures",
  "opentelemetry",
  "prost",
