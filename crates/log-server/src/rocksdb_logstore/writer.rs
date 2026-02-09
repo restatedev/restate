@@ -273,14 +273,16 @@ impl LogStoreWriter {
             )
             .await;
 
-        if let Err(e) = result {
-            error!("Failed to commit write batch to rocksdb log-store: {}", e);
-            self.health_status.update(LogServerStatus::Failsafe);
-            self.send_acks(Err(OperationError::terminal(e)));
-            return;
+        match result {
+            Ok(_batch) => {
+                self.send_acks(Ok(()));
+            }
+            Err((e, _batch)) => {
+                error!("Failed to commit write batch to rocksdb log-store: {}", e);
+                self.health_status.update(LogServerStatus::Failsafe);
+                self.send_acks(Err(OperationError::terminal(e)));
+            }
         }
-
-        self.send_acks(Ok(()));
     }
 
     fn send_acks(&mut self, result: Result<(), OperationError>) {

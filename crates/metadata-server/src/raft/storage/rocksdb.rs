@@ -327,7 +327,8 @@ impl RocksDbStorage {
                 write_batch,
             )
             .await
-            .map_err(Into::into)
+            .map(|_| ())
+            .map_err(|(e, _)| e.into())
     }
 
     #[allow(dead_code)]
