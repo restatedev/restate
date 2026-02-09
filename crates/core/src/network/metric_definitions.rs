@@ -13,6 +13,8 @@ use metrics::{Unit, describe_counter, describe_histogram};
 pub const NETWORK_CONNECTION_CREATED: &str = "restate.network.connection_created.total";
 pub const NETWORK_CONNECTION_DROPPED: &str = "restate.network.connection_dropped.total";
 pub const NETWORK_MESSAGE_RECEIVED_BYTES: &str = "restate.network.message_received_bytes.total";
+pub const NETWORK_MESSAGE_RECEIVED_DROPPED_BYTES: &str =
+    "restate.network.message_received_dropped_bytes.total";
 
 pub const NETWORK_MESSAGE_PROCESSING_DURATION: &str =
     "restate.network.message_processing_duration.seconds";
@@ -31,7 +33,13 @@ pub fn describe_metrics() {
     describe_counter!(
         NETWORK_MESSAGE_RECEIVED_BYTES,
         Unit::Bytes,
-        "Number of bytes received by message name"
+        "Number of bytes received by service name"
+    );
+
+    describe_counter!(
+        NETWORK_MESSAGE_RECEIVED_DROPPED_BYTES,
+        Unit::Bytes,
+        "Number of bytes received and dropped/rejected by service name"
     );
 
     describe_histogram!(
