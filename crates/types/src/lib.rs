@@ -11,6 +11,7 @@
 //! This crate contains the core types used by various Restate components.
 
 mod base62_util;
+mod buf_pool;
 mod id_util;
 mod macros;
 mod node_id;
@@ -57,6 +58,7 @@ pub mod storage;
 pub mod timer;
 pub mod vqueue;
 
+pub use buf_pool::Buffers;
 pub use id_util::IdResourceType;
 pub use node_id::*;
 pub use restate_version::*;
