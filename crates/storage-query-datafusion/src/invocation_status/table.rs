@@ -15,7 +15,7 @@ use std::sync::Arc;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{
-    ScanInvocationStatusTable, ScanInvocationStatusTableRange,
+    InvocationStatusFilter, InvocationStatusRange, ScanInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_types::errors::ConversionError;
@@ -99,12 +99,13 @@ impl ScanLocalPartition for StatusScanner {
     }
 }
 
-impl From<InvocationIdFilter> for ScanInvocationStatusTableRange {
+impl From<InvocationIdFilter> for InvocationStatusFilter {
     fn from(value: InvocationIdFilter) -> Self {
-        if let Some(invocation_ids) = value.invocation_ids {
-            ScanInvocationStatusTableRange::InvocationId(invocation_ids)
+        let range = if let Some(invocation_ids) = value.invocation_ids {
+            InvocationStatusRange::InvocationId(invocation_ids)
         } else {
-            ScanInvocationStatusTableRange::PartitionKey(value.partition_keys)
-        }
+            InvocationStatusRange::PartitionKey(value.partition_keys)
+        };
+        InvocationStatusFilter::new(range, Default::default())
     }
 }
