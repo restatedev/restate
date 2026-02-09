@@ -127,6 +127,8 @@ where
         let status_reader = invoker.status_reader();
 
         let (control_tx, control_rx) = watch::channel(TargetLeaderState::Follower);
+        // todo(asoli): This channel should be replaced by a memory-aware channel to cap the
+        // budget per processor.
         let (net_tx, net_rx) = mpsc::channel(128);
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());

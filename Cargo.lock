@@ -6963,6 +6963,7 @@ dependencies = [
  "restate-futures-util",
  "restate-invoker-api",
  "restate-log-server",
+ "restate-memory",
  "restate-metadata-store",
  "restate-rocksdb",
  "restate-serde-util",
@@ -7309,6 +7310,7 @@ dependencies = [
  "googletest",
  "pin-project",
  "restate-core",
+ "restate-memory",
  "restate-types",
  "restate-workspace-hack",
  "test-log",
@@ -7538,6 +7540,7 @@ dependencies = [
  "restate-bifrost",
  "restate-clock",
  "restate-core",
+ "restate-memory",
  "restate-metadata-store",
  "restate-rocksdb",
  "restate-serde-util",
@@ -7573,7 +7576,11 @@ name = "restate-memory"
 version = "1.6.1-dev"
 dependencies = [
  "bytes",
+ "restate-serde-util",
  "restate-workspace-hack",
+ "tokio",
+ "tracing",
+ "triomphe",
 ]
 
 [[package]]
@@ -7730,6 +7737,7 @@ dependencies = [
  "restate-ingestion-client",
  "restate-ingress-http",
  "restate-log-server",
+ "restate-memory",
  "restate-metadata-providers",
  "restate-metadata-server",
  "restate-metadata-server-grpc",
@@ -8086,6 +8094,7 @@ dependencies = [
  "prost",
  "restate-core",
  "restate-invoker-api",
+ "restate-memory",
  "restate-partition-store",
  "restate-rocksdb",
  "restate-service-protocol",
@@ -8379,6 +8388,7 @@ dependencies = [
  "restate-ingress-kafka",
  "restate-invoker-api",
  "restate-invoker-impl",
+ "restate-memory",
  "restate-metadata-server",
  "restate-metadata-store",
  "restate-partition-store",
@@ -10326,6 +10336,16 @@ checksum = "04659ddb06c87d233c566112c1c9c5b9e98256d9af50ec3bc9c8327f873a7568"
 dependencies = [
  "quote",
  "syn 2.0.114",
+]
+
+[[package]]
+name = "triomphe"
+version = "0.1.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd69c5aa8f924c7519d6372789a74eac5b94fb0f8fcf0d4a97eb0bfc3e785f39"
+dependencies = [
+ "serde",
+ "stable_deref_trait",
 ]
 
 [[package]]

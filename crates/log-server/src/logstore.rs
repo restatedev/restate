@@ -11,6 +11,7 @@
 use std::future::Future;
 
 use futures::FutureExt;
+use restate_memory::MemoryReservation;
 use tokio::sync::oneshot;
 
 use restate_bifrost::loglet::OperationError;
@@ -39,6 +40,7 @@ pub trait LogStore: Clone + Send + 'static {
         &self,
         store_message: Store,
         set_sequencer_in_metadata: bool,
+        reservation: MemoryReservation,
     ) -> impl Future<Output = Result<AsyncToken, OperationError>> + Send;
 
     fn enqueue_seal(

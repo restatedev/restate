@@ -17,6 +17,7 @@ restate-workspace-hack = { workspace = true }
 
 restate-core = { workspace = true }
 restate-invoker-api = { workspace = true }
+restate-memory = { workspace = true }
 restate-partition-store = { workspace = true }
 restate-service-protocol = { workspace = true, features = ["codec"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"]  }
