@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
 use std::pin;
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use restate_core::network::{
     BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver, Verdict,
 };
 use restate_core::{cancellation_watcher, my_node_id};
+use restate_memory::MemoryBudget;
 use restate_types::net::RpcRequest;
 use restate_types::net::remote_query_scanner::{
     RemoteDataFusionService, RemoteQueryScannerClose, RemoteQueryScannerClosed,
@@ -45,7 +47,10 @@ impl RemoteQueryScannerServer {
         remote_scanner_manager: RemoteScannerManager,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        let network_rx = router_builder.register_service(64, BackPressureMode::PushBack);
+        // Original: buffer_size=64, BackPressureMode::PushBack
+        // TODO: Consider adding a config option for this service's memory limit.
+        let pool = MemoryBudget::new("remote-query-scanner", 2 * 1024 * 1024, NonZeroUsize::MIN); // 2MiB
+        let network_rx = router_builder.register_service(pool, BackPressureMode::PushBack);
 
         Self {
             query_context,
