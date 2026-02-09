@@ -15,7 +15,7 @@ pub mod fsm_table;
 pub mod idempotency_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
-mod invocation_status_tracking;
+pub mod invocation_status_tracking;
 pub mod journal_events;
 pub mod journal_table;
 pub mod journal_table_v2;

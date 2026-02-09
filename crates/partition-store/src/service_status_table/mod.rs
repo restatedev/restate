@@ -11,6 +11,7 @@
 use std::ops::RangeInclusive;
 
 use bytestring::ByteString;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
@@ -102,6 +103,7 @@ impl ScanVirtualObjectStatusTable for PartitionStore {
             "df-vo-status",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<ServiceStatusKey>(range),
+            ReadOptions::default(),
             move |(mut key, mut value)| {
                 let state_key = break_on_err(ServiceStatusKey::deserialize_from(&mut key))?;
                 let state_value = break_on_err(VirtualObjectStatus::decode(&mut value))?;
