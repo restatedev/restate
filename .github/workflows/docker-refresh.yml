@@ -50,7 +50,7 @@ jobs:
 
           # Query GitHub for tags matching this minor series and get the latest
           VERSION=$(gh api "repos/${{ github.repository }}/git/refs/tags" --jq \
-            "[.[] | .ref | select(startswith(\"refs/tags/v${MINOR}.\"))] | map(ltrimstr(\"refs/tags/v\")) | sort_by(split(\".\") | map(tonumber)) | last // empty")
+            "[.[] | .ref | select(startswith(\"refs/tags/v${MINOR}.\")) | ltrimstr(\"refs/tags/v\") | select(test(\"^[0-9]+\\\\.[0-9]+\\\\.[0-9]+$\"))] | sort_by(split(\".\") | map(tonumber)) | last // empty")
 
           if [[ -z "$VERSION" ]]; then
             echo "No released version found for ${MINOR}.x series"
