@@ -5,7 +5,7 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: "0 0 * * *"
 
 jobs:
   hack-clippy:
@@ -30,12 +30,6 @@ jobs:
         with:
           components: clippy
           rustflags: ""
-          cache: false
-
-      - name: Setup Rust Caching
-        uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
-        with:
-          cache-on-failure: "true"
 
       - name: Install cargo-hakari and cargo-hack
         uses: taiki-e/install-action@v2
