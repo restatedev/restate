@@ -262,6 +262,7 @@ tracing-subscriber = { version = "0.3", features = [
     "parking_lot",
 ] }
 tracing-test = { version = "0.2.5" }
+triomphe = { version = "0.1.14" }
 typed-builder = "0.23.2"
 typify = { version = "0.5.0" }
 ulid = { version = "1.2.1" }

@@ -26,6 +26,8 @@ use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
 use restate_types::partition_table::PartitionTable;
 use restate_types::{GenerationalNodeId, RestateVersion, Version};
 
+use restate_memory::MemoryBudget;
+
 use crate::network::protobuf::network::Message;
 use crate::network::{
     AcceptError, BackPressureMode, FailingConnector, Handler, MessageRouterBuilder, Networking,
@@ -121,7 +123,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
 
     pub fn register_buffered_service<H, S>(
         mut self,
-        buffer_size: usize,
+        pool: MemoryBudget,
         backpressure: BackPressureMode,
         handler: H,
     ) -> Self
@@ -131,7 +133,7 @@ impl<T: TransportConnect> TestCoreEnvBuilder<T> {
     {
         let buffered = self
             .router_builder
-            .register_buffered_service(buffer_size, backpressure);
+            .register_buffered_service(pool, backpressure);
         buffered
             .start(TaskKind::NetworkMessageHandler, "service-handler", handler)
             .unwrap();

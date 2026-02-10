@@ -278,6 +278,7 @@ mod test {
         },
         partitions::PartitionRouting,
     };
+    use restate_memory::MemoryBudget;
     use restate_types::{
         Version,
         identifiers::{LeaderEpoch, PartitionId},
@@ -318,10 +319,13 @@ mod test {
             );
         }
 
+        // Original test used buffer_size=10, BackPressureMode::PushBack
+        // Using a small pool for tests (~20KB)
+        let pool = MemoryBudget::new("test-partition-leader", 20 * 1024, NonZeroUsize::MIN);
         let svc = builder
             .router_builder
             .register_service::<net::partition_processor::PartitionLeaderService>(
-                10,
+                pool,
                 BackPressureMode::PushBack,
             );
 

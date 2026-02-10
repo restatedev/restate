@@ -301,13 +301,13 @@ impl<T: TransportConnect> SequencerAppender<T> {
         trace!(graylist = %self.graylist, %spread, wave = %self.current_wave, nodeset_status = %self.nodeset_status, "Sending append wave");
         let last_offset = self.records.last_offset(self.first_offset).unwrap();
 
-        // todo: should be exponential backoff
+        // todo: should be exponential backoff tracked per generational node ID
         let store_timeout = *self
             .configuration
             .live_load()
             .bifrost
             .replicated_loglet
-            .log_server_rpc_timeout;
+            .log_server_store_timeout;
 
         // track the in flight server ids
         let mut pending_servers = NodeSet::from_iter(spread.iter().copied());
