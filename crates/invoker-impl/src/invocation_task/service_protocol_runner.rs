@@ -261,8 +261,10 @@ where
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
     ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
-        // Just an arbitrary buffering size
-        let (http_stream_tx, http_stream_rx) = mpsc::channel(10);
+        // Make this channel a rendezvous channel to avoid unnecessary buffering between the service
+        // protocol runner and the underlying hyper HTTP client. This helps with keeping the overall
+        // memory consumption per invocation in check.
+        let (http_stream_tx, http_stream_rx) = mpsc::channel(1);
         let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
 
         let service_protocol_header_value =
