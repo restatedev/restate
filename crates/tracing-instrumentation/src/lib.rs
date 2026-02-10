@@ -88,6 +88,26 @@ fn bad_endpoint<T: Into<String>>(msg: T) -> Error {
     Error::InvalidTracingEndpoint(EndpointError(msg.into()))
 }
 
+/// Parses `OTEL_RESOURCE_ATTRIBUTES` into a list of key-value pairs.
+/// Format: `key1=value1,key2=value2,...`
+///
+/// Mirrors the parsing logic in the OpenTelemetry SDK's `EnvResourceDetector`:
+/// https://github.com/open-telemetry/opentelemetry-rust/blob/main/opentelemetry-sdk/src/resource/env.rs
+fn otel_resource_attributes_from_env() -> Vec<KeyValue> {
+    let Ok(s) = env::var("OTEL_RESOURCE_ATTRIBUTES") else {
+        return Vec::new();
+    };
+    s.split_terminator(',')
+        .filter_map(|entry| {
+            let (key, value) = entry.split_once('=')?;
+            Some(KeyValue::new(
+                key.trim().to_owned(),
+                value.trim().to_owned(),
+            ))
+        })
+        .collect()
+}
+
 /// This function parses tracing-services-endpoint and/or tracing-endpoint, and
 /// builds an OpenTelemetry trace exporter emitting to that endpoint. It then
 /// installs that exporter as the global OpenTelemetry tracer provider, which is
@@ -132,6 +152,7 @@ fn install_opentelemetry_tracer_provider(
 
     // Build the tracer provider.
     let resource = opentelemetry_sdk::Resource::builder_empty()
+        .with_attributes(otel_resource_attributes_from_env())
         .with_service_name("services")
         .with_attributes(vec![
             KeyValue::new(
@@ -202,6 +223,7 @@ where
     }
 
     let resource = opentelemetry_sdk::Resource::builder_empty()
+        .with_attributes(otel_resource_attributes_from_env())
         .with_service_name(format!("{}@{}", service_name, common_opts.node_name()))
         .with_attributes(vec![
             KeyValue::new(
