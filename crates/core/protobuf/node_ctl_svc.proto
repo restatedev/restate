@@ -29,6 +29,10 @@ service NodeCtlSvc {
   // todo: Remove in v1.7.0 once the REST endpoint /cluster-health is removed
   // Returns the cluster health from the point of view of this node.
   rpc ClusterHealth(google.protobuf.Empty) returns (ClusterHealthResponse);
+
+  // Trigger manual compaction of RocksDB databases on this node.
+  rpc TriggerCompaction(TriggerCompactionRequest)
+      returns (TriggerCompactionResponse);
 }
 
 message ProvisionClusterRequest {
@@ -107,4 +111,28 @@ message ClusterHealthResponse {
 
 message EmbeddedMetadataClusterHealth {
   repeated restate.common.NodeId members = 1;
+}
+
+enum DatabaseKind {
+  DATABASE_KIND_UNKNOWN = 0;
+  DATABASE_KIND_ALL = 1;
+  DATABASE_KIND_PARTITION_STORE = 2;
+  DATABASE_KIND_LOG_SERVER = 3;
+  DATABASE_KIND_METADATA_SERVER = 4;
+  DATABASE_KIND_LOCAL_LOGLET = 5;
+}
+
+message TriggerCompactionRequest {
+  repeated DatabaseKind databases = 1;
+}
+
+message TriggerCompactionResponse {
+  repeated DatabaseCompactionResult results = 1;
+}
+
+message DatabaseCompactionResult {
+  string db_name = 1;
+  bool success = 2;
+  optional string error = 3;
+  uint32 column_families_compacted = 4;
 }

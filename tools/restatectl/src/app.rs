@@ -25,6 +25,7 @@ use crate::commands::replicated_loglet::ReplicatedLoglet;
 use crate::commands::snapshot::Snapshot;
 use crate::commands::sql::SqlOpts;
 use crate::commands::status::ClusterStatusOpts;
+use crate::commands::storage::Storage;
 use crate::connection::ConnectionInfo;
 
 /// Restate Cluster Administration Tool
@@ -84,6 +85,9 @@ pub enum Command {
     /// Generate or install shell completions
     #[clap(subcommand)]
     Completions(Completions),
+    /// Storage operations (RocksDB maintenance)
+    #[clap(subcommand)]
+    Storage(Storage),
 }
 
 fn init(common_opts: &CommonOpts) {
