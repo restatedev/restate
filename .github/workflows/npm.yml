@@ -20,7 +20,7 @@ jobs:
       id-token: write # Required for trusted publishing
       contents: read
       packages: read
-    runs-on: warp-ubuntu-latest-x64-2x
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         package:
@@ -105,7 +105,7 @@ jobs:
     permissions:
       id-token: write # Required for trusted publishing
       contents: read
-    runs-on: warp-ubuntu-latest-x64-2x
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         package:
