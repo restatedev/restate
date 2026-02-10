@@ -39,7 +39,6 @@ pub mod test_util {
     use restate_types::time::MillisSinceEpoch;
     use restate_types::vqueue::VQueueId;
     use std::convert::Infallible;
-    use std::iter::empty;
     use std::marker::PhantomData;
     use std::ops::RangeInclusive;
     use tokio::sync::mpsc::Sender;
@@ -58,32 +57,38 @@ pub mod test_util {
     pub struct EmptyStorageReaderTransaction;
 
     impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
-        type JournalStream = futures::stream::Empty<JournalEntry>;
-        type StateIter = std::iter::Empty<(Bytes, Bytes)>;
+        type JournalStream<'a> = futures::stream::Empty<Result<JournalEntry, Self::Error>>;
+        type StateStream<'a> = futures::stream::Empty<Result<(Bytes, Bytes), Self::Error>>;
         type Error = Infallible;
 
-        async fn read_journal(
+        async fn read_journal_metadata(
             &mut self,
-            _fid: &InvocationId,
-        ) -> Result<Option<(JournalMetadata, Self::JournalStream)>, Self::Error> {
-            Ok(Some((
-                JournalMetadata::new(
-                    0,
-                    ServiceInvocationSpanContext::empty(),
-                    None,
-                    MillisSinceEpoch::UNIX_EPOCH,
-                    0,
-                    true,
-                ),
-                futures::stream::empty(),
+            _invocation_id: &InvocationId,
+        ) -> Result<Option<JournalMetadata>, Self::Error> {
+            Ok(Some(JournalMetadata::new(
+                0,
+                ServiceInvocationSpanContext::empty(),
+                None,
+                MillisSinceEpoch::UNIX_EPOCH,
+                0,
+                true,
             )))
         }
 
-        async fn read_state(
-            &mut self,
+        fn read_journal(
+            &self,
+            _invocation_id: &InvocationId,
+            _length: EntryIndex,
+            _using_journal_table_v2: bool,
+        ) -> Result<Self::JournalStream<'_>, Self::Error> {
+            Ok(futures::stream::empty())
+        }
+
+        fn read_state(
+            &self,
             _service_id: &ServiceId,
-        ) -> Result<EagerState<Self::StateIter>, Self::Error> {
-            Ok(EagerState::new_complete(empty()))
+        ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error> {
+            Ok(EagerState::new_complete(futures::stream::empty()))
         }
     }
 

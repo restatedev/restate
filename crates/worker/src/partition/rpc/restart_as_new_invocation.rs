@@ -490,7 +490,7 @@ mod tests {
         }
 
         fn get_journal(
-            &mut self,
+            &self,
             invocation_id: InvocationId,
             length: EntryIndex,
         ) -> restate_storage_api::Result<
@@ -559,14 +559,15 @@ mod tests {
             ready(Ok(None))
         }
 
-        fn get_journal(
-            &mut self,
+        fn get_journal<'a>(
+            &'a self,
             invocation_id: &InvocationId,
             journal_length: EntryIndex,
         ) -> restate_storage_api::Result<
             impl Stream<
                 Item = restate_storage_api::Result<(EntryIndex, journal_table_v1::JournalEntry)>,
-            > + Send,
+            > + Send
+            + 'a,
         > {
             assert_eq!(&self.expected_invocation_id, invocation_id);
             let items: Vec<(EntryIndex, journal_table_v1::JournalEntry)> = if journal_length > 0 {

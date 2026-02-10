@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -17,7 +18,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, stream};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -29,15 +30,18 @@ use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
 use restate_invoker_api::JournalMetadata;
-use restate_invoker_api::invocation_reader::{EagerState, JournalEntry};
+use restate_invoker_api::invocation_reader::{
+    EagerState, InvocationReaderTransaction, JournalEntry,
+};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
-    Decoder, Encoder, Message, MessageHeader, MessageType, proto,
+    Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
 };
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::ServiceId;
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
     SpanRelation,
@@ -60,7 +64,7 @@ use crate::error::{
 };
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
-    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
+    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
     invocation_id_to_header_value, service_protocol_version_to_header_value,
 };
 
@@ -74,8 +78,8 @@ const GATEWAY_ERRORS_CODES: [StatusCode; 3] = [
 ];
 
 /// Runs the interaction between the server and the service endpoint.
-pub struct ServiceProtocolRunner<'a, IR, EE, Schemas> {
-    invocation_task: &'a mut InvocationTask<IR, EE, Schemas>,
+pub struct ServiceProtocolRunner<'a, EE, Schemas> {
+    invocation_task: &'a mut InvocationTask<EE, Schemas>,
 
     service_protocol_version: ServiceProtocolVersion,
 
@@ -86,12 +90,12 @@ pub struct ServiceProtocolRunner<'a, IR, EE, Schemas> {
     command_index: CommandIndex,
 }
 
-impl<'a, IR, EE, Schemas> ServiceProtocolRunner<'a, IR, EE, Schemas>
+impl<'a, EE, Schemas> ServiceProtocolRunner<'a, EE, Schemas>
 where
     Schemas: InvocationTargetResolver,
 {
     pub fn new(
-        invocation_task: &'a mut InvocationTask<IR, EE, Schemas>,
+        invocation_task: &'a mut InvocationTask<EE, Schemas>,
         service_protocol_version: ServiceProtocolVersion,
     ) -> Self {
         let encoder = Encoder::new(service_protocol_version);
@@ -104,16 +108,22 @@ where
         }
     }
 
-    pub async fn run<JournalStream, StateIter>(
+    /// Run the service protocol interaction.
+    ///
+    /// # Arguments
+    /// * `keyed_service_id` - If `Some`, eager state loading is enabled and we'll read/send
+    ///   state for this service upfront. If `None`, lazy state is used (either because this
+    ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
+    pub async fn run<Txn>(
         mut self,
+        txn: Txn,
         journal_metadata: JournalMetadata,
+        keyed_service_id: Option<ServiceId>,
+        cached_journal_items: Option<Vec<JournalEntry>>,
         deployment: Deployment,
-        journal_stream: JournalStream,
-        state_iter: EagerState<StateIter>,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = JournalEntry> + Unpin,
-        StateIter: Iterator<Item = (Bytes, Bytes)>,
+        Txn: InvocationReaderTransaction,
     {
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
@@ -147,27 +157,16 @@ where
 
         // Create an arc of the parent SpanContext.
         // We send this with every journal entry to correctly link new spans generated from journal entries.
-        let service_invocation_span_context = journal_metadata.span_context;
+        let service_invocation_span_context = journal_metadata.span_context.clone();
 
-        // Prepare the request and send start message
+        // Prepare the request
         let (mut http_stream_tx, request) = Self::prepare_request(
             path,
             deployment,
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             &service_invocation_span_context,
-        );
-
-        crate::shortcircuit!(
-            self.write_start(
-                &mut http_stream_tx,
-                journal_size,
-                state_iter,
-                self.invocation_task.retry_count_since_last_stored_entry,
-                journal_metadata.last_modification_date.elapsed(),
-                journal_metadata.random_seed
-            )
-            .await
+            self.invocation_task.service_protocol_channel_size,
         );
 
         // Initialize the response stream state
@@ -183,16 +182,69 @@ where
             .throttle(self.invocation_task.action_token_bucket.take())
         );
 
-        // Execute the replay
-        crate::shortcircuit!(
-            self.replay_loop(
-                &mut http_stream_tx,
-                &mut decoder_stream,
-                journal_stream,
-                journal_metadata.length
-            )
-            .await
-        );
+        // === Replay phase (transaction alive) ===
+        {
+            // Read state if needed (state is collected for the START message)
+            let state = if let Some(ref service_id) = keyed_service_id {
+                Some(crate::shortcircuit!(
+                    txn.read_state(service_id)
+                        .map_err(|e| InvokerError::StateReader(e.into()))
+                ))
+            } else {
+                None
+            };
+
+            // Send start message with state
+            crate::shortcircuit!(
+                self.write_start(
+                    &mut http_stream_tx,
+                    journal_size,
+                    state,
+                    self.invocation_task.retry_count_since_last_stored_entry,
+                    journal_metadata.last_modification_date.elapsed(),
+                    journal_metadata.random_seed
+                )
+                .await
+            );
+
+            // Read journal stream (or use cached)
+            if let Some(items) = cached_journal_items {
+                let journal_stream = stream::iter(items.into_iter().map(Ok::<_, Infallible>));
+                // Execute the replay
+                crate::shortcircuit!(
+                    self.replay_loop(
+                        &mut http_stream_tx,
+                        &mut decoder_stream,
+                        journal_stream,
+                        journal_metadata.length
+                    )
+                    .await
+                );
+            } else {
+                let journal_stream = crate::shortcircuit!(
+                    txn.read_journal(
+                        &self.invocation_task.invocation_id,
+                        journal_size,
+                        journal_metadata.using_journal_table_v2,
+                    )
+                    .map_err(|e| InvokerError::JournalReader(e.into()))
+                );
+                // Execute the replay
+                crate::shortcircuit!(
+                    self.replay_loop(
+                        &mut http_stream_tx,
+                        &mut decoder_stream,
+                        journal_stream,
+                        journal_metadata.length
+                    )
+                    .await
+                );
+            }
+        }
+        // === End replay phase - streams dropped, transaction can be dropped ===
+
+        // Transaction dropped - RocksDB snapshot released!
+        drop(txn);
 
         // If we have the invoker_rx and the protocol type is bidi stream,
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
@@ -236,9 +288,9 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
+        channel_size: usize,
     ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
-        // Just an arbitrary buffering size
-        let (http_stream_tx, http_stream_rx) = mpsc::channel(10);
+        let (http_stream_tx, http_stream_rx) = mpsc::channel(channel_size);
         let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
 
         let service_protocol_header_value =
@@ -306,7 +358,7 @@ where
     // --- Loops
 
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
-    async fn replay_loop<JournalStream, S>(
+    async fn replay_loop<JournalStream, S, E>(
         &mut self,
         http_stream_tx: &mut InvokerRequestStreamSender,
         http_stream_rx: &mut S,
@@ -314,8 +366,9 @@ where
         expected_entries_count: u32,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = JournalEntry> + Unpin,
+        JournalStream: Stream<Item = Result<JournalEntry, E>> + Unpin,
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
+        E: std::error::Error + Send + Sync + 'static,
     {
         let mut journal_stream = journal_stream.fuse();
         let mut got_headers = false;
@@ -341,11 +394,11 @@ where
                 },
                 opt_je = journal_stream.next() => {
                     match opt_je {
-                        Some(JournalEntry::JournalV2(entry)) => {
+                        Some(Ok(JournalEntry::JournalV2(entry))) => {
                             sent_entries += 1;
                             crate::shortcircuit!(self.write_entry(http_stream_tx, entry.inner).await);
                         }
-                        Some(JournalEntry::JournalV1(old_entry)) => {
+                        Some(Ok(JournalEntry::JournalV1(old_entry))) => {
                             sent_entries += 1;
                             if let journal::Entry::Input(input_entry) = crate::shortcircuit!(old_entry.deserialize_entry::<ProtobufRawEntryCodec>()) {
                                 crate::shortcircuit!(self.write_entry(
@@ -360,6 +413,9 @@ where
                                 panic!("This is unexpected, when an entry is stored with journal v1, only input entry is allowed!")
                             }
                         },
+                        Some(Err(e)) => {
+                            return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
+                        }
                         None => {
                             // Let's verify if we sent all the entries we promised, otherwise the stream will hang in a bad way!
                             if sent_entries < expected_entries_count {
@@ -465,16 +521,26 @@ where
 
     // --- Read and write methods
 
-    async fn write_start<I: Iterator<Item = (Bytes, Bytes)>>(
+    async fn write_start<S, E>(
         &mut self,
         http_stream_tx: &mut InvokerRequestStreamSender,
         journal_size: u32,
-        state_entries: EagerState<I>,
+        state: Option<EagerState<S>>,
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
         random_seed: u64,
-    ) -> Result<(), InvokerError> {
-        let is_partial = state_entries.is_partial();
+    ) -> Result<(), InvokerError>
+    where
+        S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        // Collect state entries with size limit
+        let (partial_state, raw_entries) =
+            collect_eager_state(state, self.invocation_task.eager_state_size_limit).await?;
+        let state_map: Vec<StateEntry> = raw_entries
+            .into_iter()
+            .map(|(key, value)| StateEntry { key, value })
+            .collect();
 
         // Send the invoke frame
         self.write(
@@ -487,8 +553,8 @@ where
                     .key()
                     .map(|bs| bs.as_bytes().clone()),
                 journal_size,
-                is_partial,
-                state_entries,
+                partial_state,
+                state_map,
                 retry_count_since_last_stored_entry,
                 duration_since_last_stored_entry,
                 random_seed,

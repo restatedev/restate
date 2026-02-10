@@ -9,20 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::ops::RangeInclusive;
 
 use anyhow::anyhow;
 use futures::Stream;
 use futures_util::stream;
+use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use crate::TableKind::Journal;
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::owned_iter::OwnedIterator;
-use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
-    TableScanIterationDecision, break_on_err,
-};
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
     JournalEntryIndex, ReadJournalTable, ScanJournalTable, StoredEntry, WriteJournalTable,
@@ -65,6 +62,43 @@ define_table_key!(
         notification_id: NotificationId
     )
 );
+
+/// Lazy iterator over journal entries. Decodes entries on-demand from RocksDB.
+struct JournalEntryIter<'a, DB: DBAccess> {
+    iter: DBRawIteratorWithThreadMode<'a, DB>,
+    remaining: u32,
+}
+
+impl<'a, DB: DBAccess> JournalEntryIter<'a, DB> {
+    fn new(iter: DBRawIteratorWithThreadMode<'a, DB>, journal_length: EntryIndex) -> Self {
+        Self {
+            iter,
+            remaining: journal_length,
+        }
+    }
+}
+
+impl<DB: DBAccess> Iterator for JournalEntryIter<'_, DB> {
+    type Item = Result<(EntryIndex, StoredRawEntry)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        let (mut k, mut v) = self.iter.item()?;
+
+        let key_result =
+            JournalKey::deserialize_from(&mut k).map(|journal_key| journal_key.journal_index);
+
+        let entry_result = StoredEntry::decode(&mut v).map_err(|e| StorageError::Generic(e.into()));
+
+        self.iter.next();
+        self.remaining -= 1;
+
+        Some(key_result.and_then(|key| entry_result.map(|entry| (key, entry.0))))
+    }
+}
 
 fn write_journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> JournalKey {
     JournalKey {
@@ -119,35 +153,22 @@ fn get_journal_entry<S: StorageAccess>(
     Ok(opt.map(|e| e.0))
 }
 
-fn get_journal<S: StorageAccess>(
-    storage: &mut S,
+fn get_journal<'a, S: StorageAccess>(
+    storage: &'a S,
     invocation_id: &InvocationId,
     journal_length: EntryIndex,
-) -> Result<Vec<Result<(EntryIndex, StoredRawEntry)>>> {
-    let _x = RocksDbPerfGuard::new("get-journal");
+) -> Result<JournalEntryIter<'a, S::DBAccess<'a>>> {
+    let _x = RocksDbPerfGuard::new("get-journal-iter-setup");
     let key = JournalKey::builder()
         .partition_key(invocation_id.partition_key())
         .invocation_uuid(invocation_id.invocation_uuid());
 
-    let mut n = 0;
-    storage.for_each_key_value_in_place(
-        TableScan::SinglePartitionKeyPrefix(invocation_id.partition_key(), key),
-        move |k, mut v| {
-            let key = JournalKey::deserialize_from(&mut Cursor::new(k))
-                .map(|journal_key| journal_key.journal_index);
-            let entry =
-                StoredEntry::decode(&mut v).map_err(|error| StorageError::Generic(error.into()));
+    let iter = storage.iterator_from(TableScan::SinglePartitionKeyPrefix(
+        invocation_id.partition_key(),
+        key,
+    ))?;
 
-            let result = key.and_then(|key| entry.map(|entry| (key, entry.0)));
-
-            n += 1;
-            if n < journal_length {
-                TableScanIterationDecision::Emit(result)
-            } else {
-                TableScanIterationDecision::BreakWith(result)
-            }
-        },
-    )
+    Ok(JournalEntryIter::new(iter, journal_length))
 }
 
 fn delete_journal<S: StorageAccess>(
@@ -310,7 +331,7 @@ impl ReadJournalTable for PartitionStore {
     }
 
     fn get_journal(
-        &mut self,
+        &self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send> {
@@ -396,7 +417,7 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
     }
 
     fn get_journal(
-        &mut self,
+        &self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
     ) -> Result<impl Stream<Item = Result<(EntryIndex, StoredRawEntry)>> + Send> {

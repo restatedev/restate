@@ -307,6 +307,30 @@ pub struct InvokerOptions {
     /// Number of concurrent invocations that can be processed by the invoker.
     concurrent_invocations_limit: Option<NonZeroUsize>,
 
+    /// # Eager state size limit
+    ///
+    /// Maximum total size (in bytes) of state entries to send eagerly in the StartMessage.
+    /// When the total size of state entries exceeds this limit, only a partial state is sent
+    /// and the service will fetch remaining state lazily using GetEagerState commands.
+    ///
+    /// This helps reduce memory pressure on deployments for services with large state.
+    /// If unset, all state entries are sent eagerly (no limit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eager_state_size_limit: Option<NonZeroByteCount>,
+
+    /// # Service protocol channel size
+    ///
+    /// The capacity of the bounded channel used to buffer outgoing messages to service
+    /// deployments. Each message can be up to `message-size-limit` in size, so the
+    /// worst-case memory usage per invocation for this buffer is:
+    ///   `service-protocol-channel-size × message-size-limit`
+    ///
+    /// Lower values reduce memory usage but may reduce throughput for services with
+    /// high message rates. A value of 1 provides the tightest memory bound.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(default = "default_service_protocol_channel_size")]
+    pub service_protocol_channel_size: NonZeroUsize,
+
     // -- Private config options (not exposed in the schema)
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -378,6 +402,11 @@ impl InvokerOptions {
     }
 }
 
+const fn default_service_protocol_channel_size() -> NonZeroUsize {
+    // SAFETY: 10 is non-zero
+    unsafe { NonZeroUsize::new_unchecked(10) }
+}
+
 impl Default for InvokerOptions {
     fn default() -> Self {
         Self {
@@ -390,6 +419,8 @@ impl Default for InvokerOptions {
             message_size_limit: None,
             tmp_dir: None,
             concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
+            eager_state_size_limit: None,
+            service_protocol_channel_size: default_service_protocol_channel_size(),
             disable_eager_state: false,
             invocation_throttling: None,
             action_throttling: None,

@@ -117,7 +117,7 @@ fn populate_sleep_journal<T: WriteJournalTable>(txn: &mut T) {
     }
 }
 
-async fn get_entire_sleep_journal<T: ReadJournalTable>(txn: &mut T) {
+async fn get_entire_sleep_journal<T: ReadJournalTable>(txn: &T) {
     let mut journal = pin!(txn.get_journal(MOCK_INVOCATION_ID_1, 10).unwrap());
     for _ in 0..5 {
         let entry = journal.next().await.unwrap().unwrap().1;
@@ -159,7 +159,7 @@ async fn check_sleep_notification_index<T: ReadJournalTable>(txn: &mut T) {
     );
 }
 
-async fn get_subset_of_a_journal<T: ReadJournalTable>(txn: &mut T) {
+async fn get_subset_of_a_journal<T: ReadJournalTable>(txn: &T) {
     let mut journal = pin!(txn.get_journal(MOCK_INVOCATION_ID_1, 2).unwrap());
     let mut count = 0;
     while (journal.next().await).is_some() {
@@ -226,8 +226,8 @@ async fn test_sleep_journal() {
     let mut txn = rocksdb.transaction();
 
     populate_sleep_journal(&mut txn);
-    get_entire_sleep_journal(&mut txn).await;
-    get_subset_of_a_journal(&mut txn).await;
+    get_entire_sleep_journal(&txn).await;
+    get_subset_of_a_journal(&txn).await;
     check_sleep_completion_index(&mut txn).await;
     check_sleep_notification_index(&mut txn).await;
 
