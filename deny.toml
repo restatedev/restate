@@ -96,10 +96,6 @@ skip = [
     # The following is an internal dependency needed by librocksdb-sys
     { name = "syn" },
 
-    # Clash between datafusion async-compression dependency and datafusion zstd dependency
-    { name = "zstd-safe" },
-    { name = "zstd" },
-
     # Clash between datafusion and arrow
     { name = "hashbrown" },
 
@@ -111,10 +107,6 @@ skip = [
 
     # Clash with criterion
     { name = "itertools" },
-
-    # clash between prost and otel libraries
-    { name = "prost" },
-    { name = "prost-derive" },
 
     # clash between aws-config and pgwire
     { name = "untrusted" },
