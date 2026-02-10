@@ -21,9 +21,10 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
+use tracing::{info, trace};
 use triomphe::Arc;
 
-use restate_serde_util::NonZeroByteCount;
+use restate_serde_util::{ByteCount, NonZeroByteCount};
 
 /// A memory budget that tracks and limits memory usage.
 ///
@@ -186,8 +187,16 @@ impl MemoryBudget {
                 loop {
                     future.as_mut().enable();
                     if let Some(lease) = self.try_reserve(size) {
+                        trace!(
+                            "Memory budget is available, reserving {}",
+                            ByteCount::from(size)
+                        );
                         return lease;
                     }
+                    info!(
+                        "Waiting for memory budget to become available, requesting {}",
+                        ByteCount::from(size)
+                    );
                     future.as_mut().await;
                     future.set(inner.notify.notified());
                 }

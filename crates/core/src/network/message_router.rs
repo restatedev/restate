@@ -15,18 +15,17 @@ use std::task::{Poll, ready};
 
 use ahash::HashMap;
 use futures::Stream;
-use metrics::{Histogram, histogram};
+
+use restate_memory::{EstimatedMemorySize, MemoryBudget, MemoryLease};
 use tokio::sync::mpsc;
-use tokio::time::Instant;
 use tokio_stream::StreamExt;
-use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, instrument};
 
 use restate_types::SharedString;
 use restate_types::net::{Service, ServiceTag};
 
 use super::incoming::{Incoming, RawRpc, RawUnary, RawWatch};
-use super::metric_definitions::NETWORK_MESSAGE_PROCESSING_DURATION;
+
 use super::{RawSvcRpc, RawSvcUnary, RawSvcWatch, RouterError, Verdict};
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_token};
 
@@ -110,10 +109,9 @@ impl MessageRouter {
         target: ServiceTag,
         message: Incoming<RawRpc>,
     ) -> Result<(), RouterError> {
-        let permit = self.get_sender(target)?.reserve().await?;
-        permit.send(ServiceOp::CallRpc(message));
-
-        Ok(())
+        self.get_sender(target)?
+            .send(ServiceOp::CallRpc(message))
+            .await
     }
 
     pub async fn call_watch(
@@ -122,10 +120,8 @@ impl MessageRouter {
         message: Incoming<RawWatch>,
     ) -> Result<(), RouterError> {
         self.get_sender(target)?
-            .reserve()
-            .await?
-            .send(ServiceOp::Watch(message));
-        Ok(())
+            .send(ServiceOp::Watch(message))
+            .await
     }
 
     pub async fn call_unary(
@@ -134,10 +130,8 @@ impl MessageRouter {
         message: Incoming<RawUnary>,
     ) -> Result<(), RouterError> {
         self.get_sender(target)?
-            .reserve()
-            .await?
-            .send(ServiceOp::Unary(message));
-        Ok(())
+            .send(ServiceOp::Unary(message))
+            .await
     }
 }
 
@@ -146,16 +140,53 @@ pub struct MessageRouterBuilder {
     handlers: HashMap<ServiceTag, ServiceSender>,
 }
 
+/// Controls backpressure behavior when the memory pool is exhausted.
+#[derive(Clone, Copy, Default, Debug)]
+pub enum BackPressureMode {
+    /// Waits asynchronously for memory to become available before sending.
+    /// Use this when you want to slow down senders when the service is under pressure.
+    #[default]
+    PushBack,
+    /// Immediately rejects messages when there's no capacity (load shedding).
+    /// The sender will receive [`RouterError::CapacityExceeded`].
+    /// Use this when you prefer to drop requests rather than queue them.
+    Lossy,
+}
+
 impl MessageRouterBuilder {
-    /// Attach a handler that receives all messages targeting a certain [`ServiceTag`].
+    /// Registers a service with an unlimited memory pool and default backpressure mode.
+    ///
+    /// This is a convenience method for services that don't need memory-based
+    /// admission control. For memory-bounded services, use [`Self::register_service`]
+    /// with a bounded [`MemoryBudget`].
+    #[track_caller]
+    #[must_use]
+    pub fn register_unbounded_service<S: Service>(&mut self) -> ServiceReceiver<S> {
+        self.register_service(MemoryBudget::unlimited(""), BackPressureMode::default())
+    }
+
+    /// Registers a service with the specified memory pool and backpressure mode.
+    ///
+    /// The memory reservation is attached to each incoming message and should be
+    /// held until processing is complete (e.g., until data is persisted to storage).
+    ///
+    /// # Backpressure Modes
+    ///
+    /// - [`BackPressureMode::PushBack`]: Waits for memory to become available.
+    ///   Use when you want to slow down senders under pressure.
+    /// - [`BackPressureMode::Lossy`]: Immediately rejects with [`RouterError::CapacityExceeded`].
+    ///   Use when you prefer to drop requests rather than queue them.
+    ///
+    /// For services that don't need memory tracking, use [`Self::register_unbounded_service`]
+    /// or pass [`MemoryBudget::unlimited()`].
     #[track_caller]
     #[must_use]
     pub fn register_service<S: Service>(
         &mut self,
-        buffer_size: usize,
+        pool: MemoryBudget,
         backpressure: BackPressureMode,
     ) -> ServiceReceiver<S> {
-        let (sender, receiver) = ServiceSender::new(backpressure, buffer_size);
+        let (sender, receiver) = ServiceSender::new::<S>(pool, backpressure);
         if self.handlers.insert(S::TAG, sender).is_some() {
             panic!(
                 "Handler for service {} has been registered already!",
@@ -165,27 +196,20 @@ impl MessageRouterBuilder {
         receiver
     }
 
-    /// Subscribes to messages for a specific service.
+    /// Subscribes to messages for a specific service with a buffered handler.
     ///
     /// [`Buffered`] provides a batteries-included implementation of a processor
     /// task that manages the service lifecycle and exposes a convenient API for
     /// handling requests and unary messages. The buffered processor task is started
     /// when calling [`Buffered::start()`].
-    ///
     #[track_caller]
     #[must_use]
     pub fn register_buffered_service<S: Service>(
         &mut self,
-        buffer_size: usize,
+        pool: MemoryBudget,
         backpressure: BackPressureMode,
     ) -> Buffered<S> {
-        let (sender, receiver) = ServiceSender::new(backpressure, buffer_size);
-        assert!(
-            self.handlers.insert(S::TAG, sender).is_none(),
-            "Handler for service {} has been registered already!",
-            S::TAG
-        );
-
+        let receiver = self.register_service::<S>(pool, backpressure);
         Buffered::new(receiver)
     }
 
@@ -205,27 +229,27 @@ enum ServiceOp {
     Unary(Incoming<RawUnary>),
 }
 
-/// A permit to route a message to a service
-pub struct ServiceSendPermit<'a> {
-    permit: mpsc::Permit<'a, ServiceOp>,
-}
-
-impl ServiceSendPermit<'_> {
-    fn send(self, message: ServiceOp) {
-        self.permit.send(message);
+impl EstimatedMemorySize for ServiceOp {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        match self {
+            ServiceOp::CallRpc(incoming) => incoming.estimated_memory_size(),
+            ServiceOp::Watch(incoming) => incoming.estimated_memory_size(),
+            ServiceOp::Unary(incoming) => incoming.estimated_memory_size(),
+        }
     }
 }
 
 /// Ingress stream for network services
 pub struct ServiceStream<S> {
-    inner: ReceiverStream<ServiceOp>,
+    inner: mpsc::UnboundedReceiver<ServiceOp>,
     _marker: std::marker::PhantomData<S>,
 }
 
 impl<S: Service> ServiceStream<S> {
-    fn new(receiver: mpsc::Receiver<ServiceOp>) -> Self {
+    fn new(receiver: mpsc::UnboundedReceiver<ServiceOp>) -> Self {
         Self {
-            inner: ReceiverStream::new(receiver),
+            inner: receiver,
             _marker: std::marker::PhantomData,
         }
     }
@@ -243,6 +267,16 @@ impl<S: Service> ServiceStream<S> {
     pub fn close(&mut self) {
         self.inner.close();
     }
+
+    /// Returns the number of messages in the queue.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Returns true if there are no messages in the queue.
+    pub fn is_empty(&self) -> bool {
+        self.inner.len() == 0
+    }
 }
 
 impl<S: Service> Stream for ServiceStream<S> {
@@ -252,7 +286,7 @@ impl<S: Service> Stream for ServiceStream<S> {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        match ready!(self.as_mut().inner.as_mut().poll_recv(cx)) {
+        match ready!(self.inner.poll_recv(cx)) {
             Some(op) => match op {
                 ServiceOp::CallRpc(message) => {
                     let message = Incoming::from_raw_rpc(message);
@@ -273,7 +307,7 @@ impl<S: Service> Stream for ServiceStream<S> {
 
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
+        (self.inner.len(), None)
     }
 }
 
@@ -296,6 +330,7 @@ impl<S: Service> ServiceMessage<S> {
     where
         M: restate_types::net::RpcRequest<Service = S>,
     {
+        use restate_memory::MemoryLease;
         use restate_types::net::CURRENT_PROTOCOL_VERSION;
         let protocol_version = CURRENT_PROTOCOL_VERSION;
 
@@ -314,6 +349,7 @@ impl<S: Service> ServiceMessage<S> {
             payload,
             sort_code,
             msg_type: M::TYPE.to_owned(),
+            reservation: MemoryLease::unlinked(),
         };
 
         let raw_incoming = Incoming::new(
@@ -371,18 +407,8 @@ impl<S: Service> ServiceMessage<S> {
     }
 }
 
-#[derive(Clone, Copy, Default, Debug)]
-pub enum BackPressureMode {
-    /// Pushes back to the sender if the service has no capacity
-    #[default]
-    PushBack,
-    /// Drops messages if the service has no capacity. The sender will be
-    /// notified that the message has been dropped due to load shedding.
-    Lossy,
-}
-
 pub struct ServiceReceiver<S> {
-    receiver: mpsc::Receiver<ServiceOp>,
+    receiver: mpsc::UnboundedReceiver<ServiceOp>,
     started: Arc<AtomicBool>,
     _marker: std::marker::PhantomData<S>,
 }
@@ -404,7 +430,7 @@ impl<S: Service> ServiceReceiver<S> {
 // creates a default closed receiver
 impl<S: Service> Default for ServiceReceiver<S> {
     fn default() -> Self {
-        let (_tx, mut receiver) = mpsc::channel(1);
+        let (_tx, mut receiver) = mpsc::unbounded_channel();
         receiver.close();
         Self {
             receiver,
@@ -415,25 +441,25 @@ impl<S: Service> Default for ServiceReceiver<S> {
 }
 
 struct ServiceSender {
-    sender: mpsc::Sender<ServiceOp>,
-    started: Arc<AtomicBool>,
+    sender: mpsc::UnboundedSender<ServiceOp>,
+    pool: MemoryBudget,
     backpressure: BackPressureMode,
-    send_histogram: Histogram,
+    started: Arc<AtomicBool>,
 }
 
 impl ServiceSender {
     fn new<S: Service>(
+        pool: MemoryBudget,
         backpressure: BackPressureMode,
-        buffer_size: usize,
     ) -> (Self, ServiceReceiver<S>) {
         let started = Arc::new(AtomicBool::new(false));
-        let (sender, receiver) = mpsc::channel(buffer_size);
+        let (sender, receiver) = mpsc::unbounded_channel();
         (
             Self {
                 sender,
+                pool,
                 backpressure,
                 started: started.clone(),
-                send_histogram: histogram!(NETWORK_MESSAGE_PROCESSING_DURATION, "target" => S::TAG.as_str_name()),
             },
             ServiceReceiver {
                 receiver,
@@ -443,34 +469,60 @@ impl ServiceSender {
         )
     }
 
-    async fn reserve(&self) -> Result<ServiceSendPermit<'_>, RouterError> {
+    /// Reserve memory and send a message through the channel.
+    ///
+    /// Behavior depends on [`BackPressureMode`]:
+    /// - `PushBack`: Waits asynchronously for memory to become available
+    /// - `Lossy`: Returns [`RouterError::CapacityExceeded`] if pool is exhausted
+    async fn send(&self, op: ServiceOp) -> Result<(), RouterError> {
         if !self.started.load(Ordering::Relaxed) {
             return Err(RouterError::ServiceNotReady);
         }
-        let processing_started = Instant::now();
-        let permit = match self.backpressure {
+
+        // Get payload size from the message for memory accounting
+        let payload_size = op.estimated_memory_size();
+
+        // Reserve memory based on backpressure mode
+        let reservation = match self.backpressure {
             BackPressureMode::PushBack => {
-                let permit = self
-                    .sender
-                    .reserve()
-                    .await
-                    .map_err(|_| RouterError::ServiceStopped)?;
-                // only measure latency for pushback mode to avoid skewing metrics
-                // with lossy mode as they don't wait.
-                self.send_histogram.record(processing_started.elapsed());
-                permit
+                // Wait for memory to become available
+                self.pool.reserve(payload_size).await
             }
-            BackPressureMode::Lossy => match self.sender.try_reserve() {
-                Ok(permit) => permit,
-                Err(mpsc::error::TrySendError::Full(())) => {
-                    return Err(RouterError::CapacityExceeded);
-                }
-                Err(mpsc::error::TrySendError::Closed(())) => {
-                    return Err(RouterError::ServiceStopped);
-                }
-            },
+            BackPressureMode::Lossy => {
+                // Try to reserve immediately, fail if no capacity
+                self.pool
+                    .try_reserve(payload_size)
+                    .ok_or(RouterError::CapacityExceeded)?
+            }
         };
-        Ok(ServiceSendPermit { permit })
+
+        // Attach the reservation to the incoming message.
+        // The old (unlinked) reservation is dropped, which is a no-op.
+        let op_with_reservation = Self::attach_reservation(op, reservation);
+
+        // Send through unbounded channel (memory pool is the bound)
+        self.sender
+            .send(op_with_reservation)
+            .map_err(|_| RouterError::ServiceStopped)?;
+
+        Ok(())
+    }
+
+    fn attach_reservation(op: ServiceOp, reservation: MemoryLease) -> ServiceOp {
+        match op {
+            ServiceOp::CallRpc(mut incoming) => {
+                let _ = incoming.swap_reservation(reservation);
+                ServiceOp::CallRpc(incoming)
+            }
+            ServiceOp::Watch(mut incoming) => {
+                let _ = incoming.swap_reservation(reservation);
+                ServiceOp::Watch(incoming)
+            }
+            ServiceOp::Unary(mut incoming) => {
+                let _ = incoming.swap_reservation(reservation);
+                ServiceOp::Unary(incoming)
+            }
+        }
     }
 }
 

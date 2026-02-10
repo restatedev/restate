@@ -13,6 +13,7 @@ mod spawn_processor_task;
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::Entry;
+use std::num::NonZeroUsize;
 use std::ops::{Add, RangeInclusive};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,6 +48,7 @@ use restate_ingestion_client::IngestionClient;
 use restate_invoker_api::StatusHandle;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_invoker_impl::ChannelStatusReader;
+use restate_memory::MemoryBudget;
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
@@ -249,8 +251,23 @@ where
         snapshot_repository: Option<SnapshotRepository>,
         ingestion_client: IngestionClient<T, Envelope>,
     ) -> Self {
-        let ppm_svc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
-        let pp_rpc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
+        // Original: buffer_size=24, BackPressureMode::PushBack for both services
+        // todo(asoli): Consider adding config options for these services' memory limits.
+        let ppm_svc_rx = router_builder.register_service(
+            MemoryBudget::new("partition-manager", 128 * 1024, NonZeroUsize::MIN),
+            BackPressureMode::PushBack,
+        );
+        let pp_rpc_rx = router_builder.register_service(
+            // NOTE: this is a shared pool for RPC requests from ingress and ingestion clients across all
+            // partitions.
+            //
+            // NOTE: This is a transitional solution until we allow partitions to auto-register
+            // their sort-codes into the message router.
+            // todo(asoli): Make sort-code-based routing happen directly in MessageRouter.
+            // Temporarily set to 64MiB
+            MemoryBudget::new("partition-leader", 64 * 1024 * 1024, NonZeroUsize::MIN),
+            BackPressureMode::PushBack,
+        );
 
         let config = updateable_config.pinned();
 
@@ -354,6 +371,8 @@ where
                 Some(event) = self.asynchronous_operations.join_next() => {
                     self.on_asynchronous_event(event.context("asynchronous operations must not panic")?);
                 }
+                // todo(asoli): Move this out of the PPM's loop and let each partition handle their
+                // own RPC queue directly.
                 Some(partition_processor_rpc) = pp_rpc_rx.next() => {
                     self.on_partition_processor_rpc(partition_processor_rpc);
                 }
