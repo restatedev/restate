@@ -49,6 +49,9 @@ macro_rules! define_builder {
     (LargeUtf8List) => {
         ::datafusion::arrow::array::ListBuilder<::datafusion::arrow::array::LargeStringBuilder>
     };
+    (FixedSizeBinary16) => {
+        FixedSizeBinaryBuilder<16>
+    };
 }
 
 pub(crate) trait BuilderCapacity: datafusion::arrow::array::ArrayBuilder {
@@ -112,6 +115,69 @@ impl BuilderCapacity for datafusion::arrow::array::BooleanBuilder {
 
     fn with_capacity(capacity: Self::Size) -> Self {
         Self::with_capacity(capacity)
+    }
+}
+
+// Wrapper for FixedSizeBinaryBuilder that implements default for a const width N
+pub struct FixedSizeBinaryBuilder<const N: usize>(
+    ::datafusion::arrow::array::FixedSizeBinaryBuilder,
+);
+
+impl<const N: usize> Default for FixedSizeBinaryBuilder<N> {
+    fn default() -> Self {
+        Self(::datafusion::arrow::array::FixedSizeBinaryBuilder::new(
+            N as i32,
+        ))
+    }
+}
+
+impl<const N: usize> FixedSizeBinaryBuilder<N> {
+    #[inline]
+    pub fn append_value(&mut self, v: [u8; N]) {
+        self.0.append_value(v).unwrap();
+    }
+
+    #[inline]
+    pub fn append_null(&mut self) {
+        self.0.append_null();
+    }
+}
+
+impl<const N: usize> BuilderCapacity for FixedSizeBinaryBuilder<N> {
+    type Size = usize;
+
+    fn len(&self) -> Self::Size {
+        datafusion::arrow::array::ArrayBuilder::len(self)
+    }
+
+    fn with_capacity(capacity: Self::Size) -> Self {
+        Self(::datafusion::arrow::array::FixedSizeBinaryBuilder::with_capacity(capacity, N as i32))
+    }
+}
+
+impl<const N: usize> ::datafusion::arrow::array::ArrayBuilder for FixedSizeBinaryBuilder<N> {
+    fn len(&self) -> usize {
+        ::datafusion::arrow::array::ArrayBuilder::len(&self.0)
+    }
+
+    fn finish(&mut self) -> datafusion::arrow::array::ArrayRef {
+        ::datafusion::arrow::array::ArrayBuilder::finish(&mut self.0)
+    }
+
+    fn finish_cloned(&self) -> datafusion::arrow::array::ArrayRef {
+        ::datafusion::arrow::array::ArrayBuilder::finish_cloned(&self.0)
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        ::datafusion::arrow::array::ArrayBuilder::as_any(&self.0)
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        ::datafusion::arrow::array::ArrayBuilder::as_any_mut(&mut self.0)
+    }
+
+    fn into_box_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        ::datafusion::arrow::array::ArrayBuilder::into_box_any(Box::new(self.0))
     }
 }
 
@@ -277,6 +343,9 @@ macro_rules! define_primitive_trait {
     (LargeUtf8List) => {
         impl IntoIterator<Item = Option<impl AsRef<str>>>
     };
+    (FixedSizeBinary16) => {
+        [u8; 16]
+    }
 }
 
 pub static TIMEZONE_UTC: std::sync::LazyLock<std::sync::Arc<str>> =
@@ -326,6 +395,9 @@ macro_rules! define_data_type {
             ::datafusion::common::arrow::datatypes::Field::new("item", DataType::LargeUtf8, true),
         ))
     };
+    (FixedSizeBinary16) => {
+        DataType::FixedSizeBinary(16)
+    };
 }
 
 #[cfg(feature = "table_docs")]
@@ -365,6 +437,9 @@ macro_rules! document_type {
     };
     (LargeUtf8List) => {
         "Utf8 List"
+    };
+    (FixedSizeBinary16) => {
+        "FixedSizeBinary(16)"
     };
 }
 
