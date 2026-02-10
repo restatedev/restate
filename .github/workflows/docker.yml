@@ -104,14 +104,7 @@ jobs:
 
       # this is needed to be able to load and push a multiplatform image in one step
       - name: Set up Docker containerd snapshotter
-        uses: docker/setup-docker-action@v4
-        with:
-          daemon-config: |
-            {
-              "features": {
-                "containerd-snapshotter": true
-              }
-            }
+        uses: depot/use-containerd-snapshotter-action@v1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
