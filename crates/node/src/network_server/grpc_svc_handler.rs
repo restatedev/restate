@@ -28,12 +28,14 @@ use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
 use restate_core::protobuf::node_ctl_svc::{
-    ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
-    IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
+    ClusterHealthResponse, DatabaseCompactionResult, DatabaseKind, EmbeddedMetadataClusterHealth,
+    GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
+    ProvisionClusterResponse, TriggerCompactionRequest, TriggerCompactionResponse,
 };
 use restate_core::{Identification, MetadataWriter};
 use restate_core::{Metadata, MetadataKind};
 use restate_metadata_store::{MetadataStoreClient, ReadError, WriteError};
+use restate_rocksdb::RocksDbManager;
 use restate_types::Version;
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::{ConversionError, MaybeRetryableError};
@@ -45,6 +47,23 @@ use restate_types::replication::ReplicationProperty;
 use restate_types::storage::StorageCodec;
 
 use crate::{ClusterConfiguration, provision_cluster_metadata};
+
+/// Maps database names to their corresponding DatabaseKind.
+/// Returns None for unrecognized names so they are skipped rather than
+/// accidentally compacted if new databases are added without updating this mapping.
+fn db_name_to_kind(name: &str) -> Option<DatabaseKind> {
+    if name == "log-server" {
+        Some(DatabaseKind::LogServer)
+    } else if name == "replicated-metadata-server" {
+        Some(DatabaseKind::MetadataServer)
+    } else if name == "local-loglet" {
+        Some(DatabaseKind::LocalLoglet)
+    } else if name == "db" || name.starts_with("db-") {
+        Some(DatabaseKind::PartitionStore)
+    } else {
+        None
+    }
+}
 
 pub struct NodeCtlSvcHandler {
     metadata_writer: MetadataWriter,
@@ -259,6 +278,64 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
 
         Ok(Response::new(cluster_state_response))
     }
+
+    async fn trigger_compaction(
+        &self,
+        request: Request<TriggerCompactionRequest>,
+    ) -> Result<Response<TriggerCompactionResponse>, Status> {
+        let request = request.into_inner();
+
+        // An empty databases list means compact all; otherwise filter to the requested kinds,
+        // ignoring any unspecified/unknown values.
+        let compact_all = request.databases.is_empty();
+        let requested_kinds: Vec<DatabaseKind> = request
+            .databases
+            .into_iter()
+            .filter_map(|k| DatabaseKind::try_from(k).ok())
+            .filter(|k| *k != DatabaseKind::Unspecified)
+            .collect();
+
+        let Some(manager) = RocksDbManager::maybe_get() else {
+            return Err(Status::unavailable("RocksDB manager not initialized"));
+        };
+
+        let all_dbs = manager.get_all_dbs();
+        let mut results = Vec::new();
+
+        // Compactions run sequentially to avoid overwhelming the system with
+        // concurrent I/O from multiple databases.
+        for db in all_dbs {
+            let db_name = db.name().to_string();
+
+            // Check if this database should be compacted. Skip databases whose names
+            // are not recognized so newly added databases are not accidentally compacted.
+            let should_compact = compact_all || {
+                db_name_to_kind(&db_name).is_some_and(|kind| requested_kinds.contains(&kind))
+            };
+
+            if !should_compact {
+                continue;
+            }
+
+            let cf_count = db.cfs().len() as u32;
+            match db.compact_all().await {
+                Ok(()) => results.push(DatabaseCompactionResult {
+                    db_name,
+                    success: true,
+                    error: None,
+                    column_families_compacted: cf_count,
+                }),
+                Err(e) => results.push(DatabaseCompactionResult {
+                    db_name,
+                    success: false,
+                    error: Some(e.to_string()),
+                    column_families_compacted: 0,
+                }),
+            }
+        }
+
+        Ok(Response::new(TriggerCompactionResponse { results }))
+    }
 }
 
 pub struct MetadataProxySvcHandler {
@@ -389,5 +466,32 @@ fn write_err_to_status(err: WriteError) -> Status {
         WriteError::FailedPrecondition(msg) => Status::failed_precondition(msg),
         err if err.retryable() => Status::unavailable(err.to_string()),
         err => Status::internal(err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_db_name_to_kind() {
+        assert_eq!(db_name_to_kind("db"), Some(DatabaseKind::PartitionStore));
+        assert_eq!(db_name_to_kind("db-0"), Some(DatabaseKind::PartitionStore));
+        assert_eq!(
+            db_name_to_kind("db-123"),
+            Some(DatabaseKind::PartitionStore)
+        );
+        assert_eq!(db_name_to_kind("log-server"), Some(DatabaseKind::LogServer));
+        assert_eq!(
+            db_name_to_kind("replicated-metadata-server"),
+            Some(DatabaseKind::MetadataServer)
+        );
+        assert_eq!(
+            db_name_to_kind("local-loglet"),
+            Some(DatabaseKind::LocalLoglet)
+        );
+        // Unknown names return None so they are safely skipped
+        assert_eq!(db_name_to_kind("unknown"), None);
+        assert_eq!(db_name_to_kind("random-name"), None);
     }
 }
