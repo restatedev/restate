@@ -11,6 +11,7 @@
 use datafusion::{
     arrow::datatypes::SchemaRef,
     common::{ColumnStatistics, Statistics, stats::Precision},
+    scalar::ScalarValue,
 };
 
 pub(super) const DEPLOYMENT_ROW_ESTIMATE: RowEstimate = RowEstimate::Tiny;
@@ -132,32 +133,29 @@ impl TableStatisticsBuilder {
 fn partition_key_column_statistics(row_count: Precision<usize>) -> ColumnStatistics {
     ColumnStatistics {
         null_count: Precision::Exact(0),
-        max_value: Precision::Absent,
-        min_value: Precision::Absent,
+        max_value: Precision::Inexact(ScalarValue::Null),
+        min_value: Precision::Inexact(ScalarValue::Null),
         sum_value: Precision::Absent,
         distinct_count: row_count,
-        byte_size: Precision::Absent,
     }
 }
 
 fn primary_key_column_statistics(row_count: Precision<usize>) -> ColumnStatistics {
     ColumnStatistics {
         null_count: Precision::Exact(0),
-        max_value: Precision::Absent,
-        min_value: Precision::Absent,
+        max_value: Precision::Inexact(ScalarValue::Null),
+        min_value: Precision::Inexact(ScalarValue::Null),
         sum_value: Precision::Absent,
         distinct_count: row_count,
-        byte_size: Precision::Absent,
     }
 }
 
 fn foreign_key_column_statistics(foreign_row_estimate: Precision<usize>) -> ColumnStatistics {
     ColumnStatistics {
         null_count: Precision::Absent,
-        max_value: Precision::Absent,
-        min_value: Precision::Absent,
+        max_value: Precision::Inexact(ScalarValue::Null),
+        min_value: Precision::Inexact(ScalarValue::Null),
         sum_value: Precision::Absent,
         distinct_count: foreign_row_estimate,
-        byte_size: Precision::Absent,
     }
 }
