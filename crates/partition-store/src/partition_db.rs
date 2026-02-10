@@ -125,36 +125,43 @@ impl PartitionDb {
     }
 
     pub(crate) fn update_memory_budget(&self, memory_budget: usize) {
-        let max_bytes_for_level_base = memory_budget;
-        let single_memtable_budget = memory_budget / 4;
-        let target_file_size_base = memory_budget / 8;
-
-        let max_bytes_for_level_base_str = max_bytes_for_level_base.to_string();
-        let single_memtable_budget_str = single_memtable_budget.to_string();
-        let target_file_size_base_str = target_file_size_base.to_string();
-
         // impacts only this partition's column-families
         for cf in self.cf_names() {
-            debug!(
-                "Updating memory budget for {}/{} to {}",
-                self.rocksdb.name(),
-                cf,
-                ByteCount::from(memory_budget)
-            );
+            let rocksdb = self.rocksdb.clone();
 
-            if let Err(err) = self.rocksdb.inner().set_options_cf(
-                &cf,
-                &[
-                    ("write_buffer_size", &single_memtable_budget_str),
-                    ("target_file_size_base", &target_file_size_base_str),
-                    ("max_bytes_for_level_base", &max_bytes_for_level_base_str),
-                ],
-            ) {
-                warn!(
-                    "Failed to update memory budget for {}/{cf}: {err}",
-                    self.rocksdb.name(),
+            // NOTE: Updating rocksdb's options is a blocking operations and may take a few
+            // tens of milliseconds on each column family. We need to perform this operation
+            // on non-blocking threads to avoid stalling the tokio runtime (starving failure
+            // detector, etc.).
+            tokio::task::spawn_blocking(move || {
+                let max_bytes_for_level_base = memory_budget;
+                let single_memtable_budget = memory_budget / 4;
+                let target_file_size_base = memory_budget / 8;
+                let max_bytes_for_level_base_str = max_bytes_for_level_base.to_string();
+                let single_memtable_budget_str = single_memtable_budget.to_string();
+                let target_file_size_base_str = target_file_size_base.to_string();
+
+                debug!(
+                    "Updating memory budget for {}/{} to {}",
+                    rocksdb.name(),
+                    cf,
+                    ByteCount::from(memory_budget)
                 );
-            }
+
+                if let Err(err) = rocksdb.inner().set_options_cf(
+                    &cf,
+                    &[
+                        ("write_buffer_size", &single_memtable_budget_str),
+                        ("target_file_size_base", &target_file_size_base_str),
+                        ("max_bytes_for_level_base", &max_bytes_for_level_base_str),
+                    ],
+                ) {
+                    warn!(
+                        "Failed to update memory budget for {}/{cf}: {err}",
+                        rocksdb.name(),
+                    );
+                }
+            });
         }
     }
 }
