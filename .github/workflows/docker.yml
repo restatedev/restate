@@ -98,6 +98,8 @@ jobs:
         with:
           tool: cargo-hakari
 
+      - run: docker info -f '{{ .DriverStatus }}'
+
       - name: Disable hakari
         if: ${{ hashFiles('.config/hakari.toml') != '' }}
         run: cargo hakari disable
@@ -108,10 +110,13 @@ jobs:
         with:
           daemon-config: |
             {
+              "debug": true,
               "features": {
                 "containerd-snapshotter": true
               }
             }
+
+      - run: docker info -f '{{ .DriverStatus }}'
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
