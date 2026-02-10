@@ -248,3 +248,28 @@ jobs:
           path: restate.tar
           retention-days: 1
           if-no-files-found: error
+
+      - name: Extract debug symbols
+        if: ${{ inputs.parca }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: "docker/Dockerfile"
+          target: debug-symbols
+          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
+          outputs: type=local,dest=./debug-symbols
+          build-args: |
+            CARGO_PROFILE_RELEASE_DEBUG=true
+            BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
+            UPLOAD_DEBUGINFO=true
+            RESTATE_FEATURES=${{ inputs.features || '' }}
+          secrets: |
+            parca=${{ secrets.PARCA_TOKEN }}
+
+      - name: Upload debug symbols
+        if: ${{ inputs.parca }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-symbols
+          path: ./debug-symbols/**/restate-server.debug
+          if-no-files-found: ignore
