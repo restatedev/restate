@@ -38,6 +38,7 @@ restate-futures-util = { workspace = true }
 restate-ingestion-client = { workspace = true }
 restate-ingress-http = { workspace = true }
 restate-log-server = { workspace = true }
+restate-memory = { workspace = true }
 restate-metadata-providers = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
