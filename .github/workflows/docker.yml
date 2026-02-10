@@ -115,14 +115,10 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
-          driver-opts: |
-            network=host
 
       - name: Cache sccache
         id: cache
-        uses: WarpBuilds/cache@v1
+        uses: actions/cache@v5
         with:
           path: sccache-cache
           key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
@@ -233,7 +229,6 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # on main, always push both platforms, otherwise use platform input
           platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
-          network: host
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=${{ inputs.debug || inputs.parca }}
             BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
@@ -241,9 +236,9 @@ jobs:
             RESTATE_FEATURES=${{ inputs.features || '' }}
           secrets: |
             parca=${{ secrets.PARCA_TOKEN }}
-          cache-from: type=gha,url=http://127.0.0.1:49160/,version=1
+          cache-from: type=gha
           # don't cache debug/parca builds, it's just too big
-          cache-to: ${{ (!inputs.debug && !inputs.parca) && 'type=gha,url=http://127.0.0.1:49160/,mode=max,version=1' || '' }}
+          cache-to: ${{ (!inputs.debug && !inputs.parca) && 'type=gha,mode=max' || '' }}
 
       - name: Upload docker image tar as artifact
         if: ${{ inputs.uploadImageAsTarball != '' }}

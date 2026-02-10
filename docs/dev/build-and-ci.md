@@ -201,9 +201,9 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 - `pushToDockerHub`: Push to Docker Hub in addition to GHCR
 
 **Build optimizations:**
-- Uses `sccache` with WarpBuild cache
+- Uses `sccache` with GHA cache
 - Multi-platform builds via Docker Buildx
-- Caches layers via WarpBuild's GHA cache proxy
+- Caches Docker layers to GHA cache
 
 ### Release Workflow (`release.yml`)
 
@@ -309,18 +309,12 @@ All CI jobs use [WarpBuild](https://warpbuild.com/) runners instead of GitHub-ho
 
 **Benefits:**
 - Larger machines at lower cost (up to 32x runners for release builds)
-- Unlimited build cache
 - Faster checkout and artifact operations
 
 **Runner naming:**
 - `warp-ubuntu-latest-x64-{2,4,16,32}x`: Linux x64 with N cores
 - `warp-ubuntu-latest-arm64-{2,4,32}x`: Linux ARM64
 - `warp-macos-latest-arm64-6x`: macOS ARM64
-
-**Cache integration:**
-- `WarpBuilds/rust-cache@v2`: Fork of Swatinem/rust-cache using WarpBuild cache
-- `WarpBuilds/cache@v1`: General-purpose cache action
-- Docker layer caching via GHA cache proxy (`cache-from: type=gha,url=http://127.0.0.1:49160/`)
 
 ## Analytics and Observability
 
