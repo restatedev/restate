@@ -97,6 +97,7 @@ RUN --mount=type=secret,id=parca --mount=type=cache,target=/var/cache/sccache \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --add-gnu-debuglink=target/restate-server.debug target/restate-server && \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restatectl && \
     $(just --set arch $TARGETARCH --evaluate _arch)-linux-gnu-objcopy --strip-debug target/restate && \
+    stat target/restate-server.debug && \
     parca-debuginfo upload --store-address=grpc.polarsignals.com:443 --bearer-token-file=/run/secrets/parca --no-extract --type=debuginfo target/restate-server.debug && \
     rm target/restate-server.debug
 RUN cp docker/scripts/download-restate-debug-symbols.sh target/ && \
