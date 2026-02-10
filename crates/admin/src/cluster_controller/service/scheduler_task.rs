@@ -17,6 +17,7 @@ use tracing::{debug, warn};
 use restate_core::network::TransportConnect;
 use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, cancellation_watcher,
+    is_cancellation_requested,
 };
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::cluster::cluster_state::LegacyClusterState;
@@ -29,7 +30,7 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partitions::PartitionTable;
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateWatcher;
-use crate::cluster_controller::service::scheduler::Scheduler;
+use crate::cluster_controller::service::scheduler::{self, Scheduler};
 
 pub struct SchedulerTask<T> {
     cluster_state_watcher: ClusterStateWatcher,
@@ -168,7 +169,16 @@ where
             )
             .await
         {
-            warn!(%err, "Failed to react to cluster state changes. This can impair the overall cluster operations");
+            match err {
+                scheduler::Error::Shutdown(_) if is_cancellation_requested() => {
+                    debug!(
+                        "Scheduler is shutting down, possibly due to a leader-to-follower transition"
+                    );
+                }
+                err => {
+                    warn!(%err, "Failed to react to cluster state changes. This can impair the overall cluster operations");
+                }
+            }
         }
     }
 }
