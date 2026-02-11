@@ -7556,7 +7556,12 @@ name = "restate-memory"
 version = "1.6.2-dev"
 dependencies = [
  "bytes",
+ "hashbrown 0.16.1",
+ "metrics",
+ "parking_lot",
+ "restate-serde-util",
  "restate-workspace-hack",
+ "tokio",
 ]
 
 [[package]]

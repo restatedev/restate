@@ -155,6 +155,7 @@ futures-sink = "0.3.31"
 futures-util = "0.3.31"
 gardal = { version = "0.0.1-alpha.9" }
 googletest = { version = "0.10", features = ["anyhow"] }
+hashbrown = { version = "0.16"  }
 hostname = { version = "0.4.2" }
 http = "1.4.0"
 http-body = "1.0.1"
@@ -262,6 +263,7 @@ tracing-subscriber = { version = "0.3", features = [
     "parking_lot",
 ] }
 tracing-test = { version = "0.2.5" }
+triomphe = { version = "0.1.14" }
 typed-builder = "0.23.2"
 typify = { version = "0.5.0" }
 ulid = { version = "1.2.1" }
