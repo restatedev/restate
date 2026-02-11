@@ -9,6 +9,21 @@
 // by the Apache License, Version 2.0.
 
 //! Memory management utilities for Restate.
+//!
+//! This crate provides:
+//! - [`MemoryPool`]: A named memory budget for bounding memory usage
+//! - [`MemoryLease`]: RAII guard for memory leases that can be passed through
+//!   channels
+//! - [`EstimatedMemorySize`]: Trait for types that can estimate their memory
+//!   footprint
+
+mod controller;
 mod footprint;
+mod metric_definitions;
+mod pool;
+
+pub use controller::MemoryController;
+pub use pool::{MemoryLease, MemoryPool};
+pub use restate_serde_util::NonZeroByteCount;
 
 pub use footprint::*;

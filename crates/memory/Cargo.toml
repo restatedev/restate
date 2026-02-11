@@ -13,4 +13,13 @@ default = []
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-serde-util = { workspace = true }
+
 bytes = { workspace = true }
+hashbrown = { workspace = true }
+metrics = { workspace = true }
+parking_lot = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
