@@ -22,6 +22,7 @@ use restate_bifrost::loglet::FindTailOptions;
 use restate_core::TaskCenterBuilder;
 use restate_core::TaskCenterFutureExt;
 use restate_core::network::MessageRouterBuilder;
+
 use restate_core::network::NetworkServerBuilder;
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, TaskKind};
 use restate_metadata_server::MetadataServer;
@@ -184,7 +185,16 @@ async fn dump_log(opts: &DumpLogOpts) -> anyhow::Result<()> {
         let mut metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
         let metadata_writer = metadata_manager.writer();
-        let mut router_builder = MessageRouterBuilder::default();
+        let default_pool = TaskCenter::with_current(|tc| {
+            tc.memory_controller().create_pool(
+                "fabric-default",
+                config.networking.fabric_memory_limit(),
+                |pool| {
+                    pool.set_capacity(Configuration::pinned().networking.fabric_memory_limit());
+                },
+            )
+        });
+        let mut router_builder = MessageRouterBuilder::with_default_pool(default_pool);
         metadata_manager.register_in_message_router(&mut router_builder);
 
         TaskCenter::spawn(

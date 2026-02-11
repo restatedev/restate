@@ -33,6 +33,7 @@ use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
 use restate_log_server::LogServerService;
+
 use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
 };
@@ -206,7 +207,16 @@ impl Node {
 
         let mut metadata_manager =
             MetadataManager::new(metadata_builder, metadata_store_client.clone());
-        let mut router_builder = MessageRouterBuilder::default();
+        let default_pool = TaskCenter::with_current(|tc| {
+            tc.memory_controller().create_pool(
+                "fabric-default",
+                config.networking.fabric_memory_limit(),
+                |pool| {
+                    pool.set_capacity(Configuration::pinned().networking.fabric_memory_limit());
+                },
+            )
+        });
+        let mut router_builder = MessageRouterBuilder::with_default_pool(default_pool);
         let networking = Networking::with_grpc_connector();
         metadata_manager.register_in_message_router(&mut router_builder);
         let replica_set_states = PartitionReplicaSetStates::default();
