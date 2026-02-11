@@ -918,6 +918,9 @@ pub enum MetadataClientKind {
     },
 
     #[display("dynamo-db")]
+    // Don't include the DynamoDB variant in our publicly released configuration schema because it
+    // is a paid product only feature atm.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
     DynamoDb {
         /// # DynamoDB table name
         ///
