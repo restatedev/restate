@@ -164,6 +164,19 @@ where
         let predicate = predicate
             .map(|p| datafusion::physical_expr::planner::logical2physical(&p, &projected_schema));
 
+        // The predicate *should* have the correct column indices but bugs in datafusion can create mixups.
+        // Most datafusion table providers seem to use reassign_expr_columns so they are tolerant to this.
+        // The column indices are not important as all columns should refer to fields in this table
+        // and we don't have any duplicate field names.
+        let predicate = predicate
+            .map(|predicate| {
+                datafusion::physical_expr::utils::reassign_expr_columns(
+                    predicate,
+                    &projected_schema,
+                )
+            })
+            .transpose()?;
+
         let partition_keys = self
             .partition_key_extractor
             .try_extract(filters)
@@ -391,18 +404,24 @@ where
             return Ok(FilterPushdownPropagation::if_all(child_pushdown_result));
         }
 
-        let filters = child_pushdown_result
+        // As in the static case above, the predicate *should* have the correct column indices,
+        // but bugs in datafusion can create mixups.
+        let mut filters: Vec<_> = child_pushdown_result
             .parent_filters
             .iter()
-            .map(|f| f.filter.clone());
+            .map(|f| {
+                datafusion::physical_expr::utils::reassign_expr_columns(
+                    f.filter.clone(),
+                    &self.projected_schema,
+                )
+            })
+            .collect::<Result<_, _>>()?;
 
-        let predicate = match &self.predicate {
-            Some(predicate) => datafusion::physical_expr::conjunction(
-                std::iter::once(predicate.clone()).chain(filters),
-            ),
-            None => datafusion::physical_expr::conjunction(filters),
-        };
+        if let Some(predicate) = &self.predicate {
+            filters.push(predicate.clone());
+        }
 
+        let predicate = datafusion::physical_expr::conjunction(filters);
         let mut plan = self.clone();
         plan.predicate = Some(predicate);
 
