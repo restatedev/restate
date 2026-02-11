@@ -12,6 +12,11 @@
 //!
 //! We maintain a stream per message type for fine-grain per-message-type control over the queue
 //! depth, head-of-line blocking issues, and priority of consumption.
+//!
+//! Both data and metadata services use memory-metered channels for admission control.
+//! When memory limits are exceeded, incoming messages are rejected with load shedding
+//! rather than blocking the sender. This prevents memory ballooning when downstream
+//! processing (e.g., RocksDB writes) is stalling.
 use std::collections::hash_map;
 
 use ahash::{HashMap, HashMapExt};
@@ -20,8 +25,8 @@ use tokio::task::JoinSet;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::trace;
 
-use restate_core::cancellation_token;
 use restate_core::network::{BackPressureMode, MessageRouterBuilder, ServiceReceiver};
+use restate_core::{TaskCenter, cancellation_token};
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -39,7 +44,6 @@ const DEFAULT_WRITERS_CAPACITY: usize = 128;
 type LogletWorkerMap = HashMap<LogletId, LogletWorkerHandle>;
 
 pub struct RequestPump {
-    _configuration: Live<Configuration>,
     data_svc_rx: ServiceReceiver<LogServerDataService>,
     info_svc_rx: ServiceReceiver<LogServerMetaService>,
 }
@@ -49,16 +53,28 @@ impl RequestPump {
         mut configuration: Live<Configuration>,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        let queue_length = configuration
-            .live_load()
-            .log_server
-            .incoming_network_queue_length
-            .into();
-        // We divide requests into two priority categories.
-        let data_svc_rx = router_builder.register_service(queue_length, BackPressureMode::PushBack);
-        let info_svc_rx = router_builder.register_service(queue_length, BackPressureMode::PushBack);
+        let config = configuration.live_load();
+
+        // Data service uses a dedicated memory pool with configurable capacity.
+        // When memory is exhausted, requests are rejected immediately (load shedding)
+        // rather than queuing which could cause unbounded memory growth.
+        let data_pool = TaskCenter::with_current(|tc| {
+            tc.memory_controller().create_pool(
+                "log-server-data",
+                config.log_server.data_service_memory_limit,
+                |pool| {
+                    pool.set_capacity(Configuration::pinned().log_server.data_service_memory_limit);
+                },
+            )
+        });
+
+        // todo(asoli): Consider making this push-back
+        let data_svc_rx =
+            router_builder.register_service_with_pool(data_pool, BackPressureMode::Lossy);
+        // Meta service uses the default shared memory pool.
+        let info_svc_rx = router_builder.register_service(BackPressureMode::Lossy);
+
         Self {
-            _configuration: configuration,
             data_svc_rx,
             info_svc_rx,
         }

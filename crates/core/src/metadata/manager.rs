@@ -17,6 +17,7 @@ use tokio_stream::StreamExt;
 use tracing::{debug, info, trace};
 
 use restate_metadata_store::MetadataStoreClient;
+use restate_types::config::Configuration;
 use restate_types::live::Pinned;
 use restate_types::logs::metadata::Logs;
 use restate_types::net::RpcRequest;
@@ -30,10 +31,13 @@ use restate_types::{Version, Versioned};
 
 use super::MetadataBuilder;
 use super::{Metadata, MetadataContainer, MetadataKind, MetadataWriter};
+
+use crate::TaskCenter;
 use crate::cancellation_watcher;
 use crate::metadata::update_task::GlobalMetadataUpdateTask;
 use crate::network::{
-    MessageRouterBuilder, Oneshot, Reciprocal, ServiceMessage, ServiceReceiver, Verdict,
+    BackPressureMode, MessageRouterBuilder, Oneshot, Reciprocal, ServiceMessage, ServiceReceiver,
+    Verdict,
 };
 
 pub(super) type CommandSender = mpsc::UnboundedSender<Command>;
@@ -106,8 +110,18 @@ impl MetadataManager {
     }
 
     pub fn register_in_message_router(&mut self, sr_builder: &mut MessageRouterBuilder) {
-        self.service_op_rx =
-            sr_builder.register_service(10, crate::network::BackPressureMode::Lossy);
+        // Using dedicated memory pool for metadata manager to ensure that metadata sync
+        // messages do not starve the rest of the system.
+        let pool = TaskCenter::with_current(|tc| {
+            tc.memory_controller().create_pool(
+                "metadata-manager",
+                Configuration::pinned().networking.message_size_limit,
+                |pool| {
+                    pool.set_capacity(Configuration::pinned().networking.message_size_limit);
+                },
+            )
+        });
+        self.service_op_rx = sr_builder.register_service_with_pool(pool, BackPressureMode::Lossy);
     }
 
     pub fn metadata(&self) -> &Metadata {
