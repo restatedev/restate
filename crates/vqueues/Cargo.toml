@@ -19,7 +19,7 @@ restate-types = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
 derive_more = { workspace = true }
 gardal = { workspace = true, features = ["tokio"] }
-hashbrown = { version = "0.16"  }
+hashbrown = { workspace = true  }
 metrics = { workspace = true }
 pin-project = { workspace = true }
 slotmap = { version = "1" }
