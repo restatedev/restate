@@ -56,6 +56,12 @@ jobs:
         with:
           components: clippy
           rustflags: ""
+          cache: false
+
+      - name: Setup Rust Caching
+        uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
+        with:
+          cache-on-failure: "true"
 
       - name: Install cargo-hakari
         uses: taiki-e/install-action@v2
