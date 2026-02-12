@@ -907,7 +907,7 @@ fn clamp_max<T: Ord>(
         (Some(requested_duration), Some(global_limit)) if requested_duration > global_limit => {
             (Some(global_limit), true)
         }
-        (Some(requested_duration), Some(_)) => (Some(requested_duration), true),
+        (Some(requested_duration), Some(_)) => (Some(requested_duration), false),
     }
 }
 
