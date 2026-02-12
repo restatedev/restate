@@ -278,6 +278,7 @@ mod test {
         },
         partitions::PartitionRouting,
     };
+
     use restate_types::{
         Version,
         identifiers::{LeaderEpoch, PartitionId},
@@ -321,7 +322,6 @@ mod test {
         let svc = builder
             .router_builder
             .register_service::<net::partition_processor::PartitionLeaderService>(
-                10,
                 BackPressureMode::PushBack,
             );
 

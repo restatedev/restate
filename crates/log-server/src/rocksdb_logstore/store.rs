@@ -16,6 +16,7 @@ use tokio::time::Instant;
 use tracing::trace;
 
 use restate_bifrost::loglet::OperationError;
+use restate_memory::MemoryLease;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::GenerationalNodeId;
 use restate_types::health::HealthStatus;
@@ -197,22 +198,25 @@ impl LogStore for RocksDbLogStore {
         &self,
         store_message: Store,
         set_sequencer_in_metadata: bool,
+        reservation: MemoryLease,
     ) -> Result<AsyncToken, OperationError> {
         // do not accept INVALID offsets
         if store_message.first_offset == LogletOffset::INVALID {
             return Err(RocksDbLogStoreError::InvalidOffset(store_message.first_offset).into());
         }
-        self.writer_handle
-            .enqueue_put_records(store_message, set_sequencer_in_metadata)
-            .await
+        self.writer_handle.enqueue_put_records(
+            store_message,
+            set_sequencer_in_metadata,
+            reservation,
+        )
     }
 
     async fn enqueue_seal(&self, seal_message: Seal) -> Result<AsyncToken, OperationError> {
-        self.writer_handle.enqueue_seal(seal_message).await
+        self.writer_handle.enqueue_seal(seal_message)
     }
 
     async fn enqueue_trim(&self, trim_message: Trim) -> Result<AsyncToken, OperationError> {
-        self.writer_handle.enqueue_trim(trim_message).await
+        self.writer_handle.enqueue_trim(trim_message)
     }
 
     async fn read_records(
@@ -499,6 +503,7 @@ mod tests {
     use test_log::test;
 
     use restate_core::TaskCenter;
+    use restate_memory::MemoryLease;
     use restate_rocksdb::RocksDbManager;
     use restate_types::logs::{LogletId, LogletOffset, Record, SequenceNumber};
     use restate_types::net::log_server::{
@@ -569,7 +574,7 @@ mod tests {
         };
         // add record at offset=1, no sequencer set.
         log_store
-            .enqueue_store(store_msg_1.clone(), false)
+            .enqueue_store(store_msg_1.clone(), false, MemoryLease::unlinked())
             .await?
             .await?;
 
@@ -585,7 +590,10 @@ mod tests {
         };
 
         // add record at end of range (4B) (and set sequencer)
-        log_store.enqueue_store(store_msg_2, true).await?.await?;
+        log_store
+            .enqueue_store(store_msg_2, true, MemoryLease::unlinked())
+            .await?
+            .await?;
 
         let state = log_store.load_loglet_state(loglet_id_1).await?;
         assert!(!state.is_sealed());
@@ -605,7 +613,10 @@ mod tests {
             sequencer: sequencer_2,
             ..store_msg_1
         };
-        log_store.enqueue_store(store_msg_3, true).await?.await?;
+        log_store
+            .enqueue_store(store_msg_3, true, MemoryLease::unlinked())
+            .await?
+            .await?;
 
         let state = log_store.load_loglet_state(loglet_id_1).await?;
         assert!(!state.is_sealed());
@@ -677,7 +688,7 @@ mod tests {
                 payloads: payloads.clone().into(),
             };
             log_store
-                .enqueue_store(store_msg.clone(), true)
+                .enqueue_store(store_msg.clone(), true, MemoryLease::unlinked())
                 .await?
                 .await?;
         }
@@ -700,7 +711,10 @@ mod tests {
             flags: StoreFlags::empty(),
             payloads: payloads.into(),
         };
-        log_store.enqueue_store(store_msg, true).await?.await?;
+        log_store
+            .enqueue_store(store_msg, true, MemoryLease::unlinked())
+            .await?
+            .await?;
         // the adjacent log is at 2
         let state2 = log_store.load_loglet_state(loglet_id_2).await?;
         assert!(!state2.is_sealed());
