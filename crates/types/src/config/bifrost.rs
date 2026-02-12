@@ -304,6 +304,11 @@ pub struct ReplicatedLogletOptions {
     /// append wave.
     pub log_server_store_timeout: NonZeroFriendlyDuration,
 
+    /// Log Server Read timeout
+    ///
+    /// How long do we wait for a batch of records to be sent from a log-server
+    pub log_server_read_timeout: NonZeroFriendlyDuration,
+
     /// Log Server RPC retry policy
     ///
     /// Retry policy for log server RPCs
@@ -383,6 +388,7 @@ impl Default for ReplicatedLogletOptions {
             log_server_rpc_timeout: NonZeroFriendlyDuration::from_millis_unchecked(2000),
             // 2 minutes. Consider changing if we implemented a non-flood spread selector.
             log_server_store_timeout: NonZeroFriendlyDuration::from_millis_unchecked(120000),
+            log_server_read_timeout: NonZeroFriendlyDuration::from_millis_unchecked(120000),
             log_server_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),
                 2.0,

@@ -292,15 +292,19 @@ impl<S: LogStore> LogletWorker<S> {
                 // seal to happen
                 let tail_watcher = self.loglet_state.get_local_tail_watch();
                 let global_tail = self.loglet_state.get_global_tail_tracker();
-                waiting_for_seal.spawn(Box::pin(async move {
-                    let seal_watcher = tail_watcher.wait_for_seal();
-                    if seal_watcher.await.is_ok() {
-                        let body = Sealed::new(*tail_watcher.get(), global_tail.get())
-                            .with_status(Status::Ok);
-                        // send the response over the network
-                        reciprocal.send(body);
-                    }
-                }));
+                waiting_for_seal
+                    .build_task()
+                    .name("loglet-wait-for-seal")
+                    .spawn(Box::pin(async move {
+                        let seal_watcher = tail_watcher.wait_for_seal();
+                        if seal_watcher.await.is_ok() {
+                            let body = Sealed::new(*tail_watcher.get(), global_tail.get())
+                                .with_status(Status::Ok);
+                            // send the response over the network
+                            reciprocal.send(body);
+                        }
+                    }))
+                    .unwrap();
                 let seal_token = self.process_seal(msg, sealing_in_progress).await;
                 if let Some(seal_token) = seal_token {
                     in_flight_seal.set(Some(seal_token).into());

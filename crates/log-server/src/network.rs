@@ -58,7 +58,6 @@ impl RequestPump {
             })
         });
 
-        // todo(asoli): Consider making this push-back
         let data_svc_rx =
             router_builder.register_service_with_pool(data_pool, BackPressureMode::Lossy);
         // Meta service uses the default shared memory pool.

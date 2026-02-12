@@ -11,11 +11,11 @@
 use std::future::Future;
 
 use futures::FutureExt;
-use restate_memory::MemoryLease;
 use tokio::sync::oneshot;
 
 use restate_bifrost::loglet::OperationError;
 use restate_core::ShutdownError;
+use restate_memory::MemoryLease;
 use restate_types::logs::LogletId;
 use restate_types::net::log_server::{Digest, GetDigest, GetRecords, Records, Seal, Store, Trim};
 
