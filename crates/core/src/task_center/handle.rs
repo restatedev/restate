@@ -17,6 +17,7 @@ use std::sync::atomic::Ordering;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use restate_memory::MemoryController;
 use tokio_util::sync::CancellationToken;
 use tracing::instrument;
 
@@ -87,6 +88,10 @@ impl Handle {
 
     pub fn cluster_state_updater(&self) -> ClusterStateUpdater {
         self.inner.cluster_state.clone().updater()
+    }
+
+    pub fn memory_controller(&self) -> &MemoryController {
+        &self.inner.memory_controller
     }
 
     /// Returns true if the task center was requested to shutdown
