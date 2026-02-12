@@ -15,10 +15,11 @@ use std::task::{Poll, ready};
 
 use ahash::HashMap;
 use futures::Stream;
+use metrics::{Counter, counter};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::StreamExt;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, trace};
 
 use restate_memory::{EstimatedMemorySize, MemoryLease, MemoryPool};
 use restate_types::SharedString;
@@ -26,8 +27,13 @@ use restate_types::net::{Service, ServiceTag};
 
 use super::incoming::{Incoming, RawRpc, RawUnary, RawWatch};
 
-use super::{RawSvcRpc, RawSvcUnary, RawSvcWatch, RouterError, Verdict};
-use crate::{ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_token};
+use super::{
+    Connection, RawSvcRpc, RawSvcUnary, RawSvcWatch, ReplyEnvelope, RouterError, Verdict,
+    WatchUpdateEnvelope,
+};
+use crate::network::metric_definitions::NETWORK_MESSAGE_ACCEPTED_BYTES;
+use crate::network::{PeerMetadataVersion, RpcReplyPort};
+use crate::{ShutdownError, TaskCenter, TaskId, TaskKind, cancellation_token, network::protobuf};
 
 /// Chooses the draining strategy for the service
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,32 +112,107 @@ impl MessageRouter {
 
     pub async fn call_rpc(
         &self,
-        target: ServiceTag,
-        message: Incoming<RawRpc>,
-    ) -> Result<(), RouterError> {
-        self.get_sender(target)?
-            .send(ServiceOp::CallRpc(message))
-            .await
+        header: protobuf::network::Header,
+        rpc_call: protobuf::network::RpcCall,
+        connection: &Connection,
+    ) -> Result<oneshot::Receiver<ReplyEnvelope>, RouterError> {
+        let target_service = rpc_call.service();
+        trace!(
+            peer = %connection.peer(),
+            rpc_id = %rpc_call.id,
+            "Received RPC call: {target_service}::{}",
+            rpc_call.msg_type
+        );
+        let sender = self.get_sender(target_service)?;
+        let encoded_len = rpc_call.payload.len();
+        let reservation = sender.reserve(encoded_len).await?;
+
+        let (reply_port, reply_rx) = RpcReplyPort::new();
+        let raw_rpc = RawRpc {
+            reply_port,
+            payload: rpc_call.payload,
+            sort_code: rpc_call.sort_code,
+            msg_type: rpc_call.msg_type,
+            reservation,
+        };
+        let incoming = Incoming::new(
+            connection.protocol_version,
+            raw_rpc,
+            connection.peer,
+            PeerMetadataVersion::from(header),
+        );
+
+        sender.send(ServiceOp::CallRpc(incoming))?;
+        sender.bytes_accepted.increment(encoded_len as u64);
+        Ok(reply_rx)
     }
 
+    // WIP
+    #[allow(unused)]
     pub async fn call_watch(
         &self,
-        target: ServiceTag,
-        message: Incoming<RawWatch>,
-    ) -> Result<(), RouterError> {
-        self.get_sender(target)?
-            .send(ServiceOp::Watch(message))
-            .await
+        header: protobuf::network::Header,
+        watch: protobuf::network::Watch,
+        connection: &Connection,
+    ) -> Result<watch::Receiver<WatchUpdateEnvelope>, RouterError> {
+        let target_service = watch.service();
+        trace!(
+            "Received Watch request: {target_service}::{}",
+            watch.msg_type
+        );
+
+        let sender = self.get_sender(target_service)?;
+        let encoded_len = watch.payload.len();
+        let reservation = sender.reserve(encoded_len).await?;
+
+        let (reply_port, reply_rx) = todo!();
+
+        let incoming = Incoming::new(
+            connection.protocol_version,
+            RawWatch {
+                payload: watch.payload,
+                sort_code: watch.sort_code,
+                msg_type: watch.msg_type,
+                reservation,
+                reply_port,
+            },
+            connection.peer(),
+            PeerMetadataVersion::from(header),
+        );
+
+        sender.send(ServiceOp::Watch(incoming))?;
+        sender.bytes_accepted.increment(encoded_len as u64);
+        Ok(reply_rx)
     }
 
     pub async fn call_unary(
         &self,
-        target: ServiceTag,
-        message: Incoming<RawUnary>,
+        header: protobuf::network::Header,
+        unary: protobuf::network::Unary,
+        connection: &Connection,
     ) -> Result<(), RouterError> {
-        self.get_sender(target)?
-            .send(ServiceOp::Unary(message))
-            .await
+        let target_service = unary.service();
+        trace!("Received Unary call: {target_service}::{}", unary.msg_type);
+
+        let sender = self.get_sender(target_service)?;
+        let encoded_len = unary.payload.len();
+        let reservation = sender.reserve(encoded_len).await?;
+
+        let incoming = Incoming::new(
+            connection.protocol_version,
+            RawUnary {
+                payload: unary.payload,
+                sort_code: unary.sort_code,
+                msg_type: unary.msg_type,
+                reservation,
+            },
+            connection.peer(),
+            PeerMetadataVersion::from(header),
+        );
+
+        sender.send(ServiceOp::Unary(incoming))?;
+        sender.bytes_accepted.increment(encoded_len as u64);
+        Ok(())
     }
 }
 
@@ -484,6 +565,7 @@ struct ServiceSender {
     pool: MemoryPool,
     backpressure: BackPressureMode,
     started: Arc<AtomicBool>,
+    bytes_accepted: Counter,
 }
 
 impl ServiceSender {
@@ -499,6 +581,7 @@ impl ServiceSender {
                 pool,
                 backpressure,
                 started: started.clone(),
+                bytes_accepted: counter!(NETWORK_MESSAGE_ACCEPTED_BYTES, "target" => S::TAG.as_str_name()),
             },
             ServiceReceiver {
                 receiver,
@@ -508,60 +591,36 @@ impl ServiceSender {
         )
     }
 
-    /// Reserve memory and send a message through the channel.
+    /// Reserve memory and return a lease when successful.
     ///
     /// Behavior depends on [`BackPressureMode`]:
     /// - `PushBack`: Waits asynchronously for memory to become available
     /// - `Lossy`: Returns [`RouterError::CapacityExceeded`] if pool is exhausted
-    async fn send(&self, op: ServiceOp) -> Result<(), RouterError> {
+    async fn reserve(&self, payload_size: usize) -> Result<MemoryLease, RouterError> {
         if !self.started.load(Ordering::Relaxed) {
             return Err(RouterError::ServiceNotReady);
         }
 
-        // Get payload size from the message for memory accounting
-        let payload_size = op.estimated_memory_size();
-
         // Reserve memory based on backpressure mode
-        let reservation = match self.backpressure {
+        match self.backpressure {
             BackPressureMode::PushBack => {
                 // Wait for memory to become available
-                self.pool.reserve(payload_size).await
+                Ok(self.pool.reserve(payload_size).await)
             }
             BackPressureMode::Lossy => {
                 // Try to reserve immediately, fail if no capacity
                 self.pool
                     .try_reserve(payload_size)
-                    .ok_or(RouterError::CapacityExceeded)?
-            }
-        };
-
-        // Attach the reservation to the incoming message.
-        // The old (unlinked) reservation is dropped, which is a no-op.
-        let op_with_reservation = Self::attach_reservation(op, reservation);
-
-        // Send through unbounded channel (memory pool is the bound)
-        self.sender
-            .send(op_with_reservation)
-            .map_err(|_| RouterError::ServiceStopped)?;
-
-        Ok(())
-    }
-
-    fn attach_reservation(op: ServiceOp, reservation: MemoryLease) -> ServiceOp {
-        match op {
-            ServiceOp::CallRpc(mut incoming) => {
-                let _ = incoming.swap_reservation(reservation);
-                ServiceOp::CallRpc(incoming)
-            }
-            ServiceOp::Watch(mut incoming) => {
-                let _ = incoming.swap_reservation(reservation);
-                ServiceOp::Watch(incoming)
-            }
-            ServiceOp::Unary(mut incoming) => {
-                let _ = incoming.swap_reservation(reservation);
-                ServiceOp::Unary(incoming)
+                    .ok_or(RouterError::CapacityExceeded)
             }
         }
+    }
+
+    /// send a message through the channel
+    fn send(&self, op: ServiceOp) -> Result<(), RouterError> {
+        self.sender
+            .send(op)
+            .map_err(|_| RouterError::ServiceStopped)
     }
 }
 
