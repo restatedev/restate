@@ -165,10 +165,10 @@ pub struct RawSvcWatch<S> {
 }
 
 pub struct RawWatch {
-    reply_port: WatchUpdatePort,
-    payload: Bytes,
-    sort_code: Option<u64>,
-    msg_type: String,
+    pub(super) reply_port: WatchUpdatePort,
+    pub(super) payload: Bytes,
+    pub(super) sort_code: Option<u64>,
+    pub(super) msg_type: String,
     pub(super) reservation: MemoryLease,
 }
 
@@ -260,11 +260,6 @@ impl<S> EstimatedMemorySize for Incoming<Rpc<S>> {
 impl Incoming<RawRpc> {
     pub fn msg_type(&self) -> &str {
         &self.inner.msg_type
-    }
-
-    /// Swaps the memory reservation attached to this message, returning the old one.
-    pub(crate) fn swap_reservation(&mut self, new_reservation: MemoryLease) -> MemoryLease {
-        std::mem::replace(&mut self.inner.reservation, new_reservation)
     }
 }
 
@@ -368,11 +363,6 @@ impl Incoming<RawUnary> {
     pub fn msg_type(&self) -> &str {
         &self.inner.msg_type
     }
-
-    /// Swaps the memory reservation attached to this message, returning the old one.
-    pub(crate) fn swap_reservation(&mut self, new_reservation: MemoryLease) -> MemoryLease {
-        std::mem::replace(&mut self.inner.reservation, new_reservation)
-    }
 }
 
 impl<S: Service> Incoming<RawSvcUnary<S>> {
@@ -437,11 +427,6 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
 impl Incoming<RawWatch> {
     pub fn msg_type(&self) -> &str {
         &self.inner.msg_type
-    }
-
-    /// Swaps the memory reservation attached to this message, returning the old one.
-    pub(crate) fn swap_reservation(&mut self, new_reservation: MemoryLease) -> MemoryLease {
-        std::mem::replace(&mut self.inner.reservation, new_reservation)
     }
 }
 
