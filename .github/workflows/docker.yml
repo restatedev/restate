@@ -255,6 +255,7 @@ jobs:
           file: "docker/Dockerfile"
           target: debug-symbols
           platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
+          network: host
           outputs: type=local,dest=./debug-symbols
           build-args: |
             CARGO_PROFILE_RELEASE_DEBUG=true
