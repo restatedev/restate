@@ -201,7 +201,7 @@ pub enum RpcReplyError {
     ServiceStopped,
     #[error("the requested rpc service didn't recognize this message")]
     MessageUnrecognized,
-    #[error("peer dropped the request due to back-pressure")]
+    #[error("peer dropped the request due to load-shedding")]
     LoadShedding,
     #[error(
         "the target has the rpc service but it has rejected serving the request for the supplied sort code"
