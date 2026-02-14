@@ -123,7 +123,10 @@ impl InvocationTargetMetadata {
 pub struct InvocationAttemptOptions {
     pub abort_timeout: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
-    pub enable_lazy_state: Option<bool>,
+    /// Maximum total size (in bytes) of state entries to send eagerly.
+    /// `Some(0)` means no eager state (equivalent to lazy state).
+    /// `None` means no per-handler override (use server default).
+    pub eager_state_size_limit: Option<usize>,
 }
 
 // --- Input rules

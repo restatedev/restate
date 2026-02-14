@@ -145,7 +145,12 @@ where
                     invocation_target,
                     opts.inactivity_timeout.into(),
                     opts.abort_timeout.into(),
-                    opts.disable_eager_state,
+                    // Fuse disable_eager_state (deprecated) with eager_state_size_limit
+                    if opts.disable_eager_state {
+                        Some(0)
+                    } else {
+                        opts.eager_state_size_limit.map(|v| v.as_usize())
+                    },
                     opts.message_size_warning.as_non_zero_usize(),
                     opts.message_size_limit(),
                     retry_count_since_last_stored_entry,
