@@ -18,6 +18,7 @@ use tracing::{debug, error, instrument, trace, warn};
 use restate_core::network::{Incoming, Rpc, ServiceMessage, Verdict};
 use restate_core::task_center::TaskGuard;
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
+use restate_memory::MemoryLease;
 use restate_types::GenerationalNodeId;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::{RpcRequest, UnaryMessage, log_server::*};
@@ -186,7 +187,7 @@ impl<S: LogStore> LogletWorker<S> {
                 let msg = message.into_typed::<Store>();
                 let peer = msg.peer();
 
-                let (reciprocal, msg) = msg.split();
+                let (reciprocal, msg, reservation) = msg.split_with_reservation();
                 let first_offset = msg.first_offset;
                 // this message might be telling us about a higher `known_global_tail`
                 self.loglet_state
@@ -200,6 +201,7 @@ impl<S: LogStore> LogletWorker<S> {
                         staging_local_tail,
                         next_ok_offset,
                         sealing_in_progress,
+                        reservation,
                     )
                     .await;
                 // if this store is complete, the last committed is updated to this value.
@@ -290,15 +292,19 @@ impl<S: LogStore> LogletWorker<S> {
                 // seal to happen
                 let tail_watcher = self.loglet_state.get_local_tail_watch();
                 let global_tail = self.loglet_state.get_global_tail_tracker();
-                waiting_for_seal.spawn(Box::pin(async move {
-                    let seal_watcher = tail_watcher.wait_for_seal();
-                    if seal_watcher.await.is_ok() {
-                        let body = Sealed::new(*tail_watcher.get(), global_tail.get())
-                            .with_status(Status::Ok);
-                        // send the response over the network
-                        reciprocal.send(body);
-                    }
-                }));
+                waiting_for_seal
+                    .build_task()
+                    .name("loglet-wait-for-seal")
+                    .spawn(Box::pin(async move {
+                        let seal_watcher = tail_watcher.wait_for_seal();
+                        if seal_watcher.await.is_ok() {
+                            let body = Sealed::new(*tail_watcher.get(), global_tail.get())
+                                .with_status(Status::Ok);
+                            // send the response over the network
+                            reciprocal.send(body);
+                        }
+                    }))
+                    .unwrap();
                 let seal_token = self.process_seal(msg, sealing_in_progress).await;
                 if let Some(seal_token) = seal_token {
                     in_flight_seal.set(Some(seal_token).into());
@@ -320,6 +326,7 @@ impl<S: LogStore> LogletWorker<S> {
         staging_local_tail: &mut LogletOffset,
         next_ok_offset: LogletOffset,
         sealing_in_progress: &bool,
+        reservation: MemoryLease,
     ) -> (Status, Option<AsyncToken>) {
         // Is this a sealed loglet?
         if !body.flags.contains(StoreFlags::IgnoreSeal) && self.loglet_state.is_sealed() {
@@ -392,7 +399,7 @@ impl<S: LogStore> LogletWorker<S> {
         // exhausted.
         match self
             .log_store
-            .enqueue_store(body, set_sequencer_in_metadata)
+            .enqueue_store(body, set_sequencer_in_metadata, reservation)
             .await
         {
             Ok(store_token) => {
