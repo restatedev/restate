@@ -65,7 +65,7 @@ mod tests {
     use crate::partition::state_machine::tests::fixtures::invoker_entry_effect;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::matchers::contains;
-    use googletest::prelude::assert_that;
+    use googletest::prelude::{assert_that, eq};
     use restate_storage_api::Transaction;
     use restate_storage_api::state_table::WriteStateTable;
     use restate_types::identifiers::ServiceId;
@@ -108,6 +108,18 @@ mod tests {
                 }
             ))
         );
+
+        let state_keys_command = test_env
+            .read_journal_entry::<GetLazyStateKeysCommand>(invocation_id, 1)
+            .await;
+        assert_that!(
+            state_keys_command,
+            eq(GetLazyStateKeysCommand {
+                completion_id: 1,
+                name: Default::default()
+            })
+        );
+
         test_env.shutdown().await;
     }
 }

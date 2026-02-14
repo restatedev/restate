@@ -3025,7 +3025,7 @@ pub mod v1 {
                         EntryType::ClearAllStateCommand
                     }
                     journal_v2::EntryType::Command(journal_v2::CommandType::GetLazyStateKeys) => {
-                        EntryType::GetLazyStateCommand
+                        EntryType::GetLazyStateKeysCommand
                     }
                     journal_v2::EntryType::Command(journal_v2::CommandType::GetEagerState) => {
                         EntryType::GetEagerStateCommand

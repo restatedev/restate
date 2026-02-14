@@ -1,10 +1,16 @@
 replicaCount: 1
 nameOverride: "restate"
+# DEPRECATED: Use image.tag instead. This field will be removed in a future release.
 version: ""
 
 image:
   repository: docker.restate.dev/restatedev/restate
   pullPolicy: IfNotPresent
+  # -- Image tag to use. Defaults to Chart.Version if not set.
+  # tag: ""
+  # -- Image digest to use (e.g., sha256:abc123...).
+  # If set, takes precedence over tag and version. Must start with 'sha256:'.
+  # digest: ""
 
 imagePullSecrets: []
 
