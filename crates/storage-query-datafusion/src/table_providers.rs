@@ -40,7 +40,7 @@ use restate_types::partition_table::Partition;
 
 use crate::context::SelectPartitions;
 use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
-use crate::table_util::{find_sort_columns, make_ordering};
+use crate::table_util::{find_sort_columns, make_decending_ordering, make_ordering};
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
     #[allow(clippy::too_many_arguments)]
@@ -64,6 +64,7 @@ pub(crate) struct PartitionedTableProvider<T, S> {
     partition_scanner: T,
     partition_key_extractor: FirstMatchingPartitionKeyExtractor,
     statistics: Statistics,
+    is_ascending_order: bool,
 }
 
 impl<T, S> PartitionedTableProvider<T, S> {
@@ -82,11 +83,19 @@ impl<T, S> PartitionedTableProvider<T, S> {
             partition_scanner,
             partition_key_extractor,
             statistics,
+            is_ascending_order: true,
         }
     }
 
     pub(crate) fn with_statistics(self, statistics: Statistics) -> Self {
         Self { statistics, ..self }
+    }
+
+    pub(crate) fn with_descending_order(self) -> Self {
+        Self {
+            is_ascending_order: false,
+            ..self
+        }
     }
 }
 
@@ -182,7 +191,7 @@ where
             .try_extract(filters)
             .map_err(|e| DataFusionError::External(e.into()))?;
 
-        let physical_partitions: Vec<(PartitionId, Partition)> = self
+        let mut physical_partitions: Vec<(PartitionId, Partition)> = self
             .partition_selector
             .get_live_partitions()
             .await
@@ -224,6 +233,10 @@ where
             })
             .collect();
 
+        if !self.is_ascending_order {
+            physical_partitions.reverse();
+        }
+
         let target_partitions = state.config().target_partitions();
         let logical_partitions =
             physical_partitions_to_logical(physical_partitions, target_partitions);
@@ -233,7 +246,11 @@ where
         let eq_properties = if sort_columns.is_empty() {
             EquivalenceProperties::new(projected_schema.clone())
         } else {
-            let ordering = make_ordering(sort_columns.clone());
+            let ordering = if self.is_ascending_order {
+                make_ordering(sort_columns.clone())
+            } else {
+                make_decending_ordering(sort_columns.clone())
+            };
             EquivalenceProperties::new_with_orderings(projected_schema.clone(), [ordering])
         };
 

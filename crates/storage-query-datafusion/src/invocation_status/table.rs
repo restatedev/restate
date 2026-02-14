@@ -62,7 +62,9 @@ pub(crate) fn register_self(
             .with_service_key("target_service_key")
             .with_invocation_id("id"),
     )
-    .with_statistics(statistics.build());
+    .with_statistics(statistics.build())
+    .with_descending_order();
+
     ctx.register_partitioned_table(NAME, Arc::new(status_table))
 }
 

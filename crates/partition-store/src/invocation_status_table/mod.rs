@@ -140,7 +140,7 @@ impl ScanInvocationStatusTable for PartitionStore {
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
         let new_status_keys = self
-            .iterator_for_each(
+            .iterator_for_each_reversed(
                 "df-for-each-invocation-status",
                 Priority::Low,
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
