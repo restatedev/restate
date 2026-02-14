@@ -13,6 +13,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use enum_dispatch::enum_dispatch;
 
+use restate_serde_util::ByteCount;
+
 use crate::identifiers::InvocationId;
 use crate::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use crate::journal_v2::encoding::DecodingError;
@@ -64,10 +66,11 @@ impl RawEntry {
 
 // -- Raw command
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawCommand {
     ty: CommandType,
     pub command_specific_metadata: RawCommandSpecificMetadata,
+    #[debug("Bytes({})", ByteCount::from(serialized_content.len()))]
     pub serialized_content: Bytes,
 }
 
@@ -137,10 +140,11 @@ pub enum RawCommandSpecificMetadata {
 
 // -- Raw notification
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RawNotification {
     ty: NotificationType,
     id: NotificationId,
+    #[debug("Bytes({})", ByteCount::from(serialized_content.len()))]
     serialized_content: Bytes,
 }
 
