@@ -26,9 +26,16 @@
 pub mod deployment;
 pub mod info;
 pub mod invocation_target;
+pub mod kafka;
 mod metadata;
 pub mod registry;
 pub mod service;
 pub mod subscriptions;
 
 pub use metadata::Schema;
+
+#[derive(Clone, Copy)]
+pub enum Redaction {
+    Yes,
+    No,
+}
