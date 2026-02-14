@@ -24,7 +24,6 @@ use tracing::{Instrument, Span, debug, info, trace, warn};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::live::Live;
 use restate_types::logs::metadata::Logs;
-use restate_types::net::ServiceTag;
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
@@ -32,18 +31,14 @@ use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::{Version, Versioned};
 
-use crate::network::incoming::{RawRpc, RawUnary, RpcReplyPort};
 use crate::network::io::EgressMessage;
-use crate::network::metric_definitions::{
-    NETWORK_MESSAGE_RECEIVED_BYTES, NETWORK_MESSAGE_RECEIVED_DROPPED_BYTES,
-};
+use crate::network::metric_definitions::NETWORK_MESSAGE_RECEIVED_REJECTED_BYTES;
 use crate::network::protobuf::network::message::{Body, Signal};
 use crate::network::protobuf::network::{Datagram, RpcReply, datagram, rpc_reply};
 use crate::network::protobuf::network::{Header, Message};
 use crate::network::tracking::ConnectionTracking;
 use crate::network::{
-    Connection, Incoming, MessageRouter, PeerMetadataVersion, ReplyEnvelope, RouterError,
-    RpcReplyError,
+    Connection, MessageRouter, PeerMetadataVersion, ReplyEnvelope, RouterError, RpcReplyError,
 };
 use crate::{Metadata, ShutdownError, TaskCenter, TaskContext, TaskId, TaskKind};
 
@@ -333,40 +328,21 @@ impl ConnectionReactor {
                     return Decision::Continue;
                 };
                 let target_service = rpc_call.service();
-
+                let rpc_id = rpc_call.id;
                 let encoded_len = rpc_call.payload.len() as u64;
-                let (reply_port, reply_rx) = RpcReplyPort::new();
-                let raw_rpc = RawRpc {
-                    reply_port,
-                    payload: rpc_call.payload,
-                    sort_code: rpc_call.sort_code,
-                    msg_type: rpc_call.msg_type,
-                };
-                let incoming = Incoming::new(
-                    self.connection.protocol_version,
-                    raw_rpc,
-                    self.connection.peer,
-                    PeerMetadataVersion::from(header),
-                );
-                trace!(
-                    peer = %self.connection.peer(),
-                    rpc_id = %rpc_call.id,
-                    "Received RPC call: {target_service}::{}",
-                    incoming.msg_type()
-                );
 
-                // ship to the service router, dropping the reply port will close the responder
-                // task.
-                match tokio::task::unconstrained(self.router.call_rpc(target_service, incoming))
+                // Ship to the message router
+                match self
+                    .router
+                    .call_rpc(header, rpc_call, &self.connection)
                     .await
                 {
-                    Ok(()) => {
-                        counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target_service.as_str_name()).increment(encoded_len);
-                        spawn_rpc_responder(tx.clone(), rpc_call.id, reply_rx, target_service);
+                    Ok(reply_rx) => {
+                        spawn_rpc_responder(tx.clone(), rpc_id, reply_rx);
                     }
                     Err(err) => {
-                        send_rpc_error(tx, err, rpc_call.id);
-                        counter!(NETWORK_MESSAGE_RECEIVED_DROPPED_BYTES, "target" => target_service.as_str_name()).increment(encoded_len);
+                        send_rpc_error(tx, err, rpc_id);
+                        counter!(NETWORK_MESSAGE_RECEIVED_REJECTED_BYTES, "target" => target_service.as_str_name()).increment(encoded_len);
                     }
                 }
                 Decision::Continue
@@ -375,25 +351,17 @@ impl ConnectionReactor {
             Body::Datagram(Datagram {
                 datagram: Some(datagram::Datagram::Unary(unary)),
             }) => {
-                let metadata_versions = PeerMetadataVersion::from(header);
-                let target = unary.service();
+                let target_service = unary.service();
                 let encoded_len = unary.payload.len() as u64;
-                let incoming = Incoming::new(
-                    self.connection.protocol_version,
-                    RawUnary {
-                        payload: unary.payload,
-                        sort_code: unary.sort_code,
-                        msg_type: unary.msg_type,
-                    },
-                    self.connection.peer(),
-                    metadata_versions,
-                );
-                trace!("Received Unary call: {target}::{}", incoming.msg_type());
 
-                let _ = tokio::task::unconstrained(self.router.call_unary(target, incoming)).await;
-
-                counter!(NETWORK_MESSAGE_RECEIVED_BYTES, "target" => target.as_str_name())
-                    .increment(encoded_len);
+                if self
+                    .router
+                    .call_unary(header, unary, &self.connection)
+                    .await
+                    .is_err()
+                {
+                    counter!(NETWORK_MESSAGE_RECEIVED_REJECTED_BYTES, "target" => target_service.as_str_name()).increment(encoded_len);
+                }
                 Decision::Continue
             }
             // RPC REPLY
@@ -482,7 +450,6 @@ fn spawn_rpc_responder(
     tx: super::UnboundedEgressSender,
     id: u64,
     reply_rx: oneshot::Receiver<ReplyEnvelope>,
-    _target_service: ServiceTag,
 ) {
     // this is rpc-call, spawning a responder task
     tokio::spawn(async move {

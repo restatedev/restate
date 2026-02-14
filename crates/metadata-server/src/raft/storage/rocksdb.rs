@@ -8,6 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::cell::RefCell;
+use std::sync::Arc;
+use std::{error, mem};
+
+use bytes::{BufMut, BytesMut};
+use flexbuffers::{DeserializationError, SerializationError};
+use protobuf::{Message, ProtobufError};
+use raft::{GetEntriesContext, RaftState, Storage, StorageError};
+use raft_proto::eraftpb::{ConfState, Entry, HardState, Snapshot};
+use rocksdb::{BoundColumnFamily, DB, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions};
+use tracing::debug;
+
+use restate_rocksdb::{IoMode, Priority, RocksDb, RocksError};
+use restate_types::errors::GenericError;
+use restate_types::nodes_config::NodesConfiguration;
+
 use crate::raft::storage::keys::{
     CONF_STATE_KEY, HARD_STATE_KEY, LogEntryKey, MARKER_KEY, NODES_CONFIGURATION_KEY,
     RAFT_SERVER_STATE_KEY, SNAPSHOT_KEY,
@@ -15,19 +31,6 @@ use crate::raft::storage::keys::{
 use crate::raft::storage::rocksdb_builder::build_rocksdb;
 use crate::raft::storage::{DATA_CF, METADATA_CF};
 use crate::raft::{RaftServerState, StorageMarker};
-use bytes::{BufMut, BytesMut};
-use flexbuffers::{DeserializationError, SerializationError};
-use protobuf::{Message, ProtobufError};
-use raft::{GetEntriesContext, RaftState, Storage, StorageError};
-use raft_proto::eraftpb::{ConfState, Entry, HardState, Snapshot};
-use restate_rocksdb::{IoMode, Priority, RocksDb, RocksError};
-use restate_types::errors::GenericError;
-use restate_types::nodes_config::NodesConfiguration;
-use rocksdb::{BoundColumnFamily, DB, DBPinnableSlice, ReadOptions, WriteBatch, WriteOptions};
-use std::cell::RefCell;
-use std::sync::Arc;
-use std::{error, mem};
-use tracing::debug;
 
 const FIRST_RAFT_INDEX: u64 = 1;
 
@@ -226,24 +229,28 @@ impl RocksDbStorage {
         &self,
         key: impl AsRef<[u8]>,
     ) -> Result<Option<DBPinnableSlice<'_>>, Error> {
-        let cf = self.data_cf();
-        self.rocksdb
-            .inner()
-            .as_raw_db()
-            .get_pinned_cf(&cf, key)
-            .map_err(Into::into)
+        tokio::task::block_in_place(|| {
+            let cf = self.data_cf();
+            self.rocksdb
+                .inner()
+                .as_raw_db()
+                .get_pinned_cf(&cf, key)
+                .map_err(Into::into)
+        })
     }
 
     fn get_bytes_metadata_cf(
         &self,
         key: impl AsRef<[u8]>,
     ) -> Result<Option<DBPinnableSlice<'_>>, Error> {
-        let cf = self.metadata_cf();
-        self.rocksdb
-            .inner()
-            .as_raw_db()
-            .get_pinned_cf(&cf, key)
-            .map_err(Into::into)
+        tokio::task::block_in_place(|| {
+            let cf = self.metadata_cf();
+            self.rocksdb
+                .inner()
+                .as_raw_db()
+                .get_pinned_cf(&cf, key)
+                .map_err(Into::into)
+        })
     }
 
     async fn put_bytes_metadata_cf(
@@ -382,45 +389,47 @@ impl RocksDbStorage {
     // ------------------------------
 
     fn find_indices(db: &DB) -> (u64, u64) {
-        let data_cf = db.cf_handle(DATA_CF).expect("DATA_CF exists");
-        let metadata_cf = db.cf_handle(METADATA_CF).expect("METADATA_CF exists");
-        let start = LogEntryKey::new(0).to_bytes();
-        let end = LogEntryKey::new(u64::MAX).to_bytes();
+        tokio::task::block_in_place(|| {
+            let data_cf = db.cf_handle(DATA_CF).expect("DATA_CF exists");
+            let metadata_cf = db.cf_handle(METADATA_CF).expect("METADATA_CF exists");
+            let start = LogEntryKey::new(0).to_bytes();
+            let end = LogEntryKey::new(u64::MAX).to_bytes();
 
-        let mut options = ReadOptions::default();
-        options.set_async_io(true);
-        options.set_iterate_range(start..end);
-        let mut iterator = db.raw_iterator_cf_opt(&data_cf, options);
+            let mut options = ReadOptions::default();
+            options.set_async_io(true);
+            options.set_iterate_range(start..end);
+            let mut iterator = db.raw_iterator_cf_opt(&data_cf, options);
 
-        iterator.seek_to_first();
+            iterator.seek_to_first();
 
-        if iterator.valid() {
-            let key_bytes = iterator.key().expect("key should be present");
-            let first_index = LogEntryKey::from_slice(key_bytes).index();
+            if iterator.valid() {
+                let key_bytes = iterator.key().expect("key should be present");
+                let first_index = LogEntryKey::from_slice(key_bytes).index();
 
-            iterator.seek_to_last();
+                iterator.seek_to_last();
 
-            assert!(iterator.valid(), "iterator should be valid");
-            let key_bytes = iterator.key().expect("key should be present");
-            let last_index = LogEntryKey::from_slice(key_bytes).index();
-
-            (first_index, last_index)
-        } else {
-            let snapshot_bytes = db
-                .get_pinned_cf(&metadata_cf, SNAPSHOT_KEY)
-                .expect("snapshot key should be readable");
-            if let Some(snapshot_bytes) = snapshot_bytes {
-                let snapshot = Snapshot::parse_from_bytes(snapshot_bytes.as_ref())
-                    .expect("snapshot should be deserializable");
-                let last_index = snapshot.get_metadata().get_index();
-                let first_index = snapshot.get_metadata().get_index() + 1;
+                assert!(iterator.valid(), "iterator should be valid");
+                let key_bytes = iterator.key().expect("key should be present");
+                let last_index = LogEntryKey::from_slice(key_bytes).index();
 
                 (first_index, last_index)
             } else {
-                // the first valid raft index starts at 1, so 0 means there are no replicated raft entries
-                (FIRST_RAFT_INDEX, 0)
+                let snapshot_bytes = db
+                    .get_pinned_cf(&metadata_cf, SNAPSHOT_KEY)
+                    .expect("snapshot key should be readable");
+                if let Some(snapshot_bytes) = snapshot_bytes {
+                    let snapshot = Snapshot::parse_from_bytes(snapshot_bytes.as_ref())
+                        .expect("snapshot should be deserializable");
+                    let last_index = snapshot.get_metadata().get_index();
+                    let first_index = snapshot.get_metadata().get_index() + 1;
+
+                    (first_index, last_index)
+                } else {
+                    // the first valid raft index starts at 1, so 0 means there are no replicated raft entries
+                    (FIRST_RAFT_INDEX, 0)
+                }
             }
-        }
+        })
     }
 
     fn check_index(&self, idx: u64) -> Result<(), Error> {
@@ -481,62 +490,64 @@ impl Storage for RocksDbStorage {
         max_size: impl Into<Option<u64>>,
         _context: GetEntriesContext,
     ) -> raft::Result<Vec<Entry>> {
-        self.check_range(low, high)?;
-        let start_key = LogEntryKey::new(low).to_bytes();
-        let end_key = LogEntryKey::new(high).to_bytes();
+        tokio::task::block_in_place(|| {
+            self.check_range(low, high)?;
+            let start_key = LogEntryKey::new(low).to_bytes();
+            let end_key = LogEntryKey::new(high).to_bytes();
 
-        let cf = self.data_cf();
-        let mut opts = ReadOptions::default();
-        opts.set_iterate_range(start_key..end_key);
-        opts.set_async_io(true);
+            let cf = self.data_cf();
+            let mut opts = ReadOptions::default();
+            opts.set_iterate_range(start_key..end_key);
+            opts.set_async_io(true);
 
-        let mut iterator = self
-            .rocksdb
-            .inner()
-            .as_raw_db()
-            .raw_iterator_cf_opt(&cf, opts);
-        iterator.seek(start_key);
+            let mut iterator = self
+                .rocksdb
+                .inner()
+                .as_raw_db()
+                .raw_iterator_cf_opt(&cf, opts);
+            iterator.seek(start_key);
 
-        let mut result =
-            Vec::with_capacity(usize::try_from(high - low).expect("u64 fits into usize"));
+            let mut result =
+                Vec::with_capacity(usize::try_from(high - low).expect("u64 fits into usize"));
 
-        let max_size =
-            usize::try_from(max_size.into().unwrap_or(u64::MAX)).expect("u64 fits into usize");
-        let mut size = 0;
-        let mut expected_idx = low;
+            let max_size =
+                usize::try_from(max_size.into().unwrap_or(u64::MAX)).expect("u64 fits into usize");
+            let mut size = 0;
+            let mut expected_idx = low;
 
-        while iterator.valid() {
-            if size > 0 && size >= max_size {
-                break;
-            }
-
-            if let Some(value) = iterator.value() {
-                let mut entry = Entry::default();
-                entry.merge_from_bytes(value)?;
-
-                if expected_idx != entry.index {
-                    if expected_idx == low {
-                        Err(StorageError::Compacted)?;
-                    } else {
-                        // missing raft entries :-(
-                        Err(StorageError::Unavailable)?;
-                    }
+            while iterator.valid() {
+                if size > 0 && size >= max_size {
+                    break;
                 }
 
-                result.push(entry);
-                expected_idx += 1;
-                size += value.len();
+                if let Some(value) = iterator.value() {
+                    let mut entry = Entry::default();
+                    entry.merge_from_bytes(value)?;
+
+                    if expected_idx != entry.index {
+                        if expected_idx == low {
+                            Err(StorageError::Compacted)?;
+                        } else {
+                            // missing raft entries :-(
+                            Err(StorageError::Unavailable)?;
+                        }
+                    }
+
+                    result.push(entry);
+                    expected_idx += 1;
+                    size += value.len();
+                }
+
+                iterator.next();
             }
 
-            iterator.next();
-        }
+            // check for an occurred error
+            iterator
+                .status()
+                .map_err(|err| StorageError::Other(err.into()))?;
 
-        // check for an occurred error
-        iterator
-            .status()
-            .map_err(|err| StorageError::Other(err.into()))?;
-
-        Ok(result)
+            Ok(result)
+        })
     }
 
     fn term(&self, idx: u64) -> raft::Result<u64> {

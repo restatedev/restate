@@ -186,6 +186,8 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
         // jemalloc memory statistics
         #[cfg(not(target_env = "msvc"))]
         super::jemalloc::submit_metrics();
+        // Memory Pools
+        state.task_center.memory_controller().submit_metrics();
         // Internal system metrics
         let _ = write!(&mut out, "{}", prometheus_handle.render());
     }
