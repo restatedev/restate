@@ -574,7 +574,7 @@ impl ReadStreamTask {
                 Swimlane::BifrostData,
                 request,
                 Some(self.my_params.loglet_id.into()),
-                Some(*options.log_server_rpc_timeout),
+                Some(*options.log_server_read_timeout),
             )
             .await;
 

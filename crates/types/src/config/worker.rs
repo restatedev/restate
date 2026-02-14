@@ -105,6 +105,11 @@ pub struct WorkerOptions {
     /// Settings for the shared ingestion client used by all workers to
     /// manage record ingestion across partitions (shuffle).
     pub shuffle: IngestionOptions,
+
+    /// Memory limit for incoming partition data service messages (Ingestion).
+    ///
+    /// Default is 256 MiB.
+    pub data_service_memory_limit: NonZeroByteCount,
 }
 
 impl WorkerOptions {
@@ -162,6 +167,9 @@ impl Default for WorkerOptions {
                     NonZeroUsize::new(50 * 1024).expect("non zero"),
                 ),
             },
+            data_service_memory_limit: NonZeroByteCount::new(
+                NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
+            ),
         }
     }
 }

@@ -32,6 +32,8 @@ use restate_types::retries::with_jitter;
 use restate_types::schema::Schema;
 use restate_types::{Version, Versioned};
 
+use restate_memory::MemoryLease;
+
 use crate::network::incoming::{RawRpc, RawUnary, RpcReplyPort};
 use crate::network::io::EgressMessage;
 use crate::network::metric_definitions::{
@@ -341,6 +343,7 @@ impl ConnectionReactor {
                     payload: rpc_call.payload,
                     sort_code: rpc_call.sort_code,
                     msg_type: rpc_call.msg_type,
+                    reservation: MemoryLease::unlinked(),
                 };
                 let incoming = Incoming::new(
                     self.connection.protocol_version,
@@ -384,6 +387,7 @@ impl ConnectionReactor {
                         payload: unary.payload,
                         sort_code: unary.sort_code,
                         msg_type: unary.msg_type,
+                        reservation: MemoryLease::unlinked(),
                     },
                     self.connection.peer(),
                     metadata_versions,
