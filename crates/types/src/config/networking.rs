@@ -21,6 +21,7 @@ use crate::retries::RetryPolicy;
 
 /// The default maximum size for messages (32 MiB).
 pub const DEFAULT_MESSAGE_SIZE_LIMIT: NonZeroUsize = NonZeroUsize::new(32 * 1024 * 1024).unwrap();
+pub const DEFAULT_FABRIC_MEMORY_LIMIT: NonZeroUsize = NonZeroUsize::new(64 * 1024 * 1024).unwrap();
 
 /// # Networking options
 ///
@@ -89,6 +90,19 @@ pub struct NetworkingOptions {
         skip_serializing_if = "is_default_message_size_limit"
     )]
     pub message_size_limit: NonZeroByteCount,
+
+    /// # Global Fabric Memory Limit
+    ///
+    /// This sets the memory limit for all in-flight fabric services that don't own dedicated
+    /// memory pools. The memory limit will be sanitized to the configured `message-size-limit`
+    /// if smaller.
+    ///
+    /// Default: `64MiB`
+    #[serde(
+        default = "default_fabric_memory_limit",
+        skip_serializing_if = "is_default_fabric_memory_limit"
+    )]
+    fabric_memory_limit: NonZeroByteCount,
 }
 
 const fn default_message_size_limit() -> NonZeroByteCount {
@@ -98,6 +112,15 @@ const fn default_message_size_limit() -> NonZeroByteCount {
 fn is_default_message_size_limit(value: &NonZeroByteCount) -> bool {
     value.as_non_zero_usize() == DEFAULT_MESSAGE_SIZE_LIMIT
 }
+
+const fn default_fabric_memory_limit() -> NonZeroByteCount {
+    NonZeroByteCount::new(DEFAULT_FABRIC_MEMORY_LIMIT)
+}
+
+fn is_default_fabric_memory_limit(value: &NonZeroByteCount) -> bool {
+    value.as_non_zero_usize() == DEFAULT_FABRIC_MEMORY_LIMIT
+}
+
 impl NetworkingOptions {
     pub fn stream_window_size(&self) -> u32 {
         // santize to 500MiB if set higher
@@ -108,6 +131,10 @@ impl NetworkingOptions {
 
     pub fn connection_window_size(&self) -> u32 {
         self.stream_window_size() * 3
+    }
+
+    pub fn fabric_memory_limit(&self) -> NonZeroByteCount {
+        self.fabric_memory_limit.max(self.message_size_limit)
     }
 }
 
@@ -131,6 +158,7 @@ impl Default for NetworkingOptions {
                 NonZeroUsize::new(2 * 1024 * 1024).expect("Non zero number"),
             ),
             message_size_limit: default_message_size_limit(),
+            fabric_memory_limit: default_fabric_memory_limit(),
         }
     }
 }
