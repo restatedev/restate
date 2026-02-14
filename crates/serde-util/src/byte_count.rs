@@ -65,6 +65,7 @@ impl schemars::JsonSchema for ByteCount<false> {
 }
 
 impl ByteCount<true> {
+    pub const ZERO: Self = Self(0);
     pub const fn new(value: u64) -> Self {
         Self(value)
     }

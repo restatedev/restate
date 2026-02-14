@@ -87,7 +87,17 @@ pub struct LogServerOptions {
     pub writer_batch_commit_count: usize,
 
     /// The number of messages that can queue up on input network stream while request processor is busy.
-    pub incoming_network_queue_length: NonZeroUsize,
+    #[deprecated = "Use `data_service_memory_limit` and `metadata_service_memory_limit` instead"]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incoming_network_queue_length: Option<NonZeroUsize>,
+
+    /// Memory limit for incoming data service messages (Store, GetRecords).
+    ///
+    /// When this limit is reached, new data messages are rejected with load shedding
+    /// error code. This prevents memory ballooning when RocksDB writes are stalling.
+    ///
+    /// Default is 256 MiB.
+    pub data_service_memory_limit: NonZeroByteCount,
 }
 
 fn is_zero(value: &usize) -> bool {
@@ -168,7 +178,12 @@ impl Default for LogServerOptions {
             writer_batch_commit_count: 5000,
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,
-            incoming_network_queue_length: NonZeroUsize::new(1000).unwrap(),
+            #[allow(deprecated)]
+            incoming_network_queue_length: None,
+            // 256 MiB for data service
+            data_service_memory_limit: NonZeroByteCount::new(
+                NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
+            ),
         }
     }
 }
