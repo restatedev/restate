@@ -20,6 +20,7 @@ use downcast_rs::{DowncastSync, impl_downcast};
 
 use restate_encoding::{BilrostAs, NetSerde};
 use restate_memory::EstimatedMemorySize;
+use restate_serde_util::ByteCount;
 
 use crate::errors::GenericError;
 use crate::journal_v2::raw::{RawEntry, RawEntryError, TryFromEntry};
@@ -202,13 +203,13 @@ macro_rules! flexbuffers_storage_encode_decode {
 #[bilrost_as(dto::PolyBytes)]
 pub enum PolyBytes {
     /// Raw bytes backed by (Bytes), so it's cheap to clone
-    #[debug("Bytes({} bytes)", _0.len())]
+    #[debug("Bytes({})", ByteCount::from(_0.len()))]
     Bytes(bytes::Bytes),
     /// A cached deserialized value that can be downcasted to the original type
     #[debug("Typed")]
     Typed(Arc<dyn StorageEncode>),
     /// A cached deserialized value along with the raw bytes of the serialized value
-    #[debug("Both({} bytes)", _1.len())]
+    #[debug("Both({})", ByteCount::from(_1.len()))]
     Both(Arc<dyn StorageEncode>, bytes::Bytes),
 }
 
@@ -502,7 +503,7 @@ mod tests {
     #[test]
     fn test_polybytes() {
         let bytes = PolyBytes::Bytes(Bytes::from_static(b"hello"));
-        assert_eq!(format!("{bytes:?}"), "Bytes(5 bytes)");
+        assert_eq!(format!("{bytes:?}"), "Bytes(5 B)");
         let typed = PolyBytes::Typed(Arc::new("hello".to_string()));
         assert_eq!(format!("{typed:?}"), "Typed");
         // can be downcasted.
