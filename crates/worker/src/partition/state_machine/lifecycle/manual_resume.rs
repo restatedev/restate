@@ -96,6 +96,7 @@ mod tests {
     use crate::partition::types::InvokerEffectKind;
     use googletest::prelude::{all, assert_that, contains, eq, pat};
     use restate_invoker_api::Effect;
+    use restate_memory::MemoryLease;
     use restate_storage_api::invocation_status_table::{
         InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
@@ -169,6 +170,7 @@ mod tests {
                     deployment_id: initial_deployment_id,
                     service_protocol_version: ServiceProtocolVersion::V5,
                 }),
+                memory_lease: MemoryLease::unlinked(),
             })))
             .await;
         // Mock paused

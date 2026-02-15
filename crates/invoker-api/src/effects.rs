@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashSet;
+
+use restate_memory::MemoryLease;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
@@ -19,21 +22,33 @@ use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
-use std::collections::HashSet;
 
 use crate::EffectKind::JournalEntryV2;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Effect {
     pub invocation_id: InvocationId,
-    // removed in v1.6
-    // #[cfg_attr(
-    //     feature = "serde",
-    //     serde(default, skip_serializing_if = "num_traits::Zero::is_zero")
-    // )]
-    // pub invocation_epoch: InvocationEpoch,
     pub kind: EffectKind,
+    /// Memory reservation held until the effect is processed by the PP.
+    /// When this is dropped, the memory is returned to the invoker's pool.
+    #[cfg_attr(
+        feature = "serde",
+        serde(skip, default = "MemoryLease::unlinked")
+    )]
+    pub memory_lease: MemoryLease,
+}
+
+impl Clone for Effect {
+    fn clone(&self) -> Self {
+        // The clone does NOT clone the memory reservation — cloned effects
+        // get an unlinked lease. The original retains ownership of the reservation.
+        Self {
+            invocation_id: self.invocation_id,
+            kind: self.kind.clone(),
+            memory_lease: MemoryLease::unlinked(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

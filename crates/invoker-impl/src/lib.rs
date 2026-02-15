@@ -42,6 +42,7 @@ use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
 };
+use restate_memory::MemoryLease;
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
@@ -474,10 +475,13 @@ where
                 let InvocationTaskOutput {
                     invocation_id,
                     partition,
-                    inner
+                    inner,
+                    memory_lease,
                 } = invocation_task_msg;
                 match inner {
                     InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
+                        // memory_lease dropped here (not forwarded to PP for metadata-only effects)
+                        drop(memory_lease);
                         self.handle_pinned_deployment(
                             partition,
                             invocation_id,
@@ -486,6 +490,7 @@ where
                         )
                     }
                     InvocationTaskOutputInner::ServerHeaderReceived(x_restate_server_header) => {
+                        drop(memory_lease);
                         self.handle_server_header_received(
                             partition,
                             invocation_id,
@@ -498,23 +503,28 @@ where
                             invocation_id,
                             entry_index,
                             *entry,
-                            requires_ack
+                            requires_ack,
+                            memory_lease,
                         ).await
                     },
                     InvocationTaskOutputInner::NewNotificationProposal { notification } => {
                         self.handle_new_notification_proposal(
                             partition,
                             invocation_id,
-                            notification
+                            notification,
+                            memory_lease,
                         ).await
                     },
                     InvocationTaskOutputInner::Closed => {
+                        drop(memory_lease);
                         self.handle_invocation_task_closed(partition, invocation_id).await
                     },
                     InvocationTaskOutputInner::Failed(e) => {
+                        drop(memory_lease);
                         self.handle_invocation_task_failed(partition, invocation_id, e).await
                     },
                     InvocationTaskOutputInner::Suspended(indexes) => {
+                        drop(memory_lease);
                         self.handle_invocation_task_suspended(partition, invocation_id, indexes).await
                     }
                     InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
@@ -523,10 +533,12 @@ where
                             invocation_id,
                             command_index,
                             command,
-                            requires_ack
+                            requires_ack,
+                            memory_lease,
                         ).await
                     }
                     InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
+                        drop(memory_lease);
                         self.handle_invocation_task_suspended_v2(partition, invocation_id, notification_ids).await
                     }
                 };
@@ -819,6 +831,7 @@ where
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
         requires_ack: bool,
+        memory_lease: MemoryLease,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
@@ -837,6 +850,7 @@ where
                     .send(Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             }
@@ -844,6 +858,7 @@ where
                 .send(Box::new(Effect {
                     invocation_id,
                     kind: EffectKind::JournalEntry { entry_index, entry },
+                    memory_lease,
                 }))
                 .await;
         } else {
@@ -867,6 +882,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         notification: RawNotification,
+        memory_lease: MemoryLease,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
@@ -885,6 +901,7 @@ where
                     .send(Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             }
@@ -892,6 +909,7 @@ where
                 .send(Box::new(Effect {
                     invocation_id,
                     kind: EffectKind::journal_entry(notification, None),
+                    memory_lease,
                 }))
                 .await;
         } else {
@@ -917,6 +935,7 @@ where
         command_index: CommandIndex,
         command: RawCommand,
         requires_ack: bool,
+        memory_lease: MemoryLease,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
@@ -935,6 +954,7 @@ where
                     .send(Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             }
@@ -942,6 +962,7 @@ where
                 .send(Box::new(Effect {
                     invocation_id,
                     kind: EffectKind::journal_entry(command, Some(command_index)),
+                    memory_lease,
                 }))
                 .await;
         } else {
@@ -1034,6 +1055,7 @@ where
                 .send(Box::new(Effect {
                     invocation_id,
                     kind: EffectKind::End,
+                    memory_lease: MemoryLease::unlinked(),
                 }))
                 .await;
         } else {
@@ -1079,6 +1101,7 @@ where
                                 last_failure: None,
                             })),
                         },
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             } else {
@@ -1093,6 +1116,7 @@ where
                         kind: EffectKind::Suspended {
                             waiting_for_completed_entries: entry_indexes,
                         },
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             }
@@ -1140,6 +1164,7 @@ where
                                 last_failure: None,
                             })),
                         },
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             } else {
@@ -1154,6 +1179,7 @@ where
                         kind: EffectKind::SuspendedV2 {
                             waiting_for_notifications,
                         },
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             }
@@ -1287,6 +1313,7 @@ where
                                 last_failure: ism.last_transient_error_event,
                             })),
                         },
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             } else {
@@ -1442,6 +1469,7 @@ where
                             kind: EffectKind::JournalEvent {
                                 event: RawEvent::from(Event::TransientError(event)),
                             },
+                            memory_lease: MemoryLease::unlinked(),
                         }))
                         .await;
                 }
@@ -1519,6 +1547,7 @@ where
                         kind: EffectKind::Paused {
                             paused_event: RawEvent::from(Event::Paused(paused_event)),
                         },
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             }
@@ -1545,6 +1574,7 @@ where
                     .send(Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::Failed(error.into_invocation_error()),
+                        memory_lease: MemoryLease::unlinked(),
                     }))
                     .await;
             }
@@ -2118,6 +2148,7 @@ mod tests {
                             .into(),
                         requires_ack: false,
                     },
+                    memory_lease: MemoryLease::unlinked(),
                 });
                 pending() // Never ends
             },
@@ -2319,6 +2350,7 @@ mod tests {
                 .try_as_command()
                 .unwrap(),
                 false,
+                MemoryLease::unlinked(),
             )
             .await;
 

@@ -124,6 +124,7 @@ mod tests {
     use assert2::assert;
     use googletest::prelude::*;
     use restate_invoker_api::Effect;
+    use restate_memory::MemoryLease;
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, ReadInvocationStatusTable,
     };
@@ -221,6 +222,7 @@ mod tests {
                     deployment_id: DeploymentId::default(),
                     service_protocol_version: ServiceProtocolVersion::V4,
                 }),
+                memory_lease: MemoryLease::unlinked(),
             })))
             .await;
         assert_that!(

@@ -98,10 +98,12 @@ async fn start_workflow_method() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::End,
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;
@@ -231,10 +233,12 @@ async fn attach_by_workflow_key() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::End,
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;

@@ -79,10 +79,12 @@ async fn start_and_complete_idempotent_invocation() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::End,
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;
@@ -167,10 +169,12 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::End,
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;
@@ -332,10 +336,12 @@ async fn attach_with_service_invocation_command_while_executing() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::End,
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;
@@ -445,10 +451,12 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::End,
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;
@@ -641,10 +649,12 @@ async fn attach_command() {
                         EntryResult::Success(response_bytes.clone()),
                     )),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
                 kind: InvokerEffectKind::End,
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;

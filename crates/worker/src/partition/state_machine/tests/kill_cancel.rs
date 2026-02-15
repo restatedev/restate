@@ -367,6 +367,7 @@ async fn cancel_invoked_invocation() -> Result<(), Error> {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
                 }),
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;
@@ -489,6 +490,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
                     deployment_id: Default::default(),
                     service_protocol_version: ServiceProtocolVersion::V3,
                 }),
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;
@@ -655,6 +657,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
                         CancelInvocationTarget::InvocationId(callee_1.to_string().into()),
                     )),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
@@ -664,6 +667,7 @@ async fn cancel_invocation_entry_referring_to_previous_entry() {
                         CancelInvocationTarget::CallEntryIndex(2),
                     )),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;

@@ -14,6 +14,7 @@ use crate::partition::types::InvokerEffectKind;
 use bytes::Bytes;
 use googletest::prelude::*;
 use restate_invoker_api::Effect;
+use restate_memory::MemoryLease;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::journal_table::JournalEntry;
 use restate_types::deployment::PinnedDeployment;
@@ -90,6 +91,7 @@ pub fn invoker_entry_effect_for_epoch(
             entry.into().encode::<ServiceProtocolV4Codec>(),
             None,
         ),
+        memory_lease: MemoryLease::unlinked(),
     }))
 }
 
@@ -101,6 +103,7 @@ pub fn invoker_end_effect_for_epoch(invocation_id: InvocationId) -> Command {
     Command::InvokerEffect(Box::new(Effect {
         invocation_id,
         kind: InvokerEffectKind::End,
+        memory_lease: MemoryLease::unlinked(),
     }))
 }
 
@@ -114,6 +117,7 @@ pub fn pinned_deployment(
             deployment_id: DeploymentId::default(),
             service_protocol_version,
         }),
+        memory_lease: MemoryLease::unlinked(),
     }))
 }
 
@@ -126,6 +130,7 @@ pub fn invoker_suspended(
         kind: InvokerEffectKind::SuspendedV2 {
             waiting_for_notifications: waiting_for_notifications.into(),
         },
+        memory_lease: MemoryLease::unlinked(),
     }))
 }
 

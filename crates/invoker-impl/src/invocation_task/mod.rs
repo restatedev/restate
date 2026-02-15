@@ -31,8 +31,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::instrument;
 
-use restate_invoker_api::invocation_reader::{InvocationReader, InvocationReaderTransaction};
 use restate_invoker_api::EntryEnricher;
+use restate_invoker_api::invocation_reader::{InvocationReader, InvocationReaderTransaction};
+use restate_memory::MemoryLease;
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
@@ -85,6 +86,7 @@ pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
     pub(super) inner: InvocationTaskOutputInner,
+    pub(super) memory_lease: MemoryLease,
 }
 
 pub(super) enum InvocationTaskOutputInner {
@@ -407,11 +409,20 @@ where
 }
 
 impl<EE, Schemas> InvocationTask<EE, Schemas> {
-    pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
+    pub(crate) fn send_invoker_tx(&self, inner: InvocationTaskOutputInner) {
+        self.send_invoker_tx_with_lease(inner, MemoryLease::unlinked());
+    }
+
+    pub(crate) fn send_invoker_tx_with_lease(
+        &self,
+        inner: InvocationTaskOutputInner,
+        memory_lease: MemoryLease,
+    ) {
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             invocation_id: self.invocation_id,
-            inner: invocation_task_output_inner,
+            inner,
+            memory_lease,
         });
     }
 }

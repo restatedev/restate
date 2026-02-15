@@ -85,6 +85,7 @@ mod tests {
     use crate::partition::types::InvokerEffectKind;
     use googletest::prelude::*;
     use restate_invoker_api::Effect;
+    use restate_memory::MemoryLease;
     use restate_types::journal_events::raw::RawEvent;
     use restate_types::journal_events::{Event, TransientErrorEvent};
     use restate_wal_protocol::Command;
@@ -112,6 +113,7 @@ mod tests {
                     event: RawEvent::from(Event::TransientError(transient_error_event.clone()))
                         .clone(),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })))
             .await;
 

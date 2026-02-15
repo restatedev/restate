@@ -30,6 +30,7 @@ use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat};
 use restate_core::TaskCenter;
 use restate_invoker_api::{Effect, EffectKind};
+use restate_memory::MemoryLease;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -408,6 +409,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::awakeable(None)),
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 
@@ -463,6 +465,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
             kind: InvokerEffectKind::Suspended {
                 waiting_for_completed_entries: HashSet::from([1]),
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 
@@ -499,6 +502,7 @@ async fn complete_awakeable_with_success() {
                 entry_index: 1,
                 entry,
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 
@@ -544,6 +548,7 @@ async fn complete_awakeable_with_failure() {
                 entry_index: 1,
                 entry,
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 
@@ -593,6 +598,7 @@ async fn invoke_with_headers() -> TestResult {
                     None,
                 )),
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 
@@ -667,6 +673,7 @@ async fn mutate_state() -> anyhow::Result<()> {
         .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             kind: InvokerEffectKind::End,
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 
@@ -704,6 +711,7 @@ async fn clear_all_user_states() -> anyhow::Result<()> {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::clear_all_state()),
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 
@@ -739,6 +747,7 @@ async fn get_state_keys() -> TestResult {
                 entry_index: 1,
                 entry: ProtobufRawEntryCodec::serialize_enriched(Entry::get_state_keys(None)),
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 
@@ -791,6 +800,7 @@ async fn get_invocation_id_entry() {
                         Entry::get_call_invocation_id(1, None),
                     ),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
             Command::InvokerEffect(Box::new(Effect {
                 invocation_id,
@@ -800,6 +810,7 @@ async fn get_invocation_id_entry() {
                         Entry::get_call_invocation_id(2, None),
                     ),
                 },
+                memory_lease: MemoryLease::unlinked(),
             })),
         ])
         .await;
@@ -870,6 +881,7 @@ async fn attach_invocation_entry() {
                     },
                 )),
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
     assert_that!(
@@ -914,6 +926,7 @@ async fn get_invocation_output_entry() {
                     },
                 )),
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 
@@ -1009,6 +1022,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
                     EntryResult::Success(response_bytes.clone()),
                 )),
             },
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
     // No ingress response is expected at this point because the invocation did not end yet
@@ -1019,6 +1033,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id,
             kind: InvokerEffectKind::End,
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
     // At this point we expect the completion to be forwarded to the invoker
@@ -1178,6 +1193,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id: first_invocation_id,
             kind: InvokerEffectKind::End,
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
     // At this point we expect the invoke for the second, and also the lock updated
@@ -1197,6 +1213,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         .apply(Command::InvokerEffect(Box::new(Effect {
             invocation_id: second_invocation_id,
             kind: InvokerEffectKind::End,
+            memory_lease: MemoryLease::unlinked(),
         })))
         .await;
 

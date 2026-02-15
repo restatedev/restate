@@ -90,6 +90,7 @@ where
 mod tests {
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
+    use restate_memory::MemoryLease;
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
@@ -122,6 +123,7 @@ mod tests {
                     kind: restate_invoker_api::EffectKind::Paused {
                         paused_event: paused_event.clone().into(),
                     },
+                    memory_lease: MemoryLease::unlinked(),
                 },
             )))
             .await;
@@ -171,6 +173,7 @@ mod tests {
                 restate_invoker_api::Effect {
                     invocation_id,
                     kind: restate_invoker_api::EffectKind::Paused { paused_event },
+                    memory_lease: MemoryLease::unlinked(),
                 },
             )))
             .await;
