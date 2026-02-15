@@ -293,27 +293,27 @@ iteration. No data is ever "in flight" inside an async future.
 
 ---
 
+## Prerequisites (already in base branch)
+
+This branch is based on `pr4395` which includes the full memory pool PR stack:
+- `9352ea635` - MemoryPool, MemoryLease, MemoryController in `crates/memory/`
+- `1d848b059` - Memory tracking wired into network messages, MessageRouter, TaskCenter
+- `6f252e31b` - LogServer write batch memory reuse
+- `c221c621f` - LogServer store timeout bump
+- `4302326c1` - LogServer reads moved to background
+- `9357e052c` - MetadataServer RocksDB reads on blocking threads
+
+Available APIs:
+- `MemoryPool::with_capacity()`, `::unlimited()`, `::try_reserve()`, `::reserve()`, `::empty_lease()`
+- `MemoryLease` (RAII, `#[must_use]`): `split()`, `merge()`, `take()`, `grow()`, `shrink()`, `release()`
+- `MemoryController::create_pool()`, `::submit_metrics()`, `::notify_config_update()`
+- `TaskCenter::memory_controller()` accessor
+
+---
+
 ## Implementation Plan
 
-### Step 1: Port MemoryPool primitives to restate-memory crate
-
-Port `MemoryPool`, `MemoryLease`, and `MemoryController` from upstream PR #4339.
-
-**Files to create/modify:**
-- `crates/memory/src/pool.rs` (new)
-- `crates/memory/src/controller.rs` (new)
-- `crates/memory/src/metric_definitions.rs` (new)
-- `crates/memory/src/lib.rs` (add module declarations and re-exports)
-- `crates/memory/Cargo.toml` (add deps)
-
-### Step 2: Wire MemoryController into TaskCenter
-
-- `crates/core/src/task_center.rs` - Add `MemoryController` to `TaskCenterInner`
-- `crates/core/src/task_center/handle.rs` - Add `memory_controller()` accessor
-- `crates/node/src/network_server/metrics.rs` - Call `submit_metrics()` during Prometheus render
-- `server/src/main.rs` - Call `notify_config_update()` on config changes
-
-### Step 3: Add invoker memory pool configuration
+### Step 1: Add invoker memory pool configuration
 
 Add **two** config options to `InvokerOptions` (`crates/types/src/config/worker.rs`):
 
@@ -333,7 +333,7 @@ pub invoker_outbound_memory_limit: NonZeroByteCount,  // default: 128 MiB
 pub invoker_inbound_memory_limit: NonZeroByteCount,  // default: 128 MiB
 ```
 
-### Step 4: Remove CachedJournal usage
+### Step 2: Remove CachedJournal usage
 
 **Changes:**
 - `crates/worker/src/partition/state_machine/mod.rs` - `init_journal()` always returns
@@ -346,7 +346,7 @@ pub invoker_inbound_memory_limit: NonZeroByteCount,  // default: 128 MiB
 **Safety**: PP commits storage batch before executing `Action::Invoke` per
 `crates/worker/src/partition/leadership/leader_state.rs:515-694`.
 
-### Step 5: Add MemoryLease to InvocationTaskOutput and Effect
+### Step 3: Add MemoryLease to InvocationTaskOutput and Effect
 
 The inbound lease must travel from the InvocationTask through the entire pipeline to bifrost.
 
@@ -364,7 +364,7 @@ Add a `reservation: MemoryLease` field. Non-data-carrying effects use `pool.empt
 5. Bifrost background appender calls `append_batch_erased()`
 6. Batch dropped → Arc dropped → Effect dropped → **MemoryLease dropped**
 
-### Step 6: Two-phase Decoder
+### Step 4: Two-phase Decoder
 
 Add `try_consume_header()` and `try_consume_body()` to both decoders:
 
@@ -413,7 +413,7 @@ impl Decoder {
 }
 ```
 
-### Step 7: Peekable Journal Iterator
+### Step 5: Peekable Journal Iterator
 
 Add `peek_next_size()` to `JournalEntryIter`
 (`crates/partition-store/src/journal_table_v2/mod.rs`):
@@ -435,7 +435,7 @@ This must be exposed through the `InvocationReaderTransaction` trait and the str
 The stream type becomes a `PeekableJournalStream` that supports both `peek_next_size()` (sync)
 and `next()` (yields entries).
 
-### Step 8: Implement BytesWithLease for outbound path
+### Step 6: Implement BytesWithLease for outbound path
 
 Create `BytesWithLease` in `crates/invoker-impl/src/invocation_task/mod.rs`:
 ```rust
@@ -452,14 +452,14 @@ type InvokerBodyStream = StreamBody<ReceiverStream<Result<Frame<BytesWithLease>,
 type InvokerRequestStreamSender = mpsc::UnboundedSender<Result<Frame<BytesWithLease>, Infallible>>;
 ```
 
-### Step 9: Thread MemoryPools through InvocationTask
+### Step 7: Thread MemoryPools through InvocationTask
 
 - `DefaultInvocationTaskRunner` stores `pool_out: MemoryPool` and `pool_in: MemoryPool`
 - `InvocationTask` gains both pool fields
 - `prepare_request()` creates `mpsc::unbounded_channel()` instead of `mpsc::channel(1)`
 - Pools created via `MemoryController` in `Service::new()` / `Service::run()`
 
-### Step 10: Restructure bidi_stream_loop with explicit state machine
+### Step 8: Restructure bidi_stream_loop with explicit state machine
 
 This is the most complex and most critical change. The loop manages explicit state for both
 directions, using only sync handler blocks. All async work is in single-future select! arms.
@@ -559,7 +559,7 @@ loop {
 - **Inbound prioritized**: Arm 1 guard includes `inbound_state == Idle`, preventing new outbound
   work while inbound needs attention.
 
-### Step 11: Restructure replay_loop for pre-read acquisition
+### Step 9: Restructure replay_loop for pre-read acquisition
 
 The replay loop reads journal entries from the peekable journal stream:
 
@@ -597,13 +597,13 @@ async fn replay_loop(...) -> TerminalLoopState<()> {
 the deployment hasn't started sending data yet. The response header arm is for early error
 detection only.
 
-### Step 12: Update response_stream_loop
+### Step 10: Update response_stream_loop
 
 The `response_stream_loop` (post-bidi, response-only phase) needs the same inbound state
 machine as `bidi_stream_loop`, minus the outbound arms. Use the two-phase decoder with
 `pool_in.reserve()` for each message.
 
-### Step 13: Release notes and metrics
+### Step 11: Release notes and metrics
 
 **Metrics** (via MemoryController):
 - `restate.memory_pool.usage_bytes` (gauge, label: name="invoker-outbound")
