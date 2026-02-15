@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
-use std::convert::Infallible;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -18,7 +17,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::{Stream, StreamExt, TryStreamExt, stream};
+use futures::{Stream, StreamExt, TryStreamExt};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -119,7 +118,6 @@ where
         txn: Txn,
         journal_metadata: JournalMetadata,
         keyed_service_id: Option<ServiceId>,
-        cached_journal_items: Option<Vec<JournalEntry>>,
         deployment: Deployment,
     ) -> TerminalLoopState<()>
     where
@@ -206,39 +204,25 @@ where
                 .await
             );
 
-            // Read journal stream (or use cached)
-            if let Some(items) = cached_journal_items {
-                let journal_stream = stream::iter(items.into_iter().map(Ok::<_, Infallible>));
-                // Execute the replay
-                crate::shortcircuit!(
-                    self.replay_loop(
-                        &mut http_stream_tx,
-                        &mut decoder_stream,
-                        journal_stream,
-                        journal_metadata.length
-                    )
-                    .await
-                );
-            } else {
-                let journal_stream = crate::shortcircuit!(
-                    txn.read_journal(
-                        &self.invocation_task.invocation_id,
-                        journal_size,
-                        journal_metadata.using_journal_table_v2,
-                    )
-                    .map_err(|e| InvokerError::JournalReader(e.into()))
-                );
-                // Execute the replay
-                crate::shortcircuit!(
-                    self.replay_loop(
-                        &mut http_stream_tx,
-                        &mut decoder_stream,
-                        journal_stream,
-                        journal_metadata.length
-                    )
-                    .await
-                );
-            }
+            // Read journal stream from storage
+            let journal_stream = crate::shortcircuit!(
+                txn.read_journal(
+                    &self.invocation_task.invocation_id,
+                    journal_size,
+                    journal_metadata.using_journal_table_v2,
+                )
+                .map_err(|e| InvokerError::JournalReader(e.into()))
+            );
+            // Execute the replay
+            crate::shortcircuit!(
+                self.replay_loop(
+                    &mut http_stream_tx,
+                    &mut decoder_stream,
+                    journal_stream,
+                    journal_metadata.length
+                )
+                .await
+            );
         }
         // === End replay phase - streams dropped, transaction can be dropped ===
 

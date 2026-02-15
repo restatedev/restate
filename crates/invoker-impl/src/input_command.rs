@@ -8,28 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
+use tokio::sync::mpsc;
+
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
-use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, StatusHandle};
+use restate_invoker_api::{Effect, InvocationStatusReport, StatusHandle};
 use restate_types::identifiers::{InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::Completion;
 use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::vqueue::VQueueId;
-use std::ops::RangeInclusive;
-use tokio::sync::mpsc;
+
 // -- Input messages
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct InvokeCommand {
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
-    // removed in v1.6
-    // pub(super) invocation_epoch: InvocationEpoch,
     pub(super) invocation_target: InvocationTarget,
-    #[serde(skip)]
-    pub(super) journal: InvokeInputJournal,
 }
 
 #[derive(derive_more::Debug)]
@@ -40,8 +39,6 @@ pub(crate) struct VQueueInvokeCommand {
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_target: InvocationTarget,
-    #[debug(skip)]
-    pub(super) journal: InvokeInputJournal,
 }
 
 #[derive(Debug)]
@@ -111,14 +108,12 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Invoke(Box::new(InvokeCommand {
                 partition,
                 invocation_id,
                 invocation_target,
-                journal,
             })))
             .map_err(|_| NotRunningError)
     }
@@ -130,7 +125,6 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         permit: Permit,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::VQInvoke(Box::new(VQueueInvokeCommand {
@@ -139,7 +133,6 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
                 partition,
                 invocation_id,
                 invocation_target,
-                journal,
             })))
             .map_err(|_| NotRunningError)
     }

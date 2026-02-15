@@ -29,7 +29,6 @@ use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_api::InvokeInputJournal;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::{StorageError, vqueue_table};
@@ -561,7 +560,6 @@ where
                         partition_leader_epoch,
                         invocation_id,
                         invocation_target,
-                        InvokeInputJournal::NoCachedJournal,
                     )
                     .map_err(Error::Invoker)?;
                 count += 1;

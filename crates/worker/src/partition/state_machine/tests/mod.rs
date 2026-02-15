@@ -29,7 +29,7 @@ use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat};
 use restate_core::TaskCenter;
-use restate_invoker_api::{Effect, EffectKind, InvokeInputJournal};
+use restate_invoker_api::{Effect, EffectKind};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -979,7 +979,6 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 

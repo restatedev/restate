@@ -345,6 +345,19 @@ pub struct InvokerOptions {
     /// When `unset`, no throttling is applied and actions are processed
     /// without throttling.
     pub action_throttling: Option<ThrottlingOptions>,
+
+    /// # Invoker outbound memory limit
+    ///
+    /// Maximum memory for buffering outbound messages (journal entries, completions)
+    /// sent from the invoker to service deployments. Shared across all concurrent
+    /// invocations on this node.
+    pub invoker_outbound_memory_limit: NonZeroByteCount,
+
+    /// # Invoker inbound memory limit
+    ///
+    /// Maximum memory for buffering inbound messages (commands, entries) received
+    /// from service deployments. Shared across all concurrent invocations on this node.
+    pub invoker_inbound_memory_limit: NonZeroByteCount,
 }
 
 impl InvokerOptions {
@@ -401,6 +414,12 @@ impl Default for InvokerOptions {
             disable_eager_state: false,
             invocation_throttling: None,
             action_throttling: None,
+            invoker_outbound_memory_limit: NonZeroByteCount::new(
+                NonZeroUsize::new(128 * 1024 * 1024).unwrap(),
+            ),
+            invoker_inbound_memory_limit: NonZeroByteCount::new(
+                NonZeroUsize::new(128 * 1024 * 1024).unwrap(),
+            ),
         }
     }
 }

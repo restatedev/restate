@@ -45,7 +45,6 @@ async fn start_workflow_method() {
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
@@ -75,7 +74,6 @@ async fn start_workflow_method() {
         all!(
             not(contains(pat!(Action::Invoke {
                 invocation_id: eq(invocation_id),
-                invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
             }))),
             // We get back this error due to the fact that we disabled the attach semantics
             contains(pat!(Action::IngressResponse {
@@ -196,7 +194,6 @@ async fn attach_by_workflow_key() {
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
@@ -217,7 +214,6 @@ async fn attach_by_workflow_key() {
         all!(
             not(contains(pat!(Action::Invoke {
                 invocation_id: eq(invocation_id),
-                invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
             }))),
             not(contains(pat!(Action::IngressResponse { .. })))
         )
