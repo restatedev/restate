@@ -33,7 +33,7 @@ use tracing::instrument;
 
 use restate_invoker_api::EntryEnricher;
 use restate_invoker_api::invocation_reader::{InvocationReader, InvocationReaderTransaction};
-use restate_memory::MemoryLease;
+use restate_memory::{MemoryLease, MemoryPool};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
@@ -157,6 +157,10 @@ pub(super) struct InvocationTask<EE, DMR> {
 
     // throttling
     action_token_bucket: Option<TokenBucket>,
+
+    // Memory pools for backpressure
+    inbound_pool: MemoryPool,
+    outbound_pool: MemoryPool,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
@@ -213,6 +217,8 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
+        inbound_pool: MemoryPool,
+        outbound_pool: MemoryPool,
     ) -> Self {
         Self {
             client,
@@ -230,6 +236,8 @@ where
             message_size_warning,
             retry_count_since_last_stored_entry,
             action_token_bucket,
+            inbound_pool,
+            outbound_pool,
         }
     }
 

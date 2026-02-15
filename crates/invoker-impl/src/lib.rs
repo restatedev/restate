@@ -42,7 +42,7 @@ use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
 };
-use restate_memory::MemoryLease;
+use restate_memory::{MemoryLease, MemoryPool};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
@@ -112,6 +112,8 @@ struct DefaultInvocationTaskRunner<EE, Schemas> {
     entry_enricher: EE,
     schemas: Live<Schemas>,
     action_token_bucket: Option<TokenBucket>,
+    inbound_pool: MemoryPool,
+    outbound_pool: MemoryPool,
 }
 
 impl<IR, EE, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<EE, Schemas>
@@ -152,6 +154,8 @@ where
                     invoker_tx,
                     invoker_rx,
                     self.action_token_bucket.clone(),
+                    self.inbound_pool.clone(),
+                    self.outbound_pool.clone(),
                 )
                 .run(storage_reader),
             )
@@ -244,6 +248,12 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                     entry_enricher,
                     schemas: Live::clone(&schemas),
                     action_token_bucket,
+                    inbound_pool: MemoryPool::with_capacity(
+                        options.invoker_inbound_memory_limit,
+                    ),
+                    outbound_pool: MemoryPool::with_capacity(
+                        options.invoker_outbound_memory_limit,
+                    ),
                 },
                 schemas,
                 invocation_tasks: Default::default(),
