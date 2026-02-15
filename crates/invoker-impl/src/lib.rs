@@ -248,12 +248,8 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                     entry_enricher,
                     schemas: Live::clone(&schemas),
                     action_token_bucket,
-                    inbound_pool: MemoryPool::with_capacity(
-                        options.invoker_inbound_memory_limit,
-                    ),
-                    outbound_pool: MemoryPool::with_capacity(
-                        options.invoker_outbound_memory_limit,
-                    ),
+                    inbound_pool: MemoryPool::with_capacity(options.invoker_inbound_memory_limit),
+                    outbound_pool: MemoryPool::with_capacity(options.invoker_outbound_memory_limit),
                 },
                 schemas,
                 invocation_tasks: Default::default(),
@@ -1645,13 +1641,7 @@ where
                     restate.invocation.target = %ism.invocation_target,
                     "Going to retry now");
                 let storage_reader = storage_reader.clone();
-                self.start_invocation_task(
-                    options,
-                    partition,
-                    storage_reader,
-                    invocation_id,
-                    ism,
-                );
+                self.start_invocation_task(options, partition, storage_reader, invocation_id, ism);
             } else {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
@@ -2010,11 +2000,7 @@ mod tests {
             )
             .unwrap();
         handle
-            .invoke(
-                partition_leader_epoch,
-                invocation_id,
-                invocation_target,
-            )
+            .invoke(partition_leader_epoch, invocation_id, invocation_target)
             .unwrap();
 
         // If input order between 'register partition' and 'invoke' is not maintained, then it can happen

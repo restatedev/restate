@@ -1235,12 +1235,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             )?;
         }
 
-        self.vqueue_invoke(
-            qid,
-            item_hash,
-            invocation_id,
-            in_flight_invocation_metadata,
-        )
+        self.vqueue_invoke(qid, item_hash, invocation_id, in_flight_invocation_metadata)
     }
 
     /// Inits the journal if invocation_input is `Some` and invokes the invocation. If

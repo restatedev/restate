@@ -32,10 +32,7 @@ pub struct Effect {
     pub kind: EffectKind,
     /// Memory reservation held until the effect is processed by the PP.
     /// When this is dropped, the memory is returned to the invoker's pool.
-    #[cfg_attr(
-        feature = "serde",
-        serde(skip, default = "MemoryLease::unlinked")
-    )]
+    #[cfg_attr(feature = "serde", serde(skip, default = "MemoryLease::unlinked"))]
     pub memory_lease: MemoryLease,
 }
 

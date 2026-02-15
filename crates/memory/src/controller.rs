@@ -67,7 +67,7 @@ impl MemoryController {
         let pools = self.pools.read();
         for (name, bin) in pools.iter() {
             let current_capacity = bin.pool.capacity();
-            let new_capacity = (&bin.updater)();
+            let new_capacity = (bin.updater)();
             if new_capacity.as_usize() != current_capacity.as_usize() {
                 warn!(
                     "[config update] Setting memory-pool {name} capacity from {current_capacity} to {new_capacity}"

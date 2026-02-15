@@ -556,11 +556,7 @@ where
                     invocation_target,
                 } = invoked_invocation?;
                 invoker_handle
-                    .invoke(
-                        partition_leader_epoch,
-                        invocation_id,
-                        invocation_target,
-                    )
+                    .invoke(partition_leader_epoch, invocation_id, invocation_target)
                     .map_err(Error::Invoker)?;
                 count += 1;
             }

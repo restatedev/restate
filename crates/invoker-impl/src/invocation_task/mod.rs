@@ -160,6 +160,7 @@ pub(super) struct InvocationTask<EE, DMR> {
 
     // Memory pools for backpressure
     inbound_pool: MemoryPool,
+    #[allow(dead_code)] // Reserved for outbound replay backpressure
     outbound_pool: MemoryPool,
 }
 
@@ -432,6 +433,23 @@ impl<EE, Schemas> InvocationTask<EE, Schemas> {
             inner,
             memory_lease,
         });
+    }
+
+    /// Tries to acquire a lease from the inbound pool (deployment → bifrost).
+    ///
+    /// Returns `Ok(lease)` if acquired or if the message exceeds pool capacity
+    /// (unlinked lease to prevent deadlock). Returns `Err(size)` if the caller
+    /// should await `pool.reserve(size)`.
+    pub(crate) fn try_acquire_inbound(&self, size: usize) -> Result<MemoryLease, usize> {
+        match self.inbound_pool.try_reserve(size) {
+            Some(lease) => Ok(lease),
+            None if !self.inbound_pool.is_unlimited()
+                && size > self.inbound_pool.capacity().as_usize() =>
+            {
+                Ok(MemoryLease::unlinked())
+            }
+            None => Err(size),
+        }
     }
 }
 

@@ -32,6 +32,7 @@ use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReaderTransaction, JournalEntry,
 };
+use restate_memory::MemoryLease;
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -87,6 +88,10 @@ pub struct ServiceProtocolRunner<'a, EE, Schemas> {
 
     // task state
     command_index: CommandIndex,
+
+    /// Inbound memory lease set before calling handle_message.
+    /// Consumed by handle_new_command or ProposeRunCompletion.
+    pending_inbound_lease: Option<MemoryLease>,
 }
 
 impl<'a, EE, Schemas> ServiceProtocolRunner<'a, EE, Schemas>
@@ -104,6 +109,7 @@ where
             service_protocol_version,
             encoder,
             command_index: 0,
+            pending_inbound_lease: None,
         }
     }
 
@@ -430,6 +436,9 @@ where
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
     {
+        // Pending inbound message waiting for a memory lease from the inbound pool
+        let mut pending_inbound: Option<(MessageHeader, Message, usize)> = None;
+
         loop {
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
@@ -453,16 +462,34 @@ where
                         },
                     }
                 },
-                chunk = http_stream_rx.next() => {
+                // Read from HTTP/decoder only when no pending inbound message
+                chunk = http_stream_rx.next(), if pending_inbound.is_none() => {
                     match crate::shortcircuit!(chunk.transpose()) {
                         None => {
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
                         Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
                         Some(DecoderStreamItem::Message(message_header, message)) => {
-                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message));
+                            let body_size = message_header.frame_length() as usize;
+                            match self.invocation_task.try_acquire_inbound(body_size) {
+                                Ok(lease) => {
+                                    self.pending_inbound_lease = Some(lease);
+                                    crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message));
+                                }
+                                Err(need_size) => {
+                                    pending_inbound = Some((message_header, message, need_size));
+                                }
+                            }
                         }
                     }
+                },
+                // Acquire inbound lease for stashed message
+                lease = self.invocation_task.inbound_pool.reserve(
+                    pending_inbound.as_ref().map_or(0, |p| p.2)
+                ), if pending_inbound.is_some() => {
+                    let (mh, msg, _) = pending_inbound.take().unwrap();
+                    self.pending_inbound_lease = Some(lease);
+                    crate::shortcircuit!(self.handle_message(parent_span_context, mh, msg));
                 },
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
@@ -482,19 +509,36 @@ where
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
     {
+        let mut pending_inbound: Option<(MessageHeader, Message, usize)> = None;
+
         loop {
             tokio::select! {
-                chunk = http_stream_rx.next() => {
-                    // don't read again until all buffered messages has been consumed
-                    // to force a back pressure on the read stream
-
+                chunk = http_stream_rx.next(), if pending_inbound.is_none() => {
                     match crate::shortcircuit!(chunk.transpose()) {
                         None => {
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
                         Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(DecoderStreamItem::Message(message_header, message)) => crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message)),
+                        Some(DecoderStreamItem::Message(message_header, message)) => {
+                            let body_size = message_header.frame_length() as usize;
+                            match self.invocation_task.try_acquire_inbound(body_size) {
+                                Ok(lease) => {
+                                    self.pending_inbound_lease = Some(lease);
+                                    crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message));
+                                }
+                                Err(need_size) => {
+                                    pending_inbound = Some((message_header, message, need_size));
+                                }
+                            }
+                        }
                     }
+                },
+                lease = self.invocation_task.inbound_pool.reserve(
+                    pending_inbound.as_ref().map_or(0, |p| p.2)
+                ), if pending_inbound.is_some() => {
+                    let (mh, msg, _) = pending_inbound.take().unwrap();
+                    self.pending_inbound_lease = Some(lease);
+                    crate::shortcircuit!(self.handle_message(parent_span_context, mh, msg));
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
                     warn!("Inactivity detected, going to close invocation");
@@ -672,14 +716,20 @@ where
     }
 
     fn handle_new_command(&mut self, mh: MessageHeader, command: RawCommand) {
-        self.invocation_task
-            .send_invoker_tx(InvocationTaskOutputInner::NewCommand {
+        let lease = self
+            .pending_inbound_lease
+            .take()
+            .unwrap_or_else(MemoryLease::unlinked);
+        self.invocation_task.send_invoker_tx_with_lease(
+            InvocationTaskOutputInner::NewCommand {
                 command_index: self.command_index,
                 requires_ack: mh
                     .requires_ack()
                     .expect("All command messages support requires_ack"),
                 command,
-            });
+            },
+            lease,
+        );
         self.command_index += 1;
     }
 
@@ -730,10 +780,15 @@ where
                     .try_into()
                     .expect("a raw notification");
 
-                self.invocation_task.send_invoker_tx(
+                let lease = self
+                    .pending_inbound_lease
+                    .take()
+                    .unwrap_or_else(MemoryLease::unlinked);
+                self.invocation_task.send_invoker_tx_with_lease(
                     InvocationTaskOutputInner::NewNotificationProposal {
                         notification: raw_notification,
                     },
+                    lease,
                 );
 
                 TerminalLoopState::Continue(())

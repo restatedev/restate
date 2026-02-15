@@ -26,6 +26,7 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReaderTransaction, JournalEntry,
 };
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
+use restate_memory::MemoryLease;
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
@@ -393,6 +394,9 @@ where
         mut http_stream_tx: InvokerRequestStreamSender,
         http_stream_rx: &mut ResponseStream,
     ) -> TerminalLoopState<()> {
+        // Pending inbound message waiting for a memory lease from the inbound pool
+        let mut pending_inbound: Option<(MessageHeader, ProtocolMessage, usize)> = None;
+
         loop {
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
@@ -416,13 +420,48 @@ where
                         },
                     }
                 },
-                chunk = http_stream_rx.next() => {
+                // Read from HTTP only when no pending inbound message
+                chunk = http_stream_rx.next(), if pending_inbound.is_none() => {
                     match crate::shortcircuit!(chunk.transpose()) {
                         None => {
                             return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(ResponseChunk::Data(buf)) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        Some(ResponseChunk::Data(buf)) => {
+                            self.decoder.push(buf);
+                            while let Some((mh, msg)) = crate::shortcircuit!(self.decoder.consume_next()) {
+                                let body_size = mh.frame_length() as usize;
+                                match self.invocation_task.try_acquire_inbound(body_size) {
+                                    Ok(lease) => {
+                                        crate::shortcircuit!(self.handle_message(parent_span_context, mh, msg, lease));
+                                    }
+                                    Err(need_size) => {
+                                        pending_inbound = Some((mh, msg, need_size));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                // Acquire inbound lease for stashed message
+                lease = self.invocation_task.inbound_pool.reserve(
+                    pending_inbound.as_ref().map_or(0, |p| p.2)
+                ), if pending_inbound.is_some() => {
+                    let (mh, msg, _) = pending_inbound.take().unwrap();
+                    crate::shortcircuit!(self.handle_message(parent_span_context, mh, msg, lease));
+                    // Resume draining buffered messages
+                    while let Some((mh, msg)) = crate::shortcircuit!(self.decoder.consume_next()) {
+                        let body_size = mh.frame_length() as usize;
+                        match self.invocation_task.try_acquire_inbound(body_size) {
+                            Ok(lease) => {
+                                crate::shortcircuit!(self.handle_message(parent_span_context, mh, msg, lease));
+                            }
+                            Err(need_size) => {
+                                pending_inbound = Some((mh, msg, need_size));
+                                break;
+                            }
+                        }
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
@@ -440,15 +479,49 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
         http_stream_rx: &mut ResponseStream,
     ) -> TerminalLoopState<()> {
+        let mut pending_inbound: Option<(MessageHeader, ProtocolMessage, usize)> = None;
+
         loop {
             tokio::select! {
-                chunk = http_stream_rx.next() => {
+                chunk = http_stream_rx.next(), if pending_inbound.is_none() => {
                     match crate::shortcircuit!(chunk.transpose()) {
                         None => {
                             return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(ResponseChunk::Data(buf)) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        Some(ResponseChunk::Data(buf)) => {
+                            self.decoder.push(buf);
+                            while let Some((mh, msg)) = crate::shortcircuit!(self.decoder.consume_next()) {
+                                let body_size = mh.frame_length() as usize;
+                                match self.invocation_task.try_acquire_inbound(body_size) {
+                                    Ok(lease) => {
+                                        crate::shortcircuit!(self.handle_message(parent_span_context, mh, msg, lease));
+                                    }
+                                    Err(need_size) => {
+                                        pending_inbound = Some((mh, msg, need_size));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                lease = self.invocation_task.inbound_pool.reserve(
+                    pending_inbound.as_ref().map_or(0, |p| p.2)
+                ), if pending_inbound.is_some() => {
+                    let (mh, msg, _) = pending_inbound.take().unwrap();
+                    crate::shortcircuit!(self.handle_message(parent_span_context, mh, msg, lease));
+                    while let Some((mh, msg)) = crate::shortcircuit!(self.decoder.consume_next()) {
+                        let body_size = mh.frame_length() as usize;
+                        match self.invocation_task.try_acquire_inbound(body_size) {
+                            Ok(lease) => {
+                                crate::shortcircuit!(self.handle_message(parent_span_context, mh, msg, lease));
+                            }
+                            Err(need_size) => {
+                                pending_inbound = Some((mh, msg, need_size));
+                                break;
+                            }
+                        }
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
@@ -458,8 +531,6 @@ where
             }
         }
     }
-
-    // --- Read and write methods
 
     async fn write_start<S, E>(
         &mut self,
@@ -521,6 +592,8 @@ where
         Ok(())
     }
 
+    // --- Read and write methods
+
     fn handle_response_headers(
         &mut self,
         mut parts: http::response::Parts,
@@ -578,25 +651,12 @@ where
         Ok(())
     }
 
-    fn handle_read(
-        &mut self,
-        parent_span_context: &ServiceInvocationSpanContext,
-        buf: Bytes,
-    ) -> TerminalLoopState<()> {
-        self.decoder.push(buf);
-
-        while let Some((frame_header, frame)) = crate::shortcircuit!(self.decoder.consume_next()) {
-            crate::shortcircuit!(self.handle_message(parent_span_context, frame_header, frame));
-        }
-
-        TerminalLoopState::Continue(())
-    }
-
     fn handle_message(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         mh: MessageHeader,
         message: ProtocolMessage,
+        lease: MemoryLease,
     ) -> TerminalLoopState<()> {
         trace!(restate.protocol.message_header = ?mh, restate.protocol.message = ?message, "Received message");
         match message {
@@ -659,14 +719,16 @@ where
                             e
                         ))
                 );
-                self.invocation_task
-                    .send_invoker_tx(InvocationTaskOutputInner::NewEntry {
+                self.invocation_task.send_invoker_tx_with_lease(
+                    InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
                         entry: enriched_entry.into(),
                         requires_ack: mh
                             .requires_ack()
                             .expect("All entry messages support requires_ack"),
-                    });
+                    },
+                    lease,
+                );
                 self.next_journal_index += 1;
                 TerminalLoopState::Continue(())
             }

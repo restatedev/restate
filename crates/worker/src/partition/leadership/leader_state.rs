@@ -521,11 +521,7 @@ impl LeaderState {
                 invocation_id,
                 invocation_target,
             } => invoker_tx
-                .invoke(
-                    partition_leader_epoch,
-                    invocation_id,
-                    invocation_target,
-                )
+                .invoke(partition_leader_epoch, invocation_id, invocation_target)
                 .map_err(Error::Invoker)?,
             Action::NewOutboxMessage {
                 seq_number,

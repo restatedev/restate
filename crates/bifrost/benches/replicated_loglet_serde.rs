@@ -26,6 +26,7 @@ use restate_bifrost::InputRecord;
 use restate_core::network::protobuf::network::message::Body;
 use restate_core::network::protobuf::network::{Datagram, Message, datagram};
 use restate_invoker_api::{Effect, EffectKind};
+use restate_memory::MemoryLease;
 use restate_storage_api::deduplication_table::{DedupInformation, EpochSequenceNumber, ProducerId};
 use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId};
 use restate_types::invocation::{
@@ -119,6 +120,7 @@ fn invoker_effect_cmd() -> Command {
             )),
             Some(random()),
         ),
+        memory_lease: MemoryLease::unlinked(),
     }))
 }
 
