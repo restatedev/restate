@@ -46,6 +46,7 @@ use tracing::{debug, error, info, trace, warn};
 #[cfg(debug_assertions)]
 use crate::metric_definitions::{STATUS_COMPLETED, STATUS_FAILED, TC_FINISHED, TC_SPAWN};
 use crate::{Metadata, ShutdownError, ShutdownSourceErr};
+use restate_memory::MemoryController;
 use restate_types::SharedString;
 use restate_types::cluster_state::ClusterState;
 use restate_types::config::Configuration;
@@ -343,6 +344,7 @@ struct TaskCenterInner {
     managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
     global_metadata: OnceLock<Metadata>,
     address_book: OnceLock<AddressBook>,
+    memory_controller: MemoryController,
     health: Health,
     cluster_state: ClusterState,
     root_task_context: TaskContext,
@@ -377,6 +379,7 @@ impl TaskCenterInner {
             managed_tasks: Mutex::new(HashMap::new()),
             global_metadata: OnceLock::new(),
             address_book: OnceLock::new(),
+            memory_controller: MemoryController::default(),
             managed_runtimes: Mutex::new(HashMap::with_capacity(64)),
             root_task_context,
             #[cfg(any(test, feature = "test-util"))]
