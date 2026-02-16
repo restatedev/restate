@@ -4869,6 +4869,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lzma-rust2"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d673a11333485e7d8b93d62a9a5b07b22daf5e8a8655a44c1bb18aa4bf3d1524"
+dependencies = [
+ "crc",
+ "sha2",
+]
+
+[[package]]
 name = "mappings"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8310,8 +8320,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "0.1.49"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.49#f6b14f9dfd1aedb399f62db374d7a4041915e8d6"
+version = "0.1.50"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v0.1.50#d34123a470843d30bc1a660b549f34146005fea6"
 dependencies = [
  "anyhow",
  "include_dir",
