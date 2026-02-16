@@ -200,6 +200,11 @@ async fn rebalance_memory(
     memory_budget: &MemoryBudget,
     psm_state: &SharedState,
 ) -> anyhow::Result<()> {
+    // If system is shutting down, do not rebalance memory.
+    if TaskCenter::is_shutdown_requested() {
+        return Ok(());
+    }
+
     let total_budget = memory_budget.get_total_memory_budget();
     let current_per_partition_budget = memory_budget.current_per_partition_budget();
     let collected = collect_memory_usage(psm_state, current_per_partition_budget).await?;
@@ -264,6 +269,10 @@ async fn rebalance_memory(
     }
 
     for (usage, partition_db) in reclaim_candidates {
+        if TaskCenter::is_shutdown_requested() {
+            // Flushes take time, let's make sure we don't do them if we're shutting down.
+            break;
+        }
         info!(
             "Flushing partition {} to reclaim memory. partition_usage: {}/{}",
             partition_db.partition().id(),
