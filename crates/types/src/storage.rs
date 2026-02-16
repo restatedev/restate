@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn test_polybytes() {
         let bytes = PolyBytes::Bytes(Bytes::from_static(b"hello"));
-        assert_eq!(format!("{bytes:?}"), "Bytes(5 bytes)");
+        assert_eq!(format!("{bytes:?}"), "Bytes(5 B)");
         let typed = PolyBytes::Typed(Arc::new("hello".to_string()));
         assert_eq!(format!("{typed:?}"), "Typed");
         // can be downcasted.
