@@ -292,6 +292,7 @@ fn main() {
                         );
                     },
                     _ = config_update_watcher.changed(), if !shutdown => {
+                        TaskCenter::with_current(|tc| tc.memory_controller().notify_config_update());
                         tracing_guard.on_config_update();
                     },
                     _ = signal::sighup_compact(), if !shutdown => {},
