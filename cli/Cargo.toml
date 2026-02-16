@@ -88,7 +88,7 @@ tower = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
-zip = { version = "7.3" }
+zip = { version = "8.0" }
 
 
 [dev-dependencies]
