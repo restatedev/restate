@@ -11,6 +11,7 @@
 mod fd_state;
 mod node_state;
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use futures::stream::FuturesUnordered;
@@ -30,6 +31,7 @@ use restate_core::{
     task_center::TaskCenterMonitoring,
     worker_api::ProcessorsManagerHandle,
 };
+use restate_memory::NonZeroByteCount;
 use restate_types::health::NodeStatus;
 use restate_types::live::LiveLoad;
 use restate_types::net::RpcRequest;
@@ -68,7 +70,14 @@ impl<T: NetworkSender> FailureDetector<T> {
         replica_set_states: PartitionReplicaSetStates,
         processor_manager_handle: Option<ProcessorsManagerHandle>,
     ) -> Self {
-        let gossip_svc_rx = router_builder.register_service(128, BackPressureMode::Lossy);
+        // Gossip uses a small dedicated pool (1 MiB) with load shedding.
+        let gossip_pool = TaskCenter::with_current(|tc| {
+            tc.memory_controller().create_pool("gossip", ||
+                // No config-driven resizing.
+                NonZeroByteCount::new(NonZeroUsize::new(1024 * 1024).unwrap()))
+        });
+        let gossip_svc_rx =
+            router_builder.register_service_with_pool(gossip_pool, BackPressureMode::Lossy);
         let mut gossip_interval = tokio::time::interval(*opts.gossip_tick_interval);
         gossip_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 

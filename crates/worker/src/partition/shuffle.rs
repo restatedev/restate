@@ -768,6 +768,7 @@ mod ingestion_client_tests {
         BackPressureMode, FailingConnector, ServiceMessage, ServiceStream,
     };
     use restate_core::{TaskCenter, TaskKind, TestCoreEnv, TestCoreEnvBuilder};
+
     use restate_storage_api::StorageError;
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::Version;
@@ -971,7 +972,7 @@ mod ingestion_client_tests {
 
         let svc = builder
             .router_builder
-            .register_service::<PartitionLeaderService>(10, BackPressureMode::PushBack);
+            .register_service::<PartitionLeaderService>(BackPressureMode::PushBack);
 
         let env = builder.build().await;
 
