@@ -12,8 +12,7 @@
 //!
 //! This crate provides:
 //! - [`MemoryPool`]: A named memory budget for bounding memory usage
-//! - [`MemoryLease`]: RAII guard for memory leases that can be passed through
-//!   channels
+//! - [`MemoryLease`]: RAII guard for memory leases that can be passed through channels
 //! - [`EstimatedMemorySize`]: Trait for types that can estimate their memory
 //!   footprint
 
