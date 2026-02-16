@@ -10,9 +10,10 @@
 
 use std::io::IoSlice;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::BytesMut;
-use metrics::histogram;
+use metrics::{Histogram, histogram};
 use rocksdb::{BoundColumnFamily, WriteBatch};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, trace, warn};
@@ -35,8 +36,6 @@ use crate::logstore::AsyncToken;
 use crate::metric_definitions::LOG_SERVER_WRITE_BATCH_SIZE_BYTES;
 
 type Ack = oneshot::Sender<Result<(), OperationError>>;
-
-const INITIAL_SERDE_BUFFER_SIZE: usize = 16_384; // Initial capacity 16KiB
 
 pub struct LogStoreWriteCommand {
     loglet_id: LogletId,
@@ -71,7 +70,9 @@ pub(crate) struct LogStoreWriter {
     arena: BytesMut,
     health_status: HealthStatus<LogServerStatus>,
     sync_write_is_required: bool,
-    // add WriteBatch
+    write_size_histogram: Histogram,
+    /// Reusable write batch buffer.
+    write_batch: Option<WriteBatch>,
 }
 
 impl LogStoreWriter {
@@ -79,9 +80,11 @@ impl LogStoreWriter {
         Self {
             rocksdb,
             batch_acks_buf: Vec::default(),
-            arena: BytesMut::with_capacity(INITIAL_SERDE_BUFFER_SIZE),
+            arena: BytesMut::default(),
             health_status,
             sync_write_is_required: false,
+            write_size_histogram: histogram!(LOG_SERVER_WRITE_BATCH_SIZE_BYTES),
+            write_batch: None,
         }
     }
 
@@ -98,14 +101,26 @@ impl LogStoreWriter {
                 debug!("Start running LogStoreWriter");
                 let mut config = Configuration::live();
                 let mut buffer = Vec::default();
+                let mut mem_relaim = tokio::time::interval(Duration::from_secs(60));
                 loop {
                     let config = &config.live_load().log_server;
                     let batch_size = std::cmp::max(1, config.writer_batch_commit_count);
-                    if receiver.recv_many(&mut buffer, batch_size).await == 0 {
-                        debug!("LogStore loglet writer task finished");
-                        break;
-                    } else {
-                        self.handle_commands(config, &mut buffer).await;
+                    tokio::select! {
+                        count = receiver.recv_many(&mut buffer, batch_size) => {
+                            if count == 0 {
+                                debug!("LogStore loglet writer task finished");
+                                break;
+                            } else {
+                                self.handle_commands(config, &mut buffer).await;
+                            }
+                        }
+                        _ = mem_relaim.tick() => {
+                            // Drop old buffers to reclaim memory if previous batches were too
+                            // large
+                            self.arena = BytesMut::default();
+                            self.write_batch = Some(WriteBatch::default());
+                            buffer = Vec::default();
+                        }
                     }
                 }
             },
@@ -118,7 +133,6 @@ impl LogStoreWriter {
         opts: &LogServerOptions,
         commands: &mut Vec<LogStoreWriteCommand>,
     ) {
-        let mut write_batch = WriteBatch::default();
         self.batch_acks_buf.clear();
         self.batch_acks_buf.reserve(commands.len());
         // Hold memory reservations until after commit to ensure backpressure from
@@ -126,6 +140,9 @@ impl LogStoreWriter {
         let mut all_memory: MemoryLease = MemoryLease::unlinked();
         let batch_acks = &mut self.batch_acks_buf;
         let arena = &mut self.arena;
+
+        let write_batch = self.write_batch.get_or_insert_with(WriteBatch::default);
+
         {
             let data_cf = self
                 .rocksdb
@@ -142,25 +159,19 @@ impl LogStoreWriter {
                 self.sync_write_is_required |= command.requires_sync_write();
 
                 match command.data_update {
-                    Some(DataUpdate::StoreBatch { store_message }) => Self::process_store_message(
-                        store_message,
-                        &data_cf,
-                        &mut write_batch,
-                        arena,
-                    ),
-                    Some(DataUpdate::TrimLogRecords { trim_point }) => Self::trim_log_records(
-                        &data_cf,
-                        &mut write_batch,
-                        command.loglet_id,
-                        trim_point,
-                    ),
+                    Some(DataUpdate::StoreBatch { store_message }) => {
+                        Self::process_store_message(store_message, &data_cf, write_batch, arena)
+                    }
+                    Some(DataUpdate::TrimLogRecords { trim_point }) => {
+                        Self::trim_log_records(&data_cf, write_batch, command.loglet_id, trim_point)
+                    }
                     None => {}
                 }
 
                 if let Some(metadata_update) = command.metadata_update {
                     Self::update_metadata(
                         &metadata_cf,
-                        &mut write_batch,
+                        write_batch,
                         command.loglet_id,
                         metadata_update,
                     )
@@ -176,8 +187,9 @@ impl LogStoreWriter {
             }
         }
 
-        histogram!(LOG_SERVER_WRITE_BATCH_SIZE_BYTES).record(write_batch.size_in_bytes() as f64);
-        self.commit(opts, write_batch, all_memory).await;
+        self.write_size_histogram
+            .record(write_batch.size_in_bytes() as f64);
+        self.commit(opts, all_memory).await;
     }
 
     fn process_store_message(
@@ -242,12 +254,15 @@ impl LogStoreWriter {
         write_batch.delete_range_cf(data_cf, from_key, to_key);
     }
 
-    async fn commit(
-        &mut self,
-        opts: &LogServerOptions,
-        write_batch: WriteBatch,
-        reservation: MemoryLease,
-    ) {
+    async fn commit(&mut self, opts: &LogServerOptions, reservation: MemoryLease) {
+        // Take the batch out without allocating a replacement (Option::take leaves None).
+        // Note that the write batch is wrapped in `Option` so we can move it out without
+        // allocating a temporary replacement (as `std::mem::take` would in this particular
+        // case).
+        let Some(write_batch) = self.write_batch.take() else {
+            return;
+        };
+
         let mut write_opts = rocksdb::WriteOptions::new();
         if self.sync_write_is_required {
             write_opts.disable_wal(false);
@@ -263,15 +278,16 @@ impl LogStoreWriter {
         // are mostly ordered.
         write_opts.set_memtable_insert_hint_per_batch(true);
 
-        trace!(
-            "Committing loglet current write batch: {} items",
-            write_batch.len(),
-        );
         let io_mode = if opts.always_commit_in_background {
             IoMode::AlwaysBackground
         } else {
             IoMode::Default
         };
+
+        trace!(
+            "Committing loglet current write batch: {} items",
+            write_batch.len(),
+        );
         let result = self
             .rocksdb
             .write_batch(
@@ -288,10 +304,19 @@ impl LogStoreWriter {
         drop(reservation);
 
         match result {
-            Ok(_batch) => {
+            Ok(mut write_batch) => {
                 self.send_acks(Ok(()));
+                // Reuse the batch for the next commit, we must clear it first. Otherwise,
+                // the same batch will be re-appended in the next round.
+                write_batch.clear();
+                self.write_batch = Some(write_batch);
             }
-            Err((e, _batch)) => {
+            Err((e, write_batch)) => {
+                // Recover the batch for reuse if possible (None only on ShutdownError).
+                if let Some(mut write_batch) = write_batch {
+                    write_batch.clear();
+                    self.write_batch = Some(write_batch);
+                }
                 error!("Failed to commit write batch to rocksdb log-store: {}", e);
                 self.health_status.update(LogServerStatus::Failsafe);
                 self.send_acks(Err(OperationError::terminal(e)));
