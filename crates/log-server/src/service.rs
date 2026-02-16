@@ -81,7 +81,7 @@ impl LogServerService {
             crate::protobuf::FILE_DESCRIPTOR_SET,
         );
 
-        let request_processor = RequestPump::new(updateable_config, router_builder);
+        let request_processor = RequestPump::new(router_builder);
 
         Ok(Self {
             health_status,

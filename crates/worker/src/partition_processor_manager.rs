@@ -249,10 +249,23 @@ where
         snapshot_repository: Option<SnapshotRepository>,
         ingestion_client: IngestionClient<T, Envelope>,
     ) -> Self {
-        let ppm_svc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
-        let pp_rpc_rx = router_builder.register_service(24, BackPressureMode::PushBack);
-
         let config = updateable_config.pinned();
+        let ppm_svc_rx = router_builder.register_service(BackPressureMode::PushBack);
+
+        // NOTE: this is a shared pool for RPC requests from ingress and ingestion clients across all
+        // partitions.
+        //
+        // NOTE: This is a transitional solution until we allow partitions to auto-register
+        // their sort-codes into the message router.
+        // todo(asoli): Make sort-code-based routing happen directly in MessageRouter.
+        let pp_rpc_pool = TaskCenter::with_current(|tc| {
+            tc.memory_controller()
+                .create_pool("partition-leader-rpc", || {
+                    Configuration::pinned().worker.data_service_memory_limit
+                })
+        });
+        let pp_rpc_rx =
+            router_builder.register_service_with_pool(pp_rpc_pool, BackPressureMode::PushBack);
 
         let invoker_capacity = InvokerCapacity::new(
             config.worker.invoker.concurrent_invocations_limit(),
@@ -354,6 +367,8 @@ where
                 Some(event) = self.asynchronous_operations.join_next() => {
                     self.on_asynchronous_event(event.context("asynchronous operations must not panic")?);
                 }
+                // todo(asoli): Move this out of the PPM's loop and let each partition handle their
+                // own RPC queue directly.
                 Some(partition_processor_rpc) = pp_rpc_rx.next() => {
                     self.on_partition_processor_rpc(partition_processor_rpc);
                 }
