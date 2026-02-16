@@ -76,6 +76,8 @@ pub mod test_util {
     use restate_types::GenerationalNodeId;
     use restate_types::config::Configuration;
 
+    use restate_memory::MemoryPool;
+
     use crate::network::MessageRouterBuilder;
     use crate::network::handshake::negotiate_protocol_version;
     use crate::network::io::{ConnectionReactor, EgressMessage, EgressStream};
@@ -143,7 +145,7 @@ pub mod test_util {
             let router = if let Some(router) = guard.routers.get(&peer_node_id) {
                 router.clone()
             } else {
-                let mut router = MessageRouterBuilder::default();
+                let mut router = MessageRouterBuilder::with_default_pool(MemoryPool::unlimited());
                 (guard.router_factory)(peer_node_id, &mut router);
                 let router = Arc::new(router.build());
                 guard.routers.insert(peer_node_id, router.clone());
