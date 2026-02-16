@@ -56,7 +56,7 @@ tracing = { workspace = true }
 # which benefits importing libraries that don't need rocksdb.
 restate-bifrost = {path = ".", default-features = false, features = ["local-loglet"]}
 restate-core = { workspace = true, features = ["test-util"] }
-restate-log-server = { workspace = true }
+restate-log-server = { workspace = true, features = ["test-util"] }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
