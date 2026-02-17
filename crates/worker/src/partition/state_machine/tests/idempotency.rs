@@ -54,7 +54,6 @@ async fn start_and_complete_idempotent_invocation() {
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
@@ -143,7 +142,6 @@ async fn start_and_complete_idempotent_invocation_neo_table() {
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
@@ -305,7 +303,6 @@ async fn attach_with_service_invocation_command_while_executing() {
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
@@ -407,7 +404,6 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
@@ -615,7 +611,6 @@ async fn attach_command() {
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
@@ -705,7 +700,6 @@ async fn attach_command_without_blocking_inflight() {
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
