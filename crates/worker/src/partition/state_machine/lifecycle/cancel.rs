@@ -137,7 +137,9 @@ mod tests {
         InvocationTarget, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
         ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
     };
-    use restate_types::journal_v2::{CANCEL_SIGNAL, CommandType, Entry, EntryMetadata, EntryType};
+    use restate_types::journal_v2::{
+        CANCEL_NOTIFICATION_ID, CANCEL_SIGNAL, CommandType, Entry, EntryMetadata, EntryType,
+    };
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
     use restate_types::{RESTATE_VERSION_1_6_0, SemanticRestateVersion};
@@ -161,7 +163,8 @@ mod tests {
             actions,
             contains(matchers::actions::forward_notification(
                 invocation_id,
-                CANCEL_SIGNAL.clone()
+                1,
+                CANCEL_NOTIFICATION_ID,
             ))
         );
 
@@ -185,7 +188,8 @@ mod tests {
             actions,
             contains(matchers::actions::forward_notification(
                 invocation_id,
-                CANCEL_SIGNAL.clone()
+                1,
+                CANCEL_NOTIFICATION_ID,
             ))
         );
 
@@ -209,7 +213,8 @@ mod tests {
             actions,
             not(contains(matchers::actions::forward_notification(
                 invocation_id,
-                CANCEL_SIGNAL.clone()
+                1,
+                CANCEL_NOTIFICATION_ID,
             )))
         );
 
@@ -227,7 +232,8 @@ mod tests {
             actions,
             contains(matchers::actions::forward_notification(
                 invocation_id,
-                CANCEL_SIGNAL.clone()
+                1,
+                CANCEL_NOTIFICATION_ID,
             ))
         );
 
@@ -251,7 +257,8 @@ mod tests {
             actions,
             contains(matchers::actions::forward_notification(
                 invocation_id,
-                CANCEL_SIGNAL.clone()
+                1,
+                CANCEL_NOTIFICATION_ID,
             ))
         );
 

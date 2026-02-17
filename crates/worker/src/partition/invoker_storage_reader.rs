@@ -39,9 +39,14 @@ impl<Storage> InvokerStorageReader<Storage> {
 
 impl<Storage> InvocationReader for InvokerStorageReader<Storage>
 where
-    Storage: restate_storage_api::Storage + 'static,
+    Storage: restate_storage_api::Storage
+        + journal_table_v1::ReadJournalTable
+        + journal_table_v2::ReadJournalTable
+        + Send
+        + 'static,
 {
     type Transaction<'a> = InvokerStorageReaderTransaction<'a, Storage>;
+    type Error = InvokerStorageReaderError;
 
     fn transaction(&mut self) -> Self::Transaction<'_> {
         InvokerStorageReaderTransaction {
@@ -50,6 +55,38 @@ where
                 // we must use repeatable reads to avoid reading inconsistent values in the presence
                 // of concurrent writes
                 .transaction_with_isolation(IsolationLevel::RepeatableReads),
+        }
+    }
+
+    async fn read_journal_entry(
+        &mut self,
+        invocation_id: &InvocationId,
+        entry_index: restate_types::identifiers::EntryIndex,
+        using_journal_table_v2: bool,
+    ) -> Result<Option<JournalEntry>, InvokerStorageReaderError> {
+        if using_journal_table_v2 {
+            let entry = journal_table_v2::ReadJournalTable::get_journal_entry(
+                &mut self.0,
+                *invocation_id,
+                entry_index,
+            )
+            .await?;
+            Ok(entry.map(JournalEntry::JournalV2))
+        } else {
+            let entry = journal_table_v1::ReadJournalTable::get_journal_entry(
+                &mut self.0,
+                invocation_id,
+                entry_index,
+            )
+            .await?;
+            Ok(entry.map(|je| match je {
+                journal_table_v1::JournalEntry::Entry(entry) => {
+                    JournalEntry::JournalV1(entry.erase_enrichment())
+                }
+                journal_table_v1::JournalEntry::Completion(result) => {
+                    JournalEntry::JournalV1Completion(result)
+                }
+            }))
         }
     }
 }
