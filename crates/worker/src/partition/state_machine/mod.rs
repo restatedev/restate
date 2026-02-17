@@ -30,7 +30,6 @@ use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
 use tracing::{Instrument, Span, debug, error, info, trace, warn};
 
-use restate_invoker_api::InvokeInputJournal;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -1231,23 +1230,15 @@ impl<S> StateMachineApplyContext<'_, S> {
             .increment(1);
         }
 
-        let invoke_input_journal = if let Some(invocation_input) = invocation_input {
+        if let Some(invocation_input) = invocation_input {
             self.init_journal(
                 invocation_id,
                 &mut in_flight_invocation_metadata,
                 invocation_input,
-            )?
-        } else {
-            InvokeInputJournal::NoCachedJournal
-        };
+            )?;
+        }
 
-        self.vqueue_invoke(
-            qid,
-            item_hash,
-            invocation_id,
-            in_flight_invocation_metadata,
-            invoke_input_journal,
-        )
+        self.vqueue_invoke(qid, item_hash, invocation_id, in_flight_invocation_metadata)
     }
 
     /// Inits the journal if invocation_input is `Some` and invokes the invocation. If
@@ -1274,21 +1265,15 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
 
         // Only init the journal if we have some invocation input
-        let invoke_input_journal = if let Some(invocation_input) = invocation_input {
+        if let Some(invocation_input) = invocation_input {
             self.init_journal(
                 invocation_id,
                 &mut in_flight_invocation_metadata,
                 invocation_input,
-            )?
-        } else {
-            InvokeInputJournal::NoCachedJournal
-        };
+            )?;
+        }
 
-        self.invoke(
-            invocation_id,
-            in_flight_invocation_metadata,
-            invoke_input_journal,
-        )
+        self.invoke(invocation_id, in_flight_invocation_metadata)
     }
 
     /// This method creates a journal for the given invocation id. Depending on `min_restate_version`
@@ -1303,7 +1288,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         invocation_id: InvocationId,
         in_flight_invocation_metadata: &mut InFlightInvocationMetadata,
         invocation_input: InvocationInput,
-    ) -> Result<InvokeInputJournal, Error>
+    ) -> Result<(), Error>
     where
         S: WriteJournalTable + journal_table_v2::WriteJournalTable,
     {
@@ -1338,22 +1323,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                 &[],
             )?;
 
-            Ok(InvokeInputJournal::CachedJournal(
-                restate_invoker_api::JournalMetadata::new(
-                    in_flight_invocation_metadata.journal_metadata.length,
-                    in_flight_invocation_metadata
-                        .journal_metadata
-                        .span_context
-                        .clone(),
-                    None,
-                    self.record_created_at,
-                    in_flight_invocation_metadata
-                        .random_seed
-                        .unwrap_or_else(|| invocation_id.to_random_seed()),
-                    true,
-                ),
-                vec![restate_invoker_api::invocation_reader::JournalEntry::JournalV2(stored_entry)],
-            ))
+            Ok(())
         } else {
             // We store the entry in the JournalTable V1.
             // When pinning the deployment version we figure the concrete protocol version
@@ -1371,28 +1341,7 @@ impl<S> StateMachineApplyContext<'_, S> {
             )
             .map_err(Error::Storage)?;
 
-            let_assert!(JournalEntry::Entry(input_entry) = input_entry);
-
-            Ok(InvokeInputJournal::CachedJournal(
-                restate_invoker_api::JournalMetadata::new(
-                    in_flight_invocation_metadata.journal_metadata.length,
-                    in_flight_invocation_metadata
-                        .journal_metadata
-                        .span_context
-                        .clone(),
-                    None,
-                    self.record_created_at,
-                    in_flight_invocation_metadata
-                        .random_seed
-                        .unwrap_or_else(|| invocation_id.to_random_seed()),
-                    false,
-                ),
-                vec![
-                    restate_invoker_api::invocation_reader::JournalEntry::JournalV1(
-                        input_entry.erase_enrichment(),
-                    ),
-                ],
-            ))
+            Ok(())
         }
     }
 
@@ -1402,7 +1351,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         item_hash: u64,
         invocation_id: InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
-        invoke_input_journal: InvokeInputJournal,
     ) -> Result<(), Error>
     where
         S: WriteInvocationStatusTable,
@@ -1422,7 +1370,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                 item_hash,
                 invocation_id,
                 invocation_target,
-                invoke_input_journal,
             });
         }
 
@@ -1433,7 +1380,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         &mut self,
         invocation_id: InvocationId,
         in_flight_invocation_metadata: InFlightInvocationMetadata,
-        invoke_input_journal: InvokeInputJournal,
     ) -> Result<(), Error>
     where
         S: WriteInvocationStatusTable,
@@ -1443,7 +1389,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         self.action_collector.push(Action::Invoke {
             invocation_id,
             invocation_target: in_flight_invocation_metadata.invocation_target.clone(),
-            invoke_input_journal,
         });
         self.storage
             .put_invocation_status(
@@ -3005,7 +2950,6 @@ impl<S> StateMachineApplyContext<'_, S> {
                     item_hash,
                     invocation_id,
                     invocation_target: metadata.invocation_target,
-                    invoke_input_journal: InvokeInputJournal::NoCachedJournal,
                 });
             }
             InvocationStatus::Invoked(_) => { /* do nothing when not leader */ }
@@ -4471,7 +4415,6 @@ impl<S> StateMachineApplyContext<'_, S> {
             self.action_collector.push(Action::Invoke {
                 invocation_id,
                 invocation_target,
-                invoke_input_journal: InvokeInputJournal::NoCachedJournal,
             });
         }
 

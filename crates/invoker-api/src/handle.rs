@@ -23,15 +23,6 @@ use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawNotification;
 
 use super::Effect;
-use super::JournalMetadata;
-use crate::invocation_reader::JournalEntry;
-
-#[derive(Debug, Eq, PartialEq, Default)]
-pub enum InvokeInputJournal {
-    #[default]
-    NoCachedJournal,
-    CachedJournal(JournalMetadata, Vec<JournalEntry>),
-}
 
 pub trait InvokerHandle<SR> {
     fn invoke(
@@ -39,7 +30,6 @@ pub trait InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError>;
 
     fn vqueue_invoke(
@@ -49,7 +39,6 @@ pub trait InvokerHandle<SR> {
         permit: Permit,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError>;
 
     fn notify_completion(
