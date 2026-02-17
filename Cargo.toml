@@ -132,7 +132,7 @@ const_format = "0.2.35"
 criterion = "0.5"
 crossterm = { version = "0.29.0" }
 dashmap = { version = "6" }
-datafusion = { version = "51.0.0", default-features = false, features = [
+datafusion = { version = "52.1.0", default-features = false, features = [
     "crypto_expressions",
     "encoding_expressions",
     "nested_expressions",
@@ -140,8 +140,8 @@ datafusion = { version = "51.0.0", default-features = false, features = [
     "unicode_expressions",
     "recursive_protection",
 ] }
-datafusion-functions-json = { version = "0.51.1" }
-datafusion-proto = { version = "51.0.0", default-features = false }
+datafusion-functions-json = { version = "0.52.0" }
+datafusion-proto = { version = "52.1.0", default-features = false }
 derive_builder = "0.20.2"
 derive_more = { version = "2.1.1", features = ["full"] }
 dialoguer = { version = "0.12.0" }
@@ -283,6 +283,11 @@ path = "workspace-hack"
 # The fixes are based on rust-sasl v0.1.22.
 # Todo: Upstream changes and get rid of patch
 sasl2-sys = { git = "https://github.com/restatedev/rust-sasl", rev = "d3e87c54e87327ddbd226881d7546ab7696bf683" }
+# forked datafusion to add on top of 52.2.0:
+# https://github.com/apache/datafusion/pull/20191
+# https://github.com/apache/datafusion/pull/20192
+datafusion = { git = "https://github.com/restatedev/datafusion", branch = "branch-52" }
+datafusion-proto = { git = "https://github.com/restatedev/datafusion", branch = "branch-52" }
 
 [profile.release]
 opt-level = 3
