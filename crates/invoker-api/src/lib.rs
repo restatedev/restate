@@ -34,8 +34,7 @@ pub mod test_util {
         EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
     use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
-    use restate_types::journal::Completion;
-    use restate_types::journal_v2::raw::RawNotification;
+
     use restate_types::time::MillisSinceEpoch;
     use restate_types::vqueue::VQueueId;
     use std::convert::Infallible;
@@ -48,9 +47,19 @@ pub mod test_util {
 
     impl InvocationReader for EmptyStorageReader {
         type Transaction<'a> = EmptyStorageReaderTransaction;
+        type Error = Infallible;
 
         fn transaction(&mut self) -> Self::Transaction<'_> {
             EmptyStorageReaderTransaction
+        }
+
+        async fn read_journal_entry(
+            &mut self,
+            _invocation_id: &InvocationId,
+            _entry_index: EntryIndex,
+            _using_journal_table_v2: bool,
+        ) -> Result<Option<JournalEntry>, Infallible> {
+            Ok(None)
         }
     }
 
@@ -130,7 +139,7 @@ pub mod test_util {
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _completion: Completion,
+            _entry_index: EntryIndex,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }
@@ -139,7 +148,8 @@ pub mod test_util {
             &mut self,
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
-            _notification: RawNotification,
+            _entry_index: EntryIndex,
+            _notification_id: restate_types::journal_v2::NotificationId,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

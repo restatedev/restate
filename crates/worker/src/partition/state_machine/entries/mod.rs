@@ -149,6 +149,14 @@ where
 
         let mut entries = VecDeque::from([self.entry]);
         while let Some(entry) = entries.pop_front() {
+            // Compute the entry index before processing effects, so it's available
+            // for signal-only notification forwarding.
+            let entry_index = self
+                .invocation_status
+                .get_journal_metadata()
+                .expect("At this point there must be a journal")
+                .length;
+
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
 
@@ -337,6 +345,7 @@ where
                         entry: entry
                             .try_as_notification_ref()
                             .ok_or(Error::BadEntryVariant(et))?,
+                        entry_index,
                     }
                     .apply(ctx)
                     .await?;
@@ -349,7 +358,9 @@ where
                 .get_journal_metadata_mut()
                 .expect("At this point there must be a journal");
 
-            let entry_index = journal_meta.length;
+            // Make sure that nobody changed the journal_meta.length which we use to predict the new
+            // entry index. Otherwise, we might have sent a notification with the wrong entry index.
+            debug_assert_eq!(entry_index, journal_meta.length);
             debug_if_leader!(
                 ctx.is_leader,
                 restate.journal.index = entry_index,
