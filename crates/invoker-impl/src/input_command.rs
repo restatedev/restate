@@ -11,11 +11,9 @@
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
 use restate_invoker_api::{Effect, InvocationStatusReport, StatusHandle};
-use restate_types::identifiers::{InvocationId, PartitionKey, PartitionLeaderEpoch};
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
-use restate_types::journal::Completion;
-use restate_types::journal_v2::CommandIndex;
-use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::vqueue::VQueueId;
 use std::ops::RangeInclusive;
 use tokio::sync::mpsc;
@@ -49,12 +47,13 @@ pub(crate) enum InputCommand<SR> {
     Completion {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        completion: Completion,
+        entry_index: EntryIndex,
     },
     Notification {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        notification: RawNotification,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
     },
     StoredCommandAck {
         partition: PartitionLeaderEpoch,
@@ -140,13 +139,13 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        completion: Completion,
+        entry_index: EntryIndex,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Completion {
                 partition,
                 invocation_id,
-                completion,
+                entry_index,
             })
             .map_err(|_| NotRunningError)
     }
@@ -155,13 +154,15 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        notification: RawNotification,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Notification {
                 partition,
                 invocation_id,
-                notification,
+                entry_index,
+                notification_id,
             })
             .map_err(|_| NotRunningError)
     }

@@ -40,6 +40,7 @@ itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 pin-project-lite = { workspace = true }
+prost = { workspace = true }
 schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

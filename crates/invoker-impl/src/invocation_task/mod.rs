@@ -246,7 +246,7 @@ where
     )]
     pub async fn run<IR>(mut self, mut invocation_reader: IR)
     where
-        IR: InvocationReader,
+        IR: InvocationReader + Clone,
     {
         let start = Instant::now();
         // Execute the task
@@ -275,8 +275,13 @@ where
         invocation_reader: &mut IR,
     ) -> TerminalLoopState<()>
     where
-        IR: InvocationReader,
+        IR: InvocationReader + Clone,
     {
+        // Clone the reader before creating the transaction. The clone will be passed
+        // to the protocol runner for non-transactional point reads during the bidi-stream
+        // phase (after the transaction is dropped).
+        let reader_for_bidi = invocation_reader.clone();
+
         let mut txn = invocation_reader.transaction();
 
         // Read journal metadata from storage
@@ -391,7 +396,13 @@ where
             let service_protocol_runner =
                 ServiceProtocolRunner::new(self, chosen_service_protocol_version);
             service_protocol_runner
-                .run(txn, journal_metadata, keyed_service_id, deployment)
+                .run(
+                    txn,
+                    journal_metadata,
+                    keyed_service_id,
+                    deployment,
+                    reader_for_bidi,
+                )
                 .await
         } else {
             // Protocol runner for service protocol v4+
@@ -400,7 +411,13 @@ where
                 chosen_service_protocol_version,
             );
             service_protocol_runner
-                .run(txn, journal_metadata, keyed_service_id, deployment)
+                .run(
+                    txn,
+                    journal_metadata,
+                    keyed_service_id,
+                    deployment,
+                    reader_for_bidi,
+                )
                 .await
         }
     }

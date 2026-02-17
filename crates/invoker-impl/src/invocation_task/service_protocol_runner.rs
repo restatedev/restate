@@ -17,13 +17,14 @@ use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
+use prost::Message;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReaderTransaction, JournalEntry,
+    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
 };
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
 use restate_service_client::{Endpoint, Method, Parts, Request};
@@ -36,8 +37,8 @@ use restate_types::errors::InvocationError;
 use restate_types::identifiers::ServiceId;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
-use restate_types::journal::EntryType;
 use restate_types::journal::raw::RawEntryCodec;
+use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::journal_v2;
 use restate_types::journal_v2::EntryMetadata;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
@@ -104,15 +105,17 @@ where
     /// * `keyed_service_id` - If `Some`, eager state loading is enabled and we'll read/send
     ///   state for this service upfront. If `None`, lazy state is used (either because this
     ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
-    pub async fn run<Txn>(
+    pub async fn run<Txn, IR>(
         mut self,
         txn: Txn,
         journal_metadata: JournalMetadata,
         keyed_service_id: Option<ServiceId>,
         deployment: Deployment,
+        invocation_reader: IR,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
+        IR: InvocationReader,
     {
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
@@ -215,6 +218,7 @@ where
                     &service_invocation_span_context,
                     http_stream_tx,
                     &mut http_stream_rx,
+                    invocation_reader,
                 )
                 .await
             );
@@ -371,6 +375,14 @@ where
                                 panic!("This is unexpected, when an entry is stored with journal v2, only input entry is allowed!")
                             }
                         }
+                        Some(Ok(JournalEntry::JournalV1Completion(_))) => {
+                            // During replay, a JournalV1Completion means the completion
+                            // arrived before the entry itself. This entry cannot be replayed
+                            // to the SDK because we don't have the original entry bytes.
+                            // This should not happen in normal operation since entries are
+                            // always stored before completions during replay.
+                            panic!("Unexpected JournalV1Completion during replay: completion arrived before entry was stored")
+                        }
                         Some(Err(e)) => {
                             return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
                         }
@@ -386,17 +398,29 @@ where
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
-    async fn bidi_stream_loop(
+    async fn bidi_stream_loop<IR>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: InvokerRequestStreamSender,
         http_stream_rx: &mut ResponseStream,
-    ) -> TerminalLoopState<()> {
+        mut invocation_reader: IR,
+    ) -> TerminalLoopState<()>
+    where
+        IR: InvocationReader,
+    {
         loop {
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
                     match opt_completion {
-                        Some(Notification::Completion(completion)) => {
+                        Some(Notification::Completion(entry_index)) => {
+                            trace!(restate.journal.index = entry_index, "Reading completion from storage");
+                            let completion = crate::shortcircuit!(
+                                read_completion_from_storage(
+                                    &mut invocation_reader,
+                                    &self.invocation_task.invocation_id,
+                                    entry_index,
+                                ).await
+                            );
                             trace!("Sending the completion to the wire");
                             crate::shortcircuit!(self.write(&mut http_stream_tx, completion.into()).await);
                         },
@@ -404,7 +428,7 @@ where
                             trace!("Sending the ack to the wire");
                             crate::shortcircuit!(self.write(&mut http_stream_tx, ProtocolMessage::new_entry_ack(entry_index)).await);
                         },
-                        Some(Notification::Entry(_)) => {
+                        Some(Notification::Entry { .. }) => {
                             panic!("We don't expect to receive journal_v2 entries, this is an invoker bug.")
                         },
                         None => {
@@ -669,6 +693,72 @@ where
                 self.next_journal_index += 1;
                 TerminalLoopState::Continue(())
             }
+        }
+    }
+}
+
+/// Read a v1 completion from storage by reading the journal entry at the given index
+/// and extracting the completion result from its protobuf bytes.
+///
+/// This is only used by the v1-v3 protocol runner, which always uses journal table v1.
+pub(super) async fn read_completion_from_storage<IR: InvocationReader>(
+    invocation_reader: &mut IR,
+    invocation_id: &InvocationId,
+    entry_index: EntryIndex,
+) -> Result<Completion, InvokerError> {
+    use restate_types::service_protocol;
+
+    // v1-v3 protocol runner always uses journal table v1
+    let journal_entry = invocation_reader
+        .read_journal_entry(invocation_id, entry_index, false)
+        .await
+        .map_err(|e| InvokerError::JournalReader(e.into()))?
+        .ok_or_else(|| {
+            InvokerError::JournalReader(anyhow::anyhow!(
+                "journal entry {entry_index} not found for completion read"
+            ))
+        })?;
+
+    match journal_entry {
+        JournalEntry::JournalV1(plain_raw_entry) => {
+            // Decode the entry bytes using CompletionResultExtractor which has only
+            // the result oneof at tags 13/14/15. This safely skips entry-specific
+            // fields at other tags (e.g. tag 1 = bytes key in GetStateEntryMessage)
+            // that would cause wire-type mismatches if decoded as CompletionMessage.
+            let extractor = service_protocol::CompletionResultExtractor::decode(
+                plain_raw_entry.serialized_entry().clone(),
+            )
+            .map_err(|e| {
+                InvokerError::JournalReader(anyhow::anyhow!(
+                    "failed to decode completion from entry {entry_index}: {e}"
+                ))
+            })?;
+
+            let result = match extractor.result {
+                Some(service_protocol::completion_result_extractor::Result::Empty(_)) => {
+                    CompletionResult::Empty
+                }
+                Some(service_protocol::completion_result_extractor::Result::Value(b)) => {
+                    CompletionResult::Success(b)
+                }
+                Some(service_protocol::completion_result_extractor::Result::Failure(f)) => {
+                    CompletionResult::Failure(f.code.into(), f.message.into())
+                }
+                None => {
+                    return Err(InvokerError::JournalReader(anyhow::anyhow!(
+                        "journal entry {entry_index} has no completion result"
+                    )));
+                }
+            };
+
+            Ok(Completion::new(entry_index, result))
+        }
+        JournalEntry::JournalV1Completion(result) => {
+            // Completion arrived before entry was stored; we have the result directly.
+            Ok(Completion::new(entry_index, result))
+        }
+        JournalEntry::JournalV2(_) => {
+            panic!("v1-v3 protocol runner should not encounter JournalV2 entries")
         }
     }
 }

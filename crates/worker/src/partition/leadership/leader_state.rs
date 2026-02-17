@@ -545,9 +545,9 @@ impl LeaderState {
             }
             Action::ForwardCompletion {
                 invocation_id,
-                completion,
+                entry_index,
             } => invoker_tx
-                .notify_completion(partition_leader_epoch, invocation_id, completion)
+                .notify_completion(partition_leader_epoch, invocation_id, entry_index)
                 .map_err(Error::Invoker)?,
             Action::AbortInvocation { invocation_id } => invoker_tx
                 .abort_invocation(partition_leader_epoch, invocation_id)
@@ -590,10 +590,16 @@ impl LeaderState {
             }
             Action::ForwardNotification {
                 invocation_id,
-                notification,
+                entry_index,
+                notification_id,
             } => {
                 invoker_tx
-                    .notify_notification(partition_leader_epoch, invocation_id, notification)
+                    .notify_notification(
+                        partition_leader_epoch,
+                        invocation_id,
+                        entry_index,
+                        notification_id,
+                    )
                     .map_err(Error::Invoker)?;
             }
             Action::ForwardKillResponse {

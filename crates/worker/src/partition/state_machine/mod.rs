@@ -96,7 +96,7 @@ use restate_types::journal::enriched::{
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
-use restate_types::journal_v2::raw::{RawEntry, RawNotification};
+use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
     CommandIndex, CommandType, CompletionId, EntryMetadata, InputCommand, NotificationId, Signal,
     SignalResult,
@@ -401,16 +401,22 @@ impl<S> StateMachineApplyContext<'_, S> {
         Ok(())
     }
 
-    fn forward_notification(&mut self, invocation_id: InvocationId, notification: RawNotification) {
+    fn forward_notification(
+        &mut self,
+        invocation_id: InvocationId,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
+    ) {
         debug_if_leader!(
             self.is_leader,
-            restate.notification.id = %notification.id(),
+            restate.journal.index = entry_index,
             "Forward notification to deployment",
         );
 
         self.action_collector.push(Action::ForwardNotification {
             invocation_id,
-            notification,
+            entry_index,
+            notification_id,
         });
     }
 
@@ -3119,19 +3125,17 @@ impl<S> StateMachineApplyContext<'_, S> {
                             completion_result.clone(),
                         )?;
 
-                        self.forward_completion(
-                            invocation_id,
-                            Completion::new(entry_index, completion_result),
-                        );
+                        self.forward_completion(invocation_id, entry_index);
                     } else {
                         warn!(
                             "Trying to process entry {} for a target that has no state",
                             journal_entry.header().as_entry_type()
                         );
-                        self.forward_completion(
-                            invocation_id,
-                            Completion::new(entry_index, CompletionResult::Empty),
-                        );
+                        ProtobufRawEntryCodec::write_completion(
+                            &mut journal_entry,
+                            CompletionResult::Empty,
+                        )?;
+                        self.forward_completion(invocation_id, entry_index);
                     }
                 }
             }
@@ -3248,10 +3252,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                     )?;
 
                     // We can already forward the completion
-                    self.forward_completion(
-                        invocation_id,
-                        Completion::new(entry_index, completion_result),
-                    );
+                    self.forward_completion(invocation_id, entry_index);
                 }
             }
             EnrichedEntryHeader::GetPromise { is_completed, .. } => {
@@ -3279,10 +3280,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                                 )?;
 
                                 // Forward completion
-                                self.forward_completion(
-                                    invocation_id,
-                                    Completion::new(entry_index, completion_result),
-                                );
+                                self.forward_completion(invocation_id, entry_index);
                             }
                             Some(Promise {
                                 state: PromiseState::NotCompleted(mut v),
@@ -3319,10 +3317,11 @@ impl<S> StateMachineApplyContext<'_, S> {
                             "Trying to process entry {} for a target that has no promises",
                             journal_entry.header().as_entry_type()
                         );
-                        self.forward_completion(
-                            invocation_id,
-                            Completion::new(entry_index, CompletionResult::Success(Bytes::new())),
-                        );
+                        ProtobufRawEntryCodec::write_completion(
+                            &mut journal_entry,
+                            CompletionResult::Success(Bytes::new()),
+                        )?;
+                        self.forward_completion(invocation_id, entry_index);
                     }
                 }
             }
@@ -3352,19 +3351,17 @@ impl<S> StateMachineApplyContext<'_, S> {
                         )?;
 
                         // Forward completion
-                        self.forward_completion(
-                            invocation_id,
-                            Completion::new(entry_index, completion_result),
-                        );
+                        self.forward_completion(invocation_id, entry_index);
                     } else {
                         warn!(
                             "Trying to process entry {} for a target that has no promises",
                             journal_entry.header().as_entry_type()
                         );
-                        self.forward_completion(
-                            invocation_id,
-                            Completion::new(entry_index, CompletionResult::Empty),
-                        );
+                        ProtobufRawEntryCodec::write_completion(
+                            &mut journal_entry,
+                            CompletionResult::Empty,
+                        )?;
+                        self.forward_completion(invocation_id, entry_index);
                     }
                 }
             }
@@ -3433,19 +3430,17 @@ impl<S> StateMachineApplyContext<'_, S> {
                         )?;
 
                         // Forward completion
-                        self.forward_completion(
-                            invocation_id,
-                            Completion::new(entry_index, completion_result),
-                        );
+                        self.forward_completion(invocation_id, entry_index);
                     } else {
                         warn!(
                             "Trying to process entry {} for a target that has no promises",
                             journal_entry.header().as_entry_type()
                         );
-                        self.forward_completion(
-                            invocation_id,
-                            Completion::new(entry_index, CompletionResult::Empty),
-                        );
+                        ProtobufRawEntryCodec::write_completion(
+                            &mut journal_entry,
+                            CompletionResult::Empty,
+                        )?;
+                        self.forward_completion(invocation_id, entry_index);
                     }
                 }
             }
@@ -3602,10 +3597,7 @@ impl<S> StateMachineApplyContext<'_, S> {
                         completion_result.clone(),
                     )?;
 
-                    self.forward_completion(
-                        invocation_id,
-                        Completion::new(entry_index, completion_result),
-                    );
+                    self.forward_completion(invocation_id, entry_index);
                 }
             }
             EnrichedEntryHeader::CompleteAwakeable {
@@ -3710,16 +3702,16 @@ impl<S> StateMachineApplyContext<'_, S> {
                             &mut journal_entry,
                             completion_result.clone(),
                         )?;
-                        self.forward_completion(
-                            invocation_id,
-                            Completion::new(entry_index, completion_result),
-                        );
+                        self.forward_completion(invocation_id, entry_index);
                     } else {
-                        // Nothing we can do here, just forward an empty completion (which is invalid for this entry).
-                        self.forward_completion(
-                            invocation_id,
-                            Completion::new(entry_index, CompletionResult::Empty),
-                        );
+                        // Callee invocation ID not found. Write an empty completion
+                        // (semantically invalid for this entry type, but needed for
+                        // signal-only forwarding where the invoker reads from storage).
+                        ProtobufRawEntryCodec::write_completion(
+                            &mut journal_entry,
+                            CompletionResult::Empty,
+                        )?;
+                        self.forward_completion(invocation_id, entry_index);
                     }
                 }
             }
@@ -4009,7 +4001,7 @@ impl<S> StateMachineApplyContext<'_, S> {
         S: ReadJournalTable + WriteJournalTable,
     {
         if let Some(completion) = self.store_completion(invocation_id, completion).await? {
-            self.forward_completion(invocation_id, completion);
+            self.forward_completion(invocation_id, completion.entry_index);
         }
         Ok(())
     }
@@ -4919,17 +4911,16 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    fn forward_completion(&mut self, invocation_id: InvocationId, completion: Completion) {
+    fn forward_completion(&mut self, invocation_id: InvocationId, entry_index: EntryIndex) {
         debug_if_leader!(
             self.is_leader,
-            restate.journal.index = completion.entry_index,
-            "Forward completion {} to deployment",
-            CompletionResultFmt(&completion.result)
+            restate.journal.index = entry_index,
+            "Forward completion to deployment",
         );
 
         self.action_collector.push(Action::ForwardCompletion {
             invocation_id,
-            completion,
+            entry_index,
         });
     }
 

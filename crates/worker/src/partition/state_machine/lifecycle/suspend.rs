@@ -209,7 +209,8 @@ mod tests {
                 })),
                 contains(matchers::actions::forward_notification(
                     invocation_id,
-                    sleep_completion.clone()
+                    2,
+                    NotificationId::CompletionId(completion_id),
                 ))
             ]
         );

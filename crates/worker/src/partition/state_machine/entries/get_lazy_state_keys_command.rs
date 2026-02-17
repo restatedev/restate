@@ -69,7 +69,7 @@ mod tests {
     use restate_storage_api::Transaction;
     use restate_storage_api::state_table::WriteStateTable;
     use restate_types::identifiers::ServiceId;
-    use restate_types::journal_v2::{GetLazyStateKeysCommand, GetLazyStateKeysCompletion};
+    use restate_types::journal_v2::{GetLazyStateKeysCommand, NotificationId};
 
     #[restate_core::test]
     async fn get_lazy_state_keys() {
@@ -102,10 +102,8 @@ mod tests {
             actions,
             contains(matchers::actions::forward_notification(
                 invocation_id,
-                GetLazyStateKeysCompletion {
-                    completion_id,
-                    state_keys: vec!["key1".to_string(), "key2".to_string()]
-                }
+                2,
+                NotificationId::CompletionId(completion_id),
             ))
         );
 

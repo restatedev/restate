@@ -50,12 +50,11 @@ use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{PartitionId, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
+use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::{Completion, EntryIndex};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
-use restate_types::journal_v2;
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
+use restate_types::journal_v2::raw::{RawCommand, RawNotification};
 use restate_types::journal_v2::{CommandIndex, EntryMetadata, NotificationId};
 use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
@@ -83,8 +82,11 @@ use self::input_command::VQueueInvokeCommand;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
-    Completion(Completion),
-    Entry(RawEntry),
+    /// V1 completion signal: just the entry index (data read from RocksDB on demand).
+    Completion(EntryIndex),
+    /// V2 notification signal: entry index.
+    Entry(EntryIndex),
+    /// V2 command ack: already signal-only.
     Ack(CommandIndex),
 }
 
@@ -456,11 +458,11 @@ where
                     InputCommand::AbortAllPartition { partition } => {
                         self.handle_abort_partition(partition);
                     }
-                    InputCommand::Completion { partition, invocation_id, completion } => {
-                        self.handle_completion(partition, invocation_id, completion);
+                    InputCommand::Completion { partition, invocation_id, entry_index } => {
+                        self.handle_completion(partition, invocation_id, entry_index);
                     },
-                    InputCommand::Notification { partition, invocation_id, notification } => {
-                        self.handle_notification(options, partition, invocation_id, notification);
+                    InputCommand::Notification { partition, invocation_id, entry_index, notification_id } => {
+                        self.handle_notification(options, partition, invocation_id, entry_index, notification_id);
                     },
                     InputCommand::StoredCommandAck { partition, invocation_id, command_index } => {
                         self.handle_stored_command_ack(options, partition, invocation_id, command_index);
@@ -962,7 +964,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        completion: Completion,
+        entry_index: EntryIndex,
     ) {
         self.invocation_state_machine_manager.handle_for_invocation(
             partition,
@@ -970,10 +972,10 @@ where
             |_, ism| {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
-                    restate.journal.index = completion.entry_index,
+                    restate.journal.index = entry_index,
                     "Notifying completion"
                 );
-                ism.notify_completion(completion);
+                ism.notify_completion(entry_index);
             },
         );
     }
@@ -991,16 +993,17 @@ where
         options: &InvokerOptions,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        notification: RawNotification,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
     ) {
         self.handle_retry_event(options, partition, invocation_id, |ism| {
             trace!(
                 restate.invocation.target = %ism.invocation_target,
-                restate.journal.ty = %notification.ty(),
-                "Sending entry"
+                restate.journal.index = entry_index,
+                "Sending notification signal"
             );
 
-            ism.notify_entry(RawEntry::Notification(notification));
+            ism.notify_entry(entry_index, notification_id);
         });
     }
 
@@ -1654,9 +1657,7 @@ mod tests {
     use restate_types::journal::enriched::EnrichedEntryHeader;
     use restate_types::journal::raw::RawEntry;
     use restate_types::journal_events::EventType;
-    use restate_types::journal_v2::{
-        Command, CompletionType, Encoder, Entry, NotificationType, OutputCommand, OutputResult,
-    };
+    use restate_types::journal_v2::{Command, Encoder, Entry, OutputCommand, OutputResult};
     use restate_types::live::Constant;
     use restate_types::retries::{RetryIter, RetryPolicy};
     use restate_types::schema::deployment::Deployment;
@@ -2233,19 +2234,13 @@ mod tests {
         // Fire the retry timer using the helper that retrieves the key from the ISM
         service_inner.process_retry_timers(&invoker_options).await;
 
-        // Create a notification
-        let notification = RawNotification::new(
-            NotificationType::Completion(CompletionType::Run),
-            NotificationId::CompletionId(1),
-            Bytes::default(),
-        );
-
-        // Send the notification
+        // Send the notification with completion id 1
         service_inner.handle_notification(
             &invoker_options,
             MOCK_PARTITION,
             invocation_id,
-            notification,
+            0, // entry index does not matter as we are not reading this notification
+            NotificationId::CompletionId(1),
         );
 
         let (partition, id, target) = task_started_rx.recv().await.unwrap();
