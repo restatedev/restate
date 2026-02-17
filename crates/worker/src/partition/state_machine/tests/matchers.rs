@@ -8,15 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
-use bytestring::ByteString;
 use googletest::prelude::*;
 use restate_storage_api::timer_table::{TimerKey, TimerKeyKind};
-use restate_types::errors::codes;
 use restate_types::invocation::{InvocationTermination, TerminationFlavor};
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::{Completion, CompletionResult};
-use restate_types::journal_v2::{Entry, EntryIndex};
+use restate_types::journal_v2::{Entry, EntryIndex, NotificationId};
 
 pub mod storage {
     use super::*;
@@ -111,13 +107,12 @@ pub mod actions {
     use super::*;
 
     use crate::partition::state_machine::Action;
-    use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
     use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
     use restate_types::invocation::client::{
         CancelInvocationResponse, KillInvocationResponse, PurgeInvocationResponse,
     };
     use restate_types::invocation::{InvocationTarget, ResponseResult};
-    use restate_types::journal_v2::{Notification, Signal};
+    use restate_types::journal_v2::Signal;
 
     pub fn invoke_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
         pat!(Action::Invoke {
@@ -164,7 +159,7 @@ pub mod actions {
 
     pub fn forward_canceled_completion(entry_index: EntryIndex) -> impl Matcher<ActualT = Action> {
         pat!(Action::ForwardCompletion {
-            completion: canceled_completion(entry_index),
+            entry_index: eq(entry_index),
         })
     }
 
@@ -200,26 +195,23 @@ pub mod actions {
 
     pub fn forward_completion(
         invocation_id: InvocationId,
-        inner: impl Matcher<ActualT = Completion> + 'static,
+        entry_index: EntryIndex,
     ) -> impl Matcher<ActualT = Action> {
         pat!(Action::ForwardCompletion {
             invocation_id: eq(invocation_id),
-            completion: inner,
+            entry_index: eq(entry_index),
         })
     }
 
     pub fn forward_notification(
         invocation_id: InvocationId,
-        notif: impl Into<Notification>,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
     ) -> impl Matcher<ActualT = Action> {
-        let notification = notif
-            .into()
-            .encode::<ServiceProtocolV4Codec>()
-            .try_as_notification()
-            .unwrap();
         pat!(Action::ForwardNotification {
             invocation_id: eq(invocation_id),
-            notification: eq(notification),
+            entry_index: eq(entry_index),
+            notification_id: eq(notification_id),
         })
     }
 
@@ -288,30 +280,6 @@ pub mod outbox {
             ))
         )
     }
-}
-
-pub fn completion(
-    entry_index: EntryIndex,
-    completion_result: CompletionResult,
-) -> impl Matcher<ActualT = Completion> {
-    pat!(Completion {
-        entry_index: eq(entry_index),
-        result: eq(completion_result)
-    })
-}
-
-pub fn success_completion(
-    entry_index: EntryIndex,
-    bytes: impl Into<Bytes>,
-) -> impl Matcher<ActualT = Completion> {
-    completion(entry_index, CompletionResult::Success(bytes.into()))
-}
-
-pub fn canceled_completion(entry_index: EntryIndex) -> impl Matcher<ActualT = Completion> {
-    completion(
-        entry_index,
-        CompletionResult::Failure(codes::ABORTED, ByteString::from_static("canceled")),
-    )
 }
 
 pub fn completed_entry() -> impl Matcher<ActualT = EnrichedRawEntry> {

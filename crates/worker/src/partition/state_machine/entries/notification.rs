@@ -14,7 +14,7 @@ use restate_storage_api::invocation_status_table::{InFlightInvocationMetadata, I
 use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_tracing_instrumentation as instrumentation;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{
     CANCEL_NOTIFICATION_ID, Command, CommandType, CompletionId, NotificationId,
@@ -27,6 +27,7 @@ pub(super) struct ApplyNotificationCommand<'e> {
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_status: &'e mut InvocationStatus,
     pub(super) entry: &'e RawNotification,
+    pub(super) entry_index: EntryIndex,
 }
 
 impl<'e> ApplyNotificationCommand<'e> {
@@ -168,7 +169,7 @@ where
             }
             InvocationStatus::Invoked(_) => {
                 // Just forward the notification if we're invoked
-                ctx.forward_notification(self.invocation_id, self.entry.clone());
+                ctx.forward_notification(self.invocation_id, self.entry_index, self.entry.id());
             }
             InvocationStatus::Paused(_) => {
                 // If we're paused, resume only if the notification was a cancellation signal.
@@ -244,7 +245,8 @@ mod tests {
             actions,
             contains(matchers::actions::forward_notification(
                 invocation_id,
-                signal.clone()
+                1,
+                NotificationId::SignalIndex(17),
             ))
         );
 
@@ -289,7 +291,8 @@ mod tests {
             actions,
             contains(matchers::actions::forward_notification(
                 invocation_id,
-                signal.clone()
+                1,
+                NotificationId::SignalIndex(17),
             ))
         );
 

@@ -15,8 +15,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use restate_futures_util::concurrency::Permit;
-use restate_types::journal::Completion;
-use restate_types::journal_v2::raw::RawEntry;
+use restate_types::identifiers::EntryIndex;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
 use restate_types::vqueue::VQueueId;
@@ -378,34 +377,35 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         }
     }
 
-    pub(super) fn notify_completion(&mut self, completion: Completion) {
+    pub(super) fn notify_completion(&mut self, entry_index: EntryIndex) {
         if let AttemptState::InFlight {
             notifications_tx, ..
         } = &mut self.invocation_state
         {
-            Self::try_send_notification(notifications_tx, Notification::Completion(completion));
+            Self::try_send_notification(notifications_tx, Notification::Completion(entry_index));
         }
     }
 
-    pub(super) fn notify_entry(&mut self, entry: RawEntry) {
+    pub(super) fn notify_entry(
+        &mut self,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
+    ) {
         match &mut self.invocation_state {
             AttemptState::InFlight {
                 journal_tracker,
                 notifications_tx,
                 ..
             } => {
-                if let journal_v2::raw::RawEntry::Notification(notif) = &entry {
-                    journal_tracker.notify_acked_notification_from_partition_processor(notif.id());
-                }
+                journal_tracker
+                    .notify_acked_notification_from_partition_processor(notification_id.clone());
 
-                Self::try_send_notification(notifications_tx, Notification::Entry(entry));
+                Self::try_send_notification(notifications_tx, Notification::Entry(entry_index));
             }
             AttemptState::WaitingRetry {
                 journal_tracker, ..
             } => {
-                if let journal_v2::raw::RawEntry::Notification(notif) = &entry {
-                    journal_tracker.notify_acked_notification_from_partition_processor(notif.id());
-                }
+                journal_tracker.notify_acked_notification_from_partition_processor(notification_id);
             }
             _ => {}
         }
@@ -598,7 +598,6 @@ impl fmt::Display for AttemptDeploymentId {
 mod tests {
     use super::*;
 
-    use bytes::Bytes;
     use googletest::matchers::{eq, some};
     use googletest::prelude::err;
     use googletest::{assert_that, pat};
@@ -607,7 +606,6 @@ mod tests {
     use tokio::sync::mpsc::error::TryRecvError;
 
     use restate_test_util::{assert, check, let_assert};
-    use restate_types::journal_v2::{CompletionType, NotificationType};
     use restate_types::retries::RetryPolicy;
 
     fn create_test_invocation_state_machine() -> InvocationStateMachine<u64> {
@@ -769,11 +767,7 @@ mod tests {
         assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // Got signal 18
-        invocation_state_machine.notify_entry(RawEntry::Notification(RawNotification::new(
-            NotificationType::Signal,
-            NotificationId::SignalIndex(18),
-            Bytes::default(),
-        )));
+        invocation_state_machine.notify_entry(0, NotificationId::SignalIndex(18));
 
         // Retry timer fired
         invocation_state_machine.notify_retry_timer_fired(0);
@@ -783,22 +777,14 @@ mod tests {
         assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // For whatever reason notification index 2
-        invocation_state_machine.notify_entry(RawEntry::Notification(RawNotification::new(
-            NotificationType::Completion(CompletionType::Run),
-            NotificationId::CompletionId(2),
-            Bytes::default(),
-        )));
+        invocation_state_machine.notify_entry(1, NotificationId::CompletionId(2));
 
         // Still waiting completion id 1
         assert!(!invocation_state_machine.is_ready_to_retry());
         assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
 
         // Send notification index 1
-        invocation_state_machine.notify_entry(RawEntry::Notification(RawNotification::new(
-            NotificationType::Completion(CompletionType::Run),
-            NotificationId::CompletionId(1),
-            Bytes::default(),
-        )));
+        invocation_state_machine.notify_entry(2, NotificationId::CompletionId(1));
 
         // Ready to retry
         assert!(invocation_state_machine.is_ready_to_retry());

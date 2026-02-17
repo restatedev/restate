@@ -15,12 +15,9 @@ use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
-use restate_types::identifiers::PartitionKey;
-use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
-use restate_types::journal::Completion;
-use restate_types::journal_v2::CommandIndex;
-use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::{CommandIndex, NotificationId};
 
 use super::Effect;
 
@@ -45,14 +42,15 @@ pub trait InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        completion: Completion,
+        entry_index: EntryIndex,
     ) -> Result<(), NotRunningError>;
 
     fn notify_notification(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry: RawNotification,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
     ) -> Result<(), NotRunningError>;
 
     fn retry_invocation_now(

@@ -11,15 +11,13 @@
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::vqueue_table::EntryCard;
-use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
     PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationResponse,
 };
-use restate_types::journal::Completion;
-use restate_types::journal_v2::CommandIndex;
-use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::message::MessageIndex;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueue::VQueueId;
@@ -59,11 +57,12 @@ pub enum Action {
     },
     ForwardCompletion {
         invocation_id: InvocationId,
-        completion: Completion,
+        entry_index: EntryIndex,
     },
     ForwardNotification {
         invocation_id: InvocationId,
-        notification: RawNotification,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
     },
     AbortInvocation {
         invocation_id: InvocationId,

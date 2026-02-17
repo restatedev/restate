@@ -11,9 +11,9 @@
 use bytes::Bytes;
 use futures::Stream;
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
-use restate_types::journal::EntryIndex;
+use restate_types::journal::CompletionResult;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::storage::StoredRawEntry;
 use restate_types::time::MillisSinceEpoch;
@@ -58,6 +58,8 @@ impl JournalMetadata {
 #[derive(Debug, Eq, PartialEq)]
 pub enum JournalEntry {
     JournalV1(PlainRawEntry),
+    /// V1 journal entry where only the completion result is stored (completion arrived before entry).
+    JournalV1Completion(CompletionResult),
     JournalV2(StoredRawEntry),
 }
 
@@ -66,9 +68,22 @@ pub trait InvocationReader {
     type Transaction<'a>: InvocationReaderTransaction + Send
     where
         Self: 'a;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     /// Create a read transaction to read information about invocations from the underlying storage.
     fn transaction(&mut self) -> Self::Transaction<'_>;
+
+    /// Non-transactional point read of a single journal entry by index.
+    ///
+    /// Used during the bidi-stream phase (after the replay transaction is dropped)
+    /// to read notification/completion data on-demand when a signal-only notification arrives.
+    /// Non-transactional reads are appropriate here because entries are immutable once written.
+    fn read_journal_entry(
+        &mut self,
+        invocation_id: &InvocationId,
+        entry_index: EntryIndex,
+        using_journal_table_v2: bool,
+    ) -> impl Future<Output = Result<Option<JournalEntry>, Self::Error>> + Send;
 }
 
 /// Read transaction to read information about invocations from the underlying storage.
