@@ -4069,7 +4069,8 @@ pub mod v1 {
 
             pub fn invocation_target(
                 &self,
-            ) -> std::result::Result<Option<InvocationTarget>, ConversionError> {
+            ) -> std::result::Result<Option<InvocationTargetLazy<'a>>, ConversionError>
+            {
                 use super::invocation_status_v2::Status;
                 match self.inner.status() {
                     Status::Scheduled
@@ -4084,15 +4085,11 @@ pub mod v1 {
                 let invocation_target = self.invocation_target_lazy.as_ref();
                 let invocation_target = expect_or_fail!(invocation_target)?;
 
-                // almost of invocation_target is bytes in 2 or 3 fields. if we provide the data as a slice,
-                // prost will copy those fields out separately into bytes (2 or 3 small allocations). if we instead
-                // do one copy now, prost will make each field a shallow reference into one heap-allocated buffer.
-
-                let invocation_target = Bytes::copy_from_slice(invocation_target);
-
-                InvocationTarget::decode(invocation_target)
-                    .map_err(|_| ConversionError::invalid_data("invocation_target"))
-                    .map(Some)
+                let mut target = InvocationTargetLazy::default();
+                target
+                    .merge(invocation_target)
+                    .map_err(|_| ConversionError::invalid_data("invocation_target"))?;
+                Ok(Some(target))
             }
 
             pub fn source(&self) -> std::result::Result<source::Source, ConversionError> {
@@ -4221,11 +4218,13 @@ pub mod v1 {
         }
 
         impl super::source::Service {
-            pub fn invocation_target(
-                &self,
-            ) -> std::result::Result<&InvocationTarget, ConversionError> {
+            pub fn invocation_target<'a>(
+                &'a self,
+            ) -> std::result::Result<InvocationTargetLazy<'a>, ConversionError> {
+                // We convert to the lazy target type as thats where we have our helper methods
                 self.invocation_target
                     .as_ref()
+                    .map(InvocationTargetLazy::from)
                     .ok_or(ConversionError::missing_field("invocation_target"))
             }
 
@@ -4257,10 +4256,74 @@ pub mod v1 {
             }
         }
 
-        impl InvocationTarget {
+        #[derive(Debug, Default)]
+        pub struct InvocationTargetLazy<'a> {
+            // tag 1
+            pub service_and_handler_ty: i32,
+            // tag 2
+            pub name: &'a [u8],
+            // tag 3
+            pub handler: &'a [u8],
+            // tag 4
+            pub key: &'a [u8],
+        }
+
+        impl<'a> InvocationTargetLazy<'a> {
+            pub fn merge(&mut self, mut buf: &'a [u8]) -> Result<(), prost::DecodeError> {
+                use prost::encoding::*;
+                let ctx = prost::encoding::DecodeContext::default();
+                while !buf.is_empty() {
+                    let (tag, wire_type) = decode_key(&mut buf)?;
+                    const STRUCT_NAME: &str = "InvocationTarget";
+                    match tag {
+                        1u32 => {
+                            int32::merge(
+                                wire_type,
+                                &mut self.service_and_handler_ty,
+                                &mut buf,
+                                ctx.clone(),
+                            )
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "service_and_handler_ty");
+                                error
+                            })?;
+                        }
+                        2u32 => {
+                            merge_bytes_zerocopy(wire_type, &mut self.name, &mut buf, ctx.clone())
+                                .map_err(|mut error| {
+                                    error.push(STRUCT_NAME, "name");
+                                    error
+                                })?;
+                        }
+                        3u32 => {
+                            merge_bytes_zerocopy(
+                                wire_type,
+                                &mut self.handler,
+                                &mut buf,
+                                ctx.clone(),
+                            )
+                            .map_err(|mut error| {
+                                error.push(STRUCT_NAME, "handler");
+                                error
+                            })?;
+                        }
+                        4u32 => {
+                            merge_bytes_zerocopy(wire_type, &mut self.key, &mut buf, ctx.clone())
+                                .map_err(|mut error| {
+                                    error.push(STRUCT_NAME, "key");
+                                    error
+                                })?
+                        }
+                        _ => {
+                            skip_field(wire_type, tag, &mut buf, ctx.clone())?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+
             pub fn service_name(&self) -> std::result::Result<&str, ConversionError> {
-                str::from_utf8(self.name.as_ref())
-                    .map_err(|_| ConversionError::invalid_data("name"))
+                str::from_utf8(self.name).map_err(|_| ConversionError::invalid_data("name"))
             }
 
             pub fn key(&self) -> std::result::Result<Option<&str>, ConversionError> {
@@ -4272,7 +4335,7 @@ pub mod v1 {
                         | Ty::WorkflowWorkflow
                         | Ty::WorkflowShared,
                     ) => {
-                        let key = str::from_utf8(self.key.as_ref())
+                        let key = str::from_utf8(self.key)
                             .map_err(|_| ConversionError::invalid_data("key"))?;
 
                         Ok(Some(key))
@@ -4285,8 +4348,7 @@ pub mod v1 {
             }
 
             pub fn handler_name(&self) -> std::result::Result<&str, ConversionError> {
-                str::from_utf8(self.handler.as_ref())
-                    .map_err(|_| ConversionError::invalid_data("name"))
+                str::from_utf8(self.handler).map_err(|_| ConversionError::invalid_data("name"))
             }
 
             pub fn service_ty(&self) -> Result<ServiceType, ConversionError> {
@@ -4303,13 +4365,24 @@ pub mod v1 {
                 }
             }
 
-            pub fn target_fmt<'a>(
+            pub fn target_fmt(
                 &'a self,
             ) -> std::result::Result<TargetFormatter<'a>, ConversionError> {
                 let service_name = self.service_name()?;
                 let key = self.key()?;
                 let handler_name = self.handler_name()?;
                 Ok(TargetFormatter(service_name, key, handler_name))
+            }
+        }
+
+        impl<'a> From<&'a InvocationTarget> for InvocationTargetLazy<'a> {
+            fn from(value: &'a InvocationTarget) -> Self {
+                Self {
+                    service_and_handler_ty: value.service_and_handler_ty,
+                    name: &value.name,
+                    handler: &value.handler,
+                    key: &value.key,
+                }
             }
         }
 
