@@ -41,7 +41,6 @@ use restate_invoker_api::capacity::TokenBucket;
 use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
-    InvokeInputJournal,
 };
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
@@ -103,7 +102,6 @@ trait InvocationTaskRunner<SR> {
         storage_reader: SR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
-        input_journal: InvokeInputJournal,
         task_pool: &mut JoinSet<()>,
     ) -> AbortHandle;
 }
@@ -131,7 +129,6 @@ where
         storage_reader: IR,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
-        input_journal: InvokeInputJournal,
         task_pool: &mut JoinSet<()>,
     ) -> AbortHandle {
         task_pool
@@ -155,7 +152,7 @@ where
                     invoker_rx,
                     self.action_token_bucket.clone(),
                 )
-                .run(input_journal, storage_reader),
+                .run(storage_reader),
             )
             .expect("to spawn invocation task")
     }
@@ -471,7 +468,7 @@ where
                 }
             },
             Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() => {
-                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, invoke_input_command.journal);
+                self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target);
             },
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
                 let InvocationTaskOutput {
@@ -614,7 +611,6 @@ where
                 command.partition,
                 storage_reader.clone(),
                 command.invocation_id,
-                command.journal,
                 InvocationStateMachine::create(
                     Some(command.qid),
                     command.permit,
@@ -648,7 +644,6 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        journal: InvokeInputJournal,
     ) {
         if self
             .invocation_state_machine_manager
@@ -671,7 +666,6 @@ where
                 partition,
                 storage_reader.clone(),
                 invocation_id,
-                journal,
                 InvocationStateMachine::create(
                     None,
                     Permit::new_empty(),
@@ -1563,7 +1557,6 @@ where
         partition: PartitionLeaderEpoch,
         storage_reader: IR,
         invocation_id: InvocationId,
-        journal: InvokeInputJournal,
         mut ism: InvocationStateMachine,
     ) {
         // Start the InvocationTask
@@ -1577,7 +1570,6 @@ where
             storage_reader,
             self.invocation_tasks_tx.clone(),
             completions_rx,
-            journal,
             &mut self.invocation_tasks,
         );
 
@@ -1613,14 +1605,7 @@ where
                     restate.invocation.target = %ism.invocation_target,
                     "Going to retry now");
                 let storage_reader = storage_reader.clone();
-                self.start_invocation_task(
-                    options,
-                    partition,
-                    storage_reader,
-                    invocation_id,
-                    InvokeInputJournal::NoCachedJournal,
-                    ism,
-                );
+                self.start_invocation_task(options, partition, storage_reader, invocation_id, ism);
             } else {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
@@ -1780,7 +1765,6 @@ mod tests {
             IR,
             mpsc::UnboundedSender<InvocationTaskOutput>,
             mpsc::UnboundedReceiver<Notification>,
-            InvokeInputJournal,
         ) -> Fut,
         IR: InvocationReader + Clone + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
@@ -1795,7 +1779,6 @@ mod tests {
             storage_reader: IR,
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
-            input_journal: InvokeInputJournal,
             task_pool: &mut JoinSet<()>,
         ) -> AbortHandle {
             task_pool
@@ -1808,7 +1791,6 @@ mod tests {
                     storage_reader,
                     invoker_tx,
                     invoker_rx,
-                    input_journal,
                 ))
                 .expect("to spawn invocation task")
         }
@@ -1829,7 +1811,6 @@ mod tests {
             _storage_reader: SR,
             _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
-            _input_journal: InvokeInputJournal,
             task_pool: &mut JoinSet<()>,
         ) -> AbortHandle {
             task_pool.spawn(pending())
@@ -1850,7 +1831,6 @@ mod tests {
             _storage_reader: SR,
             _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
-            _input_journal: InvokeInputJournal,
             task_pool: &mut JoinSet<()>,
         ) -> AbortHandle {
             self.fetch_add(1, Ordering::SeqCst);
@@ -1984,12 +1964,7 @@ mod tests {
             )
             .unwrap();
         handle
-            .invoke(
-                partition_leader_epoch,
-                invocation_id,
-                invocation_target,
-                InvokeInputJournal::NoCachedJournal,
-            )
+            .invoke(partition_leader_epoch, invocation_id, invocation_target)
             .unwrap();
 
         // If input order between 'register partition' and 'invoke' is not maintained, then it can happen
@@ -2018,7 +1993,7 @@ mod tests {
         let invocation_id_2 = InvocationId::mock_random();
 
         let (_invoker_tx, _status_tx, mut service_inner) = ServiceInner::mock(
-            |_, _, _, _, _, _, _| ready(()),
+            |_, _, _, _, _, _| ready(()),
             MockSchemas(
                 // fixed amount of retries so that an invocation eventually completes with a failure
                 Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
@@ -2036,7 +2011,6 @@ mod tests {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_1,
                 invocation_target: InvocationTarget::mock_virtual_object(),
-                journal: InvokeInputJournal::NoCachedJournal,
             }))
             .await;
         segment_queue
@@ -2046,7 +2020,6 @@ mod tests {
                 partition: MOCK_PARTITION,
                 invocation_id: invocation_id_2,
                 invocation_target: InvocationTarget::mock_virtual_object(),
-                journal: InvokeInputJournal::NoCachedJournal,
             }))
             .await;
 
@@ -2125,7 +2098,6 @@ mod tests {
              _service_id,
              _storage_reader,
              invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-             _,
              _| {
                 let _ = invoker_tx.send(InvocationTaskOutput {
                     partition,
@@ -2154,7 +2126,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // We should receive the new entry here
@@ -2206,8 +2177,7 @@ mod tests {
                   invocation_target,
                   _storage_reader,
                   _invoker_tx,
-                  _invoker_rx,
-                  _input_journal| {
+                  _invoker_rx| {
                 let task_started_tx = task_started_tx.clone();
                 async move {
                     // Signal that the task has started
@@ -2298,7 +2268,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // Simulate a transient failure to populate last_retry_attempt_failure
@@ -2383,7 +2352,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // Select protocol V4 to allow proposing events
@@ -2473,7 +2441,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // Abort error
@@ -2525,7 +2492,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // First transient error -> schedules retry (because 1 attempt available)
@@ -2620,7 +2586,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // Pin deployment (switches policy to Kill and resets attempts)
@@ -2687,7 +2652,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // Simulate a transient error to put invocation in WaitingRetry state
@@ -2749,7 +2713,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // Call manual pause while in flight
@@ -2809,7 +2772,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // Call manual pause while in flight
@@ -2870,7 +2832,6 @@ mod tests {
             MOCK_PARTITION,
             invocation_id,
             InvocationTarget::mock_virtual_object(),
-            InvokeInputJournal::NoCachedJournal,
         );
 
         // Simulate a transient error to put invocation in WaitingRetry state

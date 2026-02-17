@@ -520,14 +520,8 @@ impl LeaderState {
             Action::Invoke {
                 invocation_id,
                 invocation_target,
-                invoke_input_journal,
             } => invoker_tx
-                .invoke(
-                    partition_leader_epoch,
-                    invocation_id,
-                    invocation_target,
-                    invoke_input_journal,
-                )
+                .invoke(partition_leader_epoch, invocation_id, invocation_target)
                 .map_err(Error::Invoker)?,
             Action::NewOutboxMessage {
                 seq_number,
@@ -670,7 +664,6 @@ impl LeaderState {
                 item_hash,
                 invocation_id,
                 invocation_target,
-                invoke_input_journal,
             } => {
                 let permit = self.scheduler.pop_permit(item_hash).unwrap_or_else(|| {
                     tracing::warn!(
@@ -685,7 +678,6 @@ impl LeaderState {
                         permit,
                         invocation_id,
                         invocation_target,
-                        invoke_input_journal,
                     )
                     .map_err(Error::Invoker)?
             }

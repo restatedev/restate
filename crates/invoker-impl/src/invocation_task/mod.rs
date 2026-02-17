@@ -31,8 +31,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::instrument;
 
+use restate_invoker_api::EntryEnricher;
 use restate_invoker_api::invocation_reader::{InvocationReader, InvocationReaderTransaction};
-use restate_invoker_api::{EntryEnricher, InvokeInputJournal};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
@@ -244,14 +244,14 @@ where
         ),
         skip_all,
     )]
-    pub async fn run<IR>(mut self, input_journal: InvokeInputJournal, mut invocation_reader: IR)
+    pub async fn run<IR>(mut self, mut invocation_reader: IR)
     where
         IR: InvocationReader,
     {
         let start = Instant::now();
         // Execute the task
         let terminal_state = self
-            .select_protocol_version_and_run(input_journal, &mut invocation_reader)
+            .select_protocol_version_and_run(&mut invocation_reader)
             .await;
 
         // Sanity check of the final state
@@ -272,7 +272,6 @@ where
 
     async fn select_protocol_version_and_run<IR>(
         &mut self,
-        input_journal: InvokeInputJournal,
         invocation_reader: &mut IR,
     ) -> TerminalLoopState<()>
     where
@@ -280,19 +279,13 @@ where
     {
         let mut txn = invocation_reader.transaction();
 
-        // Get journal metadata and cached items (if any)
-        let (journal_metadata, cached_journal_items) = match input_journal {
-            InvokeInputJournal::NoCachedJournal => {
-                let metadata = shortcircuit!(
-                    txn.read_journal_metadata(&self.invocation_id)
-                        .await
-                        .map_err(|e| InvokerError::JournalReader(e.into()))
-                        .and_then(|opt| opt.ok_or_else(|| InvokerError::NotInvoked))
-                );
-                (metadata, None)
-            }
-            InvokeInputJournal::CachedJournal(metadata, items) => (metadata, Some(items)),
-        };
+        // Read journal metadata from storage
+        let journal_metadata = shortcircuit!(
+            txn.read_journal_metadata(&self.invocation_id)
+                .await
+                .map_err(|e| InvokerError::JournalReader(e.into()))
+                .and_then(|opt| opt.ok_or_else(|| InvokerError::NotInvoked))
+        );
 
         // Resolve the deployment metadata
         let schemas = self.schemas.live_load();
@@ -398,13 +391,7 @@ where
             let service_protocol_runner =
                 ServiceProtocolRunner::new(self, chosen_service_protocol_version);
             service_protocol_runner
-                .run(
-                    txn,
-                    journal_metadata,
-                    keyed_service_id,
-                    cached_journal_items,
-                    deployment,
-                )
+                .run(txn, journal_metadata, keyed_service_id, deployment)
                 .await
         } else {
             // Protocol runner for service protocol v4+
@@ -413,13 +400,7 @@ where
                 chosen_service_protocol_version,
             );
             service_protocol_runner
-                .run(
-                    txn,
-                    journal_metadata,
-                    keyed_service_id,
-                    cached_journal_items,
-                    deployment,
-                )
+                .run(txn, journal_metadata, keyed_service_id, deployment)
                 .await
         }
     }

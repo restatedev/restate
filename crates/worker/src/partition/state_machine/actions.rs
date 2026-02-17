@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_invoker_api::InvokeInputJournal;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::vqueue_table::EntryCard;
@@ -39,12 +38,10 @@ pub enum Action {
         item_hash: u64,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        invoke_input_journal: InvokeInputJournal,
     },
     Invoke {
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        invoke_input_journal: InvokeInputJournal,
     },
     NewOutboxMessage {
         seq_number: MessageIndex,
