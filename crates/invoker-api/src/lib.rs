@@ -111,7 +111,6 @@ pub mod test_util {
             _partition: PartitionLeaderEpoch,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
-            _journal: InvokeInputJournal,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }
@@ -123,7 +122,6 @@ pub mod test_util {
             _permit: Permit,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
-            _journal: InvokeInputJournal,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }
