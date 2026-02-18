@@ -34,7 +34,7 @@ use tracing::{debug, instrument};
 
 use restate_invoker_api::EntryEnricher;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction,
+    EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,
 };
 use restate_serde_util::ByteCount;
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
@@ -431,7 +431,7 @@ where
         }
 
         if chosen_service_protocol_version < ServiceProtocolVersion::V4
-            && journal_metadata.using_journal_table_v2
+            && journal_metadata.journal_kind == JournalKind::V2
         {
             // We don't support migrating from journal v2 to journal v1!
             shortcircuit!(Err(InvokerError::DeploymentDeprecated(
