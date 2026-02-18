@@ -159,28 +159,25 @@ where
             None => self.schema.clone(),
         };
 
-        let predicate = datafusion::logical_expr::utils::conjunction(filters.iter().cloned());
-        // as report our filter pushdown as inexact, all columns needed for the filters will be in the projection
-        let predicate = predicate
-            .map(|p| datafusion::physical_expr::planner::logical2physical(&p, &projected_schema));
-
-        // The predicate *should* have the correct column indices but bugs in datafusion can create mixups.
-        // Most datafusion table providers seem to use reassign_expr_columns so they are tolerant to this.
-        // The column indices are not important as all columns should refer to fields in this table
-        // and we don't have any duplicate field names.
-        let predicate = predicate
-            .map(|predicate| {
-                datafusion::physical_expr::utils::reassign_expr_columns(
-                    predicate,
-                    &projected_schema,
-                )
+        // as we report our filter pushdown as inexact, all columns needed for the filters will be in the projection
+        let filters: Vec<_> = filters
+            .iter()
+            .map(|p| {
+                let p = datafusion::physical_expr::planner::logical2physical(p, &projected_schema);
+                // The predicate *should* have the correct column indices but bugs in datafusion can create mixups.
+                // Most datafusion table providers seem to use reassign_expr_columns so they are tolerant to this.
+                // The column indices are not important as all columns should refer to fields in this table
+                // and we don't have any duplicate field names.
+                datafusion::physical_expr::utils::reassign_expr_columns(p, &projected_schema)
             })
-            .transpose()?;
+            .collect::<datafusion::common::Result<_>>()?;
 
         let partition_keys = self
             .partition_key_extractor
-            .try_extract(filters)
+            .try_extract(&filters)
             .map_err(|e| DataFusionError::External(e.into()))?;
+
+        let predicate = datafusion::physical_expr::conjunction_opt(filters);
 
         let physical_partitions: Vec<(PartitionId, Partition)> = self
             .partition_selector
