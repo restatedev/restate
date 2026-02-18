@@ -8,19 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Context;
-use datafusion::common::ScalarValue;
-use datafusion::logical_expr::expr::InList;
-use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col};
-use restate_types::identifiers::partitioner::HashPartitioner;
-use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
-use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::str::FromStr;
+use std::sync::Arc;
+
+use anyhow::Context;
+use datafusion::common::ScalarValue;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
+
+use restate_types::identifiers::partitioner::HashPartitioner;
+use restate_types::identifiers::{InvocationId, PartitionKey, WithPartitionKey};
 
 pub trait PartitionKeyExtractor: Send + Sync + 'static + Debug {
-    fn try_extract(&self, filters: &[Expr]) -> anyhow::Result<Option<BTreeSet<PartitionKey>>>;
+    fn try_extract(
+        &self,
+        filters: &[Arc<dyn PhysicalExpr>],
+    ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>>;
 }
 
 #[derive(Debug)]
@@ -30,25 +36,36 @@ pub struct FirstMatchingPartitionKeyExtractor {
 
 impl Default for FirstMatchingPartitionKeyExtractor {
     fn default() -> Self {
-        let extractors =
-            vec![Box::new(IdentityPartitionKeyExtractor::new()) as Box<dyn PartitionKeyExtractor>];
+        let extractors = vec![Box::new(MatchingColumnExtractor::new(
+            "partition_key",
+            |value: &ScalarValue| match value {
+                ScalarValue::UInt64(Some(v)) => Ok(*v),
+                _ => anyhow::bail!("expected UInt64 partition key"),
+            },
+        )) as Box<dyn PartitionKeyExtractor>];
         Self { extractors }
     }
 }
 
 impl FirstMatchingPartitionKeyExtractor {
     pub fn with_service_key(self, column_name: impl Into<String>) -> Self {
-        let e = MatchingColumnExtractor::new(column_name, |column_value: &str| {
-            let key = HashPartitioner::compute_partition_key(column_value);
-            Ok(key)
+        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+            let value = value
+                .try_as_str()
+                .context("expected string service key")?
+                .context("unexpected null service key")?;
+            Ok(HashPartitioner::compute_partition_key(value))
         });
         self.append(e)
     }
 
     pub fn with_invocation_id(self, column_name: impl Into<String>) -> Self {
-        let e = MatchingColumnExtractor::new(column_name, |column_value: &str| {
-            let invocation_id =
-                InvocationId::from_str(column_value).context("non valid invocation id")?;
+        let e = MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+            let value = value
+                .try_as_str()
+                .context("expected string invocation id")?
+                .context("unexpected null invocation id")?;
+            let invocation_id = InvocationId::from_str(value).context("non valid invocation id")?;
             Ok(invocation_id.partition_key())
         });
         self.append(e)
@@ -61,7 +78,10 @@ impl FirstMatchingPartitionKeyExtractor {
 }
 
 impl PartitionKeyExtractor for FirstMatchingPartitionKeyExtractor {
-    fn try_extract(&self, filters: &[Expr]) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
+    fn try_extract(
+        &self,
+        filters: &[Arc<dyn PhysicalExpr>],
+    ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
         for extractor in &self.extractors {
             if let Some(partition_keys) = extractor.try_extract(filters)? {
                 return Ok(Some(partition_keys));
@@ -73,51 +93,52 @@ impl PartitionKeyExtractor for FirstMatchingPartitionKeyExtractor {
 }
 
 pub(crate) struct MatchingColumnExtractor<F> {
-    column: Expr,
+    column_name: String,
     extractor: F,
 }
 
 impl<F> Debug for MatchingColumnExtractor<F> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("MatchingColumnExtractor{:?}", self.column))
+        f.write_fmt(format_args!(
+            "MatchingColumnExtractor({:?})",
+            self.column_name
+        ))
     }
 }
 
 impl<F> MatchingColumnExtractor<F> {
     pub(crate) fn new(column_name: impl Into<String>, extractor: F) -> Self {
-        let column = col(column_name.into());
-        Self { column, extractor }
+        Self {
+            column_name: column_name.into(),
+            extractor,
+        }
     }
 }
 
 impl<F> PartitionKeyExtractor for MatchingColumnExtractor<F>
 where
-    F: Fn(&str) -> anyhow::Result<PartitionKey> + Send + Sync + 'static,
+    F: Fn(&ScalarValue) -> anyhow::Result<PartitionKey> + Send + Sync + 'static,
 {
-    /// find an expression in the form of `$column_name = "..."`.
-    /// Then use the provided extractor to convert the textual value to a
-    /// partition_key
-    fn try_extract(&self, filters: &[Expr]) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
-        'filters: for filter in filters {
-            let Some(filter_as_inlist) = as_inlist(filter, 5) else {
+    /// Find an expression in the form of `$column_name = <literal>`.
+    /// Then use the provided extractor to convert the literal value to a partition_key.
+    fn try_extract(
+        &self,
+        filters: &[Arc<dyn PhysicalExpr>],
+    ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
+        for filter in filters {
+            let Some(inlist) = InList::parse(filter, 5) else {
                 continue;
             };
 
-            if *filter_as_inlist.expr != self.column {
+            if inlist.col.name() != self.column_name {
                 continue;
             }
 
             let mut list_keys = BTreeSet::new();
 
-            for item in &filter_as_inlist.list {
-                if let Expr::Literal(ScalarValue::LargeUtf8(Some(value)), _) = item {
-                    let f = &self.extractor;
-                    let pk = f(value)?;
-                    list_keys.insert(pk);
-                } else {
-                    // items in the list are ORed. If we can't parse one, we can't apply this list
-                    continue 'filters;
-                }
+            for value in &inlist.list {
+                let pk = (self.extractor)(value)?;
+                list_keys.insert(pk);
             }
 
             return Ok(Some(list_keys));
@@ -127,110 +148,123 @@ where
     }
 }
 
-/// Try to convert an expression to an in-list expression, recursively handling OR if needed
-/// Adapted from datafusion functions `as_inlist` and `are_inlist_and_eq`
-fn as_inlist(expr: &Expr, depth_limit: usize) -> Option<Cow<'_, InList>> {
-    if depth_limit <= 1 {
-        return None;
-    }
-    match expr {
-        Expr::InList(inlist) => Some(Cow::Borrowed(inlist)),
-        Expr::BinaryExpr(BinaryExpr {
-            left,
-            op: Operator::Eq,
-            right,
-        }) => match (left.as_ref(), right.as_ref()) {
-            (Expr::Column(_), Expr::Literal(_, _)) => Some(Cow::Owned(InList {
-                expr: left.clone(),
-                list: vec![*right.clone()],
-                negated: false,
-            })),
-            (Expr::Literal(_, _), Expr::Column(_)) => Some(Cow::Owned(InList {
-                expr: right.clone(),
-                list: vec![*left.clone()],
-                negated: false,
-            })),
-            _ => None,
-        },
-        Expr::BinaryExpr(BinaryExpr {
-            left,
-            op: Operator::Or,
-            right,
-        }) => {
-            let left_as_inlist = as_inlist(left, depth_limit - 1)?;
-            let right_as_inlist = as_inlist(right, depth_limit - 1)?;
+/// A normalized representation of predicates that compare a column to literal values.
+/// Handles `col = lit`, `col IN (lit, ...)`, and `col = lit OR col = lit ...` patterns.
+struct InList<'a> {
+    col: &'a Column,
+    list: HashSet<&'a ScalarValue>,
+    negated: bool,
+}
 
-            if matches!(left_as_inlist.expr.as_ref(), Expr::Column(_))
-                && matches!(right_as_inlist.expr.as_ref(), Expr::Column(_))
-                && left_as_inlist.expr == right_as_inlist.expr
-                && !left_as_inlist.negated
-                && !right_as_inlist.negated
-            {
-                let mut seen: HashSet<Expr> = HashSet::new();
-                let list = left_as_inlist
-                    .list
-                    .iter()
-                    .cloned()
-                    .chain(right_as_inlist.list.iter().cloned())
-                    .filter(|e| seen.insert(e.to_owned()))
-                    .collect::<Vec<_>>();
-
-                Some(Cow::Owned(InList {
-                    expr: left_as_inlist.expr.clone(),
-                    list,
-                    negated: false,
-                }))
-            } else {
-                None
-            }
+impl<'a> InList<'a> {
+    fn parse(predicate: &'a Arc<dyn PhysicalExpr>, depth_limit: usize) -> Option<Self> {
+        if depth_limit <= 1 {
+            return None;
         }
-        _ => None,
-    }
-}
 
-#[derive(Debug)]
-struct IdentityPartitionKeyExtractor(Expr);
+        // Handle IN list: col IN ('a', 'b', ...)
+        if let Some(in_list) = predicate.as_any().downcast_ref::<InListExpr>() {
+            let col = in_list.expr().as_any().downcast_ref::<Column>()?;
 
-impl IdentityPartitionKeyExtractor {
-    fn new() -> Self {
-        Self(col("partition_key"))
-    }
-}
-
-impl PartitionKeyExtractor for IdentityPartitionKeyExtractor {
-    fn try_extract(&self, filters: &[Expr]) -> Result<Option<BTreeSet<u64>>, anyhow::Error> {
-        'filters: for filter in filters {
-            let Some(filter_as_inlist) = as_inlist(filter, 5) else {
-                continue;
-            };
-
-            if *filter_as_inlist.expr != self.0 {
-                continue;
+            let mut list = HashSet::with_capacity(in_list.len());
+            for lit in in_list.list() {
+                let lit = lit.as_any().downcast_ref::<Literal>()?;
+                list.insert(lit.value());
             }
 
-            let mut list_keys = BTreeSet::new();
+            return Some(InList {
+                col,
+                list,
+                negated: in_list.negated(),
+            });
+        }
 
-            for item in &filter_as_inlist.list {
-                if let Expr::Literal(ScalarValue::UInt64(Some(value)), _) = item {
-                    list_keys.insert(*value as PartitionKey);
+        let binary = predicate.as_any().downcast_ref::<BinaryExpr>()?;
+
+        match binary.op() {
+            // Handle simple equality: col = 'a'
+            Operator::Eq => {
+                let (col, lit) = extract_column_literal(binary.left(), binary.right())
+                    .or_else(|| extract_column_literal(binary.right(), binary.left()))?;
+
+                Some(InList {
+                    col,
+                    list: HashSet::from_iter([lit.value()]),
+                    negated: false,
+                })
+            }
+            // Handle OR: col = 'a' OR col = 'b'
+            Operator::Or => {
+                let mut left = Self::parse(binary.left(), depth_limit - 1)?;
+                let right = Self::parse(binary.right(), depth_limit - 1)?;
+
+                if left.col.name() == right.col.name() && !left.negated && !right.negated {
+                    left.list.extend(right.list);
+                    Some(InList {
+                        col: left.col,
+                        list: left.list,
+                        negated: false,
+                    })
                 } else {
-                    // items in the list are ORed. If we can't parse one, we can't apply this list
-                    continue 'filters;
+                    None
                 }
             }
+            _ => None,
         }
-
-        Ok(None)
     }
+}
+
+fn extract_column_literal<'a>(
+    column: &'a Arc<dyn PhysicalExpr>,
+    literal: &'a Arc<dyn PhysicalExpr>,
+) -> Option<(&'a Column, &'a Literal)> {
+    let col = column.as_any().downcast_ref::<Column>()?;
+    let lit = literal.as_any().downcast_ref::<Literal>()?;
+    Some((col, lit))
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+    use std::sync::Arc;
+
     use datafusion::common::ScalarValue;
-    use datafusion::logical_expr::{Expr, col, or};
+    use datafusion::physical_plan::PhysicalExpr;
+    use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
+
     use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
+
+    use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+
+    fn col(name: &str) -> Arc<dyn PhysicalExpr> {
+        Arc::new(Column::new(name, 0))
+    }
+
+    fn utf8_lit(value: impl Into<String>) -> Arc<dyn PhysicalExpr> {
+        Arc::new(Literal::new(ScalarValue::LargeUtf8(Some(value.into()))))
+    }
+
+    fn eq(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            left,
+            datafusion::logical_expr::Operator::Eq,
+            right,
+        ))
+    }
+
+    fn or(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            left,
+            datafusion::logical_expr::Operator::Or,
+            right,
+        ))
+    }
+
+    fn in_list(col_name: &str, list: Vec<Arc<dyn PhysicalExpr>>) -> Arc<dyn PhysicalExpr> {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        let schema = Schema::new(vec![Field::new(col_name, DataType::LargeUtf8, true)]);
+        Arc::new(InListExpr::try_new(col(col_name), list, false, &schema).expect("valid in-list"))
+    }
 
     #[test]
     fn test_service_key() {
@@ -241,7 +275,7 @@ mod tests {
         let expected_key = service_id.partition_key();
 
         let got_keys = extractor
-            .try_extract(&[col("service_key").eq(utf8_lit("key-1"))])
+            .try_extract(&[eq(col("service_key"), utf8_lit("key-1"))])
             .expect("extract")
             .expect("to find a value");
 
@@ -260,9 +294,10 @@ mod tests {
         let expected_key_2 = service_id_2.partition_key();
 
         let got_keys = extractor
-            .try_extract(&[
-                col("service_key").in_list(vec![utf8_lit("key-1"), utf8_lit("key-2")], false)
-            ])
+            .try_extract(&[in_list(
+                "service_key",
+                vec![utf8_lit("key-1"), utf8_lit("key-2")],
+            )])
             .expect("extract")
             .expect("to find a value");
 
@@ -284,8 +319,8 @@ mod tests {
 
         let got_keys = extractor
             .try_extract(&[or(
-                col("service_key").eq(utf8_lit("key-1")),
-                col("service_key").eq(utf8_lit("key-2")),
+                eq(col("service_key"), utf8_lit("key-1")),
+                eq(col("service_key"), utf8_lit("key-2")),
             )])
             .expect("extract")
             .expect("to find a value");
@@ -313,12 +348,12 @@ mod tests {
         let got_keys = extractor
             .try_extract(&[or(
                 or(
-                    col("service_key").eq(utf8_lit("key-1")),
-                    col("service_key").eq(utf8_lit("key-2")),
+                    eq(col("service_key"), utf8_lit("key-1")),
+                    eq(col("service_key"), utf8_lit("key-2")),
                 ),
                 or(
-                    col("service_key").eq(utf8_lit("key-3")),
-                    col("service_key").eq(utf8_lit("key-4")),
+                    eq(col("service_key"), utf8_lit("key-3")),
+                    eq(col("service_key"), utf8_lit("key-4")),
                 ),
             )])
             .expect("extract")
@@ -340,16 +375,16 @@ mod tests {
         let got_keys = extractor
             .try_extract(&[or(
                 or(
-                    col("service_key").eq(utf8_lit("key-1")),
+                    eq(col("service_key"), utf8_lit("key-1")),
                     or(
-                        col("service_key").eq(utf8_lit("key-2")),
+                        eq(col("service_key"), utf8_lit("key-2")),
                         or(
-                            col("service_key").eq(utf8_lit("key-3")),
-                            col("service_key").eq(utf8_lit("key-4")),
+                            eq(col("service_key"), utf8_lit("key-3")),
+                            eq(col("service_key"), utf8_lit("key-4")),
                         ),
                     ),
                 ),
-                col("service_key").eq(utf8_lit("key-7")),
+                eq(col("service_key"), utf8_lit("key-7")),
             )])
             .expect("extract");
 
@@ -371,7 +406,7 @@ mod tests {
         let column_value = invocation_id.to_string();
 
         let got_keys = extractor
-            .try_extract(&[col("id").eq(utf8_lit(column_value))])
+            .try_extract(&[eq(col("id"), utf8_lit(column_value))])
             .expect("extract")
             .expect("to find a value");
 
@@ -389,24 +424,26 @@ mod tests {
             "add",
             VirtualObjectHandlerType::Exclusive,
         );
+
         let invocation_target_2 = InvocationTarget::virtual_object(
             "counter",
             "key-2",
             "count",
             VirtualObjectHandlerType::Exclusive,
         );
+
         let invocation_id_1 = InvocationId::generate(&invocation_target_1, None);
         let invocation_id_2 = InvocationId::generate(&invocation_target_2, None);
         let expected_key_1 = invocation_id_1.partition_key();
         let expected_key_2 = invocation_id_2.partition_key();
 
         let got_keys = extractor
-            .try_extract(&[col("id").in_list(
+            .try_extract(&[in_list(
+                "id",
                 vec![
                     utf8_lit(invocation_id_1.to_string()),
                     utf8_lit(invocation_id_2.to_string()),
                 ],
-                false,
             )])
             .expect("extract")
             .expect("to find a value");
@@ -427,19 +464,17 @@ mod tests {
             "add",
             VirtualObjectHandlerType::Exclusive,
         );
+
         let invocation_id = InvocationId::generate(&invocation_target, None);
 
+        // An OR where one side has a non-literal (column) should not be extractable
         let got_keys = extractor
-            .try_extract(&[col("id").in_list(
-                vec![utf8_lit(invocation_id.to_string()), col("some_other_col")],
-                false,
+            .try_extract(&[or(
+                eq(col("id"), utf8_lit(invocation_id.to_string())),
+                eq(col("id"), col("some_other_col")),
             )])
             .expect("extract");
 
         assert_eq!(None, got_keys);
-    }
-
-    fn utf8_lit(value: impl Into<String>) -> Expr {
-        Expr::Literal(ScalarValue::LargeUtf8(Some(value.into())), None)
     }
 }
