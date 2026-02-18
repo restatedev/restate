@@ -37,6 +37,11 @@ enum ServiceProtocolVersion {
   // * StartMessage.random_seed
   // * Failure.metadata
   V6 = 6;
+  // Added:
+  // * EagerStateEntryMessage and EagerStateCompleteMessage for streaming state
+  //   entries after the StartMessage, allowing state sizes to exceed the
+  //   maximum message size limit.
+  V7 = 7;
 }
 
 // --- Core frames ---
