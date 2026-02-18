@@ -284,7 +284,7 @@ impl<T: TransportConnect> RemoteScannerService for RemoteScannerServiceProxy<T> 
     ) -> Result<RemoteScanner, DataFusionError> {
         let connection = self
             .networking
-            .get_connection(peer, Swimlane::default())
+            .get_connection(peer, Swimlane::DataFusion)
             .in_tc_as_task(
                 &self.task_center,
                 TaskKind::InPlace,

@@ -571,7 +571,7 @@ impl ReadStreamTask {
         let maybe_records = networking
             .call_rpc(
                 server,
-                Swimlane::BifrostData,
+                Swimlane::BifrostReads,
                 request,
                 Some(self.my_params.loglet_id.into()),
                 Some(*options.log_server_rpc_timeout),
