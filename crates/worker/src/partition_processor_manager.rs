@@ -250,7 +250,7 @@ where
         ingestion_client: IngestionClient<T, Envelope>,
     ) -> Self {
         let config = updateable_config.pinned();
-        let ppm_svc_rx = router_builder.register_service(BackPressureMode::PushBack);
+        let ppm_svc_rx = router_builder.register_service(BackPressureMode::Lossy);
 
         // NOTE: this is a shared pool for RPC requests from ingress and ingestion clients across all
         // partitions.

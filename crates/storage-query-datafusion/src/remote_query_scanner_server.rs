@@ -45,7 +45,7 @@ impl RemoteQueryScannerServer {
         remote_scanner_manager: RemoteScannerManager,
         router_builder: &mut MessageRouterBuilder,
     ) -> Self {
-        let network_rx = router_builder.register_service(BackPressureMode::PushBack);
+        let network_rx = router_builder.register_service(BackPressureMode::Lossy);
 
         Self {
             query_context,
