@@ -19,7 +19,6 @@ use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
 use prost::Message;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
@@ -47,9 +46,9 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use crate::Notification;
 use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
 use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
-    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
-    invocation_id_to_header_value, service_protocol_version_to_header_value,
+    InvocationTask, InvocationTaskOutputInner, InvokerBody, InvokerBodySender, ResponseChunk,
+    ResponseStream, TerminalLoopState, X_RESTATE_SERVER, invocation_id_to_header_value,
+    service_protocol_version_to_header_value,
 };
 
 ///  Provides the value of the invocation id
@@ -252,12 +251,11 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
-    ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
-        // Make this channel a rendezvous channel to avoid unnecessary buffering between the service
-        // protocol runner and the underlying hyper HTTP client. This helps with keeping the overall
-        // memory consumption per invocation in check.
-        let (http_stream_tx, http_stream_rx) = mpsc::channel(1);
-        let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
+    ) -> (InvokerBodySender, Request<InvokerBody>) {
+        // Use an unbounded channel: backpressure is provided by the memory budget
+        // (each frame carries an optional BudgetLease) rather than channel capacity.
+        let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
+        let req_body = InvokerBody::new(http_stream_rx);
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
@@ -326,7 +324,7 @@ where
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
     async fn replay_loop<JournalStream, E>(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         http_stream_rx: &mut ResponseStream,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
@@ -358,7 +356,7 @@ where
                 opt_je = journal_stream.next() => {
                     match opt_je {
                         Some(Ok(JournalEntry::JournalV1(je))) => {
-                            crate::shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
+                            crate::shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)));
                             self.next_journal_index += 1;
                         },
                         Some(Ok(JournalEntry::JournalV2(re))) => {
@@ -369,7 +367,7 @@ where
                                         input_entry.headers,
                                         input_entry.payload
                                     ).erase_enrichment()
-                                )).await);
+                                )));
                             self.next_journal_index += 1;
                             } else {
                                 panic!("This is unexpected, when an entry is stored with journal v2, only input entry is allowed!")
@@ -401,7 +399,7 @@ where
     async fn bidi_stream_loop<IR>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        mut http_stream_tx: InvokerRequestStreamSender,
+        mut http_stream_tx: InvokerBodySender,
         http_stream_rx: &mut ResponseStream,
         mut invocation_reader: IR,
     ) -> TerminalLoopState<()>
@@ -422,11 +420,11 @@ where
                                 ).await
                             );
                             trace!("Sending the completion to the wire");
-                            crate::shortcircuit!(self.write(&mut http_stream_tx, completion.into()).await);
+                            crate::shortcircuit!(self.write(&mut http_stream_tx, completion.into()));
                         },
                         Some(Notification::Ack(entry_index)) => {
                             trace!("Sending the ack to the wire");
-                            crate::shortcircuit!(self.write(&mut http_stream_tx, ProtocolMessage::new_entry_ack(entry_index)).await);
+                            crate::shortcircuit!(self.write(&mut http_stream_tx, ProtocolMessage::new_entry_ack(entry_index)));
                         },
                         Some(Notification::Entry { .. }) => {
                             panic!("We don't expect to receive journal_v2 entries, this is an invoker bug.")
@@ -486,7 +484,7 @@ where
 
     async fn write_start<S, E>(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         journal_size: u32,
         state: Option<EagerState<S>>,
         retry_count_since_last_stored_entry: u32,
@@ -527,18 +525,17 @@ where
                 duration_since_last_stored_entry,
             ),
         )
-        .await
     }
 
-    async fn write(
+    fn write(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         msg: ProtocolMessage,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
-        if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
+        if http_stream_tx.send((Frame::data(buf), None)).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())

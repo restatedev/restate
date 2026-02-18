@@ -24,7 +24,6 @@ use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
@@ -62,9 +61,9 @@ use crate::error::{
     CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
-    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
-    invocation_id_to_header_value, service_protocol_version_to_header_value,
+    InvocationTask, InvocationTaskOutputInner, InvokerBody, InvokerBodySender, ResponseChunk,
+    ResponseStream, TerminalLoopState, X_RESTATE_SERVER, invocation_id_to_header_value,
+    service_protocol_version_to_header_value,
 };
 
 ///  Provides the value of the invocation id
@@ -274,12 +273,11 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
-    ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
-        // Make this channel a rendezvous channel to avoid unnecessary buffering between the service
-        // protocol runner and the underlying hyper HTTP client. This helps with keeping the overall
-        // memory consumption per invocation in check.
-        let (http_stream_tx, http_stream_rx) = mpsc::channel(1);
-        let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
+    ) -> (InvokerBodySender, Request<InvokerBody>) {
+        // Use an unbounded channel: backpressure is provided by the memory budget
+        // (each frame carries an optional BudgetLease) rather than channel capacity.
+        let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
+        let req_body = InvokerBody::new(http_stream_rx);
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
@@ -348,7 +346,7 @@ where
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
     async fn replay_loop<JournalStream, S, E>(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         http_stream_rx: &mut S,
         journal_stream: JournalStream,
         expected_entries_count: u32,
@@ -384,7 +382,7 @@ where
                     match opt_je {
                         Some(Ok(JournalEntry::JournalV2(entry))) => {
                             sent_entries += 1;
-                            crate::shortcircuit!(self.write_entry(http_stream_tx, entry.inner).await);
+                            crate::shortcircuit!(self.write_entry(http_stream_tx, entry.inner));
                         }
                         Some(Ok(JournalEntry::JournalV1(old_entry))) => {
                             sent_entries += 1;
@@ -396,7 +394,7 @@ where
                                         payload: input_entry.value,
                                         name: Default::default()
                                     }.into()).encode::<ServiceProtocolV4Codec>()
-                                ).await);
+                                ));
                             } else {
                                 panic!("This is unexpected, when an entry is stored with journal v1, only input entry is allowed!")
                             }
@@ -430,7 +428,7 @@ where
     async fn bidi_stream_loop<S, IR>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        mut http_stream_tx: InvokerRequestStreamSender,
+        mut http_stream_tx: InvokerBodySender,
         http_stream_rx: &mut S,
         mut invocation_reader: IR,
         journal_kind: JournalKind,
@@ -469,14 +467,14 @@ where
                                 }
                             };
                             trace!("Sending the entry to the wire");
-                            crate::shortcircuit!(self.write_entry(&mut http_stream_tx, raw_entry).await);
+                            crate::shortcircuit!(self.write_entry(&mut http_stream_tx, raw_entry));
                         }
                         Some(Notification::Completion(_)) => {
                             panic!("We don't expect to receive Notification::Completion in v4+, this is an invoker bug.")
                         },
                         Some(Notification::Ack(entry_index)) => {
                             trace!("Sending the ack to the wire");
-                            crate::shortcircuit!(self.write(&mut http_stream_tx, Message::new_command_ack(entry_index)).await);
+                            crate::shortcircuit!(self.write(&mut http_stream_tx, Message::new_command_ack(entry_index)));
                         },
                         None => {
                             // Completion channel is closed,
@@ -541,7 +539,7 @@ where
 
     async fn write_start<S, E>(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         journal_size: u32,
         state: Option<EagerState<S>>,
         retry_count_since_last_stored_entry: u32,
@@ -584,12 +582,11 @@ where
                 random_seed,
             ),
         )
-        .await
     }
 
-    async fn write_entry(
+    fn write_entry(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         entry: RawEntry,
     ) -> Result<(), InvokerError> {
         // TODO(slinkydeveloper) could this code be improved a tad bit more introducing something to our magic macro in message_codec?
@@ -599,8 +596,7 @@ where
                     http_stream_tx,
                     cmd.command_type().into(),
                     cmd.into_serialized_content(),
-                )
-                .await?;
+                )?;
                 self.command_index += 1;
             }
             RawEntry::Notification(notif) => {
@@ -608,37 +604,36 @@ where
                     http_stream_tx,
                     notif.ty().into(),
                     notif.into_serialized_content(),
-                )
-                .await?;
+                )?;
             }
         }
         Ok(())
     }
 
-    async fn write(
+    fn write(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         msg: Message,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
-        if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
+        if http_stream_tx.send((Frame::data(buf), None)).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())
     }
 
-    async fn write_raw(
+    fn write_raw(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         ty: MessageType,
         buf: Bytes,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?ty, "Sending message");
         let buf = self.encoder.encode_raw(ty, buf);
 
-        if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
+        if http_stream_tx.send((Frame::data(buf), None)).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())
