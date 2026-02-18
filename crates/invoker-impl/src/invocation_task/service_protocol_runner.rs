@@ -24,7 +24,7 @@ use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
+    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
 };
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
 use restate_service_client::{Endpoint, Method, Parts, Request};
@@ -192,7 +192,7 @@ where
                 txn.read_journal(
                     &self.invocation_task.invocation_id,
                     journal_size,
-                    journal_metadata.using_journal_table_v2,
+                    journal_metadata.journal_kind,
                 )
                 .map_err(|e| InvokerError::JournalReader(e.into()))
             );
@@ -710,7 +710,7 @@ pub(super) async fn read_completion_from_storage<IR: InvocationReader>(
 
     // v1-v3 protocol runner always uses journal table v1
     let journal_entry = invocation_reader
-        .read_journal_entry(invocation_id, entry_index, false)
+        .read_journal_entry(invocation_id, entry_index, JournalKind::V1)
         .await
         .map_err(|e| InvokerError::JournalReader(e.into()))?
         .ok_or_else(|| {

@@ -32,7 +32,9 @@ use tokio_util::task::AbortOnDropHandle;
 use tracing::instrument;
 
 use restate_invoker_api::EntryEnricher;
-use restate_invoker_api::invocation_reader::{InvocationReader, InvocationReaderTransaction};
+use restate_invoker_api::invocation_reader::{
+    InvocationReader, InvocationReaderTransaction, JournalKind,
+};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
@@ -367,7 +369,7 @@ where
         }
 
         if chosen_service_protocol_version < ServiceProtocolVersion::V4
-            && journal_metadata.using_journal_table_v2
+            && journal_metadata.journal_kind == JournalKind::V2
         {
             // We don't support migrating from journal v2 to journal v1!
             shortcircuit!(Err(InvokerError::DeploymentDeprecated(

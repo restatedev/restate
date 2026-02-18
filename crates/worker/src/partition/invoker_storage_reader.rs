@@ -15,7 +15,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 
 use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
+    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
@@ -62,9 +62,9 @@ where
         &mut self,
         invocation_id: &InvocationId,
         entry_index: restate_types::identifiers::EntryIndex,
-        using_journal_table_v2: bool,
+        journal_kind: JournalKind,
     ) -> Result<Option<JournalEntry>, InvokerStorageReaderError> {
-        if using_journal_table_v2 {
+        if journal_kind == JournalKind::V2 {
             let entry = journal_table_v2::ReadJournalTable::get_journal_entry(
                 &mut self.0,
                 *invocation_id,
@@ -130,7 +130,11 @@ where
                     *invocation_id,
                     1, // Just check first entry to determine version
                 )?);
-            let using_v2 = journal_v2_stream.next().await.transpose()?.is_some();
+            let journal_kind = if journal_v2_stream.next().await.transpose()?.is_some() {
+                JournalKind::V2
+            } else {
+                JournalKind::V1
+            };
 
             Ok(Some(JournalMetadata::new(
                 invoked_status.journal_metadata.length,
@@ -138,7 +142,7 @@ where
                 invoked_status.pinned_deployment,
                 invoked_status.timestamps.modification_time(),
                 random_seed,
-                using_v2,
+                journal_kind,
             )))
         } else {
             Ok(None)
@@ -149,9 +153,9 @@ where
         &self,
         invocation_id: &InvocationId,
         length: restate_types::identifiers::EntryIndex,
-        using_journal_table_v2: bool,
+        journal_kind: JournalKind,
     ) -> Result<Self::JournalStream<'_>, Self::Error> {
-        if using_journal_table_v2 {
+        if journal_kind == JournalKind::V2 {
             let journal_entries =
                 journal_table_v2::ReadJournalTable::get_journal(&self.txn, *invocation_id, length)?;
             Ok(Box::pin(journal_entries.map(|result| {

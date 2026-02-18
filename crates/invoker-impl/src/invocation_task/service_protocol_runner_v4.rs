@@ -30,7 +30,7 @@ use tracing::{debug, trace, warn};
 use restate_errors::warn_it;
 use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
+    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
 };
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -211,7 +211,7 @@ where
                 txn.read_journal(
                     &self.invocation_task.invocation_id,
                     journal_size,
-                    journal_metadata.using_journal_table_v2,
+                    journal_metadata.journal_kind,
                 )
                 .map_err(|e| InvokerError::JournalReader(e.into()))
             );
@@ -240,7 +240,7 @@ where
                     http_stream_tx,
                     &mut decoder_stream,
                     invocation_reader,
-                    journal_metadata.using_journal_table_v2,
+                    journal_metadata.journal_kind,
                 )
                 .await
             );
@@ -433,7 +433,7 @@ where
         mut http_stream_tx: InvokerRequestStreamSender,
         http_stream_rx: &mut S,
         mut invocation_reader: IR,
-        using_journal_table_v2: bool,
+        journal_kind: JournalKind,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
@@ -450,7 +450,7 @@ where
                                     .read_journal_entry(
                                         &self.invocation_task.invocation_id,
                                         entry_index,
-                                        using_journal_table_v2,
+                                        journal_kind,
                                     )
                                     .await
                                     .map_err(|e| InvokerError::JournalReader(e.into()))
