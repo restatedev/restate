@@ -7319,7 +7319,7 @@ dependencies = [
  "restate-time-util",
  "restate-types",
  "restate-workspace-hack",
- "schemars 1.2.0",
+ "schemars 1.2.1",
  "serde",
  "tempfile",
  "test-log",

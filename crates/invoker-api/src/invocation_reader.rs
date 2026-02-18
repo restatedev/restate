@@ -19,6 +19,15 @@ use restate_types::storage::StoredRawEntry;
 use restate_types::time::MillisSinceEpoch;
 use std::future::Future;
 
+/// Which journal storage table an invocation's entries are stored in.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum JournalKind {
+    /// Legacy journal table (service protocol v1-v3).
+    V1,
+    /// New journal table (service protocol v4+).
+    V2,
+}
+
 /// Metadata associated with a journal
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct JournalMetadata {
@@ -31,8 +40,7 @@ pub struct JournalMetadata {
     /// and the max time difference between two replicas applying the journal append command.
     pub last_modification_date: MillisSinceEpoch,
     pub random_seed: u64,
-    /// If true, the entries are stored in journal table v2
-    pub using_journal_table_v2: bool,
+    pub journal_kind: JournalKind,
 }
 
 impl JournalMetadata {
@@ -42,7 +50,7 @@ impl JournalMetadata {
         pinned_deployment: Option<PinnedDeployment>,
         last_modification_date: MillisSinceEpoch,
         random_seed: u64,
-        using_journal_table_v2: bool,
+        journal_kind: JournalKind,
     ) -> Self {
         Self {
             pinned_deployment,
@@ -50,7 +58,7 @@ impl JournalMetadata {
             length,
             last_modification_date,
             random_seed,
-            using_journal_table_v2,
+            journal_kind,
         }
     }
 }
@@ -82,7 +90,7 @@ pub trait InvocationReader {
         &mut self,
         invocation_id: &InvocationId,
         entry_index: EntryIndex,
-        using_journal_table_v2: bool,
+        journal_kind: JournalKind,
     ) -> impl Future<Output = Result<Option<JournalEntry>, Self::Error>> + Send;
 }
 
@@ -115,7 +123,7 @@ pub trait InvocationReaderTransaction {
         &self,
         invocation_id: &InvocationId,
         length: EntryIndex,
-        using_journal_table_v2: bool,
+        journal_kind: JournalKind,
     ) -> Result<Self::JournalStream<'_>, Self::Error>;
 
     /// Read the state for the given service id.
