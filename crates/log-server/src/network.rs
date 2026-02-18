@@ -61,7 +61,7 @@ impl RequestPump {
         let data_svc_rx =
             router_builder.register_service_with_pool(data_pool, BackPressureMode::PushBack);
         // Meta service uses the default shared memory pool.
-        let info_svc_rx = router_builder.register_service(BackPressureMode::PushBack);
+        let info_svc_rx = router_builder.register_service(BackPressureMode::Lossy);
 
         Self {
             data_svc_rx,

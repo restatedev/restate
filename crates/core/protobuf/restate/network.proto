@@ -25,6 +25,8 @@ enum Swimlane {
   BIFROST_DATA = 2;
   // Fat pipe for ingress data communication with workers
   INGRESS_DATA = 3;
+  /// Fat pipe for sending read requests and responses between
+  BIFROST_READS = 4;
 }
 
 //
