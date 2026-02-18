@@ -26,7 +26,7 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::{counter, histogram};
-use restate_memory::BudgetLease;
+use restate_memory::{BudgetLease, MemoryPool};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
@@ -270,6 +270,10 @@ pub(super) struct InvocationTask<EE, DMR> {
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
+    // Memory budget
+    #[allow(dead_code)]
+    memory_pool: MemoryPool,
+
     // throttling
     action_token_bucket: Option<TokenBucket>,
 }
@@ -338,6 +342,7 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
+        memory_pool: MemoryPool,
     ) -> Self {
         Self {
             client,
@@ -351,6 +356,7 @@ where
             schemas: deployment_metadata_resolver,
             invoker_tx,
             invoker_rx,
+            memory_pool,
             message_size_limit,
             message_size_warning,
             retry_count_since_last_stored_entry,
