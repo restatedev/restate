@@ -20,11 +20,11 @@ use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, PartitionKey};
 
 use crate::context::{QueryContext, SelectPartitions};
+use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::invocation_status::row::append_invocation_status_row;
 use crate::invocation_status::schema::{
     SysInvocationStatusBuilder, sys_invocation_status_sort_order,
 };
-use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{

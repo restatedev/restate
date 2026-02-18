@@ -234,7 +234,7 @@ mod tests {
     use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
 
-    use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+    use crate::filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
 
     fn col(name: &str) -> Arc<dyn PhysicalExpr> {
         Arc::new(Column::new(name, 0))

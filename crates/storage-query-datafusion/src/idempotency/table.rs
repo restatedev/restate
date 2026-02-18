@@ -20,7 +20,7 @@ use restate_types::identifiers::{IdempotencyId, PartitionKey};
 use super::row::append_idempotency_row;
 use super::schema::{SysIdempotencyBuilder, sys_idempotency_sort_order};
 use crate::context::{QueryContext, SelectPartitions};
-use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};

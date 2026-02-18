@@ -18,9 +18,9 @@ use restate_storage_api::inbox_table::{ScanInboxTable, SequenceNumberInboxEntry}
 use restate_types::identifiers::PartitionKey;
 
 use crate::context::{QueryContext, SelectPartitions};
+use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::inbox::row::append_inbox_row;
 use crate::inbox::schema::{SysInboxBuilder, sys_inbox_sort_order};
-use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};

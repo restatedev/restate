@@ -53,7 +53,7 @@ use prost::Message;
 pub(crate) mod mocks;
 
 pub mod empty_invoker_status_handle;
-mod partition_filter;
+mod filter;
 pub mod remote_query_scanner_client;
 pub mod remote_query_scanner_manager;
 #[cfg(test)]

@@ -20,7 +20,7 @@ use restate_storage_api::state_table::ScanStateTable;
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::context::{QueryContext, SelectPartitions};
-use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::state::row::append_state_row;
