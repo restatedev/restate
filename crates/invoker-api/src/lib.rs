@@ -18,14 +18,14 @@ pub mod status_handle;
 pub use effects::*;
 pub use entry_enricher::EntryEnricher;
 pub use handle::*;
-pub use invocation_reader::JournalMetadata;
+pub use invocation_reader::{JournalKind, JournalMetadata};
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util {
     use super::*;
     use crate::invocation_reader::{
-        EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry,
+        EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
     };
     use bytes::Bytes;
     use restate_errors::NotRunningError;
@@ -57,7 +57,7 @@ pub mod test_util {
             &mut self,
             _invocation_id: &InvocationId,
             _entry_index: EntryIndex,
-            _using_journal_table_v2: bool,
+            _journal_kind: JournalKind,
         ) -> Result<Option<JournalEntry>, Infallible> {
             Ok(None)
         }
@@ -80,7 +80,7 @@ pub mod test_util {
                 None,
                 MillisSinceEpoch::UNIX_EPOCH,
                 0,
-                true,
+                JournalKind::V2,
             )))
         }
 
@@ -88,7 +88,7 @@ pub mod test_util {
             &self,
             _invocation_id: &InvocationId,
             _length: EntryIndex,
-            _using_journal_table_v2: bool,
+            _journal_kind: JournalKind,
         ) -> Result<Self::JournalStream<'_>, Self::Error> {
             Ok(futures::stream::empty())
         }
