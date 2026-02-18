@@ -90,6 +90,21 @@ impl MemoryPool {
         }
     }
 
+    /// Returns the number of bytes currently available (capacity - used).
+    ///
+    /// For unlimited pools, returns `usize::MAX`.
+    #[inline]
+    pub fn available(&self) -> usize {
+        match &self.inner {
+            Some(inner) => {
+                let capacity = inner.capacity.load(Ordering::Relaxed);
+                let used = inner.used.load(Ordering::Relaxed);
+                capacity.saturating_sub(used)
+            }
+            None => usize::MAX,
+        }
+    }
+
     /// Tries to reserve `size` bytes without waiting.
     ///
     /// Returns `None` if insufficient capacity.
@@ -162,8 +177,13 @@ impl MemoryPool {
         }
     }
 
+    /// Returns `amount` bytes back to the pool.
+    ///
+    /// Typically called via [`MemoryLease::drop`], but exposed publicly for cases
+    /// where memory tracking is managed externally (e.g., directional budgets that
+    /// act as local caches on top of this pool).
     #[inline]
-    fn return_memory(&self, amount: usize) {
+    pub fn return_memory(&self, amount: usize) {
         if amount == 0 {
             return;
         }

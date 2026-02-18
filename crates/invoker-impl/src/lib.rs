@@ -10,6 +10,9 @@
 
 mod error;
 mod input_command;
+// TODO: Will be used in subsequent PRs for memory-aware journal replay and inbound path.
+#[allow(dead_code)]
+mod invocation_budget;
 mod invocation_state_machine;
 mod invocation_task;
 mod metric_definitions;
@@ -42,6 +45,7 @@ use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
 };
+use restate_memory::MemoryPool;
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
@@ -221,6 +225,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
         entry_enricher: TEntryEnricher,
         invocation_token_bucket: Option<TokenBucket>,
         action_token_bucket: Option<TokenBucket>,
+        memory_pool: MemoryPool,
     ) -> Service<StorageReader, TEntryEnricher, Schemas>
     where
         StorageReader: InvocationReader + Clone + Send + Sync + 'static,
@@ -256,11 +261,13 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                 ),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
+                memory_pool,
             },
             invocation_token_bucket,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn from_options(
         invoker_id: impl Into<InvokerId>,
         service_client_options: &ServiceClientOptions,
@@ -269,6 +276,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
         schemas: Live<Schemas>,
         invocation_token_bucket: Option<TokenBucket>,
         action_token_bucket: Option<TokenBucket>,
+        memory_pool: MemoryPool,
     ) -> Result<Service<StorageReader, TEntryEnricher, Schemas>, BuildError>
     where
         StorageReader: InvocationReader + Clone + Send + Sync + 'static,
@@ -287,6 +295,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
             entry_enricher,
             invocation_token_bucket,
             action_token_bucket,
+            memory_pool,
         ))
     }
 }
@@ -397,6 +406,10 @@ struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
     status_store: InvocationStatusStore,
     invocation_state_machine_manager:
         state_machine_manager::InvocationStateMachineManager<StorageReader>,
+
+    // Global memory budget shared across all invocations on this node.
+    #[allow(dead_code)]
+    memory_pool: MemoryPool,
 }
 
 impl<ITR, Schemas, IR> ServiceInner<ITR, Schemas, IR>
@@ -1715,6 +1728,7 @@ mod tests {
                 quota: InvokerConcurrencyQuota::new(0, concurrency_limit),
                 status_store: Default::default(),
                 invocation_state_machine_manager: Default::default(),
+                memory_pool: MemoryPool::unlimited(),
             };
             (input_tx, status_tx, service_inner)
         }
@@ -1938,6 +1952,7 @@ mod tests {
             entry_enricher::test_util::MockEntryEnricher,
             None,
             None,
+            MemoryPool::unlimited(),
         );
 
         let mut handle = service.handle();
