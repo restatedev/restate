@@ -117,6 +117,7 @@ struct DefaultInvocationTaskRunner<EE, Schemas> {
     entry_enricher: EE,
     schemas: Live<Schemas>,
     action_token_bucket: Option<TokenBucket>,
+    memory_pool: MemoryPool,
 }
 
 impl<IR, EE, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<EE, Schemas>
@@ -157,6 +158,7 @@ where
                     invoker_tx,
                     invoker_rx,
                     self.action_token_bucket.clone(),
+                    self.memory_pool.clone(),
                 )
                 .run(storage_reader),
             )
@@ -250,6 +252,7 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                     entry_enricher,
                     schemas: Live::clone(&schemas),
                     action_token_bucket,
+                    memory_pool: memory_pool.clone(),
                 },
                 schemas,
                 invocation_tasks: Default::default(),
