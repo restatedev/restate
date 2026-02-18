@@ -130,7 +130,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                 .networking
                 .call_rpc(
                     self.my_params.sequencer,
-                    Swimlane::default(),
+                    Swimlane::General,
                     get_seq_state,
                     Some(self.my_params.loglet_id.into()),
                     // todo: configure timeout?
