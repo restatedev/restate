@@ -12,6 +12,7 @@ use std::ops::{ControlFlow, RangeInclusive};
 
 use bytes::Bytes;
 use bytestring::ByteString;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::Priority;
 use restate_storage_api::idempotency_table::{
@@ -99,6 +100,7 @@ impl ScanIdempotencyTable for PartitionStore {
             "df-idempotency",
             Priority::Low,
             TableScan::FullScanPartitionKeyRange::<IdempotencyKey>(range),
+            ReadOptions::default(),
             move |(mut key, mut value)| {
                 let key = break_on_err(IdempotencyKey::deserialize_from(&mut key))?;
                 let idempotency_metadata = break_on_err(IdempotencyMetadata::decode(&mut value))?;

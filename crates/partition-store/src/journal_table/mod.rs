@@ -10,6 +10,7 @@
 
 use futures::Stream;
 use futures_util::stream;
+use rocksdb::ReadOptions;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
@@ -197,6 +198,7 @@ impl ScanJournalTable for PartitionStore {
             "df-v1-journal",
             Priority::Low,
             scan,
+            ReadOptions::default(),
             move |(mut key, mut value)| {
                 let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
                 let journal_entry = break_on_err(JournalEntry::decode(&mut value))?;

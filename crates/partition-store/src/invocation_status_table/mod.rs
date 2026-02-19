@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ffi::CStr;
 use std::ops::ControlFlow;
+use std::sync::atomic::Ordering;
 
 use futures::Stream;
+use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
@@ -24,8 +27,13 @@ use restate_storage_api::protobuf_types::v1::lazy::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
+use tracing::debug;
 
 use crate::TableScan::FullScanPartitionKeyRange;
+use crate::invocation_status_tracking::{
+    INVOCATION_STATUS_ALL_COMPLETED_PROPERTY, INVOCATION_STATUS_MAX_CREATION_TIME_PROPERTY,
+    INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY,
+};
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::scan::TableScan;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind, break_on_err};
@@ -124,6 +132,7 @@ impl ScanInvocationStatusTable for PartitionStore {
             "scan-all-invoked",
             Priority::High,
             FullScanPartitionKeyRange::<InvocationStatusKey>(self.partition_key_range().clone()),
+            ReadOptions::default(),
             read_invoked_full_invocation_id,
         )
         .map_err(|_| StorageError::OperationalError)
@@ -163,11 +172,85 @@ impl ScanInvocationStatusTable for PartitionStore {
             }
         };
 
+        debug!(?lazy_filter, "Starting invocation_status scan");
+        let mut read_options = ReadOptions::default();
+        if !lazy_filter.is_empty() && !std::env::var("TABLE_FILTER").is_ok_and(|v| v == "0") {
+            read_options.set_table_filter({
+                let lazy_filter = lazy_filter.clone();
+                move |table_properties| {
+                    let parse_property = |property: &CStr| -> Option<&str> {
+                        table_properties
+                            .get_user_collected_property(property)
+                            .and_then(|v| v.to_str().ok())
+                    };
+
+                    // If this SST contains only completed invocations, skip it when the
+                    // filter does not accept Completed status.
+                    if !lazy_filter
+                        .statuses
+                        .contains(InvocationStatusDiscriminants::Completed)
+                        && parse_property(INVOCATION_STATUS_ALL_COMPLETED_PROPERTY)
+                            .is_some_and(|v| v == "true")
+                    {
+                        debug!(
+                            statuses = ?lazy_filter.statuses,
+                            "Filtered out invocation_status sst (all_completed)"
+                        );
+                        return false;
+                    }
+
+                    if let Some(modified_after) = &lazy_filter.modified_after
+                        && let Some(max_modification_time) =
+                            parse_property(INVOCATION_STATUS_MAX_MODIFICATION_TIME_PROPERTY)
+                                .and_then(|v| v.parse::<u64>().ok())
+                        && let modified_after = modified_after.load(Ordering::Relaxed)
+                        && max_modification_time < modified_after
+                    {
+                        debug!(
+                            max_modification_time,
+                            modified_after, "Filtered out invocation_status sst (modified_at)"
+                        );
+                        return false;
+                    }
+
+                    if let Some(created_after) = &lazy_filter.created_after
+                        && let Some(max_creation_time) =
+                            parse_property(INVOCATION_STATUS_MAX_CREATION_TIME_PROPERTY)
+                                .and_then(|v| v.parse::<u64>().ok())
+                        && let created_after = created_after.load(Ordering::Relaxed)
+                        && max_creation_time < created_after
+                    {
+                        debug!(
+                            max_creation_time,
+                            created_after, "Filtered out invocation_status sst (created_at)"
+                        );
+                        return false;
+                    }
+
+                    true
+                }
+            });
+        }
+
+        struct Filtered(u64);
+        impl Drop for Filtered {
+            fn drop(&mut self) {
+                debug!("Filtered out {} invocation_status rows", self.0)
+            }
+        }
+        impl Filtered {
+            fn inc(&mut self) {
+                self.0 += 1;
+            }
+        }
+        let mut filtered = Filtered(0);
+
         let new_status_keys = self
             .iterator_for_each(
                 "df-for-each-invocation-status",
                 Priority::Low,
                 scan,
+                read_options,
                 {
                     move |(mut key, mut value)| {
                         let status_key =
@@ -192,6 +275,8 @@ impl ScanInvocationStatusTable for PartitionStore {
                         let matched = break_on_err(inv_status_v2_lazy.merge_with_filter(value, &lazy_filter).map_err(|e| StorageError::Conversion(e.into())))?;
 
                         if !matched {
+                            filtered.inc();
+
                             return ControlFlow::Continue(());
                         }
 
@@ -234,6 +319,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(
                     self.partition_key_range().clone(),
                 ),
+                ReadOptions::default(),
                 {
                     move |(mut key, mut value)| {
                         let status_key = InvocationStatusKey::deserialize_from(&mut key)?;
