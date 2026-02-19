@@ -86,6 +86,11 @@ pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
     pub(super) inner: InvocationTaskOutputInner,
+    /// Inbound budget lease tracking the memory for this message's wire data.
+    /// Held alive until the invoker main loop has forwarded the corresponding
+    /// [`Effect`] onto the bounded output channel, providing backpressure on the
+    /// unbounded `invocation_tasks_rx` channel.
+    pub(super) inbound_lease: Option<BudgetLease>,
 }
 
 pub(super) enum InvocationTaskOutputInner {
@@ -336,7 +341,7 @@ where
             TerminalLoopState::Failed(e) => InvocationTaskOutputInner::Failed(e),
         };
 
-        self.send_invoker_tx(inner);
+        self.send_invoker_tx(inner, None);
         histogram!(INVOKER_TASK_DURATION, "partition_id" => ID_LOOKUP.get(self.partition.0))
             .record(start.elapsed());
     }
@@ -457,20 +462,23 @@ where
             None
         };
 
-        self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
-            PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
-            deployment_changed,
-        ));
+        self.send_invoker_tx(
+            InvocationTaskOutputInner::PinnedDeployment(
+                PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
+                deployment_changed,
+            ),
+            None,
+        );
 
-        // Take the outbound budget out of the invocation budget. We pass it as a
-        // separate value to the protocol runner so it can be borrowed independently
-        // of the `&mut InvocationTask` reference the runner holds.
+        // Take the directional budgets out of the invocation budget. We pass them
+        // as separate values to the protocol runner so they can be borrowed
+        // independently of the `&mut InvocationTask` reference the runner holds.
         let invocation_budget = self
             .budget
             .take()
             .expect("budget already consumed; select_protocol_version_and_run called twice");
         let outbound_budget = invocation_budget.outbound;
-        // invocation_budget.inbound is dropped (will be wired in the inbound PR).
+        let inbound_budget = invocation_budget.inbound;
 
         if chosen_service_protocol_version <= ServiceProtocolVersion::V3 {
             // Protocol runner for service protocol <= v3
@@ -484,6 +492,7 @@ where
                     deployment,
                     reader_for_bidi,
                     outbound_budget,
+                    inbound_budget,
                 )
                 .await
         } else {
@@ -500,6 +509,7 @@ where
                     deployment,
                     reader_for_bidi,
                     outbound_budget,
+                    inbound_budget,
                 )
                 .await
         }
@@ -507,11 +517,16 @@ where
 }
 
 impl<EE, Schemas> InvocationTask<EE, Schemas> {
-    pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
+    pub(crate) fn send_invoker_tx(
+        &self,
+        invocation_task_output_inner: InvocationTaskOutputInner,
+        inbound_lease: Option<BudgetLease>,
+    ) {
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             invocation_id: self.invocation_id,
             inner: invocation_task_output_inner,
+            inbound_lease,
         });
     }
 }

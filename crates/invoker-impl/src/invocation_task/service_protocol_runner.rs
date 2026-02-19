@@ -73,6 +73,11 @@ pub struct ServiceProtocolRunner<'a, EE, DMR> {
 
     // task state
     next_journal_index: EntryIndex,
+
+    /// Cumulative inbound budget lease. Chunks are merged in as raw HTTP data
+    /// arrives; wire_size portions are split off per decoded message and sent
+    /// through the invoker channel with the corresponding output.
+    cumulative_inbound_lease: Option<BudgetLease>,
 }
 
 impl<'a, EE, DMR> ServiceProtocolRunner<'a, EE, DMR>
@@ -96,6 +101,7 @@ where
             encoder,
             decoder,
             next_journal_index: 0,
+            cumulative_inbound_lease: None,
         }
     }
 
@@ -108,6 +114,7 @@ where
     /// * `keyed_service_id` - If `Some`, eager state loading is enabled and we'll read/send
     ///   state for this service upfront. If `None`, lazy state is used (either because this
     ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
+    #[allow(clippy::too_many_arguments)]
     pub async fn run<Txn, IR>(
         mut self,
         txn: Txn,
@@ -116,6 +123,7 @@ where
         deployment: Deployment,
         invocation_reader: IR,
         mut outbound_budget: DirectionalBudget,
+        mut inbound_budget: DirectionalBudget,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -233,6 +241,7 @@ where
                     &mut http_stream_rx,
                     invocation_reader,
                     &mut outbound_budget,
+                    &mut inbound_budget,
                 )
                 .await
             );
@@ -246,7 +255,11 @@ where
         // We don't have the invoker_rx, so we simply consume the response
         trace!("Sender side of the request has been dropped, now processing the response");
         let result = self
-            .response_stream_loop(&service_invocation_span_context, &mut http_stream_rx)
+            .response_stream_loop(
+                &service_invocation_span_context,
+                &mut http_stream_rx,
+                &mut inbound_budget,
+            )
             .await;
 
         // Sanity check of the stream decoder
@@ -418,6 +431,7 @@ where
         http_stream_rx: &mut ResponseStream,
         mut invocation_reader: IR,
         outbound_budget: &mut DirectionalBudget,
+        inbound_budget: &mut DirectionalBudget,
     ) -> TerminalLoopState<()>
     where
         IR: InvocationReader,
@@ -462,11 +476,14 @@ where
                             return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(ResponseChunk::Data(buf)) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        Some(ResponseChunk::Data(buf)) => {
+                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, inbound_budget).await);
+                        }
                     }
                 },
                 _ = release_interval.tick() => {
                     outbound_budget.release_excess();
+                    inbound_budget.release_excess();
                 },
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
@@ -482,6 +499,7 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         http_stream_rx: &mut ResponseStream,
+        inbound_budget: &mut DirectionalBudget,
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
@@ -491,7 +509,9 @@ where
                             return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(ResponseChunk::Data(buf)) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        Some(ResponseChunk::Data(buf)) => {
+                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, inbound_budget).await);
+                        }
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
@@ -627,26 +647,56 @@ where
         }
 
         if let Some(hv) = parts.headers.remove(X_RESTATE_SERVER) {
-            self.invocation_task
-                .send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
+            self.invocation_task.send_invoker_tx(
+                InvocationTaskOutputInner::ServerHeaderReceived(
                     hv.to_str()
                         .map_err(|e| InvokerError::BadHeader(X_RESTATE_SERVER, e))?
                         .to_owned(),
-                ))
+                ),
+                None,
+            )
         }
 
         Ok(())
     }
 
-    fn handle_read(
+    async fn handle_read(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         buf: Bytes,
+        inbound_budget: &mut DirectionalBudget,
     ) -> TerminalLoopState<()> {
+        // Acquire inbound budget for the raw chunk before pushing
+        // to the decoder. On ShouldYield, abort the invocation.
+        let chunk_lease = match inbound_budget.reserve(buf.len()).await {
+            Ok(lease) => lease,
+            Err(_should_yield) => {
+                return TerminalLoopState::Failed(InvokerError::InboundBudgetExhausted);
+            }
+        };
+
+        match self.cumulative_inbound_lease.as_mut() {
+            Some(cumulative) => cumulative.merge(chunk_lease),
+            None => self.cumulative_inbound_lease = Some(chunk_lease),
+        }
+
         self.decoder.push(buf);
 
-        while let Some((frame_header, frame)) = crate::shortcircuit!(self.decoder.consume_next()) {
-            crate::shortcircuit!(self.handle_message(parent_span_context, frame_header, frame));
+        while let Some((frame_header, frame, payload_size)) =
+            crate::shortcircuit!(self.decoder.consume_next())
+        {
+            // Split off this message's payload_size from the cumulative inbound
+            // lease.
+            let msg_lease = self
+                .cumulative_inbound_lease
+                .as_mut()
+                .map(|lease| lease.split(payload_size));
+            crate::shortcircuit!(self.handle_message(
+                parent_span_context,
+                frame_header,
+                frame,
+                msg_lease,
+            ));
         }
 
         TerminalLoopState::Continue(())
@@ -657,6 +707,7 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
         mh: MessageHeader,
         message: ProtocolMessage,
+        inbound_lease: Option<BudgetLease>,
     ) -> TerminalLoopState<()> {
         trace!(restate.protocol.message_header = ?mh, restate.protocol.message = ?message, "Received message");
         match message {
@@ -719,14 +770,16 @@ where
                             e
                         ))
                 );
-                self.invocation_task
-                    .send_invoker_tx(InvocationTaskOutputInner::NewEntry {
+                self.invocation_task.send_invoker_tx(
+                    InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
                         entry: enriched_entry.into(),
                         requires_ack: mh
                             .requires_ack()
                             .expect("All entry messages support requires_ack"),
-                    });
+                    },
+                    inbound_lease,
+                );
                 self.next_journal_index += 1;
                 TerminalLoopState::Continue(())
             }

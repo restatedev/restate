@@ -247,9 +247,7 @@ where
                     Ok(je) => {
                         let size = estimate_journal_entry_size(&je);
                         match budget.reserve(size).await {
-                            Ok(lease) => {
-                                Some((Ok((je, lease)), (stream, budget)))
-                            }
+                            Ok(lease) => Some((Ok((je, lease)), (stream, budget))),
                             Err(_) => Some((
                                 Err(InvokerStorageReaderError::BudgetExhausted),
                                 (stream, budget),
@@ -279,9 +277,7 @@ where
                     Ok(kv) => {
                         let size = kv.0.len() + kv.1.len();
                         match budget.reserve(size).await {
-                            Ok(lease) => {
-                                Some((Ok((kv, lease)), (stream, budget)))
-                            }
+                            Ok(lease) => Some((Ok((kv, lease)), (stream, budget))),
                             Err(_) => Some((
                                 Err(InvokerStorageReaderError::BudgetExhausted),
                                 (stream, budget),

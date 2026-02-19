@@ -175,6 +175,11 @@ pub(crate) enum InvokerError {
     )]
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
+
+    // todo properly handle budget exhaustion by yielding the invocation instead
+    #[error("inbound memory budget exhausted for this invocation")]
+    #[code(restate_errors::RT0001)]
+    InboundBudgetExhausted,
 }
 
 impl InvokerError {

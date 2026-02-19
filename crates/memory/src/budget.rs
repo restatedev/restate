@@ -389,6 +389,30 @@ impl BudgetLease {
         // Prevent `other`'s Drop from decrementing in-flight.
         std::mem::forget(other);
     }
+
+    /// Splits off `amount` bytes into a new lease.
+    ///
+    /// The new lease shares the same [`SharedState`] as `self`. No memory is
+    /// returned to the budget — the total in-flight stays the same, just split
+    /// across two leases. Panics if `amount > self.size`.
+    pub fn split(&mut self, amount: usize) -> BudgetLease {
+        assert!(amount <= self.size, "cannot split more than lease size");
+        self.size -= amount;
+        BudgetLease {
+            shared: Arc::clone(&self.shared),
+            size: amount,
+        }
+    }
+
+    /// Shrinks by `amount` bytes (clamped to current size), returning them to
+    /// the budget immediately.
+    pub fn shrink(&mut self, amount: usize) {
+        let shrink_by = amount.min(self.size);
+        if shrink_by > 0 {
+            self.size -= shrink_by;
+            self.shared.return_memory(shrink_by);
+        }
+    }
 }
 
 impl Drop for BudgetLease {
@@ -847,5 +871,120 @@ mod tests {
         drop(l1);
         assert_eq!(budget.in_flight(), 0);
         assert_eq!(budget.available(), 150);
+    }
+
+    #[test]
+    fn split_and_drop_independently() {
+        let global = pool(1000);
+        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+
+        let mut lease = budget.try_reserve(100).unwrap();
+        assert_eq!(budget.in_flight(), 100);
+
+        // Split off 40 bytes — total in-flight stays 100.
+        let split = lease.split(40);
+        assert_eq!(lease.size(), 60);
+        assert_eq!(split.size(), 40);
+        assert_eq!(budget.in_flight(), 100);
+
+        // Dropping the split portion returns its share.
+        drop(split);
+        assert_eq!(budget.in_flight(), 60);
+
+        // Dropping the remainder returns the rest.
+        drop(lease);
+        assert_eq!(budget.in_flight(), 0);
+        assert_eq!(budget.available(), 100);
+    }
+
+    #[test]
+    fn split_to_zero() {
+        let global = pool(1000);
+        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+
+        let mut lease = budget.try_reserve(100).unwrap();
+        let zero = lease.split(0);
+        assert_eq!(lease.size(), 100);
+        assert_eq!(zero.size(), 0);
+        // Dropping a zero-size split is a no-op.
+        drop(zero);
+        assert_eq!(budget.in_flight(), 100);
+        drop(lease);
+    }
+
+    #[test]
+    fn split_entire_lease() {
+        let global = pool(1000);
+        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+
+        let mut lease = budget.try_reserve(100).unwrap();
+        let all = lease.split(100);
+        assert_eq!(lease.size(), 0);
+        assert_eq!(all.size(), 100);
+        assert_eq!(budget.in_flight(), 100);
+
+        // Original is now zero-sized — dropping it is a no-op.
+        drop(lease);
+        assert_eq!(budget.in_flight(), 100);
+
+        drop(all);
+        assert_eq!(budget.in_flight(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot split more than lease size")]
+    fn split_panics_on_overflow() {
+        let global = pool(1000);
+        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+
+        let mut lease = budget.try_reserve(50).unwrap();
+        let _ = lease.split(51);
+    }
+
+    #[test]
+    fn shrink_returns_to_budget() {
+        let global = pool(1000);
+        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+
+        let mut lease = budget.try_reserve(100).unwrap();
+        assert_eq!(budget.in_flight(), 100);
+
+        // Shrink by 30 — returns 30 to the budget immediately.
+        lease.shrink(30);
+        assert_eq!(lease.size(), 70);
+        assert_eq!(budget.in_flight(), 70);
+        assert_eq!(budget.available(), 30);
+
+        drop(lease);
+        assert_eq!(budget.in_flight(), 0);
+        assert_eq!(budget.available(), 100);
+    }
+
+    #[test]
+    fn shrink_clamped_to_size() {
+        let global = pool(1000);
+        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+
+        let mut lease = budget.try_reserve(50).unwrap();
+        // Shrink by more than the lease size — clamped to 50.
+        lease.shrink(200);
+        assert_eq!(lease.size(), 0);
+        assert_eq!(budget.in_flight(), 0);
+
+        // Dropping a zero-size lease is a no-op.
+        drop(lease);
+        assert_eq!(budget.in_flight(), 0);
+    }
+
+    #[test]
+    fn shrink_zero_is_noop() {
+        let global = pool(1000);
+        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+
+        let mut lease = budget.try_reserve(100).unwrap();
+        lease.shrink(0);
+        assert_eq!(lease.size(), 100);
+        assert_eq!(budget.in_flight(), 100);
+        drop(lease);
     }
 }
