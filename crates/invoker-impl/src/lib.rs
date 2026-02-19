@@ -41,13 +41,13 @@ use restate_errors::warn_it;
 use restate_invoker_api::capacity::TokenBucket;
 use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
-    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
+    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport, YieldReason,
 };
 use restate_memory::{InvocationBudget, MemoryLease, MemoryPool};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
-use restate_types::config::{InvokerOptions, ServiceClientOptions};
+use restate_types::config::{Configuration, InvokerOptions, ServiceClientOptions};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, WithPartitionKey};
 use restate_types::identifiers::{PartitionId, PartitionLeaderEpoch};
@@ -64,6 +64,7 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use tokio_util::time::DelayQueue;
 use tokio_util::time::delay_queue::Key as RetryTimerKey;
 
+use crate::error::BudgetDirection;
 use crate::error::InvokerError;
 use crate::error::SdkInvocationErrorV2;
 use crate::input_command::{InputCommand, InvokeCommand};
@@ -566,6 +567,9 @@ where
                     }
                     InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
                         self.handle_invocation_task_suspended_v2(partition, invocation_id, notification_ids).await
+                    }
+                    InvocationTaskOutputInner::ShouldYield { inbound_needed, outbound_needed, budget } => {
+                        self.handle_invocation_task_should_yield(partition, invocation_id, inbound_needed, outbound_needed, budget).await
                     }
                 };
             },
@@ -1234,6 +1238,72 @@ where
         } else {
             // If no state machine, this might be a result for an aborted invocation.
             trace!("No state machine found for invocation task error signal");
+        }
+    }
+
+    #[instrument(
+        level = "debug",
+        skip_all,
+        fields(
+            restate.invocation.id = %invocation_id,
+            restate.invoker.partition_leader_epoch = ?partition,
+        )
+    )]
+    async fn handle_invocation_task_should_yield(
+        &mut self,
+        partition: PartitionLeaderEpoch,
+        invocation_id: InvocationId,
+        inbound_needed: usize,
+        outbound_needed: usize,
+        budget: InvocationBudget,
+    ) {
+        if let Some((sender, _, mut ism)) = self
+            .invocation_state_machine_manager
+            .remove_invocation(partition, &invocation_id)
+        {
+            if Configuration::pinned()
+                .common
+                .experimental_enable_invoker_yield
+            {
+                debug!(
+                    restate.invocation.target = %ism.invocation_target,
+                    inbound_needed,
+                    outbound_needed,
+                    "Invocation yielding due to memory budget exhaustion"
+                );
+                ism.abort();
+                if ism._permit.is_empty() {
+                    self.quota.unreserve_slot();
+                }
+                self.status_store.on_end(&partition, &invocation_id);
+                let _ = sender
+                    .send(Box::new(Effect {
+                        invocation_id,
+                        kind: EffectKind::Yield(YieldReason::BudgetExhausted {
+                            inbound_needed_memory: inbound_needed,
+                            outbound_needed_memory: outbound_needed,
+                        }),
+                    }))
+                    .await;
+            } else {
+                // Flag disabled: fall back to retry.
+                let error = if inbound_needed > budget.inbound.min_reserved() {
+                    InvokerError::BudgetExhausted {
+                        needed: inbound_needed,
+                        direction: BudgetDirection::Inbound,
+                    }
+                } else {
+                    InvokerError::BudgetExhausted {
+                        needed: outbound_needed,
+                        direction: BudgetDirection::Outbound,
+                    }
+                };
+                ism.budget = Some(budget);
+                self.handle_error_event(partition, invocation_id, error, ism)
+                    .await;
+            }
+        } else {
+            trace!("No state machine found for invocation task yield signal");
         }
     }
 
@@ -3045,5 +3115,136 @@ mod tests {
                 })
             })
         );
+    }
+
+    /// When the yield flag is disabled (default), budget exhaustion falls back to the
+    /// retry path without bumping the retry count.
+    #[test(restate_core::test(start_paused = true))]
+    async fn yield_flag_disabled_falls_back_to_retry() {
+        let invoker_options = InvokerOptionsBuilder::default()
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
+            .disable_eager_state(false)
+            .message_size_warning(NonZeroUsize::new(1024).unwrap().into())
+            .message_size_limit(None)
+            .build()
+            .unwrap();
+        let invocation_id = InvocationId::mock_random();
+
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock(
+            (),
+            MockSchemas(
+                Some(RetryPolicy::fixed_delay(Duration::from_millis(100), None)),
+                None,
+            ),
+            None,
+        );
+        let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        let budget = service_inner.test_budget();
+        service_inner.handle_invoke(
+            &invoker_options,
+            MOCK_PARTITION,
+            invocation_id,
+            InvocationTarget::mock_virtual_object(),
+            budget,
+        );
+
+        // Simulate yield from invocation task (flag disabled by default)
+        service_inner
+            .handle_invocation_task_should_yield(
+                MOCK_PARTITION,
+                invocation_id,
+                65536,
+                32768,
+                service_inner.test_budget(),
+            )
+            .await;
+
+        // Should NOT emit EffectKind::Yield — instead the error goes through retry
+        // The ISM should be in WaitingRetry state (error was handled as BudgetExhausted)
+        assert!(service_inner.is_invocation_waiting_retry(MOCK_PARTITION, &invocation_id));
+
+        // No Yield effect should be emitted, but a transient error event should be
+        let effect = effects_rx
+            .try_recv()
+            .expect("expected a transient error event");
+        assert_that!(
+            *effect,
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                kind: pat!(EffectKind::JournalEvent {
+                    event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
+                })
+            })
+        );
+    }
+
+    /// When the yield flag is enabled, the invoker sends EffectKind::Yield and
+    /// releases the invocation slot.
+    #[test(restate_core::test(start_paused = true))]
+    async fn yield_flag_enabled_sends_yield_effect() {
+        // Enable the experimental yield flag
+        let mut config = Configuration::default();
+        config.common.experimental_enable_invoker_yield = true;
+        restate_types::config::set_current_config(config);
+
+        let invoker_options = InvokerOptionsBuilder::default()
+            .inactivity_timeout(FriendlyDuration::ZERO)
+            .abort_timeout(FriendlyDuration::ZERO)
+            .disable_eager_state(false)
+            .message_size_warning(NonZeroUsize::new(1024).unwrap().into())
+            .message_size_limit(None)
+            .build()
+            .unwrap();
+        let invocation_id = InvocationId::mock_random();
+
+        let (_, _status_tx, mut service_inner) = ServiceInner::mock(
+            (),
+            MockSchemas(
+                Some(RetryPolicy::fixed_delay(Duration::from_millis(100), None)),
+                None,
+            ),
+            None,
+        );
+        let mut effects_rx = service_inner.register_mock_partition(EmptyStorageReader);
+
+        let budget = service_inner.test_budget();
+        service_inner.handle_invoke(
+            &invoker_options,
+            MOCK_PARTITION,
+            invocation_id,
+            InvocationTarget::mock_virtual_object(),
+            budget,
+        );
+
+        // Simulate yield from invocation task
+        service_inner
+            .handle_invocation_task_should_yield(
+                MOCK_PARTITION,
+                invocation_id,
+                65536,
+                32768,
+                service_inner.test_budget(),
+            )
+            .await;
+
+        // Should emit EffectKind::Yield
+        let effect = effects_rx
+            .try_recv()
+            .expect("expected Yield effect to be emitted");
+        assert_that!(
+            *effect,
+            pat!(Effect {
+                invocation_id: eq(invocation_id),
+                kind: pat!(EffectKind::Yield(pat!(YieldReason::BudgetExhausted {
+                    inbound_needed_memory: eq(65536),
+                    outbound_needed_memory: eq(32768),
+                })))
+            })
+        );
+
+        // The invocation should no longer be tracked (slot released)
+        assert!(service_inner.quota.is_slot_available());
     }
 }

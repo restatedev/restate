@@ -74,12 +74,29 @@ pub enum JournalEntry {
     JournalV2(StoredRawEntry),
 }
 
+/// Error trait for invocation reader operations.
+///
+/// Implementations should indicate when a failure is due to memory budget
+/// exhaustion so that callers can yield the invocation instead of treating
+/// it as a transient storage error.
+pub trait InvocationReaderError: std::error::Error + Send + Sync + 'static {
+    /// If this error represents a memory budget exhaustion, returns the number
+    /// of bytes that were requested but could not be allocated.
+    fn budget_exhaustion(&self) -> Option<usize>;
+}
+
+impl InvocationReaderError for std::convert::Infallible {
+    fn budget_exhaustion(&self) -> Option<usize> {
+        match *self {}
+    }
+}
+
 /// Read information about invocations from the underlying storage.
 pub trait InvocationReader {
     type Transaction<'a>: InvocationReaderTransaction + Send
     where
         Self: 'a;
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: InvocationReaderError;
 
     /// Create a read transaction to read information about invocations from the underlying storage.
     fn transaction(&mut self) -> Self::Transaction<'_>;
@@ -132,7 +149,7 @@ pub trait InvocationReaderTransaction {
         + Send
     where
         Self: 'a;
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: InvocationReaderError;
 
     /// Read only the journal metadata for the given invocation id.
     ///

@@ -31,10 +31,10 @@ use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
 
-use restate_invoker_api::EntryEnricher;
 use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,
 };
+use restate_invoker_api::{EntryEnricher, InvocationReaderError};
 use restate_service_client::{Request, ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
@@ -50,7 +50,7 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::TokenBucket;
-use crate::error::InvokerError;
+use crate::error::{BudgetDirection, InvokerError};
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::{ID_LOOKUP, INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
@@ -98,7 +98,7 @@ async fn collect_eager_state<S, E, T>(
 ) -> Result<(bool, Vec<T>, Option<BudgetLease>), InvokerError>
 where
     S: Stream<Item = Result<((Bytes, Bytes), BudgetLease), E>> + Send,
-    E: std::error::Error + Send + Sync + 'static,
+    E: InvocationReaderError,
 {
     let Some(state) = state else {
         return Ok((true, Vec::new(), None));
@@ -185,6 +185,13 @@ pub(super) enum InvocationTaskOutputInner {
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
     Failed(InvokerError, InvocationBudget),
+    /// The invocation task yielded due to memory pressure.
+    /// The budget was dropped, returning memory to the global pool.
+    ShouldYield {
+        inbound_needed: usize,
+        outbound_needed: usize,
+        budget: InvocationBudget,
+    },
 }
 
 /// A frame sent through the body channel, carrying an optional memory budget lease.
@@ -289,13 +296,26 @@ enum TerminalLoopState<T> {
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
     Failed(InvokerError),
+    /// Memory budget exhausted — the invocation should yield.
+    ShouldYield {
+        needed: usize,
+        direction: BudgetDirection,
+    },
 }
 
 impl<T, E: Into<InvokerError>> From<Result<T, E>> for TerminalLoopState<T> {
     fn from(value: Result<T, E>) -> Self {
         match value {
             Ok(v) => TerminalLoopState::Continue(v),
-            Err(e) => TerminalLoopState::Failed(e.into()),
+            Err(e) => {
+                let err = e.into();
+                match err {
+                    InvokerError::BudgetExhausted { needed, direction } => {
+                        TerminalLoopState::ShouldYield { needed, direction }
+                    }
+                    other => TerminalLoopState::Failed(other),
+                }
+            }
         }
     }
 }
@@ -309,6 +329,9 @@ macro_rules! shortcircuit {
             TerminalLoopState::Closed => return TerminalLoopState::Closed,
             TerminalLoopState::Suspended(v) => return TerminalLoopState::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => return TerminalLoopState::SuspendedV2(v),
+            TerminalLoopState::ShouldYield { needed, direction } => {
+                return TerminalLoopState::ShouldYield { needed, direction }
+            }
             TerminalLoopState::Failed(e) => return TerminalLoopState::Failed(e),
         }
     };
@@ -379,8 +402,8 @@ where
             .await;
 
         // Only Failed returns the budget so the invoker main loop can stash
-        // it on the ISM for retry reuse. Other terminal states (Closed,
-        // Suspended) end the invocation — no retry needed.
+        // it on the ISM for retry reuse. ShouldYield drops the budget to free
+        // memory. Other terminal states (Closed, Suspended) end the invocation.
         let inner = match terminal_state {
             TerminalLoopState::Continue(_) => {
                 unreachable!("This is not supposed to happen. This is a runtime bug")
@@ -394,6 +417,21 @@ where
                 // again to release memory.
                 budget.release_excess();
                 InvocationTaskOutputInner::Failed(e, budget)
+            }
+            TerminalLoopState::ShouldYield { needed, direction } => {
+                // Extract memory requirements before dropping the budget.
+                // The failing direction reports `needed`; the other reports
+                // its min_reserved (the seed amount for that direction).
+                let (inbound_needed, outbound_needed) = match direction {
+                    BudgetDirection::Inbound => (needed, budget.outbound.min_reserved()),
+                    BudgetDirection::Outbound => (budget.inbound.min_reserved(), needed),
+                };
+
+                InvocationTaskOutputInner::ShouldYield {
+                    inbound_needed,
+                    outbound_needed,
+                    budget,
+                }
             }
         };
 
@@ -689,13 +727,25 @@ impl Stream for ResponseStream {
 mod tests {
     use bytes::Bytes;
     use futures::stream;
+    use std::convert::Infallible;
     use std::sync::LazyLock;
 
     use super::collect_eager_state;
+    use restate_invoker_api::InvocationReaderError;
     use restate_invoker_api::invocation_reader::EagerState;
     use restate_memory::{BudgetLease, DirectionalBudget};
 
-    type StateResult = Result<((Bytes, Bytes), BudgetLease), std::io::Error>;
+    #[derive(Debug, derive_more::Display)]
+    struct TestError;
+
+    impl std::error::Error for TestError {}
+    impl InvocationReaderError for TestError {
+        fn budget_exhaustion(&self) -> Option<usize> {
+            None
+        }
+    }
+
+    type StateResult = Result<((Bytes, Bytes), BudgetLease), TestError>;
 
     static MEMORY_POOL: LazyLock<DirectionalBudget> = LazyLock::new(DirectionalBudget::unlimited);
 
@@ -713,7 +763,7 @@ mod tests {
     #[tokio::test]
     async fn collect_eager_state_no_state_returns_partial() {
         let (is_partial, entries, _memory_lease) = collect_eager_state::<
-            stream::Empty<Result<((Bytes, Bytes), BudgetLease), std::io::Error>>,
+            stream::Empty<Result<((Bytes, Bytes), BudgetLease), Infallible>>,
             _,
             _,
         >(None, 1024, std::convert::identity)
@@ -788,7 +838,7 @@ mod tests {
 
     #[tokio::test]
     async fn collect_eager_state_stream_error_propagated() {
-        let items: Vec<StateResult> = vec![Err(std::io::Error::other("boom"))];
+        let items: Vec<StateResult> = vec![Err(TestError)];
         let state = EagerState::new_complete(stream::iter(items));
 
         let result = collect_eager_state(Some(state), 1024, std::convert::identity).await;
