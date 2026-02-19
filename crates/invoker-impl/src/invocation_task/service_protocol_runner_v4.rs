@@ -126,8 +126,8 @@ where
         keyed_service_id: Option<ServiceId>,
         deployment: Deployment,
         invocation_reader: IR,
-        mut outbound_budget: DirectionalBudget,
-        mut inbound_budget: DirectionalBudget,
+        outbound_budget: &mut DirectionalBudget,
+        inbound_budget: &mut DirectionalBudget,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -197,7 +197,7 @@ where
             // accompanies the start message frame.
             let state = if let Some(ref service_id) = keyed_service_id {
                 Some(crate::shortcircuit!(
-                    txn.read_state_budgeted(service_id, &mut outbound_budget)
+                    txn.read_state_budgeted(service_id, outbound_budget)
                         .map_err(|e| InvokerError::StateReader(e.into()))
                 ))
             } else {
@@ -224,7 +224,7 @@ where
                     &self.invocation_task.invocation_id,
                     journal_size,
                     journal_metadata.journal_kind,
-                    &mut outbound_budget,
+                    outbound_budget,
                 )
                 .map_err(|e| InvokerError::JournalReader(e.into()))
             );
@@ -261,8 +261,8 @@ where
                     // by the time the bidi stream loop needs to read notifications from it.
                     // todo remove once we drop support for journal v1
                     JournalKind::V2,
-                    &mut outbound_budget,
-                    &mut inbound_budget,
+                    outbound_budget,
+                    inbound_budget,
                 )
                 .await
             );
@@ -279,7 +279,7 @@ where
             .response_stream_loop(
                 &service_invocation_span_context,
                 &mut decoder_stream,
-                &mut inbound_budget,
+                inbound_budget,
             )
             .await;
 
