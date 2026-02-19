@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "adaptive-timeout"
+version = "0.0.1-alpha.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4970e2cdab8941ff642c052128cd739bcdf47576bd481f1a11d644981452a4ed"
+dependencies = [
+ "foldhash 0.2.0",
+ "hdrhistogram",
+ "schemars 1.2.0",
+ "serde",
+ "tokio",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6889,6 +6902,7 @@ dependencies = [
 name = "restate-bifrost"
 version = "1.6.2"
 dependencies = [
+ "adaptive-timeout",
  "ahash",
  "anyhow",
  "async-trait",
@@ -6921,6 +6935,7 @@ dependencies = [
  "restate-serde-util",
  "restate-storage-api",
  "restate-test-util",
+ "restate-time-util",
  "restate-types",
  "restate-wal-protocol",
  "restate-workspace-hack",
@@ -8153,6 +8168,7 @@ dependencies = [
 name = "restate-types"
 version = "1.6.2"
 dependencies = [
+ "adaptive-timeout",
  "ahash",
  "anyhow",
  "arc-swap",
@@ -8375,6 +8391,7 @@ dependencies = [
 name = "restate-workspace-hack"
 version = "0.0.1"
 dependencies = [
+ "adaptive-timeout",
  "ahash",
  "arrow",
  "arrow-array",
@@ -8413,6 +8430,7 @@ dependencies = [
  "either",
  "enum-map",
  "flate2",
+ "foldhash 0.2.0",
  "futures-channel",
  "futures-core",
  "futures-executor",
@@ -8473,6 +8491,7 @@ dependencies = [
  "rustls 0.23.35",
  "rustls-pki-types",
  "rustls-webpki 0.103.8",
+ "schemars 1.2.0",
  "semver",
  "serde",
  "serde_core",
