@@ -500,7 +500,12 @@ where
                 let InvocationTaskOutput {
                     invocation_id,
                     partition,
-                    inner
+                    inner,
+                    // Inbound budget lease — held alive through handler .await points
+                    // (including the bounded output_tx.send(Effect).await), then dropped
+                    // at the end of this select arm to release budget. A follow-up PR
+                    // will extend this lease into the Effect/Record pipeline.
+                    inbound_lease: _inbound_lease,
                 } = invocation_task_msg;
                 match inner {
                     InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
@@ -2129,6 +2134,7 @@ mod tests {
                 let _ = invoker_tx.send(InvocationTaskOutput {
                     partition,
                     invocation_id,
+                    inbound_lease: None,
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: 1,
                         entry: RawEntry::new(EnrichedEntryHeader::SetState {}, Bytes::default())
