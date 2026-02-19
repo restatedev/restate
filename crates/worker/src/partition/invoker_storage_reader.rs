@@ -15,7 +15,8 @@ use futures::{Stream, StreamExt, TryStreamExt};
 
 use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
+    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
+    JournalKind,
 };
 use restate_memory::{BudgetLease, DirectionalBudget};
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
@@ -27,8 +28,17 @@ use restate_types::identifiers::{InvocationId, ServiceId};
 pub enum InvokerStorageReaderError {
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
-    #[error("outbound memory budget exhausted")]
-    BudgetExhausted,
+    #[error("outbound memory budget exhausted (needed {needed} bytes)")]
+    BudgetExhausted { needed: usize },
+}
+
+impl InvocationReaderError for InvokerStorageReaderError {
+    fn budget_exhaustion(&self) -> Option<usize> {
+        match self {
+            Self::BudgetExhausted { needed } => Some(*needed),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -112,7 +122,7 @@ where
                 let lease = budget
                     .reserve(size)
                     .await
-                    .map_err(|_| InvokerStorageReaderError::BudgetExhausted)?;
+                    .map_err(|e| InvokerStorageReaderError::BudgetExhausted { needed: e.needed })?;
                 Ok(Some((je, lease)))
             }
             None => Ok(None),
@@ -248,8 +258,10 @@ where
                         let size = estimate_journal_entry_size(&je);
                         match budget.reserve(size).await {
                             Ok(lease) => Some((Ok((je, lease)), (stream, budget))),
-                            Err(_) => Some((
-                                Err(InvokerStorageReaderError::BudgetExhausted),
+                            Err(e) => Some((
+                                Err(InvokerStorageReaderError::BudgetExhausted {
+                                    needed: e.needed,
+                                }),
                                 (stream, budget),
                             )),
                         }
@@ -278,8 +290,10 @@ where
                         let size = kv.0.len() + kv.1.len();
                         match budget.reserve(size).await {
                             Ok(lease) => Some((Ok((kv, lease)), (stream, budget))),
-                            Err(_) => Some((
-                                Err(InvokerStorageReaderError::BudgetExhausted),
+                            Err(e) => Some((
+                                Err(InvokerStorageReaderError::BudgetExhausted {
+                                    needed: e.needed,
+                                }),
                                 (stream, budget),
                             )),
                         }

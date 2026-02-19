@@ -23,7 +23,8 @@ use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
+    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
+    JournalKind,
 };
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
 use restate_memory::{BudgetLease, DirectionalBudget};
@@ -45,7 +46,9 @@ use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
-use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
+use crate::error::{
+    BudgetDirection, InvocationErrorRelatedEntry, InvokerError, SdkInvocationError,
+};
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBody, InvokerBodySender, ResponseChunk,
     ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
@@ -184,7 +187,7 @@ where
             let state = if let Some(ref service_id) = keyed_service_id {
                 Some(crate::shortcircuit!(
                     txn.read_state_budgeted(service_id, outbound_budget)
-                        .map_err(|e| InvokerError::StateReader(e.into()))
+                        .map_err(InvokerError::from_state_reader)
                 ))
             } else {
                 None
@@ -211,7 +214,7 @@ where
                     journal_metadata.journal_kind,
                     outbound_budget,
                 )
-                .map_err(|e| InvokerError::JournalReader(e.into()))
+                .map_err(InvokerError::from_journal_reader)
             );
             crate::shortcircuit!(
                 self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
@@ -358,7 +361,7 @@ where
     ) -> TerminalLoopState<()>
     where
         JournalStream: Stream<Item = Result<(JournalEntry, BudgetLease), E>> + Unpin,
-        E: std::error::Error + Send + Sync + 'static,
+        E: InvocationReaderError,
     {
         let mut journal_stream = journal_stream.fuse();
         let mut got_headers = false;
@@ -410,6 +413,12 @@ where
                             panic!("Unexpected JournalV1Completion during replay: completion arrived before entry was stored")
                         }
                         Some(Err(e)) => {
+                            if let Some(needed) = e.budget_exhaustion() {
+                                return TerminalLoopState::ShouldYield {
+                                    needed,
+                                    direction: BudgetDirection::Outbound,
+                                };
+                            }
                             return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
                         }
                         None => {
@@ -534,7 +543,7 @@ where
     ) -> Result<(), InvokerError>
     where
         S: Stream<Item = Result<((Bytes, Bytes), BudgetLease), E>> + Send,
-        E: std::error::Error + Send + Sync + 'static,
+        E: InvocationReaderError,
     {
         // Collect state entries with size limit
         let (partial_state, state_map, state_lease) = collect_eager_state(
@@ -651,11 +660,14 @@ where
         inbound_budget: &mut DirectionalBudget,
     ) -> TerminalLoopState<()> {
         // Acquire inbound budget for the raw chunk before pushing
-        // to the decoder. On ShouldYield, abort the invocation.
+        // to the decoder. On BudgetExhausted, yield the invocation.
         let chunk_lease = match inbound_budget.reserve(buf.len()).await {
             Ok(lease) => lease,
-            Err(_should_yield) => {
-                return TerminalLoopState::Failed(InvokerError::InboundBudgetExhausted);
+            Err(exhausted) => {
+                return TerminalLoopState::ShouldYield {
+                    needed: exhausted.needed,
+                    direction: BudgetDirection::Inbound,
+                };
             }
         };
 
@@ -786,7 +798,7 @@ async fn read_completion_from_storage_budgeted<IR: InvocationReader>(
     let (entry, lease) = invocation_reader
         .read_journal_entry_budgeted(invocation_id, entry_index, JournalKind::V1, budget)
         .await
-        .map_err(|e| InvokerError::JournalReader(e.into()))?
+        .map_err(InvokerError::from_journal_reader)?
         .ok_or_else(|| {
             InvokerError::JournalReader(anyhow::anyhow!(
                 "journal entry {entry_index} not found for completion read"
