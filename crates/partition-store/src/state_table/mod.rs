@@ -23,6 +23,7 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::TableKind::State;
 use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::partition_store::DB;
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
@@ -54,8 +55,11 @@ fn user_state_key_from_slice(mut key: &[u8]) -> Result<Bytes> {
     Ok(StateKey::deserialize_from(&mut key)?.state_key)
 }
 
-/// Lazy iterator over state entries. Decodes entries on-demand from RocksDB.
-struct StateEntryIter<'a, DB: DBAccess> {
+/// Lazy iterator over state entries. Supports two-phase iteration:
+/// [`peek_value_size`](Self::peek_value_size) to inspect the raw byte size before
+/// decoding, then [`decode_and_advance`](Self::decode_and_advance) to decode and
+/// move forward. Also implements [`Iterator`] for convenience.
+pub struct StateEntryIter<'a, DB: DBAccess> {
     iter: DBRawIteratorWithThreadMode<'a, DB>,
 }
 
@@ -63,12 +67,24 @@ impl<'a, DB: DBAccess> StateEntryIter<'a, DB> {
     fn new(iter: DBRawIteratorWithThreadMode<'a, DB>) -> Self {
         Self { iter }
     }
-}
 
-impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
-    type Item = Result<(Bytes, Bytes)>;
+    /// Returns the raw byte size of the key + value at the current iterator
+    /// position without decoding or advancing. Returns `None` when exhausted.
+    pub fn peek_value_size(&self) -> Option<Result<usize>> {
+        match self.iter.item() {
+            Some((k, v)) => Some(Ok(k.len() + v.len())),
+            None => self
+                .iter
+                .status()
+                .err()
+                .map(|err| Err(StorageError::Generic(err.into()))),
+        }
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Decodes the current entry and advances the iterator.
+    /// Must only be called after [`peek_value_size`](Self::peek_value_size) returned
+    /// `Some(Ok(_))`.
+    pub fn decode_and_advance(&mut self) -> Option<Result<(Bytes, Bytes)>> {
         let Some((k, v)) = self.iter.item() else {
             return self
                 .iter
@@ -79,6 +95,14 @@ impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
         let result = decode_user_state_key_value(k, v);
         self.iter.next();
         Some(result)
+    }
+}
+
+impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
+    type Item = Result<(Bytes, Bytes)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.decode_and_advance()
     }
 }
 
@@ -212,6 +236,24 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         Ok(stream::iter(get_all_user_states_for_service(
             self, service_id,
         )?))
+    }
+}
+
+impl PartitionStoreTransaction<'_> {
+    // TODO: Thread the peekable iterator through the ReadStateTable trait (storage-api)
+    //  instead of exposing partition-store internals directly.
+
+    /// Returns a peekable state entry iterator for the given service.
+    ///
+    /// Unlike [`ReadStateTable::get_all_user_states_for_service`] which returns a
+    /// `Stream`, this returns the raw iterator supporting two-phase peek/decode for
+    /// memory budget gating.
+    pub fn get_all_user_states_peekable(
+        &self,
+        service_id: &ServiceId,
+    ) -> Result<StateEntryIter<'_, DB>> {
+        self.assert_partition_key(service_id)?;
+        get_all_user_states_for_service(self, service_id)
     }
 }
 
