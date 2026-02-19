@@ -47,7 +47,7 @@ pub type ResponseBody = http_body_util::Either<hyper::body::Incoming, Full<Bytes
 pub struct ServiceClient {
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
-    http: [HttpClient; 10],
+    http: Arc<[HttpClient]>,
     lambda: LambdaClient,
     // this can be changed to re-read periodically if necessary
     request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
@@ -56,7 +56,7 @@ pub struct ServiceClient {
 
 impl ServiceClient {
     pub(crate) fn new(
-        http: [HttpClient; 10],
+        http: Arc<[HttpClient]>,
         lambda: LambdaClient,
         request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
         additional_request_headers: HashMap<HeaderName, HeaderValue>,
@@ -85,7 +85,9 @@ impl ServiceClient {
             Arc::new(ArcSwapOption::empty())
         };
 
-        let clients = std::array::from_fn(|_| HttpClient::from_options(&options.http));
+        let clients = (0..options.num_http_clients.get())
+            .map(|_| HttpClient::from_options(&options.http))
+            .collect();
 
         Ok(Self::new(
             clients,
