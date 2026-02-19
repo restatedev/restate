@@ -19,6 +19,7 @@ use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 use crate::TableKind::Journal;
 use crate::keys::{KeyKind, TableKey, define_table_key};
 use crate::owned_iter::OwnedIterator;
+use crate::partition_store::DB;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
@@ -63,8 +64,11 @@ define_table_key!(
     )
 );
 
-/// Lazy iterator over journal entries. Decodes entries on-demand from RocksDB.
-struct JournalEntryIter<'a, DB: DBAccess> {
+/// Lazy iterator over journal entries. Supports two-phase iteration:
+/// [`peek_value_size`](Self::peek_value_size) to inspect the raw byte size before
+/// decoding, then [`decode_and_advance`](Self::decode_and_advance) to decode and
+/// move forward. Also implements [`Iterator`] for convenience.
+pub struct JournalEntryIter<'a, DB: DBAccess> {
     iter: DBRawIteratorWithThreadMode<'a, DB>,
     remaining: u32,
 }
@@ -76,12 +80,27 @@ impl<'a, DB: DBAccess> JournalEntryIter<'a, DB> {
             remaining: journal_length,
         }
     }
-}
 
-impl<DB: DBAccess> Iterator for JournalEntryIter<'_, DB> {
-    type Item = Result<(EntryIndex, StoredRawEntry)>;
+    /// Returns the raw serialized byte size of the value at the current iterator
+    /// position without decoding or advancing. Returns `None` when exhausted.
+    pub fn peek_value_size(&self) -> Option<Result<usize>> {
+        if self.remaining == 0 {
+            return None;
+        }
+        match self.iter.item() {
+            Some((_k, v)) => Some(Ok(v.len())),
+            None => self
+                .iter
+                .status()
+                .err()
+                .map(|err| Err(StorageError::Generic(err.into()))),
+        }
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
+    /// Decodes the current entry and advances the iterator.
+    /// Must only be called after [`peek_value_size`](Self::peek_value_size) returned
+    /// `Some(Ok(_))`.
+    pub fn decode_and_advance(&mut self) -> Option<Result<(EntryIndex, StoredRawEntry)>> {
         if self.remaining == 0 {
             return None;
         }
@@ -96,16 +115,20 @@ impl<DB: DBAccess> Iterator for JournalEntryIter<'_, DB> {
 
         let key_result =
             JournalKey::deserialize_from(&mut k).map(|journal_key| journal_key.journal_index);
-
-        // Todo: Evaluate whether copying v into Bytes before decoding JournalEntry is superior.
-        //  Depending on how many internal Bytes/ByteStrings are decoded, we might save allocations
-        //  at the cost of pinning more memory by copying v first to Bytes
         let entry_result = StoredEntry::decode(&mut v).map_err(|e| StorageError::Generic(e.into()));
 
         self.iter.next();
         self.remaining -= 1;
 
         Some(key_result.and_then(|key| entry_result.map(|entry| (key, entry.0))))
+    }
+}
+
+impl<DB: DBAccess> Iterator for JournalEntryIter<'_, DB> {
+    type Item = Result<(EntryIndex, StoredRawEntry)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.decode_and_advance()
     }
 }
 
@@ -459,6 +482,25 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
         completion_id: CompletionId,
     ) -> Result<bool> {
         has_completion(self, invocation_id, completion_id)
+    }
+}
+
+impl PartitionStoreTransaction<'_> {
+    // TODO: Thread the peekable iterator through the ReadJournalTable trait (storage-api)
+    //  instead of exposing partition-store internals directly.
+
+    /// Returns a peekable journal v2 entry iterator for the given invocation.
+    ///
+    /// Unlike [`ReadJournalTable::get_journal`] which returns a `Stream`, this
+    /// returns the raw iterator supporting two-phase peek/decode for memory
+    /// budget gating.
+    pub fn get_journal_v2_peekable(
+        &self,
+        invocation_id: &InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<JournalEntryIter<'_, DB>> {
+        self.assert_partition_key(invocation_id)?;
+        get_journal(self, invocation_id, journal_length)
     }
 }
 

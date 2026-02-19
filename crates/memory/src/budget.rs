@@ -322,6 +322,19 @@ impl DirectionalBudget {
     pub fn in_flight(&self) -> usize {
         self.shared.in_flight.load(Ordering::Relaxed) & !DEAD_BIT
     }
+
+    /// Creates a zero-sized lease from this budget.
+    ///
+    /// The returned lease shares the same [`Arc<SharedState>`] as leases produced
+    /// by [`try_reserve`](Self::try_reserve) / [`reserve`](Self::reserve), so it
+    /// can be [`merged`](BudgetLease::merge) with them. Dropping an empty lease
+    /// is a no-op.
+    pub fn empty_lease(&self) -> BudgetLease {
+        BudgetLease {
+            shared: Arc::clone(&self.shared),
+            size: 0,
+        }
+    }
 }
 
 impl Drop for DirectionalBudget {
@@ -360,6 +373,21 @@ impl BudgetLease {
     /// Returns the size of this lease in bytes.
     pub fn size(&self) -> usize {
         self.size
+    }
+
+    /// Merges `other` into `self`, combining their sizes.
+    ///
+    /// Both leases must originate from the same [`DirectionalBudget`] (debug-asserted).
+    /// After the merge, `other` is consumed without decrementing in-flight — the
+    /// combined in-flight is now tracked by `self` alone.
+    pub fn merge(&mut self, other: BudgetLease) {
+        debug_assert!(
+            Arc::ptr_eq(&self.shared, &other.shared),
+            "cannot merge leases from different budgets"
+        );
+        self.size += other.size;
+        // Prevent `other`'s Drop from decrementing in-flight.
+        std::mem::forget(other);
     }
 }
 
@@ -767,5 +795,57 @@ mod tests {
         drop(l3);
         drop(budget);
         assert_eq!(global.used().as_usize(), 0);
+    }
+
+    #[test]
+    fn empty_lease_and_merge() {
+        let global = pool(1000);
+        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+
+        let empty = budget.empty_lease();
+        assert_eq!(empty.size(), 0);
+        assert_eq!(budget.in_flight(), 0);
+
+        // Dropping an empty lease is a no-op.
+        drop(empty);
+        assert_eq!(budget.in_flight(), 0);
+
+        // Merge empty into a real lease.
+        let mut real = budget.try_reserve(100).unwrap();
+        let empty = budget.empty_lease();
+        real.merge(empty);
+        assert_eq!(real.size(), 100);
+        assert_eq!(budget.in_flight(), 100);
+
+        // Merge a real lease into an empty lease.
+        let mut empty = budget.empty_lease();
+        let real2 = budget.try_reserve(50).unwrap();
+        empty.merge(real2);
+        assert_eq!(empty.size(), 50);
+        assert_eq!(budget.in_flight(), 150);
+
+        drop(real);
+        drop(empty);
+        assert_eq!(budget.in_flight(), 0);
+    }
+
+    #[test]
+    fn merge_leases_combines_sizes() {
+        let global = pool(1000);
+        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+
+        let mut l1 = budget.try_reserve(100).unwrap();
+        let l2 = budget.try_reserve(50).unwrap();
+        assert_eq!(budget.in_flight(), 150);
+
+        l1.merge(l2);
+        assert_eq!(l1.size(), 150);
+        // in_flight unchanged — no double-counting
+        assert_eq!(budget.in_flight(), 150);
+
+        // Dropping the merged lease returns all memory
+        drop(l1);
+        assert_eq!(budget.in_flight(), 0);
+        assert_eq!(budget.available(), 150);
     }
 }

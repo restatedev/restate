@@ -25,7 +25,7 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::histogram;
-use restate_memory::{BudgetLease, MemoryPool};
+use restate_memory::{BudgetLease, InvocationBudget};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::instrument;
@@ -218,9 +218,9 @@ pub(super) struct InvocationTask<EE, DMR> {
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
-    // Memory budget
-    #[allow(dead_code)]
-    memory_pool: MemoryPool,
+    // Memory budget for this invocation (inbound + outbound).
+    // `Option` because the budget is taken once in `select_protocol_version_and_run`.
+    budget: Option<InvocationBudget>,
 
     // throttling
     action_token_bucket: Option<TokenBucket>,
@@ -280,7 +280,7 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
-        memory_pool: MemoryPool,
+        budget: InvocationBudget,
     ) -> Self {
         Self {
             client,
@@ -294,7 +294,7 @@ where
             schemas: deployment_metadata_resolver,
             invoker_tx,
             invoker_rx,
-            memory_pool,
+            budget: Some(budget),
             message_size_limit,
             message_size_warning,
             retry_count_since_last_stored_entry,
@@ -462,6 +462,16 @@ where
             deployment_changed,
         ));
 
+        // Take the outbound budget out of the invocation budget. We pass it as a
+        // separate value to the protocol runner so it can be borrowed independently
+        // of the `&mut InvocationTask` reference the runner holds.
+        let invocation_budget = self
+            .budget
+            .take()
+            .expect("budget already consumed; select_protocol_version_and_run called twice");
+        let outbound_budget = invocation_budget.outbound;
+        // invocation_budget.inbound is dropped (will be wired in the inbound PR).
+
         if chosen_service_protocol_version <= ServiceProtocolVersion::V3 {
             // Protocol runner for service protocol <= v3
             let service_protocol_runner =
@@ -473,6 +483,7 @@ where
                     keyed_service_id,
                     deployment,
                     reader_for_bidi,
+                    outbound_budget,
                 )
                 .await
         } else {
@@ -488,6 +499,7 @@ where
                     keyed_service_id,
                     deployment,
                     reader_for_bidi,
+                    outbound_budget,
                 )
                 .await
         }

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -31,6 +31,7 @@ use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
 };
+use restate_memory::{BudgetLease, DirectionalBudget};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -106,6 +107,9 @@ where
         }
     }
 
+    /// How often to release excess outbound budget capacity during the bidi-stream phase.
+    const BUDGET_RELEASE_INTERVAL: Duration = Duration::from_secs(5);
+
     /// Run the service protocol interaction.
     ///
     /// # Arguments
@@ -119,6 +123,7 @@ where
         keyed_service_id: Option<ServiceId>,
         deployment: Deployment,
         invocation_reader: IR,
+        mut outbound_budget: DirectionalBudget,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -182,17 +187,20 @@ where
 
         // === Replay phase (transaction alive) ===
         {
-            // Read state if needed (state is collected for the START message)
+            // Read state if needed (state is collected for the START message).
+            // Budget-gated: each state entry acquires a lease from the outbound
+            // budget. The per-entry leases are merged into a single lease that
+            // accompanies the start message frame.
             let state = if let Some(ref service_id) = keyed_service_id {
                 Some(crate::shortcircuit!(
-                    txn.read_state(service_id)
+                    txn.read_state_budgeted(service_id, &mut outbound_budget)
                         .map_err(|e| InvokerError::StateReader(e.into()))
                 ))
             } else {
                 None
             };
 
-            // Send start message with state
+            // Send start message with state (leases are merged inside write_start)
             crate::shortcircuit!(
                 self.write_start(
                     &mut http_stream_tx,
@@ -205,12 +213,14 @@ where
                 .await
             );
 
-            // Read journal stream from storage and execute the replay
+            // Read journal stream from storage and execute the replay.
+            // Budget-gated: each entry acquires a lease before it's sent.
             let journal_stream = crate::shortcircuit!(
-                txn.read_journal(
+                txn.read_journal_budgeted(
                     &self.invocation_task.invocation_id,
                     journal_size,
                     journal_metadata.journal_kind,
+                    &mut outbound_budget,
                 )
                 .map_err(|e| InvokerError::JournalReader(e.into()))
             );
@@ -229,6 +239,10 @@ where
         // Transaction dropped - RocksDB snapshot released!
         drop(txn);
 
+        // Release excess local capacity accumulated during replay back to the
+        // global pool before entering the bidi stream phase.
+        outbound_budget.release_excess();
+
         // If we have the invoker_rx and the protocol type is bidi stream,
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
         if protocol_type == ProtocolType::BidiStream {
@@ -240,6 +254,7 @@ where
                     &mut decoder_stream,
                     invocation_reader,
                     journal_metadata.journal_kind,
+                    &mut outbound_budget,
                 )
                 .await
             );
@@ -352,7 +367,7 @@ where
         expected_entries_count: u32,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = Result<JournalEntry, E>> + Unpin,
+        JournalStream: Stream<Item = Result<(JournalEntry, BudgetLease), E>> + Unpin,
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
         E: std::error::Error + Send + Sync + 'static,
     {
@@ -380,26 +395,27 @@ where
                 },
                 opt_je = journal_stream.next() => {
                     match opt_je {
-                        Some(Ok(JournalEntry::JournalV2(entry))) => {
+                        Some(Ok((JournalEntry::JournalV2(entry), lease))) => {
                             sent_entries += 1;
-                            crate::shortcircuit!(self.write_entry(http_stream_tx, entry.inner));
+                            crate::shortcircuit!(self.write_entry_with_lease(http_stream_tx, entry.inner, Some(lease)));
                         }
-                        Some(Ok(JournalEntry::JournalV1(old_entry))) => {
+                        Some(Ok((JournalEntry::JournalV1(old_entry), lease))) => {
                             sent_entries += 1;
                             if let journal::Entry::Input(input_entry) = crate::shortcircuit!(old_entry.deserialize_entry::<ProtobufRawEntryCodec>()) {
-                                crate::shortcircuit!(self.write_entry(
+                                crate::shortcircuit!(self.write_entry_with_lease(
                                     http_stream_tx,
                                     Entry::Command(InputCommand {
                                         headers: input_entry.headers,
                                         payload: input_entry.value,
                                         name: Default::default()
-                                    }.into()).encode::<ServiceProtocolV4Codec>()
+                                    }.into()).encode::<ServiceProtocolV4Codec>(),
+                                    Some(lease),
                                 ));
                             } else {
                                 panic!("This is unexpected, when an entry is stored with journal v1, only input entry is allowed!")
                             }
                         },
-                        Some(Ok(JournalEntry::JournalV1Completion(_))) => {
+                        Some(Ok((JournalEntry::JournalV1Completion(_), _))) => {
                             panic!("Unexpected JournalV1Completion during replay: completion arrived before entry was stored")
                         }
                         Some(Err(e)) => {
@@ -432,42 +448,44 @@ where
         http_stream_rx: &mut S,
         mut invocation_reader: IR,
         journal_kind: JournalKind,
+        outbound_budget: &mut DirectionalBudget,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
         IR: InvocationReader,
     {
+        let mut release_interval = tokio::time::interval(Self::BUDGET_RELEASE_INTERVAL);
+        release_interval.tick().await; // consume initial immediate tick
         loop {
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
                     match opt_completion {
                         Some(Notification::Entry(entry_index)) => {
                             trace!(restate.journal.index = entry_index, "Reading entry from storage");
-                            let journal_entry = crate::shortcircuit!(
+                            let (journal_entry, lease) = crate::shortcircuit!(
                                 invocation_reader
-                                    .read_journal_entry(
+                                    .read_journal_entry_budgeted(
                                         &self.invocation_task.invocation_id,
                                         entry_index,
                                         journal_kind,
+                                        outbound_budget,
                                     )
                                     .await
                                     .map_err(|e| InvokerError::JournalReader(e.into()))
-                            );
-                            let raw_entry = match journal_entry {
-                                Some(JournalEntry::JournalV2(stored)) => stored.inner,
-                                Some(other) => {
-                                    panic!("v4+ protocol runner expected JournalV2 entry but got {other:?}")
-                                }
-                                None => {
-                                    return TerminalLoopState::Failed(InvokerError::JournalReader(
+                                    .and_then(|opt| opt.ok_or_else(|| InvokerError::JournalReader(
                                         anyhow::anyhow!(
                                             "journal entry {entry_index} not found for notification read"
                                         ),
-                                    ));
+                                    )))
+                            );
+                            let raw_entry = match journal_entry {
+                                JournalEntry::JournalV2(stored) => stored.inner,
+                                other => {
+                                    panic!("v4+ protocol runner expected JournalV2 entry but got {other:?}")
                                 }
                             };
                             trace!("Sending the entry to the wire");
-                            crate::shortcircuit!(self.write_entry(&mut http_stream_tx, raw_entry));
+                            crate::shortcircuit!(self.write_entry_with_lease(&mut http_stream_tx, raw_entry, Some(lease)));
                         }
                         Some(Notification::Completion(_)) => {
                             panic!("We don't expect to receive Notification::Completion in v4+, this is an invoker bug.")
@@ -494,6 +512,9 @@ where
                             crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message));
                         }
                     }
+                },
+                _ = release_interval.tick() => {
+                    outbound_budget.release_excess();
                 },
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
@@ -547,25 +568,33 @@ where
         random_seed: u64,
     ) -> Result<(), InvokerError>
     where
-        S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
+        S: Stream<Item = Result<((Bytes, Bytes), BudgetLease), E>> + Send,
         E: std::error::Error + Send + Sync + 'static,
     {
-        // Collect state if present, mapping to StateEntry while collecting
-        let (partial_state, state_map) = if let Some(state) = state {
+        // Collect state if present, mapping to StateEntry while collecting.
+        // Per-entry budget leases are merged into a single combined lease that
+        // accompanies the start message frame.
+        let (partial_state, state_map, state_lease) = if let Some(state) = state {
             let is_partial = state.is_partial();
-            let entries: Vec<StateEntry> = state
-                .into_inner()
-                .map_ok(|(key, value)| StateEntry { key, value })
-                .try_collect()
-                .await
-                .map_err(|e| InvokerError::StateReader(e.into()))?;
-            (is_partial, entries)
+            let mut merged_lease: Option<BudgetLease> = None;
+            let mut entries = Vec::new();
+            let mut stream = std::pin::pin!(state.into_inner());
+            while let Some(result) = stream.next().await {
+                let ((key, value), lease) =
+                    result.map_err(|e| InvokerError::StateReader(e.into()))?;
+                entries.push(StateEntry { key, value });
+                match &mut merged_lease {
+                    Some(existing) => existing.merge(lease),
+                    None => merged_lease = Some(lease),
+                }
+            }
+            (is_partial, entries, merged_lease)
         } else {
-            (true, Vec::new())
+            (true, Vec::new(), None)
         };
 
-        // Send the invoke frame
-        self.write(
+        // Send the invoke frame with the merged state lease
+        self.write_with_lease(
             http_stream_tx,
             Message::new_start_message(
                 Bytes::copy_from_slice(&self.invocation_task.invocation_id.to_bytes()),
@@ -581,29 +610,33 @@ where
                 duration_since_last_stored_entry,
                 random_seed,
             ),
+            state_lease,
         )
     }
 
-    fn write_entry(
+    fn write_entry_with_lease(
         &mut self,
         http_stream_tx: &mut InvokerBodySender,
         entry: RawEntry,
+        lease: Option<BudgetLease>,
     ) -> Result<(), InvokerError> {
         // TODO(slinkydeveloper) could this code be improved a tad bit more introducing something to our magic macro in message_codec?
         match entry {
             RawEntry::Command(cmd) => {
-                self.write_raw(
+                self.write_raw_with_lease(
                     http_stream_tx,
                     cmd.command_type().into(),
                     cmd.into_serialized_content(),
+                    lease,
                 )?;
                 self.command_index += 1;
             }
             RawEntry::Notification(notif) => {
-                self.write_raw(
+                self.write_raw_with_lease(
                     http_stream_tx,
                     notif.ty().into(),
                     notif.into_serialized_content(),
+                    lease,
                 )?;
             }
         }
@@ -615,25 +648,35 @@ where
         http_stream_tx: &mut InvokerBodySender,
         msg: Message,
     ) -> Result<(), InvokerError> {
+        self.write_with_lease(http_stream_tx, msg, None)
+    }
+
+    fn write_with_lease(
+        &mut self,
+        http_stream_tx: &mut InvokerBodySender,
+        msg: Message,
+        lease: Option<BudgetLease>,
+    ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
-        if http_stream_tx.send((Frame::data(buf), None)).is_err() {
+        if http_stream_tx.send((Frame::data(buf), lease)).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())
     }
 
-    fn write_raw(
+    fn write_raw_with_lease(
         &mut self,
         http_stream_tx: &mut InvokerBodySender,
         ty: MessageType,
         buf: Bytes,
+        lease: Option<BudgetLease>,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?ty, "Sending message");
         let buf = self.encoder.encode_raw(ty, buf);
 
-        if http_stream_tx.send((Frame::data(buf), None)).is_err() {
+        if http_stream_tx.send((Frame::data(buf), lease)).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())

@@ -17,6 +17,7 @@ use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
 };
+use restate_memory::{BudgetLease, DirectionalBudget};
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
 use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
@@ -26,6 +27,8 @@ use restate_types::identifiers::{InvocationId, ServiceId};
 pub enum InvokerStorageReaderError {
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
+    #[error("outbound memory budget exhausted")]
+    BudgetExhausted,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +92,32 @@ where
             }))
         }
     }
+
+    // Note: budget is currently acquired after decode. A follow-up PR will push
+    // the budget into the storage layer (two-phase peek/decode) so that leases
+    // are reserved before entries are decoded into memory.
+    async fn read_journal_entry_budgeted(
+        &mut self,
+        invocation_id: &InvocationId,
+        entry_index: restate_types::identifiers::EntryIndex,
+        journal_kind: JournalKind,
+        budget: &mut DirectionalBudget,
+    ) -> Result<Option<(JournalEntry, BudgetLease)>, InvokerStorageReaderError> {
+        let entry = self
+            .read_journal_entry(invocation_id, entry_index, journal_kind)
+            .await?;
+        match entry {
+            Some(je) => {
+                let size = estimate_journal_entry_size(&je);
+                let lease = budget
+                    .reserve(size)
+                    .await
+                    .map_err(|_| InvokerStorageReaderError::BudgetExhausted)?;
+                Ok(Some((je, lease)))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 pub(crate) struct InvokerStorageReaderTransaction<'a, Storage>
@@ -108,6 +137,15 @@ where
         Self: 'a;
     type StateStream<'a>
         = Pin<Box<dyn Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send + 'a>>
+    where
+        Self: 'a;
+    type BudgetedJournalStream<'a>
+        = Pin<Box<dyn Stream<Item = Result<(JournalEntry, BudgetLease), Self::Error>> + Send + 'a>>
+    where
+        Self: 'a;
+    type BudgetedStateStream<'a>
+        =
+        Pin<Box<dyn Stream<Item = Result<((Bytes, Bytes), BudgetLease), Self::Error>> + Send + 'a>>
     where
         Self: 'a;
     type Error = InvokerStorageReaderError;
@@ -191,5 +229,91 @@ where
             .get_all_user_states_for_service(service_id)?
             .map_err(InvokerStorageReaderError::Storage);
         Ok(EagerState::new_complete(Box::pin(stream)))
+    }
+
+    fn read_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: &InvocationId,
+        length: restate_types::identifiers::EntryIndex,
+        journal_kind: JournalKind,
+        budget: &'a mut DirectionalBudget,
+    ) -> Result<Self::BudgetedJournalStream<'a>, Self::Error> {
+        let inner = self.read_journal(invocation_id, length, journal_kind)?;
+        Ok(Box::pin(futures::stream::unfold(
+            (inner, budget),
+            |(mut stream, budget)| async move {
+                let item = stream.next().await?;
+                match item {
+                    Ok(je) => {
+                        let size = estimate_journal_entry_size(&je);
+                        match budget.reserve(size).await {
+                            Ok(lease) => {
+                                Some((Ok((je, lease)), (stream, budget)))
+                            }
+                            Err(_) => Some((
+                                Err(InvokerStorageReaderError::BudgetExhausted),
+                                (stream, budget),
+                            )),
+                        }
+                    }
+                    Err(e) => Some((Err(e), (stream, budget))),
+                }
+            },
+        )))
+    }
+
+    fn read_state_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut DirectionalBudget,
+    ) -> Result<EagerState<Self::BudgetedStateStream<'a>>, Self::Error> {
+        let inner_stream = self
+            .txn
+            .get_all_user_states_for_service(service_id)?
+            .map_err(InvokerStorageReaderError::Storage);
+        let budgeted = futures::stream::unfold(
+            (Box::pin(inner_stream), budget),
+            |(mut stream, budget)| async move {
+                let item = stream.next().await?;
+                match item {
+                    Ok(kv) => {
+                        let size = kv.0.len() + kv.1.len();
+                        match budget.reserve(size).await {
+                            Ok(lease) => {
+                                Some((Ok((kv, lease)), (stream, budget)))
+                            }
+                            Err(_) => Some((
+                                Err(InvokerStorageReaderError::BudgetExhausted),
+                                (stream, budget),
+                            )),
+                        }
+                    }
+                    Err(e) => Some((Err(e), (stream, budget))),
+                }
+            },
+        );
+        Ok(EagerState::new_complete(Box::pin(budgeted)))
+    }
+}
+
+/// Estimates the in-memory byte size of a journal entry for budget accounting.
+///
+/// This is an approximation of the serialized content that will be sent over the
+/// wire to the service deployment. The exact on-wire encoding may differ slightly,
+/// but this is sufficient for backpressure purposes.
+fn estimate_journal_entry_size(entry: &JournalEntry) -> usize {
+    match entry {
+        JournalEntry::JournalV1(raw) => raw.serialized_entry().len(),
+        JournalEntry::JournalV1Completion(result) => match result {
+            restate_types::journal::CompletionResult::Empty => 0,
+            restate_types::journal::CompletionResult::Success(b) => b.len(),
+            restate_types::journal::CompletionResult::Failure(_, msg) => msg.len(),
+        },
+        JournalEntry::JournalV2(stored) => match &stored.inner {
+            restate_types::journal_v2::raw::RawEntry::Command(cmd) => cmd.serialized_content.len(),
+            restate_types::journal_v2::raw::RawEntry::Notification(notif) => {
+                notif.serialized_content().len()
+            }
+        },
     }
 }
