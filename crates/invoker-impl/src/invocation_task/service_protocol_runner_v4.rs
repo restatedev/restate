@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
-use std::convert::Infallible;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -126,7 +125,7 @@ where
         keyed_service_id: Option<ServiceId>,
         deployment: Deployment,
         invocation_reader: IR,
-        mut outbound_budget: DirectionalBudget,
+        outbound_budget: &mut DirectionalBudget,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -195,6 +194,7 @@ where
                 http_stream_tx,
                 &mut decoder_stream,
                 invocation_reader,
+                outbound_budget,
             )
             .await;
 
@@ -248,9 +248,10 @@ where
         protocol_type: ProtocolType,
         journal_metadata: JournalMetadata,
         keyed_service_id: Option<ServiceId>,
-        mut http_stream_tx: mpsc::Sender<Result<Frame<Bytes>, Infallible>>,
+        mut http_stream_tx: InvokerBodySender,
         decoder_stream: &mut S,
         invocation_reader: IR,
+        outbound_budget: &mut DirectionalBudget,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -267,7 +268,7 @@ where
             // accompanies the start message frame.
             let state = if let Some(ref service_id) = keyed_service_id {
                 Some(crate::shortcircuit!(
-                    txn.read_state_budgeted(service_id, &mut outbound_budget)
+                    txn.read_state_budgeted(service_id, outbound_budget)
                         .map_err(|e| InvokerError::StateReader(e.into()))
                 ))
             } else {
@@ -294,7 +295,7 @@ where
                     &self.invocation_task.invocation_id,
                     journal_size,
                     journal_metadata.journal_kind,
-                    &mut outbound_budget,
+                    outbound_budget,
                 )
                 .map_err(|e| InvokerError::JournalReader(e.into()))
             );
@@ -331,7 +332,7 @@ where
                     // by the time the bidi stream loop needs to read notifications from it.
                     // todo remove once we drop support for journal v1
                     JournalKind::V2,
-                    &mut outbound_budget,
+                    outbound_budget,
                 )
                 .await
             );

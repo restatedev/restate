@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use restate_futures_util::concurrency::Permit;
+use restate_memory::InvocationBudget;
 use restate_types::identifiers::EntryIndex;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
@@ -51,6 +52,10 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     pub(super) start_message_retry_count_since_last_stored_command: u32,
     pub(super) requested_pause: bool,
     _concurrency_slot: ConcurrencySlot,
+    /// Per-invocation memory budget, preserved across retries to avoid
+    /// re-acquiring from the global pool. `None` before the first task
+    /// starts and after the ISM is finally cleaned up.
+    pub(super) budget: Option<InvocationBudget>,
 }
 
 /// This struct tracks which commands the invocation task generates,
@@ -217,6 +222,7 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             start_message_retry_count_since_last_stored_command: 0,
             requested_pause: false,
             _concurrency_slot: concurrency_slot,
+            budget: None,
         }
     }
 
