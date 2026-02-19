@@ -19,13 +19,15 @@
 //! processing (e.g., RocksDB writes) is stalling.
 use std::collections::hash_map;
 
-use ahash::{HashMap, HashMapExt};
+use ahash::HashMap;
 use anyhow::Context;
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::trace;
 
-use restate_core::network::{BackPressureMode, MessageRouterBuilder, ServiceReceiver};
+use restate_core::network::{
+    BackPressureMode, ControlServiceShards, MessageRouterBuilder, ShardControlMessage, Sharded,
+};
 use restate_core::{TaskCenter, cancellation_token};
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
@@ -38,13 +40,11 @@ use crate::loglet_worker::{LogletWorker, LogletWorkerHandle};
 use crate::logstore::LogStore;
 use crate::metadata::LogletStateMap;
 
-const DEFAULT_WRITERS_CAPACITY: usize = 128;
-
 type LogletWorkerMap = HashMap<LogletId, LogletWorkerHandle>;
 
 pub struct RequestPump {
-    data_svc_rx: ServiceReceiver<LogServerDataService>,
-    info_svc_rx: ServiceReceiver<LogServerMetaService>,
+    data_svc: Sharded<LogServerDataService>,
+    meta_svc: Sharded<LogServerMetaService>,
 }
 
 impl RequestPump {
@@ -58,15 +58,12 @@ impl RequestPump {
             })
         });
 
-        let data_svc_rx =
-            router_builder.register_service_with_pool(data_pool, BackPressureMode::PushBack);
+        let data_svc = router_builder
+            .register_sharded_service_with_pool(data_pool, BackPressureMode::PushBack);
         // Meta service uses the default shared memory pool.
-        let info_svc_rx = router_builder.register_service(BackPressureMode::Lossy);
+        let meta_svc = router_builder.register_sharded_service(BackPressureMode::Lossy);
 
-        Self {
-            data_svc_rx,
-            info_svc_rx,
-        }
+        Self { data_svc, meta_svc }
     }
 
     /// Starts the main processing loop, exits on error or shutdown.
@@ -81,69 +78,55 @@ impl RequestPump {
         S: LogStore + Clone + Sync + Send + 'static,
     {
         let RequestPump {
-            data_svc_rx,
-            info_svc_rx,
-            ..
+            data_svc, meta_svc, ..
         } = self;
 
         let cancel_token = cancellation_token();
 
-        let mut loglet_workers = HashMap::with_capacity(DEFAULT_WRITERS_CAPACITY);
+        let mut loglet_workers = HashMap::default();
 
-        let mut data_svc_rx = data_svc_rx.start();
-        let mut info_svc_rx = info_svc_rx.start();
+        let (mut data_svc, data_shards) = data_svc.start();
+        let (mut meta_svc, meta_shards) = meta_svc.start();
         health_status.update(LogServerStatus::Ready);
 
-        // We need to dispatch this work to the right loglet worker as quickly as possible
-        // to avoid blocking the message handler.
-        //
         // We only block on loading loglet state from logstore, if this proves to be a bottle-neck (it
         // shouldn't) then we can offload this operation to a background task.
         loop {
-            // Ordered by priority of message types
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     // stop accepting messages
-                    drop(data_svc_rx);
-                    drop(info_svc_rx);
+                    drop(data_svc);
+                    drop(meta_svc);
                     health_status.update(LogServerStatus::Stopping);
                     break;
                 }
-                Some(op) = info_svc_rx.next() => {
-                    // all requests are sorted by sort-code (V2 fabric)
-                    // messages without sort-code will be ignored.
-                    let Some(sort_code) = op.sort_code() else {
-                        trace!("Received log-server message {} without sort-code, ignoring", op.msg_type());
-                        continue;
-                    };
+                Some(ShardControlMessage::RegisterSortCode {sort_code, decision}) = meta_svc.next() => {
                     let loglet_id = LogletId::from(sort_code);
+                    trace!("Register shard on info svc for loglet={loglet_id}");
                     // find the worker or create one.
-                    // enqueue.
-                    let worker = Self::find_or_create_worker(
+                    let handle = Self::find_or_create_worker(
                         loglet_id,
                         &log_store,
                         &state_map,
                         &mut loglet_workers,
+                        &data_shards,
+                        &meta_shards,
                     ).await?;
-                    worker.enqueue_info_msg(op);
+                    decision.accept(handle.meta_tx());
                 }
-                Some(op) = data_svc_rx.next() => {
-                    // all requests are sorted by sort-code (V2 fabric)
-                    // messages without sort-code will be ignored.
-                    let Some(sort_code) = op.sort_code() else {
-                        trace!("Received log-server message {} without sort-code, ignoring", op.msg_type());
-                        continue;
-                    };
+                Some(ShardControlMessage::RegisterSortCode {sort_code, decision}) = data_svc.next() => {
                     let loglet_id = LogletId::from(sort_code);
+                    trace!("Register shard on data svc for loglet={loglet_id}");
                     // find the worker or create one.
-                    // enqueue.
-                    let worker = Self::find_or_create_worker(
+                    let handle = Self::find_or_create_worker(
                         loglet_id,
                         &log_store,
                         &state_map,
                         &mut loglet_workers,
+                        &data_shards,
+                        &meta_shards,
                     ).await?;
-                    worker.enqueue_data_msg(op);
+                    decision.accept(handle.data_tx());
                 }
             }
         }
@@ -170,6 +153,8 @@ impl RequestPump {
         log_store: &S,
         state_map: &LogletStateMap,
         loglet_workers: &'a mut LogletWorkerMap,
+        data_shards: &'a ControlServiceShards<LogServerDataService>,
+        meta_shards: &'a ControlServiceShards<LogServerMetaService>,
     ) -> anyhow::Result<&'a LogletWorkerHandle> {
         if let hash_map::Entry::Vacant(e) = loglet_workers.entry(loglet_id) {
             let state = state_map
@@ -177,9 +162,12 @@ impl RequestPump {
                 .await
                 .context("cannot load loglet state map from logstore")?;
             let handle = LogletWorker::start(loglet_id, log_store.clone(), state.clone())?;
+
+            data_shards.force_register_sort_code(loglet_id.into(), handle.data_tx());
+            meta_shards.force_register_sort_code(loglet_id.into(), handle.meta_tx());
+
             e.insert(handle);
         }
-
         Ok(loglet_workers.get(&loglet_id).unwrap())
     }
 }
