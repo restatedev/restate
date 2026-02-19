@@ -155,6 +155,21 @@ pub(crate) fn append_journal_row_v2(
 
     row.appended_at(raw_entry.header.append_time.as_u64() as i64);
 
+    if row.is_raw_defined() || row.is_raw_length_defined() {
+        let serialized = raw_entry.inner.serialized_content();
+        if row.is_raw_defined() {
+            row.raw(&serialized);
+        }
+        if row.is_raw_length_defined() {
+            row.raw_length(
+                serialized
+                    .len()
+                    .try_into()
+                    .expect("raw length to fit in a u64"),
+            );
+        }
+    }
+
     if row.is_entry_lite_json_defined() {
         // We need to parse the entry
         let Ok(entry_lite) = ServiceProtocolV4Codec::decode_entry_lite(&raw_entry.inner) else {

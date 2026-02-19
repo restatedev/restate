@@ -62,6 +62,13 @@ impl RawEntry {
     pub fn decode<D: Decoder, T: TryFromEntry>(&self) -> Result<T, RawEntryError> {
         Ok(<T as TryFromEntry>::try_from(D::decode_entry(self)?)?)
     }
+
+    pub fn serialized_content(&self) -> Bytes {
+        match self {
+            RawEntry::Command(command) => command.serialized_content(),
+            RawEntry::Notification(notification) => notification.serialized_content(),
+        }
+    }
 }
 
 // -- Raw command

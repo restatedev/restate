@@ -53,6 +53,10 @@ define_table!(sys_journal (
     /// for more details to decode it.
     raw: DataType::LargeBinary,
 
+    /// The byte length of the raw entry. If you are writing a query that only needs to know the length,
+    /// reading this field will be much more efficient than reading length(raw).
+    raw_length: DataType::UInt64,
+
     /// The journal version.
     version: DataType::UInt32,
 
