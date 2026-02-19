@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::ops::RangeInclusive;
 
 use anyhow::anyhow;
 use futures::Stream;
@@ -22,7 +21,8 @@ use crate::owned_iter::OwnedIterator;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
-    JournalEntryIndex, ReadJournalTable, ScanJournalTable, StoredEntry, WriteJournalTable,
+    JournalEntryIndex, ReadJournalTable, ScanJournalTable, ScanJournalTableRange, StoredEntry,
+    WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
@@ -386,13 +386,30 @@ impl ScanJournalTable for PartitionStore {
             + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: ScanJournalTableRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
+        let scan = match range {
+            ScanJournalTableRange::PartitionKey(partition_key) => {
+                TableScan::FullScanPartitionKeyRange::<JournalKeyBuilder>(partition_key)
+            }
+            ScanJournalTableRange::InvocationId(invocation_id) => {
+                let start = JournalKey::builder()
+                    .partition_key(invocation_id.start().partition_key())
+                    .invocation_uuid(invocation_id.start().invocation_uuid());
+
+                let end = JournalKey::builder()
+                    .partition_key(invocation_id.end().partition_key())
+                    .invocation_uuid(invocation_id.end().invocation_uuid());
+
+                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+            }
+        };
+
         self.iterator_for_each(
             "df-v2-journal",
             Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<JournalKey>(range),
+            scan,
             move |(mut key, mut value)| {
                 let journal_key = break_on_err(JournalKey::deserialize_from(&mut key))?;
                 let journal_entry = break_on_err(

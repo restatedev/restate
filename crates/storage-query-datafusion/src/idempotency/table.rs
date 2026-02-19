@@ -20,7 +20,7 @@ use restate_types::identifiers::{IdempotencyId, PartitionKey};
 use super::row::append_idempotency_row;
 use super::schema::{SysIdempotencyBuilder, sys_idempotency_sort_order};
 use crate::context::{QueryContext, SelectPartitions};
-use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -57,6 +57,7 @@ impl ScanLocalPartition for IdempotencyScanner {
     type Builder = SysIdempotencyBuilder;
     type Item<'a> = (IdempotencyId, IdempotencyMetadata);
     type ConversionError = std::convert::Infallible;
+    type Filter = RangeInclusive<PartitionKey>;
 
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>

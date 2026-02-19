@@ -8,14 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::RangeInclusive;
-
 use futures::Stream;
 use futures_util::stream;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_events::{
-    EventView, ReadJournalEventsTable, ScanJournalEventsTable, WriteJournalEventsTable,
+    EventView, ReadJournalEventsTable, ScanJournalEventsTable, ScanJournalEventsTableRange,
+    WriteJournalEventsTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::protobuf_types::v1::Event as PbEvent;
@@ -174,13 +173,30 @@ impl ScanJournalEventsTable for PartitionStore {
         F: FnMut((InvocationId, EventView)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: ScanJournalEventsTableRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
+        let scan = match range {
+            ScanJournalEventsTableRange::PartitionKey(partition_key) => {
+                TableScan::FullScanPartitionKeyRange::<JournalEventKeyBuilder>(partition_key)
+            }
+            ScanJournalEventsTableRange::InvocationId(invocation_id) => {
+                let start = JournalEventKey::builder()
+                    .partition_key(invocation_id.start().partition_key())
+                    .invocation_uuid(invocation_id.start().invocation_uuid());
+
+                let end = JournalEventKey::builder()
+                    .partition_key(invocation_id.end().partition_key())
+                    .invocation_uuid(invocation_id.end().invocation_uuid());
+
+                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+            }
+        };
+
         self.iterator_for_each(
             "df-journal-events",
             Priority::Low,
-            TableScan::FullScanPartitionKeyRange::<JournalEventKey>(range),
+            scan,
             move |(mut key, mut value)| {
                 let event_key = break_on_err(JournalEventKey::deserialize_from(&mut key))?;
                 let (pk, inv_uuid, event_type, timestamp, _) = event_key.split();

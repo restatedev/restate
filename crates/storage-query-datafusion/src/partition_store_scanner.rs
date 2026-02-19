@@ -28,10 +28,21 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use crate::table_providers::ScanPartition;
 use crate::table_util::BatchSender;
 
+pub trait ScanLocalPartitionFilter {
+    fn new(range: RangeInclusive<PartitionKey>, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
+}
+
+impl ScanLocalPartitionFilter for RangeInclusive<PartitionKey> {
+    fn new(range: RangeInclusive<PartitionKey>, _predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        range
+    }
+}
+
 pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     type Builder: crate::table_util::Builder + Send;
     type Item<'a>: Send;
     type ConversionError;
+    type Filter: ScanLocalPartitionFilter + Send + Sync + 'static;
 
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
@@ -40,7 +51,7 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
             + 'static,
     >(
         partition_store: &PartitionStore,
-        range: RangeInclusive<PartitionKey>,
+        filter: Self::Filter,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>;
 
@@ -101,16 +112,21 @@ where
             // timer starts on first row, stops on scanner drop
             let mut elapsed_compute = ElapsedCompute::new(elapsed_compute);
 
-            let mut batch_sender = BatchSender::new(projection, tx, predicate, batch_size, limit);
+            let mut batch_sender =
+                BatchSender::new(projection, tx, predicate.clone(), batch_size, limit);
 
-            S::for_each_row(&partition_store, range, move |row| {
-                elapsed_compute.start();
-                match S::append_row(batch_sender.builder_mut(), row) {
-                    Ok(()) => {}
-                    err => return ControlFlow::Break(err),
-                }
-                batch_sender.send_if_needed().map_break(Ok)
-            })
+            S::for_each_row(
+                &partition_store,
+                S::Filter::new(range.clone(), predicate),
+                move |row| {
+                    elapsed_compute.start();
+                    match S::append_row(batch_sender.builder_mut(), row) {
+                        Ok(()) => {}
+                        err => return ControlFlow::Break(err),
+                    }
+                    batch_sender.send_if_needed().map_break(Ok)
+                },
+            )
             .map_err(|err| DataFusionError::External(err.into()))?
             .await
             .map_err(|err| DataFusionError::External(err.into()))?;

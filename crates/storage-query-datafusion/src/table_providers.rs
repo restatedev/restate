@@ -39,7 +39,7 @@ use restate_types::identifiers::{PartitionId, PartitionKey};
 use restate_types::partition_table::Partition;
 
 use crate::context::SelectPartitions;
-use crate::partition_filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
+use crate::filter::{FirstMatchingPartitionKeyExtractor, PartitionKeyExtractor};
 use crate::table_util::{find_sort_columns, make_ordering};
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
