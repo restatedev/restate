@@ -26,7 +26,7 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::{counter, histogram};
-use restate_memory::{BudgetLease, MemoryPool};
+use restate_memory::{BudgetLease, InvocationBudget};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
@@ -86,31 +86,33 @@ const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server")
 
 /// Collects state entries from an [`EagerState`] stream, respecting a size limit.
 ///
-/// Returns a tuple of `(is_partial, entries)` where:
+/// Returns a tuple of `(is_partial, entries, memory_lease)` where:
 /// - `is_partial` is true if the state was already partial or if collection stopped due to size limit
 /// - `entries` contains the collected and mapped key-value bytes
+/// - `memory_lease` represents the memory that entries occupy
 ///
 /// If the first entry already exceeds the size limit, then an empty entries [`Vec`] is returned.
 async fn collect_eager_state<S, E, T>(
     state: Option<EagerState<S>>,
     size_limit: usize,
     mut mapper: impl FnMut((Bytes, Bytes)) -> T,
-) -> Result<(bool, Vec<T>), InvokerError>
+) -> Result<(bool, Vec<T>, Option<BudgetLease>), InvokerError>
 where
-    S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
+    S: Stream<Item = Result<((Bytes, Bytes), BudgetLease), E>> + Send,
     E: std::error::Error + Send + Sync + 'static,
 {
     let Some(state) = state else {
-        return Ok((true, Vec::new()));
+        return Ok((true, Vec::new(), None));
     };
 
     let mut is_partial = state.is_partial();
+    let mut merged_lease: Option<BudgetLease> = None;
     let mut entries = Vec::new();
     let mut total_size: usize = 0;
 
     let mut stream = std::pin::pin!(state.into_inner());
     while let Some(result) = stream.next().await {
-        let (key, value) = result.map_err(|e| InvokerError::StateReader(e.into()))?;
+        let ((key, value), lease) = result.map_err(|e| InvokerError::StateReader(e.into()))?;
         let entry_size = key.len() + value.len();
 
         // Check if adding this entry would exceed the limit
@@ -129,9 +131,13 @@ where
 
         total_size = total_size.saturating_add(entry_size);
         entries.push(mapper((key, value)));
+        match &mut merged_lease {
+            Some(existing) => existing.merge(lease),
+            None => merged_lease = Some(lease),
+        }
     }
 
-    Ok((is_partial, entries))
+    Ok((is_partial, entries, merged_lease))
 }
 
 pub(super) struct InvocationTaskOutput {
@@ -270,9 +276,9 @@ pub(super) struct InvocationTask<EE, DMR> {
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
-    // Memory budget
-    #[allow(dead_code)]
-    memory_pool: MemoryPool,
+    // Memory budget for this invocation (inbound + outbound).
+    // `Option` because the budget is taken once in `select_protocol_version_and_run`.
+    budget: Option<InvocationBudget>,
 
     // throttling
     action_token_bucket: Option<TokenBucket>,
@@ -342,7 +348,7 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
-        memory_pool: MemoryPool,
+        budget: InvocationBudget,
     ) -> Self {
         Self {
             client,
@@ -356,7 +362,7 @@ where
             schemas: deployment_metadata_resolver,
             invoker_tx,
             invoker_rx,
-            memory_pool,
+            budget: Some(budget),
             message_size_limit,
             message_size_warning,
             retry_count_since_last_stored_entry,
@@ -531,6 +537,16 @@ where
             deployment_changed,
         ));
 
+        // Take the outbound budget out of the invocation budget. We pass it as a
+        // separate value to the protocol runner so it can be borrowed independently
+        // of the `&mut InvocationTask` reference the runner holds.
+        let invocation_budget = self
+            .budget
+            .take()
+            .expect("budget already consumed; select_protocol_version_and_run called twice");
+        let outbound_budget = invocation_budget.outbound;
+        // invocation_budget.inbound is dropped (will be wired in the inbound PR).
+
         if chosen_service_protocol_version <= ServiceProtocolVersion::V3 {
             // Protocol runner for service protocol <= v3
             let service_protocol_runner =
@@ -542,6 +558,7 @@ where
                     keyed_service_id,
                     deployment,
                     reader_for_bidi,
+                    outbound_budget,
                 )
                 .await
         } else {
@@ -557,6 +574,7 @@ where
                     keyed_service_id,
                     deployment,
                     reader_for_bidi,
+                    outbound_budget,
                 )
                 .await
         }
@@ -680,25 +698,31 @@ impl Stream for ResponseStream {
 mod tests {
     use bytes::Bytes;
     use futures::stream;
-
-    use restate_invoker_api::invocation_reader::EagerState;
+    use std::sync::LazyLock;
 
     use super::collect_eager_state;
+    use restate_invoker_api::invocation_reader::EagerState;
+    use restate_memory::{BudgetLease, DirectionalBudget};
 
-    type StateResult = Result<(Bytes, Bytes), std::io::Error>;
+    type StateResult = Result<((Bytes, Bytes), BudgetLease), std::io::Error>;
+
+    static MEMORY_POOL: LazyLock<DirectionalBudget> = LazyLock::new(DirectionalBudget::unlimited);
 
     // Helper to create a (Bytes, Bytes) pair of known sizes
     fn entry(key_size: usize, value_size: usize) -> StateResult {
         Ok((
-            Bytes::from(vec![b'k'; key_size]),
-            Bytes::from(vec![b'v'; value_size]),
+            (
+                Bytes::from(vec![b'k'; key_size]),
+                Bytes::from(vec![b'v'; value_size]),
+            ),
+            MEMORY_POOL.empty_lease(),
         ))
     }
 
     #[tokio::test]
     async fn collect_eager_state_no_state_returns_partial() {
-        let (is_partial, entries) = collect_eager_state::<
-            stream::Empty<Result<(Bytes, Bytes), std::io::Error>>,
+        let (is_partial, entries, _memory_lease) = collect_eager_state::<
+            stream::Empty<Result<((Bytes, Bytes), BudgetLease), std::io::Error>>,
             _,
             _,
         >(None, 1024, std::convert::identity)
@@ -714,9 +738,10 @@ mod tests {
         let items = vec![entry(10, 20), entry(5, 15)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries) = collect_eager_state(Some(state), 1024, std::convert::identity)
-            .await
-            .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 1024, std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(!is_partial, "all entries fit within limit");
         assert_eq!(entries.len(), 2);
@@ -728,9 +753,10 @@ mod tests {
         let items = vec![entry(10, 10)];
         let state = EagerState::new_partial(stream::iter(items));
 
-        let (is_partial, entries) = collect_eager_state(Some(state), 1024, std::convert::identity)
-            .await
-            .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 1024, std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(is_partial, "partial flag should be preserved from source");
         assert_eq!(entries.len(), 1);
@@ -742,9 +768,10 @@ mod tests {
         let items = vec![entry(25, 25), entry(25, 25), entry(25, 25)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries) = collect_eager_state(Some(state), 120, std::convert::identity)
-            .await
-            .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 120, std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(is_partial, "should be partial after truncation");
         assert_eq!(entries.len(), 2, "only 2 entries should fit (100 bytes)");
@@ -756,9 +783,10 @@ mod tests {
         let items = vec![entry(100, 101)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries) = collect_eager_state(Some(state), 200, std::convert::identity)
-            .await
-            .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 200, std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(is_partial, "first entry exceeded limit so partial state");
         assert!(
@@ -782,9 +810,10 @@ mod tests {
         let items = vec![entry(25, 25), entry(25, 25)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries) = collect_eager_state(Some(state), 100, std::convert::identity)
-            .await
-            .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 100, std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(!is_partial, "entries exactly at limit should fit");
         assert_eq!(entries.len(), 2);
@@ -796,9 +825,10 @@ mod tests {
         let items = vec![entry(25, 25), entry(25, 25)];
         let state = EagerState::new_complete(stream::iter(items));
 
-        let (is_partial, entries) = collect_eager_state(Some(state), 99, std::convert::identity)
-            .await
-            .unwrap();
+        let (is_partial, entries, _memory_lease) =
+            collect_eager_state(Some(state), 99, std::convert::identity)
+                .await
+                .unwrap();
 
         assert!(is_partial, "should be partial when 1 byte over");
         assert_eq!(entries.len(), 1, "only first entry should fit");

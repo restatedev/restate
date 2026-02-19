@@ -10,8 +10,6 @@
 
 mod error;
 mod input_command;
-// TODO: Will be used in subsequent PRs for memory-aware journal replay and inbound path.
-#[allow(dead_code)]
 mod invocation_budget;
 mod invocation_state_machine;
 mod invocation_task;
@@ -45,7 +43,7 @@ use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
 };
-use restate_memory::MemoryPool;
+use restate_memory::{InvocationBudget, MemoryPool};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
@@ -138,6 +136,16 @@ where
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         task_pool: &mut JoinSet<()>,
     ) -> AbortHandle {
+        // Create the per-invocation memory budget. Both directions start empty
+        // and grow on-demand from the global pool. The upper bound is set to the
+        // pool's total capacity to prevent a single invocation from monopolizing
+        // it. For unlimited pools (capacity == 0), use usize::MAX.
+        let upper_bound = match self.memory_pool.capacity().as_usize() {
+            0 => usize::MAX,
+            cap => cap,
+        };
+        let budget = InvocationBudget::new(self.memory_pool.empty_lease(), 0, upper_bound);
+
         task_pool
             .build_task()
             .name("invocation-task")
@@ -158,7 +166,7 @@ where
                     invoker_tx,
                     invoker_rx,
                     self.action_token_bucket.clone(),
-                    self.memory_pool.clone(),
+                    budget,
                 )
                 .run(storage_reader),
             )
