@@ -32,6 +32,7 @@
 //! types that cross `.await` points, but all reserve/release operations happen within
 //! the same task.
 
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -49,6 +50,12 @@ pub struct ShouldYield;
 pub struct InvocationBudget {
     pub inbound: DirectionalBudget,
     pub outbound: DirectionalBudget,
+}
+
+impl fmt::Debug for InvocationBudget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InvocationBudget").finish_non_exhaustive()
+    }
 }
 
 impl InvocationBudget {
@@ -74,6 +81,14 @@ impl InvocationBudget {
             outbound: DirectionalBudget::new(pool, outbound_seed, 0, upper_bound),
         }
     }
+
+    /// Returns surplus local capacity of inbound and outbound (above `min_reserved`) to the global pool.
+    ///
+    /// Will not shrink below `min_reserved` or below current `in_flight` of each budget.
+    pub fn release_excess(&mut self) {
+        self.inbound.release_excess();
+        self.outbound.release_excess();
+    }
 }
 
 /// A directional memory budget backed by a local [`MemoryLease`] from the global pool.
@@ -98,7 +113,6 @@ impl InvocationBudget {
 /// bytes are returned individually by orphaned [`BudgetLease`] drops, which detect
 /// the dead bit and call [`MemoryPool::return_memory`] directly.
 pub struct DirectionalBudget {
-    pool: MemoryPool,
     shared: Arc<SharedState>,
     /// Local capacity held from the global pool.
     local_capacity: MemoryLease,
@@ -181,11 +195,10 @@ impl DirectionalBudget {
     ) -> Self {
         Self {
             shared: Arc::new(SharedState {
-                pool: pool.clone(),
+                pool,
                 in_flight: AtomicUsize::new(0),
                 notify: Notify::new(),
             }),
-            pool,
             local_capacity,
             min_reserved,
             upper_bound,
@@ -303,7 +316,7 @@ impl DirectionalBudget {
             return true;
         }
         let capacity = self.local_capacity.size().as_usize();
-        let global_available = self.pool.available();
+        let global_available = self.shared.pool.available();
         needed > capacity.saturating_add(global_available)
     }
 

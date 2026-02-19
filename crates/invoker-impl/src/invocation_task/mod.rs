@@ -123,13 +123,7 @@ pub(super) enum InvocationTaskOutputInner {
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
-    Failed(InvokerError),
-}
-
-impl From<InvokerError> for InvocationTaskOutputInner {
-    fn from(value: InvokerError) -> Self {
-        InvocationTaskOutputInner::Failed(value)
-    }
+    Failed(InvokerError, InvocationBudget),
 }
 
 /// A frame sent through the body channel, carrying an optional memory budget lease.
@@ -223,10 +217,6 @@ pub(super) struct InvocationTask<EE, DMR> {
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
-    // Memory budget for this invocation (inbound + outbound).
-    // `Option` because the budget is taken once in `select_protocol_version_and_run`.
-    budget: Option<InvocationBudget>,
-
     // throttling
     action_token_bucket: Option<TokenBucket>,
 }
@@ -285,7 +275,6 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
-        budget: InvocationBudget,
     ) -> Self {
         Self {
             client,
@@ -299,7 +288,6 @@ where
             schemas: deployment_metadata_resolver,
             invoker_tx,
             invoker_rx,
-            budget: Some(budget),
             message_size_limit,
             message_size_warning,
             retry_count_since_last_stored_entry,
@@ -320,17 +308,18 @@ where
         ),
         skip_all,
     )]
-    pub async fn run<IR>(mut self, mut invocation_reader: IR)
+    pub async fn run<IR>(mut self, mut invocation_reader: IR, mut budget: InvocationBudget)
     where
         IR: InvocationReader + Clone,
     {
         let start = Instant::now();
-        // Execute the task
         let terminal_state = self
-            .select_protocol_version_and_run(&mut invocation_reader)
+            .select_protocol_version_and_run(&mut invocation_reader, &mut budget)
             .await;
 
-        // Sanity check of the final state
+        // Only Failed returns the budget so the invoker main loop can stash
+        // it on the ISM for retry reuse. Other terminal states (Closed,
+        // Suspended) end the invocation — no retry needed.
         let inner = match terminal_state {
             TerminalLoopState::Continue(_) => {
                 unreachable!("This is not supposed to happen. This is a runtime bug")
@@ -338,10 +327,21 @@ where
             TerminalLoopState::Closed => InvocationTaskOutputInner::Closed,
             TerminalLoopState::Suspended(v) => InvocationTaskOutputInner::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => InvocationTaskOutputInner::SuspendedV2(v),
-            TerminalLoopState::Failed(e) => InvocationTaskOutputInner::Failed(e),
+            TerminalLoopState::Failed(e) => {
+                // Best effort to release excessive memory. Note there can still be effects in flight
+                // that are being replicated and thereby occupy memory. Best if we periodically check
+                // again to release memory.
+                budget.release_excess();
+                InvocationTaskOutputInner::Failed(e, budget)
+            }
         };
 
-        self.send_invoker_tx(inner, None);
+        let _ = self.invoker_tx.send(InvocationTaskOutput {
+            partition: self.partition,
+            invocation_id: self.invocation_id,
+            inner,
+            inbound_lease: None,
+        });
         histogram!(INVOKER_TASK_DURATION, "partition_id" => ID_LOOKUP.get(self.partition.0))
             .record(start.elapsed());
     }
@@ -349,6 +349,7 @@ where
     async fn select_protocol_version_and_run<IR>(
         &mut self,
         invocation_reader: &mut IR,
+        invocation_budget: &mut InvocationBudget,
     ) -> TerminalLoopState<()>
     where
         IR: InvocationReader + Clone,
@@ -470,16 +471,6 @@ where
             None,
         );
 
-        // Take the directional budgets out of the invocation budget. We pass them
-        // as separate values to the protocol runner so they can be borrowed
-        // independently of the `&mut InvocationTask` reference the runner holds.
-        let invocation_budget = self
-            .budget
-            .take()
-            .expect("budget already consumed; select_protocol_version_and_run called twice");
-        let outbound_budget = invocation_budget.outbound;
-        let inbound_budget = invocation_budget.inbound;
-
         if chosen_service_protocol_version <= ServiceProtocolVersion::V3 {
             // Protocol runner for service protocol <= v3
             let service_protocol_runner =
@@ -491,8 +482,8 @@ where
                     keyed_service_id,
                     deployment,
                     reader_for_bidi,
-                    outbound_budget,
-                    inbound_budget,
+                    &mut invocation_budget.outbound,
+                    &mut invocation_budget.inbound,
                 )
                 .await
         } else {
@@ -508,8 +499,8 @@ where
                     keyed_service_id,
                     deployment,
                     reader_for_bidi,
-                    outbound_budget,
-                    inbound_budget,
+                    &mut invocation_budget.outbound,
+                    &mut invocation_budget.inbound,
                 )
                 .await
         }
@@ -517,6 +508,7 @@ where
 }
 
 impl<EE, Schemas> InvocationTask<EE, Schemas> {
+    /// Send a non-terminal message to the invoker main loop.
     pub(crate) fn send_invoker_tx(
         &self,
         invocation_task_output_inner: InvocationTaskOutputInner,
