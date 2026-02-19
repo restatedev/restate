@@ -8262,6 +8262,7 @@ dependencies = [
  "restate-ingress-kafka",
  "restate-invoker-api",
  "restate-invoker-impl",
+ "restate-memory",
  "restate-metadata-server",
  "restate-metadata-store",
  "restate-partition-store",

@@ -8,8 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future::Future;
+
 use bytes::Bytes;
 use futures::Stream;
+
+use restate_memory::{BudgetLease, DirectionalBudget};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
@@ -17,7 +21,6 @@ use restate_types::journal::CompletionResult;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::storage::StoredRawEntry;
 use restate_types::time::MillisSinceEpoch;
-use std::future::Future;
 
 /// Which journal storage table an invocation's entries are stored in.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -92,6 +95,22 @@ pub trait InvocationReader {
         entry_index: EntryIndex,
         journal_kind: JournalKind,
     ) -> impl Future<Output = Result<Option<JournalEntry>, Self::Error>> + Send;
+
+    /// Budget-aware point read of a single journal entry.
+    ///
+    /// Reads the entry and acquires a [`BudgetLease`] for its serialized size from
+    /// the given outbound budget. The lease tracks the memory until the caller
+    /// releases it (typically when hyper consumes the corresponding frame).
+    ///
+    // TODO: Push the budget into the lower storage layers so that the lease is
+    //  acquired *before* the entry is decoded into memory.
+    fn read_journal_entry_budgeted(
+        &mut self,
+        invocation_id: &InvocationId,
+        entry_index: EntryIndex,
+        journal_kind: JournalKind,
+        budget: &mut DirectionalBudget,
+    ) -> impl Future<Output = Result<Option<(JournalEntry, BudgetLease)>, Self::Error>> + Send;
 }
 
 /// Read transaction to read information about invocations from the underlying storage.
@@ -102,6 +121,15 @@ pub trait InvocationReaderTransaction {
     where
         Self: 'a;
     type StateStream<'a>: Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send
+    where
+        Self: 'a;
+    type BudgetedJournalStream<'a>: Stream<Item = Result<(JournalEntry, BudgetLease), Self::Error>>
+        + Unpin
+        + Send
+    where
+        Self: 'a;
+    type BudgetedStateStream<'a>: Stream<Item = Result<((Bytes, Bytes), BudgetLease), Self::Error>>
+        + Send
     where
         Self: 'a;
     type Error: std::error::Error + Send + Sync + 'static;
@@ -132,6 +160,30 @@ pub trait InvocationReaderTransaction {
         &self,
         service_id: &ServiceId,
     ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error>;
+
+    /// Budget-gated journal replay stream.
+    ///
+    /// Each entry's raw byte size is peeked from RocksDB first. A [`BudgetLease`]
+    /// is acquired from `budget` for that size *before* the entry is decoded.
+    /// The lease flows through to the caller and must be held until the
+    /// corresponding data is no longer needed (e.g., until hyper consumes the frame).
+    fn read_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: &InvocationId,
+        length: EntryIndex,
+        journal_kind: JournalKind,
+        budget: &'a mut DirectionalBudget,
+    ) -> Result<Self::BudgetedJournalStream<'a>, Self::Error>;
+
+    /// Budget-gated state loading stream.
+    ///
+    /// Each state entry's raw byte size is peeked first. A [`BudgetLease`]
+    /// is acquired from `budget` for that size *before* the entry is decoded.
+    fn read_state_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut DirectionalBudget,
+    ) -> Result<EagerState<Self::BudgetedStateStream<'a>>, Self::Error>;
 }
 
 /// Container for the state returned by [`InvocationReaderTransaction::read_state`].
