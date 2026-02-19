@@ -527,7 +527,7 @@ where
                                 Ok(lease) => lease,
                                 Err(_err) => return TerminalLoopState::Failed(InvokerError::InboundBudgetExhausted),
                             };
-                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message, Some(lease)));
+                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message, lease));
                         }
                     }
                 },
@@ -573,7 +573,7 @@ where
                                 Ok(lease) => lease,
                                 Err(_err) => return TerminalLoopState::Failed(InvokerError::InboundBudgetExhausted),
                             };
-                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message, Some(lease)));
+                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message, lease));
                         }
                     }
                 },
@@ -753,14 +753,12 @@ where
         }
 
         if let Some(hv) = parts.headers.remove(X_RESTATE_SERVER) {
-            self.invocation_task.send_invoker_tx(
-                InvocationTaskOutputInner::ServerHeaderReceived(
+            self.invocation_task
+                .send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
                     hv.to_str()
                         .map_err(|e| InvokerError::BadHeader(X_RESTATE_SERVER, e))?
                         .to_owned(),
-                ),
-                None,
-            )
+                ))
         }
 
         Ok(())
@@ -770,18 +768,17 @@ where
         &mut self,
         mh: MessageHeader,
         command: RawCommand,
-        inbound_lease: Option<BudgetLease>,
+        inbound_lease: BudgetLease,
     ) {
-        self.invocation_task.send_invoker_tx(
-            InvocationTaskOutputInner::NewCommand {
+        self.invocation_task
+            .send_invoker_tx(InvocationTaskOutputInner::NewCommand {
                 command_index: self.command_index,
                 requires_ack: mh
                     .requires_ack()
                     .expect("All command messages support requires_ack"),
                 command,
-            },
-            inbound_lease,
-        );
+                inbound_lease,
+            });
         self.command_index += 1;
     }
 
@@ -790,7 +787,7 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
         mh: MessageHeader,
         message: Message,
-        inbound_lease: Option<BudgetLease>,
+        inbound_lease: BudgetLease,
     ) -> TerminalLoopState<()> {
         trace!(
             restate.protocol.message_header = ?mh,
@@ -836,8 +833,8 @@ where
                 self.invocation_task.send_invoker_tx(
                     InvocationTaskOutputInner::NewNotificationProposal {
                         notification: raw_notification,
+                        inbound_lease,
                     },
-                    inbound_lease,
                 );
 
                 TerminalLoopState::Continue(())
