@@ -66,6 +66,10 @@ pub enum EffectKind {
     Paused {
         paused_event: RawEvent,
     },
+    /// The invoker yielded the invocation back to the scheduler. The partition
+    /// processor should re-schedule the invocation (via [`YieldReason`] the
+    /// scheduler can apply reason-specific strategies in the future).
+    Yield(YieldReason),
     /// This is sent always after [`Self::JournalEntry`] with `OutputStreamEntry`(s).
     End,
     /// This is sent when the invoker exhausted all its attempts to make progress on the specific invocation.
@@ -98,4 +102,24 @@ impl EffectKind {
         //     raw_entry: raw_entry.into(),
         // }
     }
+}
+
+/// Why the invoker yielded the invocation back to the scheduler.
+///
+/// New reasons can be added without a version barrier — nodes that don't
+/// recognize a reason will deserialize it as [`Unknown`](Self::Unknown) and
+/// apply the default re-scheduling strategy (immediate re-invoke).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "reason"))]
+pub enum YieldReason {
+    /// The invocation exhausted its memory budget.
+    BudgetExhausted {
+        inbound_needed_memory: usize,
+        outbound_needed_memory: usize,
+    },
+    /// A yield reason not recognized by this node version. The partition
+    /// processor applies the default strategy (re-schedule immediately).
+    #[cfg_attr(feature = "serde", serde(other))]
+    Unknown,
 }

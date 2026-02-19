@@ -18,7 +18,7 @@ pub mod status_handle;
 pub use effects::*;
 pub use entry_enricher::EntryEnricher;
 pub use handle::*;
-pub use invocation_reader::{JournalKind, JournalMetadata};
+pub use invocation_reader::{InvocationReaderError, JournalKind, JournalMetadata};
 pub use status_handle::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
 
 #[cfg(any(test, feature = "test-util"))]

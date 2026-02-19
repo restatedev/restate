@@ -11,6 +11,7 @@
 //! Re-exports from [`restate_memory::budget`].
 
 // Re-exports for use by other modules within invoker-impl.
-// These will be used when the inbound budget path is wired.
 #[allow(unused_imports)]
-pub use restate_memory::budget::{BudgetLease, DirectionalBudget, InvocationBudget, ShouldYield};
+pub use restate_memory::budget::{
+    BudgetExhausted, BudgetLease, DirectionalBudget, InvocationBudget,
+};

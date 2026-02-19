@@ -22,7 +22,7 @@ mod footprint;
 mod metric_definitions;
 mod pool;
 
-pub use budget::{BudgetLease, DirectionalBudget, InvocationBudget, ShouldYield};
+pub use budget::{BudgetExhausted, BudgetLease, DirectionalBudget, InvocationBudget};
 pub use controller::MemoryController;
 pub use pool::{MemoryLease, MemoryPool};
 pub use restate_serde_util::NonZeroByteCount;

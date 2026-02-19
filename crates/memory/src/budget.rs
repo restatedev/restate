@@ -42,9 +42,12 @@ use crate::{MemoryLease, MemoryPool};
 
 /// Returned by [`DirectionalBudget::reserve`] when the requested memory cannot
 /// be satisfied even in the best case (all in-flight reclaimed + entire global
-/// pool available). The caller should yield or suspend the invocation.
+/// pool available).
 #[derive(Debug)]
-pub struct ShouldYield;
+pub struct BudgetExhausted {
+    /// The number of bytes that were requested but could not be allocated.
+    pub needed: usize,
+}
 
 /// Per-invocation budget grouping inbound and outbound directional budgets.
 pub struct InvocationBudget {
@@ -242,15 +245,16 @@ impl DirectionalBudget {
     /// Reserves `size` bytes, waiting if necessary for in-flight memory to be
     /// reclaimed and/or global pool capacity to become available.
     ///
-    /// Returns [`Err(ShouldYield)`] if the request is infeasible — meaning even
-    /// after reclaiming all in-flight memory and tapping the entire global pool,
-    /// the request cannot be satisfied. This check is performed on every iteration,
-    /// so the caller does not need to call a separate `should_yield` method.
+    /// Returns [`Err(BudgetExhausted)`] if the request is infeasible — meaning
+    /// even after reclaiming all in-flight memory and tapping the entire global
+    /// pool, the request cannot be satisfied. This check is performed on every
+    /// iteration, so the caller does not need to call a separate
+    /// `budget_exhausted` check.
     ///
     /// On each iteration the method:
     /// 1. Attempts a non-blocking [`try_reserve`](Self::try_reserve).
-    /// 2. If that fails, checks feasibility and returns `Err(ShouldYield)` if
-    ///    the request is impossible.
+    /// 2. If that fails, checks feasibility and returns `Err(BudgetExhausted)`
+    ///    if the request is impossible.
     /// 3. Otherwise, waits for an in-flight lease to be dropped (which increases
     ///    available capacity) or a periodic timeout, then retries.
     ///
@@ -258,13 +262,13 @@ impl DirectionalBudget {
     ///
     /// This method is cancel-safe: dropping the future before completion has no
     /// effect on the budget (no memory is reserved until the method returns).
-    pub async fn reserve(&mut self, size: usize) -> Result<BudgetLease, ShouldYield> {
+    pub async fn reserve(&mut self, size: usize) -> Result<BudgetLease, BudgetExhausted> {
         loop {
             if let Some(lease) = self.try_reserve(size) {
                 return Ok(lease);
             }
-            if self.should_yield(size) {
-                return Err(ShouldYield);
+            if self.budget_exhausted(size) {
+                return Err(BudgetExhausted { needed: size });
             }
 
             // try_reserve failed but the request is feasible. Wait for either a
@@ -273,7 +277,7 @@ impl DirectionalBudget {
             //
             // The timeout is needed because the global pool's available capacity
             // can decrease (another invocation reserving memory) without any
-            // notification to us. On timeout we loop back, re-check should_yield
+            // notification to us. On timeout we loop back, re-check budget_exhausted
             // with fresh data, and either yield or wait again.
             //
             // TODO: This timeout could be eliminated if MemoryPool notified
@@ -311,7 +315,7 @@ impl DirectionalBudget {
     /// - `local_capacity + global_available` is the most we could ever hold locally
     ///   (current capacity plus everything the global pool can give us), which accounts
     ///   for in-flight reclaims since in-flight bytes are already part of local capacity.
-    pub fn should_yield(&self, needed: usize) -> bool {
+    pub fn budget_exhausted(&self, needed: usize) -> bool {
         if needed > self.upper_bound {
             return true;
         }
@@ -334,6 +338,13 @@ impl DirectionalBudget {
     /// Returns memory currently held by outstanding leases.
     pub fn in_flight(&self) -> usize {
         self.shared.in_flight.load(Ordering::Relaxed) & !DEAD_BIT
+    }
+
+    /// Returns the minimum reserved capacity for this budget.
+    ///
+    /// [`release_excess`](Self::release_excess) never shrinks below this value.
+    pub fn min_reserved(&self) -> usize {
+        self.min_reserved
     }
 
     /// Creates a zero-sized lease from this budget.
@@ -600,27 +611,21 @@ mod tests {
     }
 
     #[test]
-    fn should_yield_checks_theoretical_max() {
+    fn budget_exhausted_checks_theoretical_max() {
         let global = pool(100);
-        let mut budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
+        let budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 500);
 
-        assert!(!budget.should_yield(100));
-        assert!(budget.should_yield(101));
-
-        let lease = budget.try_reserve(50).unwrap();
-        assert!(!budget.should_yield(100));
-        assert!(budget.should_yield(101));
-
-        drop(lease);
+        assert!(!budget.budget_exhausted(100));
+        assert!(budget.budget_exhausted(101));
     }
 
     #[test]
-    fn should_yield_respects_upper_bound() {
+    fn budget_exhausted_respects_upper_bound() {
         let global = pool(10000);
         let budget = DirectionalBudget::new(global.clone(), global.empty_lease(), 0, 200);
 
-        assert!(!budget.should_yield(200));
-        assert!(budget.should_yield(201));
+        assert!(!budget.budget_exhausted(200));
+        assert!(budget.budget_exhausted(201));
     }
 
     #[test]

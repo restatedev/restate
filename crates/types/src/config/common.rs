@@ -446,6 +446,13 @@ pub struct CommonOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub experimental_enable_vqueues: bool,
 
+    /// When enabled, invocations that exhaust their memory budget will yield back to
+    /// the scheduler instead of consuming retry attempts. Requires all nodes in the
+    /// cluster to be running v1.7.0 or later because it introduces a new WAL variant.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub experimental_enable_invoker_yield: bool,
+
     /// # HLC maximum drift
     ///
     /// Restate uses an internal hybrid-logical-clock (HLC) to track causality between
@@ -719,6 +726,7 @@ impl Default for CommonOptions {
             disable_telemetry: false,
             gossip: GossipOptions::default(),
             experimental_enable_vqueues: false,
+            experimental_enable_invoker_yield: false,
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental_kafka_batch_ingestion: false,
             experimental_shuffler_batch_ingestion: false,

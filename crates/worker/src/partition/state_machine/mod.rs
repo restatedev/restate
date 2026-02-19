@@ -2553,6 +2553,14 @@ impl<S> StateMachineApplyContext<'_, S> {
                 )
                 .await?;
             }
+            InvokerEffectKind::Yield(ref reason) => {
+                let invocation_metadata = invocation_status
+                    .into_invocation_metadata()
+                    .expect("Must be present if status is invoked");
+                debug_if_leader!(self.is_leader, ?reason, "Effect: Yield invocation");
+                self.do_resume_service(effect.invocation_id, invocation_metadata)
+                    .await?;
+            }
         }
 
         Ok(())
@@ -4376,7 +4384,6 @@ impl<S> StateMachineApplyContext<'_, S> {
         }
     }
 
-    // Old code path used by the journal v1 (used by service protocols < v4)
     async fn do_resume_service(
         &mut self,
         invocation_id: InvocationId,

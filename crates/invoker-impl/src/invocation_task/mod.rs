@@ -49,7 +49,7 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::TokenBucket;
-use crate::error::InvokerError;
+use crate::error::{BudgetDirection, InvokerError};
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::{ID_LOOKUP, INVOKER_TASK_DURATION};
 
@@ -128,6 +128,13 @@ pub(super) enum InvocationTaskOutputInner {
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
     Failed(InvokerError, InvocationBudget),
+    /// The invocation task yielded due to memory pressure.
+    /// The budget was dropped, returning memory to the global pool.
+    ShouldYield {
+        inbound_needed: usize,
+        outbound_needed: usize,
+        budget: InvocationBudget,
+    },
 }
 
 /// A frame sent through the body channel, carrying an optional memory budget lease.
@@ -232,13 +239,26 @@ enum TerminalLoopState<T> {
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
     Failed(InvokerError),
+    /// Memory budget exhausted — the invocation should yield.
+    ShouldYield {
+        needed: usize,
+        direction: BudgetDirection,
+    },
 }
 
 impl<T, E: Into<InvokerError>> From<Result<T, E>> for TerminalLoopState<T> {
     fn from(value: Result<T, E>) -> Self {
         match value {
             Ok(v) => TerminalLoopState::Continue(v),
-            Err(e) => TerminalLoopState::Failed(e.into()),
+            Err(e) => {
+                let err = e.into();
+                match err {
+                    InvokerError::BudgetExhausted { needed, direction } => {
+                        TerminalLoopState::ShouldYield { needed, direction }
+                    }
+                    other => TerminalLoopState::Failed(other),
+                }
+            }
         }
     }
 }
@@ -252,6 +272,9 @@ macro_rules! shortcircuit {
             TerminalLoopState::Closed => return TerminalLoopState::Closed,
             TerminalLoopState::Suspended(v) => return TerminalLoopState::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => return TerminalLoopState::SuspendedV2(v),
+            TerminalLoopState::ShouldYield { needed, direction } => {
+                return TerminalLoopState::ShouldYield { needed, direction }
+            }
             TerminalLoopState::Failed(e) => return TerminalLoopState::Failed(e),
         }
     };
@@ -322,8 +345,8 @@ where
             .await;
 
         // Only Failed returns the budget so the invoker main loop can stash
-        // it on the ISM for retry reuse. Other terminal states (Closed,
-        // Suspended) end the invocation — no retry needed.
+        // it on the ISM for retry reuse. ShouldYield drops the budget to free
+        // memory. Other terminal states (Closed, Suspended) end the invocation.
         let inner = match terminal_state {
             TerminalLoopState::Continue(_) => {
                 unreachable!("This is not supposed to happen. This is a runtime bug")
@@ -337,6 +360,21 @@ where
                 // again to release memory.
                 budget.release_excess();
                 InvocationTaskOutputInner::Failed(e, budget)
+            }
+            TerminalLoopState::ShouldYield { needed, direction } => {
+                // Extract memory requirements before dropping the budget.
+                // The failing direction reports `needed`; the other reports
+                // its min_reserved (the seed amount for that direction).
+                let (inbound_needed, outbound_needed) = match direction {
+                    BudgetDirection::Inbound => (needed, budget.outbound.min_reserved()),
+                    BudgetDirection::Outbound => (budget.inbound.min_reserved(), needed),
+                };
+
+                InvocationTaskOutputInner::ShouldYield {
+                    inbound_needed,
+                    outbound_needed,
+                    budget,
+                }
             }
         };
 
