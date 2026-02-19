@@ -137,7 +137,12 @@ impl Decoder {
     }
 
     /// Try to consume the next message in the internal buffer.
-    pub fn consume_next(&mut self) -> Result<Option<(MessageHeader, Message)>, EncodingError> {
+    ///
+    /// Returns `(header, message, payload_size)` where `payload_size` is not counting
+    /// the header length.
+    pub fn consume_next(
+        &mut self,
+    ) -> Result<Option<(MessageHeader, Message, usize)>, EncodingError> {
         loop {
             let remaining = self.buf.remaining();
 
@@ -176,7 +181,7 @@ impl DecoderState {
         mut buf: impl Buf,
         message_size_warning: NonZeroUsize,
         message_size_limit: NonZeroUsize,
-    ) -> Result<Option<(MessageHeader, Message)>, EncodingError> {
+    ) -> Result<Option<(MessageHeader, Message, usize)>, EncodingError> {
         let mut res = None;
 
         *self = match mem::take(self) {
@@ -205,11 +210,12 @@ impl DecoderState {
                 DecoderState::WaitingPayload(header)
             }
             DecoderState::WaitingPayload(h) => {
+                let payload_size = h.frame_length() as usize;
                 let msg = h
                     .message_type()
-                    .decode(buf.take(h.frame_length() as usize))
+                    .decode(buf.take(payload_size))
                     .map_err(|e| EncodingError::DecodeMessage(h.message_type(), e))?;
-                res = Some((h, msg));
+                res = Some((h, msg, payload_size));
                 DecoderState::WaitingHeader
             }
         };
@@ -252,18 +258,18 @@ mod tests {
         decoder.push(encoder.encode(expected_msg_1.clone()));
         decoder.push(encoder.encode(expected_msg_2.clone()));
 
-        let (actual_msg_header_0, actual_msg_0) = decoder.consume_next().unwrap().unwrap();
+        let (actual_msg_header_0, actual_msg_0, _) = decoder.consume_next().unwrap().unwrap();
         assert_eq!(actual_msg_header_0.message_type(), MessageType::Start);
         assert_eq!(actual_msg_0, expected_msg_0);
 
-        let (actual_msg_header_1, actual_msg_1) = decoder.consume_next().unwrap().unwrap();
+        let (actual_msg_header_1, actual_msg_1, _) = decoder.consume_next().unwrap().unwrap();
         assert_eq!(
             actual_msg_header_1.message_type(),
             MessageType::InputCommand
         );
         assert_eq!(actual_msg_1, expected_msg_1);
 
-        let (actual_msg_header_2, actual_msg_2) = decoder.consume_next().unwrap().unwrap();
+        let (actual_msg_header_2, actual_msg_2, _) = decoder.consume_next().unwrap().unwrap();
         assert_eq!(
             actual_msg_header_2.message_type(),
             MessageType::CallCompletionNotification
@@ -299,7 +305,7 @@ mod tests {
 
         decoder.push(expected_msg_encoded.slice(split_index..));
 
-        let (actual_msg_header, actual_msg) = decoder.consume_next().unwrap().unwrap();
+        let (actual_msg_header, actual_msg, _) = decoder.consume_next().unwrap().unwrap();
         assert_eq!(actual_msg_header.message_type(), MessageType::InputCommand);
         assert_eq!(actual_msg, expected_msg);
 
