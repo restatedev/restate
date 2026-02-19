@@ -29,7 +29,8 @@ use tracing::{debug, trace, warn};
 use restate_errors::warn_it;
 use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalEntry, JournalKind,
+    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
+    JournalKind,
 };
 use restate_memory::{BudgetLease, DirectionalBudget};
 use restate_service_client::{Endpoint, Method, Parts, Request};
@@ -59,7 +60,8 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
 use crate::error::{
-    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
+    BudgetDirection, CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError,
+    SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBody, InvokerBodySender, ResponseChunk,
@@ -269,7 +271,7 @@ where
             let state = if let Some(ref service_id) = keyed_service_id {
                 Some(crate::shortcircuit!(
                     txn.read_state_budgeted(service_id, outbound_budget)
-                        .map_err(|e| InvokerError::StateReader(e.into()))
+                        .map_err(InvokerError::from_state_reader)
                 ))
             } else {
                 None
@@ -297,7 +299,7 @@ where
                     journal_metadata.journal_kind,
                     outbound_budget,
                 )
-                .map_err(|e| InvokerError::JournalReader(e.into()))
+                .map_err(InvokerError::from_journal_reader)
             );
             crate::shortcircuit!(
                 self.replay_loop(
@@ -439,7 +441,7 @@ where
     where
         JournalStream: Stream<Item = Result<(JournalEntry, BudgetLease), E>> + Unpin,
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
-        E: std::error::Error + Send + Sync + 'static,
+        E: InvocationReaderError,
     {
         let mut journal_stream = journal_stream.fuse();
         let mut got_headers = false;
@@ -489,6 +491,12 @@ where
                             panic!("Unexpected JournalV1Completion during replay: completion arrived before entry was stored")
                         }
                         Some(Err(e)) => {
+                            if let Some(needed) = e.budget_exhaustion() {
+                                return TerminalLoopState::ShouldYield {
+                                    needed,
+                                    direction: BudgetDirection::Outbound,
+                                };
+                            }
                             return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
                         }
                         None => {
@@ -541,7 +549,7 @@ where
                                         outbound_budget,
                                     )
                                     .await
-                                    .map_err(|e| InvokerError::JournalReader(e.into()))
+                                    .map_err(InvokerError::from_journal_reader)
                                     .and_then(|opt| opt.ok_or_else(|| InvokerError::JournalReader(
                                         anyhow::anyhow!(
                                             "journal entry {entry_index} not found for notification read"
@@ -639,7 +647,7 @@ where
     ) -> Result<(), InvokerError>
     where
         S: Stream<Item = Result<((Bytes, Bytes), BudgetLease), E>> + Send,
-        E: std::error::Error + Send + Sync + 'static,
+        E: InvocationReaderError,
     {
         // Collect state entries with size limit
         let (partial_state, state_map, state_lease) = collect_eager_state(
