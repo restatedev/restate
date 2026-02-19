@@ -24,6 +24,7 @@ use http_body_util::Full;
 use hyper::body::Body;
 use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Response, Uri};
+use rand::Rng;
 use restate_types::config::ServiceClientOptions;
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::deployment::EndpointLambdaCompression;
@@ -46,7 +47,7 @@ pub type ResponseBody = http_body_util::Either<hyper::body::Incoming, Full<Bytes
 pub struct ServiceClient {
     // TODO a single client uses the pooling provided by hyper, but this is not enough.
     //  See https://github.com/restatedev/restate/issues/76 for more background on the topic.
-    http: HttpClient,
+    http: [HttpClient; 10],
     lambda: LambdaClient,
     // this can be changed to re-read periodically if necessary
     request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
@@ -55,7 +56,7 @@ pub struct ServiceClient {
 
 impl ServiceClient {
     pub(crate) fn new(
-        http: HttpClient,
+        http: [HttpClient; 10],
         lambda: LambdaClient,
         request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
         additional_request_headers: HashMap<HeaderName, HeaderValue>,
@@ -84,8 +85,10 @@ impl ServiceClient {
             Arc::new(ArcSwapOption::empty())
         };
 
+        let clients = std::array::from_fn(|_| HttpClient::from_options(&options.http));
+
         Ok(Self::new(
-            HttpClient::from_options(&options.http),
+            clients,
             LambdaClient::from_options(&options.lambda, assume_role_cache_mode),
             request_identity_key,
             options
@@ -136,9 +139,12 @@ impl ServiceClient {
                 .map(|(k, v)| (k.clone(), v.clone())),
         );
 
+        let client_index = rand::rng().random_range(0..self.http.len());
+        let http_client = &self.http[client_index];
+
         match parts.address {
             Endpoint::Http(uri, version) => {
-                let fut = self.http.request(
+                let fut = http_client.request(
                     uri.clone(),
                     version,
                     parts.method.into(),
