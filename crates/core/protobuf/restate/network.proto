@@ -23,8 +23,12 @@ enum Swimlane {
   GOSSIP = 1;
   // Fat pipe for streaming bifrost records
   BIFROST_DATA = 2;
-  // Fat pipe for ingress data communication with workers
+  // Fat pipe for ingress data communication with workers (data ingestion)
   INGRESS_DATA = 3;
+  /// Fat pipe for sending read requests and responses between bifrost nodes and log-servers
+  BIFROST_READS = 4;
+  /// Data pipe for performing remote datafusion scans
+  DATAFUSION = 5;
 }
 
 //

@@ -65,8 +65,7 @@ impl<T: TransportConnect> Factory<T> {
         let data_request_pump = router_builder
             .register_buffered_service_with_pool(data_pool, BackPressureMode::PushBack);
         // Sequencer meta uses the default shared pool.
-        let info_request_pump =
-            router_builder.register_buffered_service(BackPressureMode::PushBack);
+        let info_request_pump = router_builder.register_buffered_service(BackPressureMode::Lossy);
 
         Self {
             networking,
