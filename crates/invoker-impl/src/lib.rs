@@ -509,11 +509,6 @@ where
                     invocation_id,
                     partition,
                     inner,
-                    // Inbound budget lease — held alive through handler .await points
-                    // (including the bounded output_tx.send(Effect).await), then dropped
-                    // at the end of this select arm to release budget. A follow-up PR
-                    // will extend this lease into the Effect/Record pipeline.
-                    inbound_lease: _inbound_lease,
                 } = invocation_task_msg;
                 match inner {
                     InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
@@ -531,7 +526,11 @@ where
                             x_restate_server_header
                         )
                     }
-                    InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
+                    // Inbound budget leases on payload-carrying variants are held
+                    // alive through handler .await points (including the bounded
+                    // output_tx.send(Effect).await), then dropped at the end of
+                    // this select arm to release budget.
+                    InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack, inbound_lease: _inbound_lease } => {
                         self.handle_new_entry(
                             partition,
                             invocation_id,
@@ -540,7 +539,7 @@ where
                             requires_ack
                         ).await
                     },
-                    InvocationTaskOutputInner::NewNotificationProposal { notification } => {
+                    InvocationTaskOutputInner::NewNotificationProposal { notification, inbound_lease: _inbound_lease } => {
                         self.handle_new_notification_proposal(
                             partition,
                             invocation_id,
@@ -556,7 +555,7 @@ where
                     InvocationTaskOutputInner::Suspended(indexes) => {
                         self.handle_invocation_task_suspended(partition, invocation_id, indexes).await
                     }
-                    InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack } => {
+                    InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack, inbound_lease: _inbound_lease } => {
                         self.handle_new_command(
                             partition,
                             invocation_id,
@@ -1744,8 +1743,22 @@ mod tests {
     use test_log::test;
     use tokio::sync::mpsc;
 
+    use restate_memory::{BudgetLease, DirectionalBudget};
+
     use crate::error::{InvokerError, SdkInvocationErrorV2};
     use crate::quota::InvokerConcurrencyQuota;
+
+    /// Create a zero-sized [`BudgetLease`] for tests that construct
+    /// payload-carrying [`InvocationTaskOutputInner`] variants directly.
+    fn test_empty_inbound_lease() -> BudgetLease {
+        let budget = DirectionalBudget::new(
+            MemoryPool::unlimited(),
+            MemoryPool::unlimited().empty_lease(),
+            0,
+            usize::MAX,
+        );
+        budget.empty_lease()
+    }
 
     // -- Mocks
 
@@ -2193,12 +2206,12 @@ mod tests {
                 let _ = invoker_tx.send(InvocationTaskOutput {
                     partition,
                     invocation_id,
-                    inbound_lease: None,
                     inner: InvocationTaskOutputInner::NewEntry {
                         entry_index: 1,
                         entry: RawEntry::new(EnrichedEntryHeader::SetState {}, Bytes::default())
                             .into(),
                         requires_ack: false,
+                        inbound_lease: test_empty_inbound_lease(),
                     },
                 });
                 pending() // Never ends

@@ -86,11 +86,6 @@ pub(super) struct InvocationTaskOutput {
     pub(super) partition: PartitionLeaderEpoch,
     pub(super) invocation_id: InvocationId,
     pub(super) inner: InvocationTaskOutputInner,
-    /// Inbound budget lease tracking the memory for this message's wire data.
-    /// Held alive until the invoker main loop has forwarded the corresponding
-    /// [`Effect`] onto the bounded output channel, providing backpressure on the
-    /// unbounded `invocation_tasks_rx` channel.
-    pub(super) inbound_lease: Option<BudgetLease>,
 }
 
 pub(super) enum InvocationTaskOutputInner {
@@ -106,6 +101,11 @@ pub(super) enum InvocationTaskOutputInner {
         ///
         /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
         requires_ack: bool,
+        /// Inbound budget lease tracking the memory for this message's wire data.
+        /// Held alive until the invoker main loop has forwarded the corresponding
+        /// [`Effect`] onto the bounded output channel, providing backpressure on the
+        /// unbounded `invocation_tasks_rx` channel.
+        inbound_lease: BudgetLease,
     },
     NewCommand {
         command_index: CommandIndex,
@@ -116,9 +116,13 @@ pub(super) enum InvocationTaskOutputInner {
         ///
         /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
         requires_ack: bool,
+        /// Inbound budget lease tracking the memory for this message's wire data.
+        inbound_lease: BudgetLease,
     },
     NewNotificationProposal {
         notification: RawNotification,
+        /// Inbound budget lease tracking the memory for this message's wire data.
+        inbound_lease: BudgetLease,
     },
     Closed,
     Suspended(HashSet<EntryIndex>),
@@ -340,7 +344,6 @@ where
             partition: self.partition,
             invocation_id: self.invocation_id,
             inner,
-            inbound_lease: None,
         });
         histogram!(INVOKER_TASK_DURATION, "partition_id" => ID_LOOKUP.get(self.partition.0))
             .record(start.elapsed());
@@ -463,13 +466,10 @@ where
             None
         };
 
-        self.send_invoker_tx(
-            InvocationTaskOutputInner::PinnedDeployment(
-                PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
-                deployment_changed,
-            ),
-            None,
-        );
+        self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
+            PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
+            deployment_changed,
+        ));
 
         if chosen_service_protocol_version <= ServiceProtocolVersion::V3 {
             // Protocol runner for service protocol <= v3
@@ -509,16 +509,11 @@ where
 
 impl<EE, Schemas> InvocationTask<EE, Schemas> {
     /// Send a non-terminal message to the invoker main loop.
-    pub(crate) fn send_invoker_tx(
-        &self,
-        invocation_task_output_inner: InvocationTaskOutputInner,
-        inbound_lease: Option<BudgetLease>,
-    ) {
+    pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
         let _ = self.invoker_tx.send(InvocationTaskOutput {
             partition: self.partition,
             invocation_id: self.invocation_id,
             inner: invocation_task_output_inner,
-            inbound_lease,
         });
     }
 }

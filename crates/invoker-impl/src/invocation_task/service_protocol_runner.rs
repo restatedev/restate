@@ -647,14 +647,12 @@ where
         }
 
         if let Some(hv) = parts.headers.remove(X_RESTATE_SERVER) {
-            self.invocation_task.send_invoker_tx(
-                InvocationTaskOutputInner::ServerHeaderReceived(
+            self.invocation_task
+                .send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
                     hv.to_str()
                         .map_err(|e| InvokerError::BadHeader(X_RESTATE_SERVER, e))?
                         .to_owned(),
-                ),
-                None,
-            )
+                ))
         }
 
         Ok(())
@@ -686,11 +684,14 @@ where
             crate::shortcircuit!(self.decoder.consume_next())
         {
             // Split off this message's payload_size from the cumulative inbound
-            // lease.
+            // lease. The cumulative lease is always `Some` here because
+            // `handle_read` sets it from the chunk lease before entering
+            // this decode loop.
             let msg_lease = self
                 .cumulative_inbound_lease
                 .as_mut()
-                .map(|lease| lease.split(payload_size));
+                .expect("cumulative lease set before decode loop")
+                .split(payload_size);
             crate::shortcircuit!(self.handle_message(
                 parent_span_context,
                 frame_header,
@@ -707,7 +708,7 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
         mh: MessageHeader,
         message: ProtocolMessage,
-        inbound_lease: Option<BudgetLease>,
+        inbound_lease: BudgetLease,
     ) -> TerminalLoopState<()> {
         trace!(restate.protocol.message_header = ?mh, restate.protocol.message = ?message, "Received message");
         match message {
@@ -770,16 +771,15 @@ where
                             e
                         ))
                 );
-                self.invocation_task.send_invoker_tx(
-                    InvocationTaskOutputInner::NewEntry {
+                self.invocation_task
+                    .send_invoker_tx(InvocationTaskOutputInner::NewEntry {
                         entry_index: self.next_journal_index,
                         entry: enriched_entry.into(),
                         requires_ack: mh
                             .requires_ack()
                             .expect("All entry messages support requires_ack"),
-                    },
-                    inbound_lease,
-                );
+                        inbound_lease,
+                    });
                 self.next_journal_index += 1;
                 TerminalLoopState::Continue(())
             }
