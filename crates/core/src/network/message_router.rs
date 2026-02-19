@@ -8,6 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod shard_map;
+mod sharded;
+
+// exports
+pub use sharded::{
+    ControlServiceShards, ShardControlMessage, ShardControlStream, ShardRegistrationDecision,
+    ShardSender, Sharded,
+};
+
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,17 +28,18 @@ use metrics::{Counter, counter};
 
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::StreamExt;
-use tracing::{debug, instrument, trace};
+use tracing::{debug, instrument, trace, warn};
 
 use restate_memory::{EstimatedMemorySize, MemoryLease, MemoryPool};
 use restate_types::SharedString;
 use restate_types::net::{Service, ServiceTag};
 
+use self::shard_map::Shards;
+use self::sharded::ShardedSender;
 use super::incoming::{Incoming, RawRpc, RawUnary, RawWatch};
-
 use super::{
-    Connection, RawSvcRpc, RawSvcUnary, RawSvcWatch, ReplyEnvelope, RouterError, Verdict,
-    WatchUpdateEnvelope,
+    Connection, RawSvcRpc, RawSvcUnary, RawSvcWatch, ReplyEnvelope, RouterError,
+    ShardRegistrationError, Verdict, WatchUpdateEnvelope,
 };
 use crate::network::metric_definitions::NETWORK_SERVICE_ACCEPTED_REQUEST_BYTES;
 use crate::network::{PeerMetadataVersion, RpcReplyPort};
@@ -99,15 +109,96 @@ pub trait Handler: Send + 'static {
 
 #[derive(Default)]
 pub struct MessageRouter {
-    senders: HashMap<ServiceTag, ServiceSender>,
+    senders: HashMap<ServiceTag, ServiceSink>,
+    shards: Shards,
 }
 
 impl MessageRouter {
-    fn get_sender(&self, target: ServiceTag) -> Result<&ServiceSender, RouterError> {
+    fn get_sink(&self, target: ServiceTag) -> Result<&ServiceSink, RouterError> {
         let Some(sender) = self.senders.get(&target) else {
             return Err(RouterError::ServiceNotFound);
         };
         Ok(sender)
+    }
+
+    async fn get_sharded_sender(
+        &self,
+        parent_sender: &ShardedSender,
+        target: ServiceTag,
+        sort_code: u64,
+    ) -> Result<RawSender, ShardRegistrationError> {
+        loop {
+            match self.shards.maybe_register(target, sort_code) {
+                shard_map::MaybeValue::Filled(raw_sender) => return Ok(raw_sender),
+                shard_map::MaybeValue::Opening(wait_token) => {
+                    wait_token.join().await;
+                    // try again, hopefully next time we'll find the fully registered shard
+                    // or we'll take over registration.
+                    continue;
+                }
+                shard_map::MaybeValue::Register(registration_token) => {
+                    // give the service, the receiver for this shard.
+                    // shard was not found, should the service create it?
+                    //
+                    // Note that registration_token's drop will remove the entry from the
+                    // shard_map unless we call done(). This means that if registration was
+                    // cancelled (due to future being canceled). We'll detect that on the next
+                    // attempt to create the shard and try again.
+                    let raw_sender = parent_sender.register_sort_code(sort_code).await?;
+                    if !registration_token.done(raw_sender.clone()) {
+                        // race...
+                        continue;
+                    }
+                    return Ok(raw_sender);
+                }
+            }
+        }
+    }
+
+    /// Dispatches a [`ServiceOp`] to the appropriate sink (sharded or mono).
+    ///
+    /// For sharded sinks this handles the full lifecycle: resolve the shard sender
+    /// (registering on demand if needed), send the message, and retry if the shard's
+    /// channel was closed since it was last looked up.
+    ///
+    /// Returns `Ok(())` on success or a [`ShardRegistrationError`] if the shard
+    /// registration was rejected (verdict) or the service is unreachable (router
+    /// error). Callers map the verdict case according to their message type.
+    async fn dispatch_op(
+        &self,
+        service_sink: &ServiceSink,
+        target_service: ServiceTag,
+        sort_code: Option<u64>,
+        encoded_len: usize,
+        op: ServiceOp,
+    ) -> Result<(), ShardRegistrationError> {
+        match service_sink {
+            ServiceSink::Sharded(parent_sender) => {
+                let sort_code = sort_code.expect("sort code must be set in sharded services");
+                let mut op = op;
+                loop {
+                    let sender = self
+                        .get_sharded_sender(parent_sender, target_service, sort_code)
+                        .await?;
+                    // if the shard sender is closed, we need to retry registering the shard
+                    if let Err(mpsc::error::SendError(msg)) = sender.send(op) {
+                        op = msg;
+                        // remove this sender
+                        self.shards
+                            .remove_if_matches(target_service, sort_code, &sender);
+                        // retry...
+                        continue;
+                    } else {
+                        parent_sender.increment_bytes_accepted(encoded_len);
+                        break;
+                    }
+                }
+            }
+            ServiceSink::Mono(sender) => {
+                sender.send(op).map_err(|_| RouterError::ServiceStopped)?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn call_rpc(
@@ -123,15 +214,16 @@ impl MessageRouter {
             "Received RPC call: {target_service}::{}",
             rpc_call.msg_type
         );
-        let sender = self.get_sender(target_service)?;
         let encoded_len = rpc_call.payload.len();
-        let reservation = sender.reserve(encoded_len).await?;
+        let service_sink = self.get_sink(target_service)?;
+        let sort_code = rpc_call.sort_code;
+        let reservation = service_sink.reserve(encoded_len, sort_code).await?;
 
         let (reply_port, reply_rx) = RpcReplyPort::new();
         let raw_rpc = RawRpc {
             reply_port,
             payload: rpc_call.payload,
-            sort_code: rpc_call.sort_code,
+            sort_code,
             msg_type: rpc_call.msg_type,
             reservation,
         };
@@ -142,9 +234,17 @@ impl MessageRouter {
             PeerMetadataVersion::from(header),
         );
 
-        sender.send(ServiceOp::CallRpc(incoming))?;
-        sender.bytes_accepted.increment(encoded_len as u64);
-        Ok(reply_rx)
+        let op = ServiceOp::CallRpc(incoming);
+        match self
+            .dispatch_op(service_sink, target_service, sort_code, encoded_len, op)
+            .await
+        {
+            Ok(()) => Ok(reply_rx),
+            Err(ShardRegistrationError::Router(err)) => Err(err),
+            Err(ShardRegistrationError::Verdict(verdict)) => {
+                Ok(RpcReplyPort::reply_with_verdict(verdict))
+            }
+        }
     }
 
     // WIP
@@ -161,9 +261,10 @@ impl MessageRouter {
             watch.msg_type
         );
 
-        let sender = self.get_sender(target_service)?;
+        let service_sink = self.get_sink(target_service)?;
         let encoded_len = watch.payload.len();
-        let reservation = sender.reserve(encoded_len).await?;
+        let sort_code = watch.sort_code;
+        let reservation = service_sink.reserve(encoded_len, sort_code).await?;
 
         let (reply_port, reply_rx) = todo!();
 
@@ -180,9 +281,17 @@ impl MessageRouter {
             PeerMetadataVersion::from(header),
         );
 
-        sender.send(ServiceOp::Watch(incoming))?;
-        sender.bytes_accepted.increment(encoded_len as u64);
-        Ok(reply_rx)
+        let op = ServiceOp::Watch(incoming);
+        match self
+            .dispatch_op(service_sink, target_service, sort_code, encoded_len, op)
+            .await
+        {
+            Ok(()) => Ok(reply_rx),
+            Err(ShardRegistrationError::Router(err)) => Err(err),
+            Err(ShardRegistrationError::Verdict(_verdict)) => {
+                unimplemented!("Sharded watch replies are not yet implemented");
+            }
+        }
     }
 
     pub async fn call_unary(
@@ -194,9 +303,10 @@ impl MessageRouter {
         let target_service = unary.service();
         trace!("Received Unary call: {target_service}::{}", unary.msg_type);
 
-        let sender = self.get_sender(target_service)?;
+        let service_sink = self.get_sink(target_service)?;
+        let sort_code = unary.sort_code;
         let encoded_len = unary.payload.len();
-        let reservation = sender.reserve(encoded_len).await?;
+        let reservation = service_sink.reserve(encoded_len, sort_code).await?;
 
         let incoming = Incoming::new(
             connection.protocol_version,
@@ -210,16 +320,28 @@ impl MessageRouter {
             PeerMetadataVersion::from(header),
         );
 
-        sender.send(ServiceOp::Unary(incoming))?;
-        sender.bytes_accepted.increment(encoded_len as u64);
-        Ok(())
+        let op = ServiceOp::Unary(incoming);
+        match self
+            .dispatch_op(service_sink, target_service, sort_code, encoded_len, op)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(ShardRegistrationError::Router(err)) => Err(err),
+            Err(ShardRegistrationError::Verdict(_verdict)) => {
+                // Since this is a unary message, we cannot reply with a verdict but let's
+                // return a routing error instead. Errors are not shipped to the caller
+                // but they are counted as errors in metrics.
+                Err(RouterError::ServiceNotReady)
+            }
+        }
     }
 }
 
 pub struct MessageRouterBuilder {
     /// The default memory pool that's shared across services that don't specify an explicit pool.
     default_pool: MemoryPool,
-    handlers: HashMap<ServiceTag, ServiceSender>,
+    handlers: HashMap<ServiceTag, ServiceSink>,
+    shards: Shards,
 }
 
 impl MessageRouterBuilder {
@@ -227,6 +349,7 @@ impl MessageRouterBuilder {
         Self {
             default_pool: pool,
             handlers: HashMap::default(),
+            shards: Shards::default(),
         }
     }
 }
@@ -264,7 +387,11 @@ impl MessageRouterBuilder {
         backpressure: BackPressureMode,
     ) -> ServiceReceiver<S> {
         let (sender, receiver) = ServiceSender::new::<S>(pool, backpressure);
-        if self.handlers.insert(S::TAG, sender).is_some() {
+        if self
+            .handlers
+            .insert(S::TAG, ServiceSink::Mono(sender))
+            .is_some()
+        {
             panic!(
                 "Handler for service {} has been registered already!",
                 S::TAG
@@ -291,13 +418,101 @@ impl MessageRouterBuilder {
         backpressure: BackPressureMode,
     ) -> ServiceReceiver<S> {
         let (sender, receiver) = ServiceSender::new::<S>(self.default_pool.clone(), backpressure);
-        if self.handlers.insert(S::TAG, sender).is_some() {
+        if self
+            .handlers
+            .insert(S::TAG, ServiceSink::Mono(sender))
+            .is_some()
+        {
             panic!(
                 "Handler for service {} has been registered already!",
                 S::TAG
             );
         }
         receiver
+    }
+
+    /// Registers a sharded service using the router's default memory pool.
+    ///
+    /// Unlike [`register_service`](Self::register_service), a sharded service routes
+    /// each incoming message to an independent shard identified by the message's
+    /// sort-code. Shards are created on demand: the first message targeting an
+    /// unknown sort-code triggers a [`ShardControlMessage::RegisterSortCode`] on the
+    /// returned [`Sharded`]'s control stream, giving the service owner a chance to
+    /// set up the shard and return a [`ShardSender`].  Subsequent messages with the
+    /// same sort-code are delivered directly to that shard's channel.
+    ///
+    /// Shards can also be pre-registered imperatively via
+    /// [`ControlServiceShards::force_register_sort_code`].
+    ///
+    /// # Backpressure Modes
+    ///
+    /// - [`BackPressureMode::PushBack`]: Waits for memory to become available.
+    ///   Use when you want to slow down senders under pressure.
+    /// - [`BackPressureMode::Lossy`]: Immediately rejects with [`RouterError::CapacityExceeded`].
+    ///   Use when you prefer to drop requests rather than queue them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a handler for `S` has already been registered.
+    #[track_caller]
+    #[must_use]
+    pub fn register_sharded_service<S: Service>(
+        &mut self,
+        backpressure: BackPressureMode,
+    ) -> Sharded<S> {
+        let (sender, receiver) = ShardedSender::new::<S>(self.default_pool.clone(), backpressure);
+
+        if self
+            .handlers
+            .insert(S::TAG, ServiceSink::Sharded(sender))
+            .is_some()
+        {
+            panic!(
+                "Handler for service {} has been registered already!",
+                S::TAG
+            );
+        }
+        Sharded::new(receiver, self.shards.clone())
+    }
+
+    /// Registers a sharded service with a dedicated memory pool.
+    ///
+    /// Behaves identically to [`register_sharded_service`](Self::register_sharded_service)
+    /// but uses the supplied `pool` instead of the router's default. This is useful
+    /// when a service has distinct memory-budget requirements — for example, a data
+    /// service that handles large payloads may need a larger or separately managed
+    /// pool to avoid starving other services sharing the default pool.
+    ///
+    /// # Backpressure Modes
+    ///
+    /// - [`BackPressureMode::PushBack`]: Waits for memory to become available.
+    ///   Use when you want to slow down senders under pressure.
+    /// - [`BackPressureMode::Lossy`]: Immediately rejects with [`RouterError::CapacityExceeded`].
+    ///   Use when you prefer to drop requests rather than queue them.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a handler for `S` has already been registered.
+    #[track_caller]
+    #[must_use]
+    pub fn register_sharded_service_with_pool<S: Service>(
+        &mut self,
+        pool: MemoryPool,
+        backpressure: BackPressureMode,
+    ) -> Sharded<S> {
+        let (sender, receiver) = ShardedSender::new::<S>(pool, backpressure);
+
+        if self
+            .handlers
+            .insert(S::TAG, ServiceSink::Sharded(sender))
+            .is_some()
+        {
+            panic!(
+                "Handler for service {} has been registered already!",
+                S::TAG
+            );
+        }
+        Sharded::new(receiver, self.shards.clone())
     }
 
     /// Subscribes to messages for a specific service using a dedicated memory pool.
@@ -339,23 +554,7 @@ impl MessageRouterBuilder {
     pub fn build(self) -> MessageRouter {
         MessageRouter {
             senders: self.handlers,
-        }
-    }
-}
-
-enum ServiceOp {
-    CallRpc(Incoming<RawRpc>),
-    Watch(Incoming<RawWatch>),
-    Unary(Incoming<RawUnary>),
-}
-
-impl EstimatedMemorySize for ServiceOp {
-    #[inline]
-    fn estimated_memory_size(&self) -> usize {
-        match self {
-            ServiceOp::CallRpc(incoming) => incoming.estimated_memory_size(),
-            ServiceOp::Watch(incoming) => incoming.estimated_memory_size(),
-            ServiceOp::Unary(incoming) => incoming.estimated_memory_size(),
+            shards: self.shards,
         }
     }
 }
@@ -432,6 +631,7 @@ impl<S: Service> Stream for ServiceStream<S> {
 }
 
 /// A message sent to a network service
+#[derive(derive_more::Debug)]
 pub enum ServiceMessage<S> {
     Rpc(Incoming<RawSvcRpc<S>>),
     Watch(Incoming<RawSvcWatch<S>>),
@@ -547,7 +747,7 @@ impl<S: Service> ServiceReceiver<S> {
     }
 }
 
-// creates a default closed receiver
+/// Creates a default closed receiver
 impl<S: Service> Default for ServiceReceiver<S> {
     fn default() -> Self {
         let (_tx, mut receiver) = mpsc::unbounded_channel();
@@ -560,11 +760,60 @@ impl<S: Service> Default for ServiceReceiver<S> {
     }
 }
 
+/// Internal type-erased holder of network messages
+///
+/// The public version of this type is [`ServiceMessage`].
+enum ServiceOp {
+    CallRpc(Incoming<RawRpc>),
+    Watch(Incoming<RawWatch>),
+    Unary(Incoming<RawUnary>),
+}
+
+impl EstimatedMemorySize for ServiceOp {
+    #[inline]
+    fn estimated_memory_size(&self) -> usize {
+        match self {
+            ServiceOp::CallRpc(incoming) => incoming.estimated_memory_size(),
+            ServiceOp::Watch(incoming) => incoming.estimated_memory_size(),
+            ServiceOp::Unary(incoming) => incoming.estimated_memory_size(),
+        }
+    }
+}
+
+enum ServiceSink {
+    Sharded(ShardedSender),
+    Mono(ServiceSender),
+}
+
+impl ServiceSink {
+    /// Reserve memory and return a lease when successful.
+    ///
+    /// Behavior depends on [`BackPressureMode`]:
+    /// - `PushBack`: Waits asynchronously for memory to become available
+    /// - `Lossy`: Returns [`RouterError::CapacityExceeded`] if pool is exhausted
+    async fn reserve(
+        &self,
+        payload_size: usize,
+        sort_code: Option<u64>,
+    ) -> Result<MemoryLease, RouterError> {
+        match self {
+            ServiceSink::Sharded(parent_sender) => {
+                if sort_code.is_none() {
+                    warn!("RPC call to a sharded service without sort-code, dropping.");
+                    return Err(RouterError::MessageUnrecognized);
+                }
+                parent_sender.reserve(payload_size).await
+            }
+            ServiceSink::Mono(sender) => sender.reserve(payload_size).await,
+        }
+    }
+}
+
 struct ServiceSender {
-    sender: mpsc::UnboundedSender<ServiceOp>,
+    raw_sender: RawSender,
+    started: Arc<AtomicBool>,
     pool: MemoryPool,
     backpressure: BackPressureMode,
-    started: Arc<AtomicBool>,
     bytes_accepted: Counter,
 }
 
@@ -577,10 +826,10 @@ impl ServiceSender {
         let (sender, receiver) = mpsc::unbounded_channel();
         (
             Self {
-                sender,
+                raw_sender: RawSender(sender),
+                started: started.clone(),
                 pool,
                 backpressure,
-                started: started.clone(),
                 bytes_accepted: counter!(NETWORK_SERVICE_ACCEPTED_REQUEST_BYTES, "target" => S::TAG.as_str_name()),
             },
             ServiceReceiver {
@@ -618,9 +867,36 @@ impl ServiceSender {
 
     /// send a message through the channel
     fn send(&self, op: ServiceOp) -> Result<(), RouterError> {
-        self.sender
+        let size = op.estimated_memory_size();
+        self.raw_sender
             .send(op)
-            .map_err(|_| RouterError::ServiceStopped)
+            .map_err(|_| RouterError::ServiceStopped)?;
+        self.bytes_accepted.increment(size as u64);
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct RawSender(mpsc::UnboundedSender<ServiceOp>);
+
+impl RawSender {
+    /// Creates a dummy sender for testing. Returns the sender and a receiver
+    /// that keeps the channel alive.
+    #[cfg(test)]
+    fn test_channel() -> (Self, mpsc::UnboundedReceiver<ServiceOp>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self(tx), rx)
+    }
+
+    #[inline]
+    #[allow(clippy::result_large_err)]
+    fn send(&self, op: ServiceOp) -> Result<(), mpsc::error::SendError<ServiceOp>> {
+        self.0.send(op)
+    }
+
+    #[inline]
+    fn same_channel(&self, other: &Self) -> bool {
+        self.0.same_channel(&other.0)
     }
 }
 
@@ -720,3 +996,170 @@ where
 }
 
 static_assertions::assert_impl_all!(MessageRouter: Send);
+
+#[cfg(test)]
+mod tests {
+    use tokio_stream::StreamExt;
+
+    use restate_memory::MemoryPool;
+    use restate_types::net::ServiceTag;
+    use restate_types::net::log_server::LogServerDataService;
+
+    use super::*;
+
+    const SVC: ServiceTag = ServiceTag::LogServerDataService;
+    const SORT_CODE: u64 = 42;
+
+    /// Creates a `ShardedSender` + control stream + `Shards` triple ready for
+    /// testing `get_sharded_sender` in isolation.
+    fn sharded_setup() -> (
+        ShardedSender,
+        ShardControlStream<LogServerDataService>,
+        Shards,
+    ) {
+        let (sender, receiver) = ShardedSender::new::<LogServerDataService>(
+            MemoryPool::unlimited(),
+            BackPressureMode::PushBack,
+        );
+        let stream = receiver.start();
+        (sender, stream, Shards::default())
+    }
+
+    /// Minimal `MessageRouter` that only has a `Shards` map (no service sinks).
+    fn router_with_shards(shards: Shards) -> MessageRouter {
+        MessageRouter {
+            senders: HashMap::default(),
+            shards,
+        }
+    }
+
+    /// Spawns a background task that drains the control stream, calling
+    /// `on_register` for each registration request.
+    fn spawn_control_handler<F>(
+        mut stream: ShardControlStream<LogServerDataService>,
+        mut on_register: F,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        F: FnMut(u64, ShardRegistrationDecision<LogServerDataService>) + Send + 'static,
+    {
+        tokio::spawn(async move {
+            while let Some(msg) = stream.next().await {
+                match msg {
+                    ShardControlMessage::RegisterSortCode {
+                        sort_code,
+                        decision,
+                    } => on_register(sort_code, decision),
+                }
+            }
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // get_sharded_sender
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn pre_registered_shard_returns_immediately() {
+        let shards = Shards::default();
+        let (parent, _stream) = ShardedSender::new::<LogServerDataService>(
+            MemoryPool::unlimited(),
+            BackPressureMode::PushBack,
+        );
+        let (shard_tx, _shard_rx) = RawSender::test_channel();
+        shards.force_register(SVC, SORT_CODE, shard_tx.clone());
+
+        let router = router_with_shards(shards);
+        let result = router.get_sharded_sender(&parent, SVC, SORT_CODE).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().same_channel(&shard_tx));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn on_demand_registration_accepted() {
+        let (parent, stream, shards) = sharded_setup();
+        let router = router_with_shards(shards);
+
+        // Handler accepts every registration request.
+        let shard_rxs = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rxs_clone = shard_rxs.clone();
+        let _handler = spawn_control_handler(stream, move |_sort_code, decision| {
+            let (sender, rx) = ShardSender::new();
+            rxs_clone.lock().unwrap().push(rx);
+            decision.accept(sender);
+        });
+
+        let result = router.get_sharded_sender(&parent, SVC, SORT_CODE).await;
+        assert!(result.is_ok(), "expected Ok, got Err");
+
+        let rxs = shard_rxs.lock().unwrap();
+        assert_eq!(rxs.len(), 1, "exactly one shard should have been created");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn on_demand_registration_rejected_returns_verdict() {
+        let (parent, stream, shards) = sharded_setup();
+        let router = router_with_shards(shards);
+
+        let _handler = spawn_control_handler(stream, |_sort_code, decision| {
+            decision.fail(Verdict::SortCodeNotFound);
+        });
+
+        let result = router.get_sharded_sender(&parent, SVC, SORT_CODE).await;
+        assert!(
+            matches!(
+                result,
+                Err(ShardRegistrationError::Verdict(Verdict::SortCodeNotFound))
+            ),
+            "expected Verdict(SortCodeNotFound)"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn control_stream_dropped_returns_service_stopped() {
+        let (parent, stream, shards) = sharded_setup();
+        drop(stream);
+        let router = router_with_shards(shards);
+
+        let result = router.get_sharded_sender(&parent, SVC, SORT_CODE).await;
+        assert!(
+            matches!(
+                result,
+                Err(ShardRegistrationError::Router(RouterError::ServiceStopped))
+            ),
+            "expected ServiceStopped"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn second_call_reuses_cached_shard() {
+        let (parent, stream, shards) = sharded_setup();
+        let router = router_with_shards(shards);
+
+        let registration_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let shard_rxs = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let count_clone = registration_count.clone();
+        let rxs_clone = shard_rxs.clone();
+        let _handler = spawn_control_handler(stream, move |_sort_code, decision| {
+            count_clone.fetch_add(1, Ordering::Relaxed);
+            let (sender, rx) = ShardSender::new();
+            rxs_clone.lock().unwrap().push(rx);
+            decision.accept(sender);
+        });
+
+        // First call triggers on-demand registration.
+        let r1 = router.get_sharded_sender(&parent, SVC, SORT_CODE).await;
+        assert!(r1.is_ok());
+
+        // Second call should return the cached sender without registering again.
+        let r2 = router.get_sharded_sender(&parent, SVC, SORT_CODE).await;
+        assert!(r2.is_ok());
+        assert!(r1.unwrap().same_channel(&r2.unwrap()));
+
+        assert_eq!(
+            registration_count.load(Ordering::Relaxed),
+            1,
+            "only one registration should have occurred"
+        );
+    }
+}

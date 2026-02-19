@@ -58,6 +58,7 @@ impl From<RouterError> for rpc_reply::Status {
 /// to ensure that the handler adheres to the contract of the rpc protocol.
 ///
 /// The rest of the errors are emitted by the message routing infrastructure.
+#[derive(Debug, derive_more::Display)]
 pub enum Verdict {
     /// The target service is known but the message type is not recognized by the handler
     MessageUnrecognized,
@@ -88,6 +89,14 @@ impl From<Verdict> for watch_update::Start {
             Verdict::LoadShedding => Self::LoadShedding,
         }
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ShardRegistrationError {
+    #[error("router error: {0}")]
+    Router(#[from] RouterError),
+    #[error("verdict: {0}")]
+    Verdict(Verdict),
 }
 
 #[derive(Debug, thiserror::Error)]
