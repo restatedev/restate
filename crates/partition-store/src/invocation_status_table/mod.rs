@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::ops::{ControlFlow, RangeInclusive};
+use std::ops::ControlFlow;
 
 use futures::Stream;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
@@ -16,7 +16,8 @@ use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvokedInvocationStatusLite,
-    ReadInvocationStatusTable, ScanInvocationStatusTable, WriteInvocationStatusTable,
+    ReadInvocationStatusTable, ScanInvocationStatusTable, ScanInvocationStatusTableRange,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
@@ -136,14 +137,31 @@ impl ScanInvocationStatusTable for PartitionStore {
             + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: ScanInvocationStatusTableRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
+        let scan = match range {
+            ScanInvocationStatusTableRange::PartitionKey(partition_key) => {
+                TableScan::FullScanPartitionKeyRange::<InvocationStatusKeyBuilder>(partition_key)
+            }
+            ScanInvocationStatusTableRange::InvocationId(invocation_id) => {
+                let start = InvocationStatusKey::builder()
+                    .partition_key(invocation_id.start().partition_key())
+                    .invocation_uuid(invocation_id.start().invocation_uuid());
+
+                let end = InvocationStatusKey::builder()
+                    .partition_key(invocation_id.end().partition_key())
+                    .invocation_uuid(invocation_id.end().invocation_uuid());
+
+                TableScan::KeyRangeInclusiveInSinglePartition(self.partition_id(), start, end)
+            }
+        };
+
         let new_status_keys = self
             .iterator_for_each(
                 "df-for-each-invocation-status",
                 Priority::Low,
-                TableScan::FullScanPartitionKeyRange::<InvocationStatusKey>(range.clone()),
+                scan,
                 {
                     move |(mut key, mut value)| {
                         let status_key =

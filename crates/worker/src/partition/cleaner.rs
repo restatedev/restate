@@ -198,14 +198,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::ops::RangeInclusive;
-
     use super::*;
 
     use futures::{Stream, stream};
     use googletest::prelude::*;
     use prost::Message;
-    use restate_storage_api::invocation_status_table::InvokedInvocationStatusLite;
+    use restate_storage_api::invocation_status_table::{
+        InvokedInvocationStatusLite, ScanInvocationStatusTableRange,
+    };
     use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
     use restate_storage_api::{StorageError, protobuf_types};
     use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey};
@@ -235,7 +235,7 @@ mod tests {
                 + 'static,
         >(
             &self,
-            _: RangeInclusive<PartitionKey>,
+            _: ScanInvocationStatusTableRange,
             _: F,
         ) -> restate_storage_api::Result<impl Future<Output = restate_storage_api::Result<()>> + Send>
         {

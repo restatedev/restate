@@ -23,12 +23,18 @@ pub trait ReadJournalEventsTable {
     ) -> Result<impl Stream<Item = Result<EventView>> + Send>;
 }
 
+#[derive(Debug, Clone)]
+pub enum ScanJournalEventsTableRange {
+    PartitionKey(RangeInclusive<PartitionKey>),
+    InvocationId(RangeInclusive<InvocationId>),
+}
+
 pub trait ScanJournalEventsTable {
     fn for_each_journal_event<
         F: FnMut((InvocationId, EventView)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: ScanJournalEventsTableRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }

@@ -451,7 +451,7 @@ impl PartitionStore {
         }
     }
 
-    pub fn iterator_for_each<K: TableKey>(
+    pub fn iterator_for_each<K: TableKeyPrefix>(
         &self,
         name: &'static str,
         priority: Priority,
@@ -498,7 +498,7 @@ impl PartitionStore {
         Ok(ReceiverStream::new(rx))
     }
 
-    fn run_iterator_internal<K: TableKey>(
+    fn run_iterator_internal<K: TableKeyPrefix>(
         &self,
         name: &'static str,
         priority: Priority,

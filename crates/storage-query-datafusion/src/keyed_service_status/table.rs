@@ -20,11 +20,11 @@ use restate_storage_api::service_status_table::{
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
 use crate::context::{QueryContext, SelectPartitions};
+use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::keyed_service_status::row::append_virtual_object_status_row;
 use crate::keyed_service_status::schema::{
     SysKeyedServiceStatusBuilder, sys_keyed_service_status_sort_order,
 };
-use crate::partition_filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -61,6 +61,7 @@ impl ScanLocalPartition for VirtualObjectStatusScanner {
     type Builder = SysKeyedServiceStatusBuilder;
     type Item<'a> = (ServiceId, VirtualObjectStatus);
     type ConversionError = std::convert::Infallible;
+    type Filter = RangeInclusive<PartitionKey>;
 
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>

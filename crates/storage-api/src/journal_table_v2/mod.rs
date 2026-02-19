@@ -51,6 +51,12 @@ pub trait ReadJournalTable {
     ) -> impl Future<Output = Result<bool>> + Send;
 }
 
+#[derive(Debug, Clone)]
+pub enum ScanJournalTableRange {
+    PartitionKey(RangeInclusive<PartitionKey>),
+    InvocationId(RangeInclusive<InvocationId>),
+}
+
 pub trait ScanJournalTable {
     fn for_each_journal<
         F: FnMut(
@@ -61,7 +67,7 @@ pub trait ScanJournalTable {
             + 'static,
     >(
         &self,
-        range: RangeInclusive<PartitionKey>,
+        range: ScanJournalTableRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
