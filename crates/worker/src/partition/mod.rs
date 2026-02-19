@@ -24,14 +24,14 @@ use anyhow::Context;
 use assert2::let_assert;
 use futures::{FutureExt, Stream, StreamExt};
 use metrics::{SharedString, gauge, histogram};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{Span, debug, error, info, instrument, trace, warn};
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, LogEntry, MaybeRecord};
 use restate_core::network::{
-    Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, TransportConnect, Verdict,
+    Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, ServiceStream, TransportConnect, Verdict,
 };
 use restate_core::{
     Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_watcher, my_node_id,
@@ -119,7 +119,7 @@ pub(super) struct PartitionProcessorBuilder<InvokerInputSender> {
     status: PartitionProcessorStatus,
     invoker_tx: InvokerInputSender,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
-    network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
+    network_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     invoker_capacity: InvokerCapacity,
 }
@@ -132,7 +132,7 @@ where
     pub(super) fn new(
         status: PartitionProcessorStatus,
         target_leader_state_rx: watch::Receiver<TargetLeaderState>,
-        network_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
+        network_svc_rx: ServiceStream<PartitionLeaderService>,
         status_watch_tx: watch::Sender<PartitionProcessorStatus>,
         invoker_tx: InvokerInputSender,
         invoker_capacity: InvokerCapacity,
@@ -269,7 +269,7 @@ pub struct PartitionProcessor<T, InvokerSender> {
     state_machine: StateMachine,
     bifrost: Bifrost,
     target_leader_state_rx: watch::Receiver<TargetLeaderState>,
-    network_leader_svc_rx: mpsc::Receiver<ServiceMessage<PartitionLeaderService>>,
+    network_leader_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     status: PartitionProcessorStatus,
     replica_set_states: PartitionReplicaSetStates,
@@ -385,7 +385,7 @@ where
 
         // Drain leader network service
         self.network_leader_svc_rx.close();
-        while let Some(msg) = self.network_leader_svc_rx.recv().await {
+        while let Some(msg) = self.network_leader_svc_rx.next().await {
             // signals that we are not the leader anymore
             msg.fail(Verdict::SortCodeNotFound);
         }
@@ -546,7 +546,7 @@ where
                     self.leadership_state.maybe_step_down(new_state.current_leader_epoch, new_state.current_leader).await;
                     self.status.effective_mode = self.leadership_state.effective_mode();
                 }
-                Some(msg) = self.network_leader_svc_rx.recv() => {
+                Some(msg) = self.network_leader_svc_rx.next() => {
                     self.on_rpc(msg, &mut partition_store, live_schemas.live_load(), &last_applied_lsn_watch).await;
                 }
                 _ = status_update_timer.tick() => {
