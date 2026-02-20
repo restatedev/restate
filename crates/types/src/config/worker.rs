@@ -507,6 +507,18 @@ pub struct StorageOptions {
         default = "serde_helpers::default_compact_on_deletions_min_sst_file_size"
     )]
     pub rocksdb_compact_on_deletions_min_sst_file_size: ByteCount,
+
+    /// # Disable automatic rocksdb memory reclaimer
+    ///
+    /// When set to `true`, disables RocksDB's memory reclaimer for partition stores.
+    /// The reclaimer automatically reclaims memory from memtables when they are no longer
+    /// needed, or when the total memtable budget is exceeded. Disabling this will cause
+    /// rocksdb to exceed the specific budget under extreme conditions and when flushes
+    /// are falling behind. The benefit of disabling the reclaimer is reduce the chances
+    /// of rocksdb write stalls under heavy load.
+    ///
+    /// [Supports configuration hot-reloading]
+    pub rocksdb_disable_auto_memory_reclaimer: bool,
 }
 
 impl StorageOptions {
@@ -568,6 +580,7 @@ impl Default for StorageOptions {
             rocksdb_compact_on_deletions_ratio: serde_helpers::default_compact_on_deletions_ratio(),
             rocksdb_compact_on_deletions_min_sst_file_size:
                 serde_helpers::default_compact_on_deletions_min_sst_file_size(),
+            rocksdb_disable_auto_memory_reclaimer: false,
         }
     }
 }
