@@ -94,4 +94,16 @@ impl EffectiveNodeSet {
                 .collect(),
         )
     }
+
+    pub fn from_iter(
+        nodeset: impl IntoIterator<Item = PlainNodeId>,
+        nodes_config: &NodesConfiguration,
+    ) -> Self {
+        Self(
+            nodeset
+                .into_iter()
+                .filter(|node_id| !nodes_config.get_log_server_storage_state(node_id).empty())
+                .collect(),
+        )
+    }
 }

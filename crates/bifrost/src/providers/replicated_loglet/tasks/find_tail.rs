@@ -10,12 +10,14 @@
 
 use std::time::Duration;
 
+use adaptive_timeout::{AdaptiveTimeout, TimeoutConfig};
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
 
 use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, TransportConnect};
 use restate_core::{Metadata, TaskCenter, TaskCenterFutureExt};
+use restate_time_util::DurationExt;
 use restate_types::cluster_state::ClusterState;
 use restate_types::config::Configuration;
 use restate_types::logs::metadata::SegmentIndex;
@@ -30,6 +32,7 @@ use restate_types::replication::NodeSetChecker;
 use restate_types::{GenerationalNodeId, PlainNodeId};
 
 use super::{NodeTailStatus, RepairTail, RepairTailResult, SealTask};
+use crate::providers::replicated_loglet::LATENCY_TRACKER;
 use crate::providers::replicated_loglet::loglet::FindTailFlags;
 
 /// Represents a task to determine and repair the tail of the loglet by consulting f-majority
@@ -126,17 +129,49 @@ impl<T: TransportConnect> FindTailTask<T> {
                 sequencer = %self.my_params.sequencer,
                "Asking the sequencer about the tail of the loglet"
             );
-            if let Ok(seq_state) = self
+            let timeout = AdaptiveTimeout::new(TimeoutConfig {
+                backoff: Configuration::pinned()
+                    .bifrost
+                    .replicated_loglet
+                    .rpc_timeout,
+                quantile: 0.9999, // base timeout on P99.99
+                safety_factor: 2.0,
+            })
+            .select_timeout_sync(
+                &LATENCY_TRACKER,
+                &[self.my_params.sequencer.into()],
+                1,
+                Instant::now(),
+            );
+            let attempt_start = Instant::now();
+            let maybe_seq_state = self
                 .networking
                 .call_rpc(
                     self.my_params.sequencer,
                     Swimlane::default(),
                     get_seq_state,
                     Some(self.my_params.loglet_id.into()),
-                    // todo: configure timeout?
-                    Some(Duration::from_millis(500)),
+                    Some(timeout),
                 )
                 .await
+                .inspect(|_res| {
+                    LATENCY_TRACKER.record_latency_from(
+                        &self.my_params.sequencer.into(),
+                        attempt_start,
+                        Instant::now(),
+                    );
+                })
+                .inspect_err(|err| {
+                    if let RpcError::Timeout(spent) = err {
+                        LATENCY_TRACKER.record_latency(
+                            &self.my_params.sequencer.into(),
+                            *spent,
+                            Instant::now(),
+                        );
+                    }
+                });
+
+            if let Ok(seq_state) = maybe_seq_state
                 && seq_state.header.status.is_none()
             {
                 let global_tail = seq_state
@@ -209,7 +244,9 @@ impl<T: TransportConnect> FindTailTask<T> {
         // We also need to update known_global_tail when we receive it from any response.
         // Requests to individual log-servers are sent as scatter-gather. We keep retrying in
         // sub-tasks until we exhaust the retry policy.
+        let mut attempt = 0;
         'find_tail: loop {
+            attempt += 1;
             let effective_nodeset = self
                 .my_params
                 .nodeset
@@ -229,6 +266,7 @@ impl<T: TransportConnect> FindTailTask<T> {
                                 node_id: node,
                                 loglet_id: self.my_params.loglet_id,
                                 known_global_tail: &known_global_tail,
+                                attempt,
                             };
                             task.run(&networking).await
                         }
@@ -658,6 +696,7 @@ pub(super) struct FindTailOnNode<'a> {
     pub(super) node_id: PlainNodeId,
     pub(super) loglet_id: LogletId,
     pub(super) known_global_tail: &'a TailOffsetWatch,
+    attempt: u32,
 }
 
 impl<'a> FindTailOnNode<'a> {
@@ -665,10 +704,20 @@ impl<'a> FindTailOnNode<'a> {
         self,
         networking: &'a Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
-        let request_timeout = *Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
+        let timeout = AdaptiveTimeout::new(TimeoutConfig {
+            backoff: Configuration::pinned()
+                .bifrost
+                .replicated_loglet
+                .rpc_timeout,
+            quantile: 0.9999, // base timeout on P99.99
+            safety_factor: 2.0,
+        })
+        .select_timeout_sync(
+            &LATENCY_TRACKER,
+            &[self.node_id],
+            self.attempt,
+            Instant::now(),
+        );
 
         let request = GetLogletInfo {
             header: LogServerRequestHeader::new(
@@ -683,13 +732,14 @@ impl<'a> FindTailOnNode<'a> {
             known_global_tail = %self.known_global_tail,
            "Request tail info from log-server"
         );
+        let start = Instant::now();
         let maybe_info = networking
             .call_rpc(
                 self.node_id,
                 Swimlane::default(),
                 request,
                 Some(self.loglet_id.into()),
-                Some(request_timeout),
+                Some(timeout),
             )
             .await;
         trace!(
@@ -706,6 +756,7 @@ impl<'a> FindTailOnNode<'a> {
                 // We retry on the following errors.
                 match msg.status {
                     Status::Ok | Status::Sealed => {
+                        LATENCY_TRACKER.record_latency_from(&self.node_id, start, Instant::now());
                         return (
                             self.node_id,
                             NodeTailStatus::Known {
@@ -733,9 +784,13 @@ impl<'a> FindTailOnNode<'a> {
                 }
             }
             Err(RpcError::Timeout(spent)) => {
+                LATENCY_TRACKER.record_latency(&self.node_id, spent, Instant::now());
                 trace!(
-                    "Timeout when getting loglet info from node_id={} for loglet_id={}. Configured timeout={:?}, spent={:?}",
-                    self.node_id, self.loglet_id, request_timeout, spent,
+                    "Timeout when getting loglet info from node_id={} for loglet_id={}. Configured timeout={}, spent={}",
+                    self.node_id,
+                    self.loglet_id,
+                    timeout.friendly(),
+                    spent.friendly(),
                 );
             }
             Err(err) => {
@@ -762,14 +817,19 @@ impl WaitForTailOnNode {
         requested_tail: LogletOffset,
         networking: Networking<T>,
     ) -> (PlainNodeId, NodeTailStatus) {
-        let retry_policy = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_retry_policy
-            .clone();
+        let delay_config = AdaptiveTimeout::new(TimeoutConfig {
+            backoff: Configuration::pinned()
+                .bifrost
+                .replicated_loglet
+                .rpc_timeout,
+            quantile: 0.90,     // base timeout on P90
+            safety_factor: 1.0, // do not overshoot the delay between waves
+        });
 
-        let mut retry_iter = retry_policy.into_iter();
+        let mut attempt = 0;
+        const RETRY_LIMIT: u32 = 3;
         loop {
+            attempt += 1;
             let request = WaitForTail {
                 header: LogServerRequestHeader::new(
                     self.loglet_id,
@@ -830,12 +890,20 @@ impl WaitForTailOnNode {
             }
 
             // Should we retry?
-            if let Some(pause) = retry_iter.next() {
-                trace!(
-                    "Retrying to watch loglet tail update from node_id={} and loglet_id={} after {:?}",
-                    self.node_id, self.loglet_id, pause
+            if attempt <= RETRY_LIMIT {
+                let delay = delay_config.select_timeout_sync(
+                    &LATENCY_TRACKER,
+                    &[self.node_id],
+                    attempt,
+                    Instant::now(),
                 );
-                tokio::time::sleep(pause).await;
+                trace!(
+                    "Retrying to watch loglet tail update from node_id={} and loglet_id={} after {}",
+                    self.node_id,
+                    self.loglet_id,
+                    delay.friendly()
+                );
+                tokio::time::sleep(delay).await;
             } else {
                 trace!(
                     "Exhausted retries while attempting to watch loglet tail update from node_id={} and loglet_id={}",

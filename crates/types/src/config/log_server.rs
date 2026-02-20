@@ -98,6 +98,17 @@ pub struct LogServerOptions {
     ///
     /// Default is 256 MiB.
     pub data_service_memory_limit: NonZeroByteCount,
+
+    /// Enable storing large blobs in separate files
+    ///
+    /// [Experimental]
+    /// Enables the use of BlobDB to store payloads larger than 512 KiB to separate blob
+    /// files. This may improve performance and write amplification at the cost of some
+    /// space amplification.
+    ///
+    /// This is safe to enable/disable at any time.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub rocksdb_enable_blob_separation: bool,
 }
 
 fn is_zero(value: &usize) -> bool {
@@ -184,6 +195,7 @@ impl Default for LogServerOptions {
             data_service_memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
             ),
+            rocksdb_enable_blob_separation: false,
         }
     }
 }
