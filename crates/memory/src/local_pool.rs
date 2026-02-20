@@ -10,25 +10,25 @@
 
 //! Per-invocation memory budget with inbound/outbound directional isolation.
 //!
-//! Each active invocation gets an [`InvocationBudget`] with two [`Budget`]s:
+//! Each active invocation gets an [`InvocationMemory`] with two [`LocalMemoryPool`]s:
 //! one for the outbound path (RocksDB → invoker → hyper → deployment) and one for the
 //! inbound path (deployment → hyper → decoder → invoker → Bifrost).
 //!
 //! # Memory model
 //!
-//! Each [`Budget`] maintains a *local capacity* backed by a [`MemoryLease`]
+//! Each [`LocalMemoryPool`] maintains a *local capacity* backed by a [`MemoryLease`]
 //! from the global invoker pool. Memory is reserved from local capacity first; when
 //! local capacity is insufficient, additional memory is reserved from the global pool
-//! and merged into the local lease. When outstanding [`BudgetLease`]s are dropped,
+//! and merged into the local lease. When outstanding [`LocalMemoryLease`]s are dropped,
 //! in-flight decreases and available capacity is restored. Excess local capacity above
 //! `min_reserved` can be released back to the global pool via
-//! [`release_excess`](Budget::release_excess).
+//! [`release_excess`](LocalMemoryPool::release_excess).
 //!
 //! # Concurrency
 //!
-//! A `Budget` is designed for **single-task access**. Both inbound and
+//! A `LocalMemoryPool` is designed for **single-task access**. Both inbound and
 //! outbound budgets are owned and operated by the protocol runner task alone (via a
-//! `tokio::select!` loop). The [`BudgetLease`] type is `Send` so it can be stored in
+//! `tokio::select!` loop). The [`LocalMemoryLease`] type is `Send` so it can be stored in
 //! types that cross `.await` points, but all reserve/release operations happen within
 //! the same task.
 
@@ -40,32 +40,32 @@ use tokio::sync::Notify;
 
 use crate::{MemoryLease, MemoryPool};
 
-/// Returned by [`Budget::reserve`] when the requested memory cannot
+/// Returned by [`LocalMemoryPool::reserve`] when the requested memory cannot
 /// be satisfied even in the best case (all in-flight reclaimed + entire global
 /// pool available).
 #[derive(Debug)]
-pub struct BudgetExhausted {
+pub struct OutOfMemory {
     /// The number of bytes that were requested but could not be allocated.
     pub needed: usize,
 }
 
 /// Per-invocation budget grouping inbound and outbound directional budgets.
-pub struct InvocationBudget {
-    pub inbound: Budget,
-    pub outbound: Budget,
+pub struct InvocationMemory {
+    pub inbound: LocalMemoryPool,
+    pub outbound: LocalMemoryPool,
 }
 
-impl fmt::Debug for InvocationBudget {
+impl fmt::Debug for InvocationMemory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InvocationBudget").finish_non_exhaustive()
+        f.debug_struct("InvocationMemory").finish_non_exhaustive()
     }
 }
 
-impl InvocationBudget {
+impl InvocationMemory {
     /// Creates a new invocation budget with per-direction seeds and upper bounds.
     ///
     /// Each seed's size defines the `min_reserved` floor for that direction's budget
-    /// (i.e. [`release_excess`](Budget::release_excess) will never shrink below it).
+    /// (i.e. [`release_excess`](LocalMemoryPool::release_excess) will never shrink below it).
     ///
     /// Both seeds must originate from the same [`MemoryPool`].
     pub fn new(
@@ -79,8 +79,13 @@ impl InvocationBudget {
         let outbound_min = outbound_seed.size().as_usize();
 
         Self {
-            inbound: Budget::new(pool.clone(), inbound_seed, inbound_min, inbound_upper_bound),
-            outbound: Budget::new(pool, outbound_seed, outbound_min, outbound_upper_bound),
+            inbound: LocalMemoryPool::new(
+                pool.clone(),
+                inbound_seed,
+                inbound_min,
+                inbound_upper_bound,
+            ),
+            outbound: LocalMemoryPool::new(pool, outbound_seed, outbound_min, outbound_upper_bound),
         }
     }
 
@@ -104,17 +109,17 @@ impl InvocationBudget {
 ///    `upper_bound`) by the deficit, then re-checks.
 /// 3. If the global pool cannot provide enough, the reservation fails.
 ///
-/// When a [`BudgetLease`] is dropped, in-flight decreases and available increases.
+/// When a [`LocalMemoryLease`] is dropped, in-flight decreases and available increases.
 ///
 /// # Drop behavior
 ///
-/// When a `Budget` is dropped, it atomically snapshots the in-flight
+/// When a `LocalMemoryPool` is dropped, it atomically snapshots the in-flight
 /// count (and sets the dead bit) via a single [`swap`](AtomicUsize::swap). The
 /// internal `MemoryLease` is then shrunk by the in-flight amount so that only
 /// `(capacity - in_flight)` bytes are returned to the global pool. The withheld
-/// bytes are returned individually by orphaned [`BudgetLease`] drops, which detect
+/// bytes are returned individually by orphaned [`LocalMemoryLease`] drops, which detect
 /// the dead bit and call [`MemoryPool::return_memory`] directly.
-pub struct Budget {
+pub struct LocalMemoryPool {
     shared: Arc<SharedState>,
     /// Local capacity held from the global pool.
     local_capacity: MemoryLease,
@@ -126,15 +131,15 @@ pub struct Budget {
 
 /// Shared state between the budget and its outstanding leases.
 ///
-/// `Arc`-wrapped so that [`BudgetLease`] drops can decrement `in_flight` and notify
+/// `Arc`-wrapped so that [`LocalMemoryLease`] drops can decrement `in_flight` and notify
 /// waiters.
 ///
 /// # Dead-bit protocol
 ///
 /// The high bit of `in_flight` serves as a "budget dead" flag. When
-/// [`Budget::drop`] runs, it atomically sets the dead bit via
+/// [`LocalMemoryPool::drop`] runs, it atomically sets the dead bit via
 /// [`swap`](AtomicUsize::swap), obtaining the exact in-flight count at that instant.
-/// Subsequent [`BudgetLease`] drops detect the dead bit and return their bytes
+/// Subsequent [`LocalMemoryLease`] drops detect the dead bit and return their bytes
 /// directly to the global pool instead of just decrementing in-flight.
 ///
 /// This single-atomic approach avoids the TOCTOU race that would exist with
@@ -142,7 +147,7 @@ pub struct Budget {
 struct SharedState {
     pool: MemoryPool,
     /// Bytes currently held by outstanding leases, with [`DEAD_BIT`] set once the
-    /// owning [`Budget`] has been dropped.
+    /// owning [`LocalMemoryPool`] has been dropped.
     in_flight: AtomicUsize,
     /// Wakes waiters when in-flight decreases.
     notify: Notify,
@@ -170,18 +175,18 @@ impl SharedState {
 
         match result {
             Ok(_) => {
-                // Budget is alive — we decremented in-flight. Wake reserve waiters.
+                // Pool is alive — we decremented in-flight. Wake reserve waiters.
                 self.notify.notify_waiters();
             }
             Err(_) => {
-                // Budget is dead — return directly to the global pool.
+                // Pool is dead — return directly to the global pool.
                 self.pool.return_memory(amount);
             }
         }
     }
 }
 
-impl Budget {
+impl LocalMemoryPool {
     /// Creates a new directional budget.
     ///
     /// - `pool`: the global memory pool.
@@ -212,9 +217,9 @@ impl Budget {
     /// Checks available local capacity first. If insufficient, grows the local
     /// capacity from the global pool by the exact deficit (capped at `upper_bound`).
     /// Returns `None` if the memory cannot be reserved.
-    pub fn try_reserve(&mut self, size: usize) -> Option<BudgetLease> {
+    pub fn try_reserve(&mut self, size: usize) -> Option<LocalMemoryLease> {
         if size == 0 {
-            return Some(BudgetLease {
+            return Some(LocalMemoryLease {
                 shared: Arc::clone(&self.shared),
                 size: 0,
             });
@@ -235,7 +240,7 @@ impl Budget {
         }
 
         self.shared.in_flight.fetch_add(size, Ordering::Relaxed);
-        Some(BudgetLease {
+        Some(LocalMemoryLease {
             shared: Arc::clone(&self.shared),
             size,
         })
@@ -244,15 +249,15 @@ impl Budget {
     /// Reserves `size` bytes, waiting if necessary for in-flight memory to be
     /// reclaimed and/or global pool capacity to become available.
     ///
-    /// Returns [`Err(BudgetExhausted)`] if the request is infeasible — meaning
+    /// Returns [`Err(OutOfMemory)`] if the request is infeasible — meaning
     /// even after reclaiming all in-flight memory and tapping the entire global
     /// pool, the request cannot be satisfied. This check is performed on every
     /// iteration, so the caller does not need to call a separate
-    /// `budget_exhausted` check.
+    /// `is_out_of_memory` check.
     ///
     /// On each iteration the method:
     /// 1. Attempts a non-blocking [`try_reserve`](Self::try_reserve).
-    /// 2. If that fails, checks feasibility and returns `Err(BudgetExhausted)`
+    /// 2. If that fails, checks feasibility and returns `Err(OutOfMemory)`
     ///    if the request is impossible.
     /// 3. Otherwise, waits for an in-flight lease to be dropped (which increases
     ///    available capacity) or a periodic timeout, then retries.
@@ -261,13 +266,13 @@ impl Budget {
     ///
     /// This method is cancel-safe: dropping the future before completion has no
     /// effect on the budget (no memory is reserved until the method returns).
-    pub async fn reserve(&mut self, size: usize) -> Result<BudgetLease, BudgetExhausted> {
+    pub async fn reserve(&mut self, size: usize) -> Result<LocalMemoryLease, OutOfMemory> {
         loop {
             if let Some(lease) = self.try_reserve(size) {
                 return Ok(lease);
             }
-            if self.budget_exhausted(size) {
-                return Err(BudgetExhausted { needed: size });
+            if self.is_out_of_memory(size) {
+                return Err(OutOfMemory { needed: size });
             }
 
             // try_reserve failed but the request is feasible. Wait for either a
@@ -276,7 +281,7 @@ impl Budget {
             //
             // The timeout is needed because the global pool's available capacity
             // can decrease (another invocation reserving memory) without any
-            // notification to us. On timeout we loop back, re-check budget_exhausted
+            // notification to us. On timeout we loop back, re-check is_out_of_memory
             // with fresh data, and either yield or wait again.
             //
             // TODO: This timeout could be eliminated if MemoryPool notified
@@ -314,7 +319,7 @@ impl Budget {
     /// - `local_capacity + global_available` is the most we could ever hold locally
     ///   (current capacity plus everything the global pool can give us), which accounts
     ///   for in-flight reclaims since in-flight bytes are already part of local capacity.
-    pub fn budget_exhausted(&self, needed: usize) -> bool {
+    pub fn is_out_of_memory(&self, needed: usize) -> bool {
         if needed > self.upper_bound {
             return true;
         }
@@ -350,28 +355,28 @@ impl Budget {
     ///
     /// The returned lease shares the same [`Arc<SharedState>`] as leases produced
     /// by [`try_reserve`](Self::try_reserve) / [`reserve`](Self::reserve), so it
-    /// can be [`merged`](BudgetLease::merge) with them. Dropping an empty lease
+    /// can be [`merged`](LocalMemoryLease::merge) with them. Dropping an empty lease
     /// is a no-op.
-    pub fn empty_lease(&self) -> BudgetLease {
-        BudgetLease {
+    pub fn empty_lease(&self) -> LocalMemoryLease {
+        LocalMemoryLease {
             shared: Arc::clone(&self.shared),
             size: 0,
         }
     }
 }
 
-impl Drop for Budget {
+impl Drop for LocalMemoryPool {
     fn drop(&mut self) {
         // Atomically read the exact in-flight count AND set the dead bit in one
-        // operation. After this, any BudgetLease::drop will see the dead bit and
+        // operation. After this, any LocalMemoryLease::drop will see the dead bit and
         // return its bytes directly to the global pool.
         let in_flight = self.shared.in_flight.swap(DEAD_BIT, Ordering::Relaxed);
-        debug_assert!(in_flight & DEAD_BIT == 0, "Budget dropped twice");
+        debug_assert!(in_flight & DEAD_BIT == 0, "LocalMemoryPool dropped twice");
 
         if in_flight > 0 {
             // Split off the in-flight portion and forget it so those bytes are NOT
             // returned to the global pool now. The withheld bytes will be returned
-            // individually by orphaned BudgetLease drops (which detect the dead bit).
+            // individually by orphaned LocalMemoryLease drops (which detect the dead bit).
             // Note: we cannot use `shrink()` here because that returns bytes to the
             // pool immediately — we need to withhold them.
             let withheld = self.local_capacity.split(in_flight);
@@ -382,17 +387,17 @@ impl Drop for Budget {
     }
 }
 
-/// RAII memory lease from a [`Budget`].
+/// RAII memory lease from a [`LocalMemoryPool`].
 ///
 /// When dropped, decrements in-flight and wakes anyone waiting in
-/// [`Budget::reserve`].
+/// [`LocalMemoryPool::reserve`].
 #[must_use]
-pub struct BudgetLease {
+pub struct LocalMemoryLease {
     shared: Arc<SharedState>,
     size: usize,
 }
 
-impl BudgetLease {
+impl LocalMemoryLease {
     /// Returns the size of this lease in bytes.
     pub fn size(&self) -> usize {
         self.size
@@ -400,10 +405,10 @@ impl BudgetLease {
 
     /// Merges `other` into `self`, combining their sizes.
     ///
-    /// Both leases must originate from the same [`Budget`] (debug-asserted).
+    /// Both leases must originate from the same [`LocalMemoryPool`] (debug-asserted).
     /// After the merge, `other` is consumed without decrementing in-flight — the
     /// combined in-flight is now tracked by `self` alone.
-    pub fn merge(&mut self, other: BudgetLease) {
+    pub fn merge(&mut self, other: LocalMemoryLease) {
         debug_assert!(
             Arc::ptr_eq(&self.shared, &other.shared),
             "cannot merge leases from different budgets"
@@ -418,10 +423,10 @@ impl BudgetLease {
     /// The new lease shares the same [`SharedState`] as `self`. No memory is
     /// returned to the budget — the total in-flight stays the same, just split
     /// across two leases. Panics if `amount > self.size`.
-    pub fn split(&mut self, amount: usize) -> BudgetLease {
+    pub fn split(&mut self, amount: usize) -> LocalMemoryLease {
         assert!(amount <= self.size, "cannot split more than lease size");
         self.size -= amount;
-        BudgetLease {
+        LocalMemoryLease {
             shared: Arc::clone(&self.shared),
             size: amount,
         }
@@ -438,7 +443,7 @@ impl BudgetLease {
     }
 }
 
-impl Drop for BudgetLease {
+impl Drop for LocalMemoryLease {
     fn drop(&mut self) {
         if self.size > 0 {
             self.shared.return_memory(self.size);
@@ -446,9 +451,9 @@ impl Drop for BudgetLease {
     }
 }
 
-impl std::fmt::Debug for BudgetLease {
+impl std::fmt::Debug for LocalMemoryLease {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BudgetLease")
+        f.debug_struct("LocalMemoryLease")
             .field("size", &self.size)
             .finish()
     }
@@ -457,9 +462,9 @@ impl std::fmt::Debug for BudgetLease {
 // Ensure Send + Sync
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<Budget>();
-    assert_send_sync::<InvocationBudget>();
-    assert_send_sync::<BudgetLease>();
+    assert_send_sync::<LocalMemoryPool>();
+    assert_send_sync::<InvocationMemory>();
+    assert_send_sync::<LocalMemoryLease>();
 };
 
 #[cfg(test)]
@@ -477,7 +482,7 @@ mod tests {
     #[test]
     fn basic_reserve_and_release() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let lease1 = budget.try_reserve(100).unwrap();
         assert_eq!(lease1.size(), 100);
@@ -505,7 +510,7 @@ mod tests {
     fn partial_local_partial_global() {
         let global = pool(1000);
         let seed = global.try_reserve(60).unwrap();
-        let mut budget = Budget::new(global.clone(), seed, 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
         assert_eq!(budget.local_capacity(), 60);
 
         let lease = budget.try_reserve(100).unwrap();
@@ -525,7 +530,7 @@ mod tests {
     #[test]
     fn upper_bound_enforced() {
         let global = pool(10000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 200);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
 
         let lease1 = budget.try_reserve(150).unwrap();
         assert!(budget.try_reserve(100).is_none());
@@ -540,7 +545,7 @@ mod tests {
     fn seeded_local_capacity() {
         let global = pool(1000);
         let seed = global.try_reserve(64).unwrap();
-        let mut budget = Budget::new(global.clone(), seed, 64, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 64, 500);
 
         assert_eq!(budget.local_capacity(), 64);
         assert_eq!(budget.available(), 64);
@@ -562,7 +567,7 @@ mod tests {
     fn release_excess_returns_to_global() {
         let global = pool(1000);
         let seed = global.try_reserve(64).unwrap();
-        let mut budget = Budget::new(global.clone(), seed, 64, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 64, 500);
 
         let lease = budget.try_reserve(200).unwrap();
         drop(lease);
@@ -581,7 +586,7 @@ mod tests {
     fn release_excess_respects_in_flight() {
         let global = pool(1000);
         let seed = global.try_reserve(64).unwrap();
-        let mut budget = Budget::new(global.clone(), seed, 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
 
         let lease = budget.try_reserve(200).unwrap();
         assert_eq!(budget.local_capacity(), 200);
@@ -597,7 +602,7 @@ mod tests {
     #[test]
     fn global_pool_exhaustion() {
         let global = pool(100);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let lease1 = budget.try_reserve(80).unwrap();
         assert!(budget.try_reserve(30).is_none());
@@ -610,21 +615,21 @@ mod tests {
     }
 
     #[test]
-    fn budget_exhausted_checks_theoretical_max() {
+    fn is_out_of_memory_checks_theoretical_max() {
         let global = pool(100);
-        let budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
-        assert!(!budget.budget_exhausted(100));
-        assert!(budget.budget_exhausted(101));
+        assert!(!budget.is_out_of_memory(100));
+        assert!(budget.is_out_of_memory(101));
     }
 
     #[test]
-    fn budget_exhausted_respects_upper_bound() {
+    fn is_out_of_memory_respects_upper_bound() {
         let global = pool(10000);
-        let budget = Budget::new(global.clone(), global.empty_lease(), 0, 200);
+        let budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
 
-        assert!(!budget.budget_exhausted(200));
-        assert!(budget.budget_exhausted(201));
+        assert!(!budget.is_out_of_memory(200));
+        assert!(budget.is_out_of_memory(201));
     }
 
     #[test]
@@ -632,7 +637,7 @@ mod tests {
         let global = pool(10000);
         let inbound_seed = global.try_reserve(64).unwrap();
         let outbound_seed = global.try_reserve(32).unwrap();
-        let ib = InvocationBudget::new(inbound_seed, 1024, outbound_seed, 512);
+        let ib = InvocationMemory::new(inbound_seed, 1024, outbound_seed, 512);
 
         assert_eq!(ib.inbound.local_capacity(), 64);
         assert_eq!(ib.inbound.available(), 64);
@@ -650,7 +655,7 @@ mod tests {
     async fn reserve_waits_for_reclaim() {
         let global = pool(100);
         let seed = global.try_reserve(100).unwrap();
-        let mut budget = Budget::new(global.clone(), seed, 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
 
         let lease1 = budget.try_reserve(100).unwrap();
         assert!(budget.try_reserve(50).is_none());
@@ -675,7 +680,7 @@ mod tests {
         let global = pool(100);
         let external = global.try_reserve(40).unwrap();
 
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let lease1 = budget.try_reserve(60).unwrap();
         assert_eq!(global.available(), 0);
@@ -699,7 +704,7 @@ mod tests {
     async fn reserve_waits_for_global_pool_release() {
         let global = pool(100);
         let seed = global.try_reserve(50).unwrap();
-        let mut budget = Budget::new(global.clone(), seed, 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
 
         let external = global.try_reserve(50).unwrap();
         assert_eq!(global.available(), 0);
@@ -726,7 +731,7 @@ mod tests {
     #[tokio::test]
     async fn reserve_yields_when_exceeds_upper_bound() {
         let global = pool(10000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 200);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 200);
 
         assert!(budget.reserve(201).await.is_err());
 
@@ -740,7 +745,7 @@ mod tests {
         let global = pool(100);
         let external = global.try_reserve(90).unwrap();
 
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         assert!(budget.reserve(200).await.is_err());
 
@@ -756,7 +761,7 @@ mod tests {
     #[test]
     fn zero_size_reserve() {
         let global = pool(100);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let lease = budget.try_reserve(0).unwrap();
         assert_eq!(lease.size(), 0);
@@ -768,7 +773,7 @@ mod tests {
     fn unlimited_global_pool() {
         let global = MemoryPool::unlimited();
         let seed = global.try_reserve(64).unwrap();
-        let mut budget = Budget::new(global, seed, 64, 1024);
+        let mut budget = LocalMemoryPool::new(global, seed, 64, 1024);
 
         assert_eq!(budget.local_capacity(), 64);
 
@@ -785,7 +790,7 @@ mod tests {
     fn orphaned_lease_returns_to_global_pool() {
         let global = pool(1000);
         let seed = global.try_reserve(100).unwrap();
-        let mut budget = Budget::new(global.clone(), seed, 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
 
         let lease = budget.try_reserve(60).unwrap();
         assert_eq!(global.used().as_usize(), 100);
@@ -801,7 +806,7 @@ mod tests {
     fn multiple_orphaned_leases() {
         let global = pool(1000);
         let seed = global.try_reserve(200).unwrap();
-        let mut budget = Budget::new(global.clone(), seed, 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
 
         let l1 = budget.try_reserve(80).unwrap();
         let l2 = budget.try_reserve(50).unwrap();
@@ -821,7 +826,7 @@ mod tests {
     #[test]
     fn multiple_reserves_grow_incrementally() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let l1 = budget.try_reserve(100).unwrap();
         assert_eq!(budget.local_capacity(), 100);
@@ -844,7 +849,7 @@ mod tests {
     #[test]
     fn empty_lease_and_merge() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let empty = budget.empty_lease();
         assert_eq!(empty.size(), 0);
@@ -876,7 +881,7 @@ mod tests {
     #[test]
     fn merge_leases_combines_sizes() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let mut l1 = budget.try_reserve(100).unwrap();
         let l2 = budget.try_reserve(50).unwrap();
@@ -896,7 +901,7 @@ mod tests {
     #[test]
     fn split_and_drop_independently() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let mut lease = budget.try_reserve(100).unwrap();
         assert_eq!(budget.in_flight(), 100);
@@ -920,7 +925,7 @@ mod tests {
     #[test]
     fn split_to_zero() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let mut lease = budget.try_reserve(100).unwrap();
         let zero = lease.split(0);
@@ -935,7 +940,7 @@ mod tests {
     #[test]
     fn split_entire_lease() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let mut lease = budget.try_reserve(100).unwrap();
         let all = lease.split(100);
@@ -955,7 +960,7 @@ mod tests {
     #[should_panic(expected = "cannot split more than lease size")]
     fn split_panics_on_overflow() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let mut lease = budget.try_reserve(50).unwrap();
         let _ = lease.split(51);
@@ -964,7 +969,7 @@ mod tests {
     #[test]
     fn shrink_returns_to_budget() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let mut lease = budget.try_reserve(100).unwrap();
         assert_eq!(budget.in_flight(), 100);
@@ -983,7 +988,7 @@ mod tests {
     #[test]
     fn shrink_clamped_to_size() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let mut lease = budget.try_reserve(50).unwrap();
         // Shrink by more than the lease size — clamped to 50.
@@ -999,7 +1004,7 @@ mod tests {
     #[test]
     fn shrink_zero_is_noop() {
         let global = pool(1000);
-        let mut budget = Budget::new(global.clone(), global.empty_lease(), 0, 500);
+        let mut budget = LocalMemoryPool::new(global.clone(), global.empty_lease(), 0, 500);
 
         let mut lease = budget.try_reserve(100).unwrap();
         lease.shrink(0);

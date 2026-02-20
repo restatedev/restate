@@ -27,7 +27,7 @@ use restate_invoker_api::invocation_reader::{
     JournalKind,
 };
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
-use restate_memory::{Budget, BudgetLease};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
@@ -47,7 +47,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
 use crate::error::{
-    BudgetDirection, InvocationErrorRelatedEntry, InvokerError, SdkInvocationError,
+    InvocationErrorRelatedEntry, InvokerError, MemoryDirection, SdkInvocationError,
 };
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBody, InvokerBodySender, ResponseChunk,
@@ -80,7 +80,7 @@ pub struct ServiceProtocolRunner<'a, EE, DMR> {
     /// Cumulative inbound budget lease. Chunks are merged in as raw HTTP data
     /// arrives; wire_size portions are split off per decoded message and sent
     /// through the invoker channel with the corresponding output.
-    cumulative_inbound_lease: Option<BudgetLease>,
+    cumulative_inbound_lease: Option<LocalMemoryLease>,
 }
 
 impl<'a, EE, DMR> ServiceProtocolRunner<'a, EE, DMR>
@@ -125,8 +125,8 @@ where
         keyed_service_id: Option<ServiceId>,
         deployment: Deployment,
         invocation_reader: IR,
-        outbound_budget: &mut Budget,
-        inbound_budget: &mut Budget,
+        outbound_budget: &mut LocalMemoryPool,
+        inbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -181,7 +181,7 @@ where
         // === Replay phase (transaction alive) ===
         {
             // Read state if needed (state is collected for the START message).
-            // Budget-gated: each state entry acquires a lease from the outbound
+            // LocalMemoryPool-gated: each state entry acquires a lease from the outbound
             // budget. The per-entry leases are merged into a single lease that
             // accompanies the start message frame.
             let state = if let Some(ref service_id) = keyed_service_id {
@@ -206,7 +206,7 @@ where
             );
 
             // Read journal stream from storage and execute the replay.
-            // Budget-gated: each entry acquires a lease before it's sent.
+            // LocalMemoryPool-gated: each entry acquires a lease before it's sent.
             let journal_stream = crate::shortcircuit!(
                 txn.read_journal_budgeted(
                     &self.invocation_task.invocation_id,
@@ -284,7 +284,7 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
     ) -> (InvokerBodySender, Request<InvokerBody>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
-        // (each frame carries an optional BudgetLease) rather than channel capacity.
+        // (each frame carries an optional LocalMemoryLease) rather than channel capacity.
         let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
         let req_body = InvokerBody::new(http_stream_rx);
 
@@ -360,7 +360,7 @@ where
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = Result<(JournalEntry, BudgetLease), E>> + Unpin,
+        JournalStream: Stream<Item = Result<(JournalEntry, LocalMemoryLease), E>> + Unpin,
         E: InvocationReaderError,
     {
         let mut journal_stream = journal_stream.fuse();
@@ -416,7 +416,7 @@ where
                             if let Some(needed) = e.budget_exhaustion() {
                                 return TerminalLoopState::ShouldYield {
                                     needed,
-                                    direction: BudgetDirection::Outbound,
+                                    direction: MemoryDirection::Outbound,
                                 };
                             }
                             return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
@@ -439,8 +439,8 @@ where
         mut http_stream_tx: InvokerBodySender,
         http_stream_rx: &mut ResponseStream,
         mut invocation_reader: IR,
-        outbound_budget: &mut Budget,
-        inbound_budget: &mut Budget,
+        outbound_budget: &mut LocalMemoryPool,
+        inbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         IR: InvocationReader,
@@ -508,7 +508,7 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         http_stream_rx: &mut ResponseStream,
-        inbound_budget: &mut Budget,
+        inbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
@@ -542,7 +542,7 @@ where
         duration_since_last_stored_entry: Duration,
     ) -> Result<(), InvokerError>
     where
-        S: Stream<Item = Result<((Bytes, Bytes), BudgetLease), E>> + Send,
+        S: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), E>> + Send,
         E: InvocationReaderError,
     {
         // Collect state if present, mapping to StateEntry while collecting.
@@ -550,7 +550,7 @@ where
         // accompanies the start message frame.
         let (partial_state, state_map, state_lease) = if let Some(state) = state {
             let is_partial = state.is_partial();
-            let mut merged_lease: Option<BudgetLease> = None;
+            let mut merged_lease: Option<LocalMemoryLease> = None;
             let mut entries = Vec::new();
             let mut stream = std::pin::pin!(state.into_inner());
             while let Some(result) = stream.next().await {
@@ -598,7 +598,7 @@ where
         &mut self,
         http_stream_tx: &mut InvokerBodySender,
         msg: ProtocolMessage,
-        lease: Option<BudgetLease>,
+        lease: Option<LocalMemoryLease>,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
@@ -670,16 +670,16 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         buf: Bytes,
-        inbound_budget: &mut Budget,
+        inbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()> {
         // Acquire inbound budget for the raw chunk before pushing
-        // to the decoder. On BudgetExhausted, yield the invocation.
+        // to the decoder. On OutOfMemory, yield the invocation.
         let chunk_lease = match inbound_budget.reserve(buf.len()).await {
             Ok(lease) => lease,
             Err(exhausted) => {
                 return TerminalLoopState::ShouldYield {
                     needed: exhausted.needed,
-                    direction: BudgetDirection::Inbound,
+                    direction: MemoryDirection::Inbound,
                 };
             }
         };
@@ -719,7 +719,7 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
         mh: MessageHeader,
         message: ProtocolMessage,
-        inbound_lease: BudgetLease,
+        inbound_lease: LocalMemoryLease,
     ) -> TerminalLoopState<()> {
         trace!(restate.protocol.message_header = ?mh, restate.protocol.message = ?message, "Received message");
         match message {
@@ -800,14 +800,14 @@ where
 
 /// Reads a v1 completion from storage with budget tracking.
 ///
-/// Reads the entry and acquires a [`BudgetLease`] for its serialized size from
+/// Reads the entry and acquires a [`LocalMemoryLease`] for its serialized size from
 /// the outbound budget. Only used by the v1-v3 protocol runner.
 async fn read_completion_from_storage_budgeted<IR: InvocationReader>(
     invocation_reader: &mut IR,
     invocation_id: &InvocationId,
     entry_index: EntryIndex,
-    budget: &mut Budget,
-) -> Result<(Completion, BudgetLease), InvokerError> {
+    budget: &mut LocalMemoryPool,
+) -> Result<(Completion, LocalMemoryLease), InvokerError> {
     let (entry, lease) = invocation_reader
         .read_journal_entry_budgeted(invocation_id, entry_index, JournalKind::V1, budget)
         .await

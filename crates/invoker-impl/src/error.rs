@@ -178,20 +178,20 @@ pub(crate) enum InvokerError {
 
     #[error("memory budget exhausted (needed {needed} bytes, direction: {direction})")]
     #[code(restate_errors::RT0001)]
-    BudgetExhausted {
+    OutOfMemory {
         needed: usize,
-        direction: BudgetDirection,
+        direction: MemoryDirection,
     },
 }
 
 /// Which directional budget was exhausted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BudgetDirection {
+pub(crate) enum MemoryDirection {
     Inbound,
     Outbound,
 }
 
-impl fmt::Display for BudgetDirection {
+impl fmt::Display for MemoryDirection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Inbound => f.write_str("inbound"),
@@ -230,17 +230,17 @@ impl InvokerError {
                 | InvokerError::UnknownDeployment(_)
                 | InvokerError::ResumeWithWrongServiceProtocolVersion(_)
                 | InvokerError::IncompatibleServiceEndpoint(_, _)
-                | InvokerError::BudgetExhausted { .. }
+                | InvokerError::OutOfMemory { .. }
         )
     }
 
     /// Converts a journal reader error, preserving budget exhaustion as
-    /// [`InvokerError::BudgetExhausted`] with [`BudgetDirection::Outbound`].
+    /// [`InvokerError::OutOfMemory`] with [`MemoryDirection::Outbound`].
     pub(crate) fn from_journal_reader<E: InvocationReaderError>(e: E) -> Self {
         if let Some(needed) = e.budget_exhaustion() {
-            InvokerError::BudgetExhausted {
+            InvokerError::OutOfMemory {
                 needed,
-                direction: BudgetDirection::Outbound,
+                direction: MemoryDirection::Outbound,
             }
         } else {
             InvokerError::JournalReader(e.into())
@@ -248,12 +248,12 @@ impl InvokerError {
     }
 
     /// Converts a state reader error, preserving budget exhaustion as
-    /// [`InvokerError::BudgetExhausted`] with [`BudgetDirection::Outbound`].
+    /// [`InvokerError::OutOfMemory`] with [`MemoryDirection::Outbound`].
     pub(crate) fn from_state_reader<E: InvocationReaderError>(e: E) -> Self {
         if let Some(needed) = e.budget_exhaustion() {
-            InvokerError::BudgetExhausted {
+            InvokerError::OutOfMemory {
                 needed,
-                direction: BudgetDirection::Outbound,
+                direction: MemoryDirection::Outbound,
             }
         } else {
             InvokerError::StateReader(e.into())

@@ -33,7 +33,7 @@ pub mod test_util {
 
     use restate_errors::NotRunningError;
     use restate_futures_util::concurrency::Permit;
-    use restate_memory::{Budget, BudgetLease, MemoryLease};
+    use restate_memory::{LocalMemoryLease, LocalMemoryPool, MemoryLease};
     use restate_types::identifiers::{
         EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
@@ -70,8 +70,8 @@ pub mod test_util {
             _invocation_id: &InvocationId,
             _entry_index: EntryIndex,
             _journal_kind: JournalKind,
-            _budget: &mut Budget,
-        ) -> Result<Option<(JournalEntry, BudgetLease)>, Infallible> {
+            _budget: &mut LocalMemoryPool,
+        ) -> Result<Option<(JournalEntry, LocalMemoryLease)>, Infallible> {
             Ok(None)
         }
     }
@@ -81,10 +81,10 @@ pub mod test_util {
     impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
         type JournalStream<'a> = futures::stream::Empty<Result<JournalEntry, Self::Error>>;
         type StateStream<'a> = futures::stream::Empty<Result<(Bytes, Bytes), Self::Error>>;
-        type BudgetedJournalStream<'a> =
-            futures::stream::Empty<Result<(JournalEntry, BudgetLease), Self::Error>>;
-        type BudgetedStateStream<'a> =
-            futures::stream::Empty<Result<((Bytes, Bytes), BudgetLease), Self::Error>>;
+        type LocalMemoryPooledJournalStream<'a> =
+            futures::stream::Empty<Result<(JournalEntry, LocalMemoryLease), Self::Error>>;
+        type LocalMemoryPooledStateStream<'a> =
+            futures::stream::Empty<Result<((Bytes, Bytes), LocalMemoryLease), Self::Error>>;
         type Error = Infallible;
 
         async fn read_journal_metadata(
@@ -122,16 +122,16 @@ pub mod test_util {
             _invocation_id: &InvocationId,
             _length: EntryIndex,
             _journal_kind: JournalKind,
-            _budget: &'a mut Budget,
-        ) -> Result<Self::BudgetedJournalStream<'a>, Self::Error> {
+            _budget: &'a mut LocalMemoryPool,
+        ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error> {
             Ok(futures::stream::empty())
         }
 
         fn read_state_budgeted<'a>(
             &'a self,
             _service_id: &ServiceId,
-            _budget: &'a mut Budget,
-        ) -> Result<EagerState<Self::BudgetedStateStream<'a>>, Self::Error> {
+            _budget: &'a mut LocalMemoryPool,
+        ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
             Ok(EagerState::new_complete(futures::stream::empty()))
         }
     }

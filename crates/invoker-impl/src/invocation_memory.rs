@@ -8,8 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Re-exports from [`restate_memory::budget`].
+//! Re-exports from [`restate_memory::local_pool`].
 
 // Re-exports for use by other modules within invoker-impl.
 #[allow(unused_imports)]
-pub use restate_memory::budget::{Budget, BudgetExhausted, BudgetLease, InvocationBudget};
+pub use restate_memory::local_pool::{
+    InvocationMemory, LocalMemoryLease, LocalMemoryPool, OutOfMemory,
+};

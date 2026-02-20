@@ -114,7 +114,7 @@ impl EffectKind {
 #[cfg_attr(feature = "serde", serde(tag = "reason"))]
 pub enum YieldReason {
     /// The invocation exhausted its memory budget.
-    BudgetExhausted {
+    OutOfMemory {
         inbound_needed_memory: usize,
         outbound_needed_memory: usize,
     },

@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use restate_futures_util::concurrency::Permit;
-use restate_memory::InvocationBudget;
+use restate_memory::InvocationMemory;
 use restate_types::identifiers::EntryIndex;
 use restate_types::retries;
 use restate_types::schema::invocation_target::OnMaxAttempts;
@@ -52,7 +52,7 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     /// Per-invocation memory budget, preserved across retries to avoid
     /// re-acquiring from the global pool. `None` before the first task
     /// starts and after the ISM is finally cleaned up.
-    pub(super) budget: Option<InvocationBudget>,
+    pub(super) budget: Option<InvocationMemory>,
 }
 
 /// This struct tracks which commands the invocation task generates,
