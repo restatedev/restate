@@ -305,12 +305,16 @@ pub struct ReplicatedLogletOptions {
     /// Log Server RPC timeout
     ///
     /// Timeout waiting on log server response
-    pub log_server_rpc_timeout: NonZeroFriendlyDuration,
+    #[deprecated(since = "1.6.3", note = "Use `rpc_timeout` instead")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_server_rpc_timeout: Option<NonZeroFriendlyDuration>,
 
     /// Log Server RPC retry policy
     ///
     /// Retry policy for log server RPCs
-    pub log_server_retry_policy: RetryPolicy,
+    #[deprecated(since = "1.6.3", note = "Use `rpc_timeout` instead")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_server_retry_policy: Option<RetryPolicy>,
 
     /// Maximum number of records to prefetch from log servers
     ///
@@ -382,14 +386,8 @@ impl Default for ReplicatedLogletOptions {
             read_batch_size: NonZeroByteCount::new(
                 NonZeroUsize::new(32 * 1024).expect("Non zero number"),
             ),
-            log_server_rpc_timeout: NonZeroFriendlyDuration::from_millis_unchecked(2000),
-
-            log_server_retry_policy: RetryPolicy::exponential(
-                Duration::from_millis(250),
-                2.0,
-                Some(3),
-                Some(Duration::from_millis(2000)),
-            ),
+            log_server_rpc_timeout: None,
+            log_server_retry_policy: None,
             readahead_records: NonZeroU16::new(20).unwrap(),
             readahead_trigger_ratio: 0.5,
             default_nodeset_size: NodeSetSize::default(),
