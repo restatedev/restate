@@ -1666,8 +1666,8 @@ where
             0 => usize::MAX,
             cap => cap,
         };
-        let min_reserved = seed.size().as_usize();
-        InvocationBudget::new(seed, min_reserved, upper_bound)
+        let outbound_seed = self.memory_pool.empty_lease();
+        InvocationBudget::new(seed, upper_bound, outbound_seed, upper_bound)
     }
 
     fn start_invocation_task(
@@ -1804,6 +1804,7 @@ mod tests {
     use crate::error::{InvokerError, SdkInvocationErrorV2};
     use crate::quota::{ConcurrencySlot, InvokerConcurrencyQuota};
 
+
     // -- Mocks
 
     const MOCK_PARTITION: PartitionLeaderEpoch = (PartitionId::MIN, LeaderEpoch::INITIAL);
@@ -1867,13 +1868,13 @@ mod tests {
 
         /// Helper for tests: Create a budget from the mock's unlimited pool.
         fn test_budget(&self) -> InvocationBudget {
-            let seed = self.memory_pool.empty_lease();
             let upper_bound = match self.memory_pool.capacity().as_usize() {
                 0 => usize::MAX,
                 cap => cap,
             };
-            let min_reserved = seed.size().as_usize();
-            InvocationBudget::new(seed, min_reserved, upper_bound)
+            let inbound_seed = self.memory_pool.empty_lease();
+            let outbound_seed = self.memory_pool.empty_lease();
+            InvocationBudget::new(inbound_seed, upper_bound, outbound_seed, upper_bound)
         }
 
         /// Helper for tests: Process the registered retry timers until all timers have fired.

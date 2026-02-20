@@ -729,7 +729,7 @@ mod tests {
     use super::collect_eager_state;
     use restate_invoker_api::InvocationReaderError;
     use restate_invoker_api::invocation_reader::EagerState;
-    use restate_memory::{BudgetLease, DirectionalBudget};
+    use restate_memory::{Budget, BudgetLease};
 
     #[derive(Debug, derive_more::Display)]
     struct TestError;
@@ -743,7 +743,7 @@ mod tests {
 
     type StateResult = Result<((Bytes, Bytes), BudgetLease), TestError>;
 
-    static MEMORY_POOL: LazyLock<DirectionalBudget> = LazyLock::new(DirectionalBudget::unlimited);
+    static MEMORY_POOL: LazyLock<Budget> = LazyLock::new(Budget::unlimited);
 
     // Helper to create a (Bytes, Bytes) pair of known sizes
     fn entry(key_size: usize, value_size: usize) -> StateResult {

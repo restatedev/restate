@@ -32,7 +32,7 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
     JournalKind,
 };
-use restate_memory::{BudgetLease, DirectionalBudget};
+use restate_memory::{Budget, BudgetLease};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -127,7 +127,7 @@ where
         keyed_service_id: Option<ServiceId>,
         deployment: Deployment,
         invocation_reader: IR,
-        outbound_budget: &mut DirectionalBudget,
+        outbound_budget: &mut Budget,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -526,7 +526,7 @@ where
         http_stream_rx: &mut S,
         mut invocation_reader: IR,
         journal_kind: JournalKind,
-        outbound_budget: &mut DirectionalBudget,
+        outbound_budget: &mut Budget,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,

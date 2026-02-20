@@ -33,7 +33,7 @@ pub mod test_util {
 
     use restate_errors::NotRunningError;
     use restate_futures_util::concurrency::Permit;
-    use restate_memory::{BudgetLease, DirectionalBudget};
+    use restate_memory::{Budget, BudgetLease};
     use restate_types::identifiers::{
         EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
@@ -70,7 +70,7 @@ pub mod test_util {
             _invocation_id: &InvocationId,
             _entry_index: EntryIndex,
             _journal_kind: JournalKind,
-            _budget: &mut DirectionalBudget,
+            _budget: &mut Budget,
         ) -> Result<Option<(JournalEntry, BudgetLease)>, Infallible> {
             Ok(None)
         }
@@ -122,7 +122,7 @@ pub mod test_util {
             _invocation_id: &InvocationId,
             _length: EntryIndex,
             _journal_kind: JournalKind,
-            _budget: &'a mut DirectionalBudget,
+            _budget: &'a mut Budget,
         ) -> Result<Self::BudgetedJournalStream<'a>, Self::Error> {
             Ok(futures::stream::empty())
         }
@@ -130,7 +130,7 @@ pub mod test_util {
         fn read_state_budgeted<'a>(
             &'a self,
             _service_id: &ServiceId,
-            _budget: &'a mut DirectionalBudget,
+            _budget: &'a mut Budget,
         ) -> Result<EagerState<Self::BudgetedStateStream<'a>>, Self::Error> {
             Ok(EagerState::new_complete(futures::stream::empty()))
         }

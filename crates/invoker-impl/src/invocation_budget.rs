@@ -12,6 +12,4 @@
 
 // Re-exports for use by other modules within invoker-impl.
 #[allow(unused_imports)]
-pub use restate_memory::budget::{
-    BudgetExhausted, BudgetLease, DirectionalBudget, InvocationBudget,
-};
+pub use restate_memory::budget::{Budget, BudgetExhausted, BudgetLease, InvocationBudget};
