@@ -178,8 +178,11 @@ where
             &service_invocation_span_context,
         );
 
-        // Initialize the response stream state
-        let http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
+        // Initialize the response stream state. The inbound budget is moved into
+        // the ResponseStream so that raw HTTP body chunks are gated before reaching
+        // the decoder (pre-deserialization back-pressure).
+        let http_stream_rx =
+            ResponseStream::initialize(&self.invocation_task.client, request, inbound_budget);
 
         let mut decoder_stream = std::pin::pin!(
             DecoderStream::new(
@@ -264,7 +267,6 @@ where
                     // todo remove once we drop support for journal v1
                     JournalKind::V2,
                     outbound_budget,
-                    inbound_budget,
                 )
                 .await
             );
@@ -278,11 +280,7 @@ where
         // We don't have the invoker_rx, so we simply consume the response
         trace!("Sender side of the request has been dropped, now processing the response");
         let result = self
-            .response_stream_loop(
-                &service_invocation_span_context,
-                &mut decoder_stream,
-                inbound_budget,
-            )
+            .response_stream_loop(&service_invocation_span_context, &mut decoder_stream)
             .await;
 
         // Sanity check of the stream decoder
@@ -470,7 +468,6 @@ where
         mut invocation_reader: IR,
         journal_kind: JournalKind,
         outbound_budget: &mut LocalMemoryPool,
-        inbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
@@ -530,24 +527,14 @@ where
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
                         Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(DecoderStreamItem::Message(message_header, message, payload_size)) => {
-                            // Acquire inbound budget for the decoded message's wire
-                            // size. Will be moved into the http_stream_rx in a follow-up
-                            // PR.
-                            let lease = match inbound_budget.reserve(payload_size).await {
-                                Ok(lease) => lease,
-                                Err(exhausted) => return TerminalLoopState::ShouldYield {
-                                    needed: exhausted.needed,
-                                    direction: MemoryDirection::Inbound,
-                                },
-                            };
+                        Some(DecoderStreamItem::Message(message_header, message, lease)) => {
                             crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message, lease));
                         }
                     }
                 },
                 _ = release_interval.tick() => {
                     outbound_budget.release_excess();
-                    inbound_budget.release_excess();
+                    // Inbound release_excess is handled inside ResponseStream::poll_next.
                 },
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
@@ -563,7 +550,6 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         http_stream_rx: &mut S,
-        inbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
@@ -579,17 +565,7 @@ where
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
                         Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(DecoderStreamItem::Message(message_header, message, payload_size)) => {
-                            // Acquire inbound budget for the decoded message's wire
-                            // size. Will be moved into the http_stream_rx in a follow-up
-                            // PR.
-                            let lease = match inbound_budget.reserve(payload_size).await {
-                                Ok(lease) => lease,
-                                Err(exhausted) => return TerminalLoopState::ShouldYield {
-                                    needed: exhausted.needed,
-                                    direction: MemoryDirection::Inbound,
-                                },
-                            };
+                        Some(DecoderStreamItem::Message(message_header, message, lease)) => {
                             crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message, lease));
                         }
                     }
@@ -1398,7 +1374,7 @@ fn can_write_state(
 }
 
 enum DecoderStreamItem {
-    Message(MessageHeader, Message, usize),
+    Message(MessageHeader, Message, LocalMemoryLease),
     Parts(http::response::Parts),
 }
 
@@ -1407,6 +1383,9 @@ pin_project_lite::pin_project! {
         #[pin]
         inner: S,
         decoder: Decoder,
+        // Cumulative lease from raw HTTP body chunks. Per-message leases are
+        // split from this as messages are decoded.
+        cumulative_lease: Option<LocalMemoryLease>,
     }
 }
 
@@ -1424,6 +1403,7 @@ impl<S> DecoderStream<S> {
                 message_size_warning,
                 message_size_limit,
             ),
+            cumulative_lease: None,
         }
     }
 
@@ -1434,7 +1414,7 @@ impl<S> DecoderStream<S> {
 
 impl<S> Stream for DecoderStream<S>
 where
-    S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+    S: Stream<Item = Result<ResponseChunk, InvokerError>>,
 {
     type Item = Result<DecoderStreamItem, InvokerError>;
 
@@ -1443,10 +1423,16 @@ where
         loop {
             match this.decoder.consume_next() {
                 Ok(Some((frame_header, frame, payload_size))) => {
+                    // Split a per-message lease from the cumulative chunk lease.
+                    let msg_lease = this
+                        .cumulative_lease
+                        .as_mut()
+                        .expect("cumulative lease set before decode")
+                        .split(payload_size);
                     return Poll::Ready(Some(Ok(DecoderStreamItem::Message(
                         frame_header,
                         frame,
-                        payload_size,
+                        msg_lease,
                     ))));
                 }
                 Ok(None) => match ready!(this.inner.as_mut().poll_next(cx)) {
@@ -1454,7 +1440,11 @@ where
                         ResponseChunk::Parts(parts) => {
                             return Poll::Ready(Some(Ok(DecoderStreamItem::Parts(parts))));
                         }
-                        ResponseChunk::Data(buf) => {
+                        ResponseChunk::Data(buf, lease) => {
+                            match this.cumulative_lease.as_mut() {
+                                Some(cumulative) => cumulative.merge(lease),
+                                None => *this.cumulative_lease = Some(lease),
+                            }
                             this.decoder.push(buf);
                         }
                     },
