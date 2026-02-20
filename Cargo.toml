@@ -286,8 +286,8 @@ sasl2-sys = { git = "https://github.com/restatedev/rust-sasl", rev = "d3e87c54e8
 # forked datafusion to add on top of 52.2.0:
 # https://github.com/apache/datafusion/pull/20191
 # https://github.com/apache/datafusion/pull/20192
-datafusion = { git = "https://github.com/restatedev/datafusion", branch = "branch-52" }
-datafusion-proto = { git = "https://github.com/restatedev/datafusion", branch = "branch-52" }
+datafusion = { git = "https://github.com/restatedev/datafusion", branch = "branch-52-20445-fix" }
+datafusion-proto = { git = "https://github.com/restatedev/datafusion", branch = "branch-52-20445-fix" }
 
 [profile.release]
 opt-level = 3
