@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU8;
+
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 use tracing::{Instrument, debug, info, instrument, trace, warn};
@@ -15,14 +17,13 @@ use tracing::{Instrument, debug, info, instrument, trace, warn};
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber, TailOffsetWatch};
 use restate_types::net::log_server::{LogServerRequestHeader, Seal, Sealed, Status};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::{DecoratedNodeSet, NodeSetChecker};
 
 use crate::providers::replicated_loglet::error::{NodeSealStatus, ReplicatedLogletError};
-use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
+use crate::providers::replicated_loglet::tasks::util::{Attempts, RunOnSingleNode};
 
 use super::util::Disposition;
 
@@ -75,12 +76,6 @@ impl SealTask {
             &my_params.replication,
         );
 
-        let retry_policy = Configuration::pinned()
-            .bifrost
-            .replicated_loglet
-            .log_server_retry_policy
-            .clone();
-
         let mut inflight_requests = JoinSet::new();
 
         for node_id in effective_nodeset.iter().copied() {
@@ -97,13 +92,12 @@ impl SealTask {
                 .spawn({
                     let networking = networking.clone();
                     let known_global_tail = known_global_tail.clone();
-                    let retry_policy = retry_policy.clone();
                     async move {
                         let task = RunOnSingleNode::new(
                             node_id,
                             request,
                             &known_global_tail,
-                            retry_policy,
+                            Attempts::exact(NonZeroU8::new(3).unwrap()),
                         );
 
                         (node_id, task.run(on_seal_response, &networking).await)

@@ -22,11 +22,10 @@ use restate_types::net::log_server::{
 };
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::NodeSetChecker;
-use restate_types::retries::RetryPolicy;
 
 use super::util::Disposition;
 use crate::providers::replicated_loglet::log_server_manager::RemoteLogServerManager;
-use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
+use crate::providers::replicated_loglet::tasks::util::{Attempts, RunOnSingleNode};
 
 /// Attempts to detect if the loglet has been sealed or if there is a seal in progress by
 /// consulting nodes until it reaches f-majority. If it cannot achieve f-majority, it'll still
@@ -139,7 +138,7 @@ impl CheckSealTask {
                             request,
                             &known_global_tail,
                             // do not retry
-                            RetryPolicy::None,
+                            Attempts::once(),
                         );
 
                         (

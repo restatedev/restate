@@ -11,13 +11,12 @@
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use ulid::Ulid;
 
-use restate_core::network::{ServiceMessage, Verdict};
+use restate_core::network::ShardSender;
 use restate_invoker_impl::ChannelStatusReader;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, ReplayStatus, RunMode};
 use restate_types::identifiers::{LeaderEpoch, PartitionKey};
@@ -306,21 +305,6 @@ impl ProcessorState {
         }
     }
 
-    pub fn try_send_rpc(&self, msg: ServiceMessage<PartitionLeaderService>) {
-        match self {
-            ProcessorState::Starting { .. } => msg.fail(Verdict::LoadShedding),
-            ProcessorState::Started { processor, .. } => {
-                if let Err(err) = processor.as_ref().expect("must be some").try_send_rpc(msg) {
-                    match err {
-                        TrySendError::Full(msg) => msg.fail(Verdict::LoadShedding),
-                        TrySendError::Closed(msg) => msg.fail(Verdict::SortCodeNotFound),
-                    }
-                }
-            }
-            ProcessorState::Stopping { .. } => msg.fail(Verdict::SortCodeNotFound),
-        }
-    }
-
     /// The Partition Processor is in a state in which it is acceptable to create and publish
     /// snapshots. Since we generally don't want newer snapshots to move backwards in applied LSN,
     /// the current implementation checks whether the processor is fully caught up with the log.
@@ -344,7 +328,7 @@ pub struct StartedProcessor {
     key_range: RangeInclusive<PartitionKey>,
     control_tx: watch::Sender<TargetLeaderState>,
     status_reader: ChannelStatusReader,
-    network_svc_tx: mpsc::Sender<ServiceMessage<PartitionLeaderService>>,
+    rpc_shard_tx: ShardSender<PartitionLeaderService>,
     watch_rx: watch::Receiver<PartitionProcessorStatus>,
 }
 
@@ -354,7 +338,7 @@ impl StartedProcessor {
         key_range: RangeInclusive<PartitionKey>,
         control_tx: watch::Sender<TargetLeaderState>,
         status_reader: ChannelStatusReader,
-        network_svc_tx: mpsc::Sender<ServiceMessage<PartitionLeaderService>>,
+        rpc_shard_tx: ShardSender<PartitionLeaderService>,
         watch_rx: watch::Receiver<PartitionProcessorStatus>,
     ) -> Self {
         Self {
@@ -362,7 +346,7 @@ impl StartedProcessor {
             key_range,
             control_tx,
             status_reader,
-            network_svc_tx,
+            rpc_shard_tx,
             watch_rx,
         }
     }
@@ -414,11 +398,7 @@ impl StartedProcessor {
         &self.status_reader
     }
 
-    #[allow(clippy::result_large_err)]
-    pub fn try_send_rpc(
-        &self,
-        msg: ServiceMessage<PartitionLeaderService>,
-    ) -> Result<(), TrySendError<ServiceMessage<PartitionLeaderService>>> {
-        self.network_svc_tx.try_send(msg)
+    pub fn rpc_shard_sender(&self) -> ShardSender<PartitionLeaderService> {
+        self.rpc_shard_tx.clone()
     }
 }

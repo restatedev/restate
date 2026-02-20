@@ -23,10 +23,13 @@ restate-futures-util = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true, optional = true }
+restate-serde-util = { workspace = true }
 restate-test-util = { workspace = true, optional = true }
+restate-time-util = { workspace = true }
 restate-types = { workspace = true }
 
 ahash = { workspace = true }
+adaptive-timeout = { workspace = true, features = ["tokio", "sync"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 bitflags = { workspace = true }

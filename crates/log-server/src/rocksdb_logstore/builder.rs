@@ -253,6 +253,13 @@ fn cf_data_options(
 
     opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(KeyPrefix::size()));
     opts.set_memtable_prefix_bloom_ratio(0.2);
+
+    if log_server_config.rocksdb_enable_blob_separation {
+        opts.set_enable_blob_files(true);
+        opts.set_min_blob_size(512 * 1024); // 512KiB minimum to use blob files
+        opts.set_enable_blob_gc(true);
+        opts.set_blob_compression_type(DBCompressionType::Zstd);
+    }
 }
 
 fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
