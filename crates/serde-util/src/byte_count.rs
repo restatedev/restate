@@ -124,6 +124,12 @@ impl From<u64> for ByteCount<true> {
     }
 }
 
+impl From<u32> for ByteCount<true> {
+    fn from(value: u32) -> Self {
+        ByteCount(value as u64)
+    }
+}
+
 impl From<usize> for ByteCount<true> {
     fn from(value: usize) -> Self {
         ByteCount(value as u64)
