@@ -55,10 +55,9 @@ fn user_state_key_from_slice(mut key: &[u8]) -> Result<Bytes> {
     Ok(StateKey::deserialize_from(&mut key)?.state_key)
 }
 
-/// Lazy iterator over state entries. Supports two-phase iteration:
-/// [`peek_value_size`](Self::peek_value_size) to inspect the raw byte size before
-/// decoding, then [`decode_and_advance`](Self::decode_and_advance) to decode and
-/// move forward. Also implements [`Iterator`] for convenience.
+/// Lazy iterator over state entries. Exposes [`peek_item`](Self::peek_item)
+/// for zero-copy access to raw key/value slices and [`advance`](Self::advance)
+/// to move forward. Also implements [`Iterator`] for convenience.
 pub struct StateEntryIter<'a, DB: DBAccess> {
     iter: DBRawIteratorWithThreadMode<'a, DB>,
 }
@@ -68,11 +67,11 @@ impl<'a, DB: DBAccess> StateEntryIter<'a, DB> {
         Self { iter }
     }
 
-    /// Returns the raw byte size of the key + value at the current iterator
+    /// Returns the raw `(key, value)` byte slices at the current iterator
     /// position without decoding or advancing. Returns `None` when exhausted.
-    pub fn peek_value_size(&self) -> Option<Result<usize>> {
+    pub fn peek_item(&self) -> Option<Result<(&[u8], &[u8])>> {
         match self.iter.item() {
-            Some((k, v)) => Some(Ok(k.len() + v.len())),
+            Some((k, v)) => Some(Ok((k, v))),
             None => self
                 .iter
                 .status()
@@ -81,20 +80,9 @@ impl<'a, DB: DBAccess> StateEntryIter<'a, DB> {
         }
     }
 
-    /// Decodes the current entry and advances the iterator.
-    /// Must only be called after [`peek_value_size`](Self::peek_value_size) returned
-    /// `Some(Ok(_))`.
-    pub fn decode_and_advance(&mut self) -> Option<Result<(Bytes, Bytes)>> {
-        let Some((k, v)) = self.iter.item() else {
-            return self
-                .iter
-                .status()
-                .err()
-                .map(|err| Err(StorageError::Generic(err.into())));
-        };
-        let result = decode_user_state_key_value(k, v);
+    /// Advances the iterator to the next entry.
+    pub fn advance(&mut self) {
         self.iter.next();
-        Some(result)
     }
 }
 
@@ -102,7 +90,13 @@ impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
     type Item = Result<(Bytes, Bytes)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.decode_and_advance()
+        let (k, v) = match self.peek_item()? {
+            Ok(item) => item,
+            Err(e) => return Some(Err(e)),
+        };
+        let result = decode_user_state_key_value(k, v);
+        self.advance();
+        Some(result)
     }
 }
 
@@ -294,7 +288,14 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
 }
 
 /// Wraps a [`StateEntryIter`] into an async [`Stream`] that acquires a memory
-/// lease from `budget` **before** decoding each entry (peek → reserve → decode).
+/// lease from `budget` **before** decoding each entry.
+///
+/// Each entry is produced via a unified reserve-read-adjust loop: peek the raw
+/// byte size, attempt synchronous [`LocalMemoryPool::try_reserve`], and decode
+/// from the same iterator slices on success (fast path — no `.await`). When
+/// `try_reserve` fails the borrow is dropped and the deficit is awaited via
+/// [`LocalMemoryPool::reserve`], then the loop re-peeks the (unchanged)
+/// iterator position.
 fn budgeted_state_stream<'a, DB: DBAccess + Send>(
     iter: StateEntryIter<'a, DB>,
     budget: &'a mut LocalMemoryPool,
@@ -302,24 +303,47 @@ fn budgeted_state_stream<'a, DB: DBAccess + Send>(
 + Send
 + 'a {
     futures::stream::unfold((iter, budget), |(mut iter, budget)| async move {
-        // Phase 1: peek raw byte size without decoding
-        let raw_size = match iter.peek_value_size() {
-            Some(Ok(size)) => size,
-            Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
-            None => return None,
-        };
+        let mut lease = budget.empty_lease();
+        loop {
+            let deficit = {
+                let (k, v) = match iter.peek_item() {
+                    Some(Ok(item)) => item,
+                    Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
+                    None => return None,
+                };
 
-        // Phase 2: acquire lease before allocating any memory for the decoded entry
-        let lease = match budget.reserve(raw_size).await {
-            Ok(lease) => lease,
-            Err(e) => return Some((Err(e.into()), (iter, budget))),
-        };
+                let raw_size = k.len() + v.len();
+                if raw_size <= lease.size() {
+                    lease.shrink(lease.size() - raw_size);
+                    match decode_user_state_key_value(k, v) {
+                        Ok((key, value)) => {
+                            iter.advance();
+                            return Some((Ok((key, value, lease)), (iter, budget)));
+                        }
+                        Err(e) => return Some((Err(e.into()), (iter, budget))),
+                    }
+                }
 
-        // Phase 3: decode (budget already secured)
-        match iter.decode_and_advance() {
-            Some(Ok((key, value))) => Some((Ok((key, value, lease)), (iter, budget))),
-            Some(Err(e)) => Some((Err(e.into()), (iter, budget))),
-            None => None,
+                let deficit = raw_size - lease.size();
+                if let Some(extra) = budget.try_reserve(deficit) {
+                    lease.merge(extra);
+                    match decode_user_state_key_value(k, v) {
+                        Ok((key, value)) => {
+                            iter.advance();
+                            return Some((Ok((key, value, lease)), (iter, budget)));
+                        }
+                        Err(e) => return Some((Err(e.into()), (iter, budget))),
+                    }
+                }
+
+                deficit
+            };
+
+            let extra = match budget.reserve(deficit).await {
+                Ok(l) => l,
+                Err(e) => return Some((Err(e.into()), (iter, budget))),
+            };
+            lease.merge(extra);
         }
     })
 }
