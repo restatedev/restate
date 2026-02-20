@@ -10,7 +10,7 @@
 
 mod error;
 mod input_command;
-mod invocation_budget;
+mod invocation_memory;
 mod invocation_state_machine;
 mod invocation_task;
 mod metric_definitions;
@@ -43,7 +43,7 @@ use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport, YieldReason,
 };
-use restate_memory::{InvocationBudget, MemoryLease, MemoryPool};
+use restate_memory::{InvocationMemory, MemoryLease, MemoryPool};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
@@ -64,8 +64,8 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use tokio_util::time::DelayQueue;
 use tokio_util::time::delay_queue::Key as RetryTimerKey;
 
-use crate::error::BudgetDirection;
 use crate::error::InvokerError;
+use crate::error::MemoryDirection;
 use crate::error::SdkInvocationErrorV2;
 use crate::input_command::{InputCommand, InvokeCommand};
 use crate::invocation_state_machine::InvocationStateMachine;
@@ -114,7 +114,7 @@ trait InvocationTaskRunner<SR> {
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         task_pool: &mut JoinSet<()>,
-        budget: InvocationBudget,
+        budget: InvocationMemory,
     ) -> AbortHandle;
 }
 
@@ -142,7 +142,7 @@ where
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         task_pool: &mut JoinSet<()>,
-        budget: InvocationBudget,
+        budget: InvocationMemory,
     ) -> AbortHandle {
         task_pool
             .build_task()
@@ -504,7 +504,7 @@ where
             Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() && self.pending_seed_lease.is_some() => {
                 let mut seed = self.pending_seed_lease.take().unwrap();
                 let outbound_seed = seed.split(OUTBOUND_SEED_SIZE);
-                let budget = self.create_invocation_budget(options, seed, outbound_seed);
+                let budget = self.create_invocation_memory(options, seed, outbound_seed);
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, budget);
             },
             memory_lease = self.memory_pool.reserve(INBOUND_SEED_SIZE + OUTBOUND_SEED_SIZE), if !segmented_input_queue.inner().is_empty() && self.pending_seed_lease.is_none() => {
@@ -654,7 +654,7 @@ where
             // VQueue path: use an empty-seeded budget for now. A follow-up will
             // have the vqueue scheduler supply a pre-acquired MemoryLease.
             let budget =
-                self.create_invocation_budget(options, command.inbound_seed, command.outbound_seed);
+                self.create_invocation_memory(options, command.inbound_seed, command.outbound_seed);
             self.start_invocation_task(
                 options,
                 command.partition,
@@ -695,7 +695,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        budget: InvocationBudget,
+        budget: InvocationMemory,
     ) {
         if self
             .invocation_state_machine_manager
@@ -1226,7 +1226,7 @@ where
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         error: InvokerError,
-        returned_budget: InvocationBudget,
+        returned_budget: InvocationMemory,
     ) {
         if let Some((_, _, mut ism)) = self
             .invocation_state_machine_manager
@@ -1256,7 +1256,7 @@ where
         invocation_id: InvocationId,
         inbound_needed: usize,
         outbound_needed: usize,
-        budget: InvocationBudget,
+        budget: InvocationMemory,
     ) {
         if let Some((sender, _, mut ism)) = self
             .invocation_state_machine_manager
@@ -1277,7 +1277,7 @@ where
                 let _ = sender
                     .send(Box::new(Effect {
                         invocation_id,
-                        kind: EffectKind::Yield(YieldReason::BudgetExhausted {
+                        kind: EffectKind::Yield(YieldReason::OutOfMemory {
                             inbound_needed_memory: inbound_needed,
                             outbound_needed_memory: outbound_needed,
                         }),
@@ -1286,14 +1286,14 @@ where
             } else {
                 // Flag disabled: fall back to retry.
                 let error = if inbound_needed > budget.inbound.min_reserved() {
-                    InvokerError::BudgetExhausted {
+                    InvokerError::OutOfMemory {
                         needed: inbound_needed,
-                        direction: BudgetDirection::Inbound,
+                        direction: MemoryDirection::Inbound,
                     }
                 } else {
-                    InvokerError::BudgetExhausted {
+                    InvokerError::OutOfMemory {
                         needed: outbound_needed,
-                        direction: BudgetDirection::Outbound,
+                        direction: MemoryDirection::Outbound,
                     }
                 };
                 ism.budget = Some(budget);
@@ -1667,15 +1667,15 @@ where
     ///
     /// The upper bound is set to the pool's total capacity (or `usize::MAX` for
     /// unlimited pools) to prevent a single invocation from monopolizing the pool.
-    fn create_invocation_budget(
+    fn create_invocation_memory(
         &self,
         options: &InvokerOptions,
         inbound_seed: MemoryLease,
         outbound_seed: MemoryLease,
-    ) -> InvocationBudget {
+    ) -> InvocationMemory {
         // todo figure out the proper upper bound for the inboud and outbound budgets
         let upper_bound = options.message_size_limit().get();
-        InvocationBudget::new(inbound_seed, upper_bound, outbound_seed, upper_bound)
+        InvocationMemory::new(inbound_seed, upper_bound, outbound_seed, upper_bound)
     }
 
     fn start_invocation_task(
@@ -1685,7 +1685,7 @@ where
         storage_reader: IR,
         invocation_id: InvocationId,
         mut ism: InvocationStateMachine,
-        budget: InvocationBudget,
+        budget: InvocationMemory,
     ) {
         // Start the InvocationTask
         let (completions_tx, completions_rx) = mpsc::unbounded_channel();
@@ -1874,14 +1874,14 @@ mod tests {
         }
 
         /// Helper for tests: Create a budget from the mock's unlimited pool.
-        fn test_budget(&self) -> InvocationBudget {
+        fn test_budget(&self) -> InvocationMemory {
             let upper_bound = match self.memory_pool.capacity().as_usize() {
                 0 => usize::MAX,
                 cap => cap,
             };
             let inbound_seed = self.memory_pool.empty_lease();
             let outbound_seed = self.memory_pool.empty_lease();
-            InvocationBudget::new(inbound_seed, upper_bound, outbound_seed, upper_bound)
+            InvocationMemory::new(inbound_seed, upper_bound, outbound_seed, upper_bound)
         }
 
         /// Helper for tests: Process the registered retry timers until all timers have fired.
@@ -1932,7 +1932,7 @@ mod tests {
             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
-            _budget: InvocationBudget,
+            _budget: InvocationMemory,
         ) -> AbortHandle {
             task_pool
                 .build_task()
@@ -1965,7 +1965,7 @@ mod tests {
             _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
-            _budget: InvocationBudget,
+            _budget: InvocationMemory,
         ) -> AbortHandle {
             task_pool.spawn(pending())
         }
@@ -1986,7 +1986,7 @@ mod tests {
             _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
-            _budget: InvocationBudget,
+            _budget: InvocationMemory,
         ) -> AbortHandle {
             self.fetch_add(1, Ordering::SeqCst);
             task_pool.spawn(pending())
@@ -3144,7 +3144,7 @@ mod tests {
             .await;
 
         // Should NOT emit EffectKind::Yield — instead the error goes through retry
-        // The ISM should be in WaitingRetry state (error was handled as BudgetExhausted)
+        // The ISM should be in WaitingRetry state (error was handled as OutOfMemory)
         assert!(service_inner.is_invocation_waiting_retry(MOCK_PARTITION, &invocation_id));
 
         // No Yield effect should be emitted, but a transient error event should be
@@ -3219,7 +3219,7 @@ mod tests {
             *effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
-                kind: pat!(EffectKind::Yield(pat!(YieldReason::BudgetExhausted {
+                kind: pat!(EffectKind::Yield(pat!(YieldReason::OutOfMemory {
                     inbound_needed_memory: eq(65536),
                     outbound_needed_memory: eq(32768),
                 })))

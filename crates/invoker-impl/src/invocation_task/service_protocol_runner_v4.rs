@@ -32,7 +32,7 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
     JournalKind,
 };
-use restate_memory::{Budget, BudgetLease};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -60,7 +60,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
 use crate::error::{
-    BudgetDirection, CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError,
+    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, MemoryDirection,
     SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
@@ -127,7 +127,7 @@ where
         keyed_service_id: Option<ServiceId>,
         deployment: Deployment,
         invocation_reader: IR,
-        outbound_budget: &mut Budget,
+        outbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -265,7 +265,7 @@ where
         // === Replay phase (transaction alive) ===
         {
             // Read state if needed (state is collected for the START message).
-            // Budget-gated: each state entry acquires a lease from the outbound
+            // LocalMemoryPool-gated: each state entry acquires a lease from the outbound
             // budget. The per-entry leases are merged into a single lease that
             // accompanies the start message frame.
             let state = if let Some(ref service_id) = keyed_service_id {
@@ -291,7 +291,7 @@ where
             );
 
             // Read journal stream from storage and execute the replay.
-            // Budget-gated: each entry acquires a lease before it's sent.
+            // LocalMemoryPool-gated: each entry acquires a lease before it's sent.
             let journal_stream = crate::shortcircuit!(
                 txn.read_journal_budgeted(
                     &self.invocation_task.invocation_id,
@@ -362,7 +362,7 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
     ) -> (InvokerBodySender, Request<InvokerBody>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
-        // (each frame carries an optional BudgetLease) rather than channel capacity.
+        // (each frame carries an optional LocalMemoryLease) rather than channel capacity.
         let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
         let req_body = InvokerBody::new(http_stream_rx);
 
@@ -439,7 +439,7 @@ where
         expected_entries_count: u32,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = Result<(JournalEntry, BudgetLease), E>> + Unpin,
+        JournalStream: Stream<Item = Result<(JournalEntry, LocalMemoryLease), E>> + Unpin,
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
         E: InvocationReaderError,
     {
@@ -494,7 +494,7 @@ where
                             if let Some(needed) = e.budget_exhaustion() {
                                 return TerminalLoopState::ShouldYield {
                                     needed,
-                                    direction: BudgetDirection::Outbound,
+                                    direction: MemoryDirection::Outbound,
                                 };
                             }
                             return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
@@ -526,7 +526,7 @@ where
         http_stream_rx: &mut S,
         mut invocation_reader: IR,
         journal_kind: JournalKind,
-        outbound_budget: &mut Budget,
+        outbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
@@ -623,7 +623,9 @@ where
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
                         Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(DecoderStreamItem::Message(message_header, message)) => crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message)),
+                        Some(DecoderStreamItem::Message(message_header, message)) => {
+                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message));
+                        }
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
@@ -646,7 +648,7 @@ where
         random_seed: u64,
     ) -> Result<(), InvokerError>
     where
-        S: Stream<Item = Result<((Bytes, Bytes), BudgetLease), E>> + Send,
+        S: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), E>> + Send,
         E: InvocationReaderError,
     {
         // Collect state entries with size limit
@@ -682,7 +684,7 @@ where
         &mut self,
         http_stream_tx: &mut InvokerBodySender,
         entry: RawEntry,
-        lease: Option<BudgetLease>,
+        lease: Option<LocalMemoryLease>,
     ) -> Result<(), InvokerError> {
         // TODO(slinkydeveloper) could this code be improved a tad bit more introducing something to our magic macro in message_codec?
         match entry {
@@ -719,7 +721,7 @@ where
         &mut self,
         http_stream_tx: &mut InvokerBodySender,
         msg: Message,
-        lease: Option<BudgetLease>,
+        lease: Option<LocalMemoryLease>,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
@@ -735,7 +737,7 @@ where
         http_stream_tx: &mut InvokerBodySender,
         ty: MessageType,
         buf: Bytes,
-        lease: Option<BudgetLease>,
+        lease: Option<LocalMemoryLease>,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?ty, "Sending message");
         let buf = self.encoder.encode_raw(ty, buf);
