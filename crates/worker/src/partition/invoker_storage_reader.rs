@@ -18,7 +18,7 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
     JournalKind,
 };
-use restate_memory::{Budget, BudgetLease};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
 use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
@@ -29,13 +29,13 @@ pub enum InvokerStorageReaderError {
     #[error(transparent)]
     Storage(#[from] restate_storage_api::StorageError),
     #[error("outbound memory budget exhausted (needed {needed} bytes)")]
-    BudgetExhausted { needed: usize },
+    OutOfMemory { needed: usize },
 }
 
 impl InvocationReaderError for InvokerStorageReaderError {
     fn budget_exhaustion(&self) -> Option<usize> {
         match self {
-            Self::BudgetExhausted { needed } => Some(*needed),
+            Self::OutOfMemory { needed } => Some(*needed),
             _ => None,
         }
     }
@@ -111,8 +111,8 @@ where
         invocation_id: &InvocationId,
         entry_index: restate_types::identifiers::EntryIndex,
         journal_kind: JournalKind,
-        budget: &mut Budget,
-    ) -> Result<Option<(JournalEntry, BudgetLease)>, InvokerStorageReaderError> {
+        budget: &mut LocalMemoryPool,
+    ) -> Result<Option<(JournalEntry, LocalMemoryLease)>, InvokerStorageReaderError> {
         let entry = self
             .read_journal_entry(invocation_id, entry_index, journal_kind)
             .await?;
@@ -122,7 +122,7 @@ where
                 let lease = budget
                     .reserve(size)
                     .await
-                    .map_err(|e| InvokerStorageReaderError::BudgetExhausted { needed: e.needed })?;
+                    .map_err(|e| InvokerStorageReaderError::OutOfMemory { needed: e.needed })?;
                 Ok(Some((je, lease)))
             }
             None => Ok(None),
@@ -149,13 +149,16 @@ where
         = Pin<Box<dyn Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send + 'a>>
     where
         Self: 'a;
-    type BudgetedJournalStream<'a>
-        = Pin<Box<dyn Stream<Item = Result<(JournalEntry, BudgetLease), Self::Error>> + Send + 'a>>
+    type LocalMemoryPooledJournalStream<'a>
+        = Pin<
+        Box<dyn Stream<Item = Result<(JournalEntry, LocalMemoryLease), Self::Error>> + Send + 'a>,
+    >
     where
         Self: 'a;
-    type BudgetedStateStream<'a>
-        =
-        Pin<Box<dyn Stream<Item = Result<((Bytes, Bytes), BudgetLease), Self::Error>> + Send + 'a>>
+    type LocalMemoryPooledStateStream<'a>
+        = Pin<
+        Box<dyn Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), Self::Error>> + Send + 'a>,
+    >
     where
         Self: 'a;
     type Error = InvokerStorageReaderError;
@@ -246,8 +249,8 @@ where
         invocation_id: &InvocationId,
         length: restate_types::identifiers::EntryIndex,
         journal_kind: JournalKind,
-        budget: &'a mut Budget,
-    ) -> Result<Self::BudgetedJournalStream<'a>, Self::Error> {
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error> {
         let inner = self.read_journal(invocation_id, length, journal_kind)?;
         Ok(Box::pin(futures::stream::unfold(
             (inner, budget),
@@ -259,9 +262,7 @@ where
                         match budget.reserve(size).await {
                             Ok(lease) => Some((Ok((je, lease)), (stream, budget))),
                             Err(e) => Some((
-                                Err(InvokerStorageReaderError::BudgetExhausted {
-                                    needed: e.needed,
-                                }),
+                                Err(InvokerStorageReaderError::OutOfMemory { needed: e.needed }),
                                 (stream, budget),
                             )),
                         }
@@ -275,8 +276,8 @@ where
     fn read_state_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
-        budget: &'a mut Budget,
-    ) -> Result<EagerState<Self::BudgetedStateStream<'a>>, Self::Error> {
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
         let inner_stream = self
             .txn
             .get_all_user_states_for_service(service_id)?
@@ -291,9 +292,7 @@ where
                         match budget.reserve(size).await {
                             Ok(lease) => Some((Ok((kv, lease)), (stream, budget))),
                             Err(e) => Some((
-                                Err(InvokerStorageReaderError::BudgetExhausted {
-                                    needed: e.needed,
-                                }),
+                                Err(InvokerStorageReaderError::OutOfMemory { needed: e.needed }),
                                 (stream, budget),
                             )),
                         }

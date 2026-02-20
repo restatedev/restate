@@ -26,7 +26,7 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::{counter, histogram};
-use restate_memory::{BudgetLease, InvocationBudget};
+use restate_memory::{InvocationMemory, LocalMemoryLease};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
@@ -50,7 +50,7 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::TokenBucket;
-use crate::error::{BudgetDirection, InvokerError};
+use crate::error::{InvokerError, MemoryDirection};
 use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::{ID_LOOKUP, INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
@@ -95,9 +95,9 @@ async fn collect_eager_state<S, E, T>(
     state: Option<EagerState<S>>,
     size_limit: usize,
     mut mapper: impl FnMut((Bytes, Bytes)) -> T,
-) -> Result<(bool, Vec<T>, Option<BudgetLease>), InvokerError>
+) -> Result<(bool, Vec<T>, Option<LocalMemoryLease>), InvokerError>
 where
-    S: Stream<Item = Result<((Bytes, Bytes), BudgetLease), E>> + Send,
+    S: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), E>> + Send,
     E: InvocationReaderError,
 {
     let Some(state) = state else {
@@ -105,7 +105,7 @@ where
     };
 
     let mut is_partial = state.is_partial();
-    let mut merged_lease: Option<BudgetLease> = None;
+    let mut merged_lease: Option<LocalMemoryLease> = None;
     let mut entries = Vec::new();
     let mut total_size: usize = 0;
 
@@ -162,7 +162,7 @@ pub(super) enum InvocationTaskOutputInner {
         /// Held alive until the invoker main loop has forwarded the corresponding
         /// [`Effect`] onto the bounded output channel, providing backpressure on the
         /// unbounded `invocation_tasks_rx` channel.
-        inbound_lease: BudgetLease,
+        inbound_lease: LocalMemoryLease,
     },
     NewCommand {
         command_index: CommandIndex,
@@ -174,23 +174,23 @@ pub(super) enum InvocationTaskOutputInner {
         /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
         requires_ack: bool,
         /// Inbound budget lease tracking the memory for this message's wire data.
-        inbound_lease: BudgetLease,
+        inbound_lease: LocalMemoryLease,
     },
     NewNotificationProposal {
         notification: RawNotification,
         /// Inbound budget lease tracking the memory for this message's wire data.
-        inbound_lease: BudgetLease,
+        inbound_lease: LocalMemoryLease,
     },
     Closed,
     Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
-    Failed(InvokerError, InvocationBudget),
+    Failed(InvokerError, InvocationMemory),
     /// The invocation task yielded due to memory pressure.
     /// The budget was dropped, returning memory to the global pool.
     ShouldYield {
         inbound_needed: usize,
         outbound_needed: usize,
-        budget: InvocationBudget,
+        budget: InvocationMemory,
     },
 }
 
@@ -199,19 +199,19 @@ pub(super) enum InvocationTaskOutputInner {
 /// When hyper consumes this frame, the lease is dropped, returning memory to the
 /// outbound budget. For frames sent without budget tracking (e.g. the start message),
 /// the lease is `None`.
-type InvokerBodyFrame = (Frame<Bytes>, Option<BudgetLease>);
+type InvokerBodyFrame = (Frame<Bytes>, Option<LocalMemoryLease>);
 
 /// Sender half of the invoker body channel.
 ///
 /// Unbounded because backpressure is provided by the memory budget rather than
-/// channel capacity. Each frame carries an optional [`BudgetLease`] that is held
+/// channel capacity. Each frame carries an optional [`LocalMemoryLease`] that is held
 /// until hyper consumes the frame.
 type InvokerBodySender = mpsc::UnboundedSender<InvokerBodyFrame>;
 
 /// HTTP request body that receives frames from the protocol runner.
 ///
 /// Implements [`Body<Data = Bytes>`] for use with hyper. Each frame carries an
-/// optional [`BudgetLease`]. When `poll_frame` yields a new frame, the previous
+/// optional [`LocalMemoryLease`]. When `poll_frame` yields a new frame, the previous
 /// lease is dropped (releasing its memory back to the outbound budget). The final
 /// lease is dropped when the body itself is dropped (sender closed or request ends).
 struct InvokerBody {
@@ -219,7 +219,7 @@ struct InvokerBody {
     /// Lease from the most recently yielded frame. Held until the next frame
     /// arrives or the body is dropped, ensuring the memory stays reserved while
     /// hyper is processing the frame's bytes.
-    current_lease: Option<BudgetLease>,
+    current_lease: Option<LocalMemoryLease>,
 }
 
 impl InvokerBody {
@@ -299,7 +299,7 @@ enum TerminalLoopState<T> {
     /// Memory budget exhausted — the invocation should yield.
     ShouldYield {
         needed: usize,
-        direction: BudgetDirection,
+        direction: MemoryDirection,
     },
 }
 
@@ -310,7 +310,7 @@ impl<T, E: Into<InvokerError>> From<Result<T, E>> for TerminalLoopState<T> {
             Err(e) => {
                 let err = e.into();
                 match err {
-                    InvokerError::BudgetExhausted { needed, direction } => {
+                    InvokerError::OutOfMemory { needed, direction } => {
                         TerminalLoopState::ShouldYield { needed, direction }
                     }
                     other => TerminalLoopState::Failed(other),
@@ -392,7 +392,7 @@ where
         ),
         skip_all,
     )]
-    pub async fn run<IR>(mut self, mut invocation_reader: IR, mut budget: InvocationBudget)
+    pub async fn run<IR>(mut self, mut invocation_reader: IR, mut budget: InvocationMemory)
     where
         IR: InvocationReader + Clone,
     {
@@ -423,8 +423,8 @@ where
                 // The failing direction reports `needed`; the other reports
                 // its min_reserved (the seed amount for that direction).
                 let (inbound_needed, outbound_needed) = match direction {
-                    BudgetDirection::Inbound => (needed, budget.outbound.min_reserved()),
-                    BudgetDirection::Outbound => (budget.inbound.min_reserved(), needed),
+                    MemoryDirection::Inbound => (needed, budget.outbound.min_reserved()),
+                    MemoryDirection::Outbound => (budget.inbound.min_reserved(), needed),
                 };
 
                 InvocationTaskOutputInner::ShouldYield {
@@ -447,7 +447,7 @@ where
     async fn select_protocol_version_and_run<IR>(
         &mut self,
         invocation_reader: &mut IR,
-        invocation_budget: &mut InvocationBudget,
+        invocation_budget: &mut InvocationMemory,
     ) -> TerminalLoopState<()>
     where
         IR: InvocationReader + Clone,
@@ -733,7 +733,7 @@ mod tests {
     use super::collect_eager_state;
     use restate_invoker_api::InvocationReaderError;
     use restate_invoker_api::invocation_reader::EagerState;
-    use restate_memory::{Budget, BudgetLease};
+    use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 
     #[derive(Debug, derive_more::Display)]
     struct TestError;
@@ -745,9 +745,9 @@ mod tests {
         }
     }
 
-    type StateResult = Result<((Bytes, Bytes), BudgetLease), TestError>;
+    type StateResult = Result<((Bytes, Bytes), LocalMemoryLease), TestError>;
 
-    static MEMORY_POOL: LazyLock<Budget> = LazyLock::new(Budget::unlimited);
+    static MEMORY_POOL: LazyLock<LocalMemoryPool> = LazyLock::new(LocalMemoryPool::unlimited);
 
     // Helper to create a (Bytes, Bytes) pair of known sizes
     fn entry(key_size: usize, value_size: usize) -> StateResult {
@@ -763,7 +763,7 @@ mod tests {
     #[tokio::test]
     async fn collect_eager_state_no_state_returns_partial() {
         let (is_partial, entries, _memory_lease) = collect_eager_state::<
-            stream::Empty<Result<((Bytes, Bytes), BudgetLease), Infallible>>,
+            stream::Empty<Result<((Bytes, Bytes), LocalMemoryLease), Infallible>>,
             _,
             _,
         >(None, 1024, std::convert::identity)
