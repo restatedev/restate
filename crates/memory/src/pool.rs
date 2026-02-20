@@ -193,6 +193,17 @@ impl MemoryPool {
         }
     }
 
+    /// Returns a future that resolves when pool availability may have changed
+    /// (memory returned or capacity adjusted).
+    ///
+    /// Returns `None` for unlimited pools (which have no internal tracking).
+    /// The returned [`Notified`](tokio::sync::futures::Notified) future should
+    /// be created *before* checking availability to avoid missing concurrent
+    /// notifications.
+    pub(crate) fn availability_notified(&self) -> Option<tokio::sync::futures::Notified<'_>> {
+        self.inner.as_ref().map(|inner| inner.notify.notified())
+    }
+
     #[inline]
     fn try_acquire(&self, amount: usize) -> bool {
         match &self.inner {
