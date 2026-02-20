@@ -13,7 +13,7 @@ use std::future::Future;
 use bytes::Bytes;
 use futures::Stream;
 
-use restate_memory::{BudgetLease, DirectionalBudget};
+use restate_memory::{Budget, BudgetLease};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
@@ -126,7 +126,7 @@ pub trait InvocationReader {
         invocation_id: &InvocationId,
         entry_index: EntryIndex,
         journal_kind: JournalKind,
-        budget: &mut DirectionalBudget,
+        budget: &mut Budget,
     ) -> impl Future<Output = Result<Option<(JournalEntry, BudgetLease)>, Self::Error>> + Send;
 }
 
@@ -189,7 +189,7 @@ pub trait InvocationReaderTransaction {
         invocation_id: &InvocationId,
         length: EntryIndex,
         journal_kind: JournalKind,
-        budget: &'a mut DirectionalBudget,
+        budget: &'a mut Budget,
     ) -> Result<Self::BudgetedJournalStream<'a>, Self::Error>;
 
     /// Budget-gated state loading stream.
@@ -199,7 +199,7 @@ pub trait InvocationReaderTransaction {
     fn read_state_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
-        budget: &'a mut DirectionalBudget,
+        budget: &'a mut Budget,
     ) -> Result<EagerState<Self::BudgetedStateStream<'a>>, Self::Error>;
 }
 

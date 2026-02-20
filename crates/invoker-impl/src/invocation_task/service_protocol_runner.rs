@@ -27,7 +27,7 @@ use restate_invoker_api::invocation_reader::{
     JournalKind,
 };
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
-use restate_memory::{BudgetLease, DirectionalBudget};
+use restate_memory::{Budget, BudgetLease};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
@@ -125,8 +125,8 @@ where
         keyed_service_id: Option<ServiceId>,
         deployment: Deployment,
         invocation_reader: IR,
-        outbound_budget: &mut DirectionalBudget,
-        inbound_budget: &mut DirectionalBudget,
+        outbound_budget: &mut Budget,
+        inbound_budget: &mut Budget,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
@@ -439,8 +439,8 @@ where
         mut http_stream_tx: InvokerBodySender,
         http_stream_rx: &mut ResponseStream,
         mut invocation_reader: IR,
-        outbound_budget: &mut DirectionalBudget,
-        inbound_budget: &mut DirectionalBudget,
+        outbound_budget: &mut Budget,
+        inbound_budget: &mut Budget,
     ) -> TerminalLoopState<()>
     where
         IR: InvocationReader,
@@ -508,7 +508,7 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         http_stream_rx: &mut ResponseStream,
-        inbound_budget: &mut DirectionalBudget,
+        inbound_budget: &mut Budget,
     ) -> TerminalLoopState<()> {
         loop {
             tokio::select! {
@@ -670,7 +670,7 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         buf: Bytes,
-        inbound_budget: &mut DirectionalBudget,
+        inbound_budget: &mut Budget,
     ) -> TerminalLoopState<()> {
         // Acquire inbound budget for the raw chunk before pushing
         // to the decoder. On BudgetExhausted, yield the invocation.
@@ -806,7 +806,7 @@ async fn read_completion_from_storage_budgeted<IR: InvocationReader>(
     invocation_reader: &mut IR,
     invocation_id: &InvocationId,
     entry_index: EntryIndex,
-    budget: &mut DirectionalBudget,
+    budget: &mut Budget,
 ) -> Result<(Completion, BudgetLease), InvokerError> {
     let (entry, lease) = invocation_reader
         .read_journal_entry_budgeted(invocation_id, entry_index, JournalKind::V1, budget)
