@@ -26,7 +26,7 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::{counter, histogram};
-use restate_memory::{InvocationMemory, LocalMemoryLease, LocalMemoryPool};
+use restate_memory::{AvailabilityNotified, InvocationMemory, LocalMemoryLease, LocalMemoryPool};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, instrument};
@@ -653,9 +653,6 @@ enum ResponseChunk {
 /// loops for the outbound budget.
 const INBOUND_RELEASE_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How long to sleep before retrying a budget reservation in [`ResponseStream`].
-const BUDGET_RETRY_DELAY: Duration = Duration::from_millis(500);
-
 pin_project_lite::pin_project! {
     /// HTTP response stream that gates raw body chunks on an inbound memory
     /// budget before yielding them.
@@ -669,9 +666,10 @@ pin_project_lite::pin_project! {
         budget: &'a mut LocalMemoryPool,
         // A body frame that was read but couldn't be budgeted yet.
         pending_frame: Option<Bytes>,
-        // Short sleep used to re-poll when budget acquisition is deferred.
+        // Notification future that resolves when budget availability changes.
+        // Used to re-poll when budget acquisition is deferred.
         #[pin]
-        budget_retry_delay: Option<tokio::time::Sleep>,
+        budget_notified: Option<AvailabilityNotified>,
         // Tracks when release_excess was last called so we can piggyback
         // periodic releases on poll_next without an external timer.
         last_excess_release: tokio::time::Instant,
@@ -710,7 +708,7 @@ impl<'a> ResponseStream<'a> {
             },
             budget: inbound_budget,
             pending_frame: None,
-            budget_retry_delay: None,
+            budget_notified: None,
             last_excess_release: tokio::time::Instant::now(),
         }
     }
@@ -730,22 +728,22 @@ impl Stream for ResponseStream<'_> {
 
         // If we have a pending frame waiting for budget, try to acquire first.
         if this.pending_frame.is_some() {
-            // Poll the retry delay — if it hasn't fired yet, stay pending.
+            // Poll the notification — if it hasn't fired yet, stay pending.
             if this
-                .budget_retry_delay
+                .budget_notified
                 .as_mut()
                 .as_pin_mut()
-                .is_some_and(|delay| delay.poll(cx).is_pending())
+                .is_some_and(|notified| notified.poll(cx).is_pending())
             {
                 return Poll::Pending;
             }
-            this.budget_retry_delay.set(None);
+            this.budget_notified.set(None);
 
             let buf = this.pending_frame.take().unwrap();
             return poll_acquire_budget(
                 this.budget,
                 this.pending_frame,
-                this.budget_retry_delay,
+                this.budget_notified,
                 cx,
                 buf,
             );
@@ -781,7 +779,7 @@ impl Stream for ResponseStream<'_> {
                         poll_acquire_budget(
                             this.budget,
                             this.pending_frame,
-                            this.budget_retry_delay,
+                            this.budget_notified,
                             cx,
                             buf,
                         )
@@ -803,13 +801,14 @@ impl Stream for ResponseStream<'_> {
 
 /// Try to acquire a budget lease for `buf`. On success the frame and its
 /// lease are returned as `Ready`. On permanent OOM an error is returned.
-/// On transient failure the frame is stashed in `pending_frame` and a
-/// retry delay is armed; the method returns `Pending` after polling the
-/// delay to register the waker.
+/// On transient failure the frame is stashed in `pending_frame` and an
+/// [`AvailabilityNotified`] future is armed to wake us when budget
+/// availability changes; the method returns `Pending` after polling the
+/// notification to register the waker.
 fn poll_acquire_budget(
     budget: &mut LocalMemoryPool,
     pending_frame: &mut Option<Bytes>,
-    mut budget_retry_delay: Pin<&mut Option<tokio::time::Sleep>>,
+    mut budget_notified: Pin<&mut Option<AvailabilityNotified>>,
     cx: &mut Context<'_>,
     buf: Bytes,
 ) -> Poll<Option<Result<ResponseChunk, InvokerError>>> {
@@ -821,9 +820,9 @@ fn poll_acquire_budget(
         }))),
         Poll::Pending => {
             *pending_frame = Some(buf);
-            budget_retry_delay.set(Some(tokio::time::sleep(BUDGET_RETRY_DELAY)));
-            // Poll the sleep to register the waker so we get re-polled.
-            let _ = budget_retry_delay
+            budget_notified.set(Some(budget.availability_notified()));
+            // Poll the notification to register the waker so we get re-polled.
+            let _ = budget_notified
                 .as_mut()
                 .as_pin_mut()
                 .expect("just set")
