@@ -662,108 +662,84 @@ impl Stream for ResponseStream<'_> {
             *this.last_excess_release = tokio::time::Instant::now();
         }
 
-        // If we have a pending frame waiting for budget, try to acquire first.
+        // If a previous poll stashed a frame waiting for budget, check
+        // whether the notification has fired before retrying.
         if this.pending_frame.is_some() {
-            // Poll the notification — if it hasn't fired yet, stay pending.
-            if this
-                .budget_notified
-                .as_mut()
-                .as_pin_mut()
-                .is_some_and(|notified| notified.poll(cx).is_pending())
+            if let Some(notified) = this.budget_notified.as_mut().as_pin_mut()
+                && notified.poll(cx).is_pending()
             {
                 return Poll::Pending;
             }
             this.budget_notified.set(None);
-
-            let buf = this.pending_frame.take().unwrap();
-            return poll_acquire_budget(
-                this.budget,
-                this.pending_frame,
-                this.budget_notified,
-                cx,
-                buf,
-            );
         }
 
-        // Normal path: poll the inner HTTP state machine.
-        match this.state.as_mut().project() {
-            ResponseStreamStateProj::WaitingHeaders { join_handle } => {
-                let http_response = match ready!(join_handle.poll_unpin(cx)) {
-                    Ok(Ok(res)) => res,
-                    Ok(Err(hyper_err)) => {
-                        this.state.set(ResponseStreamState::Terminated);
-                        return Poll::Ready(Some(Err(InvokerError::Client(Box::new(hyper_err)))));
-                    }
-                    Err(join_err) => {
-                        this.state.set(ResponseStreamState::Terminated);
-                        return Poll::Ready(Some(Err(InvokerError::UnexpectedJoinError(join_err))));
-                    }
-                };
-
-                // Convert to response parts
-                let (http_response_header, body) = http_response.into_parts();
-
-                // Transition to reading body
-                this.state.set(ResponseStreamState::ReadingBody { body });
-                Poll::Ready(Some(Ok(ResponseChunk::Parts(http_response_header))))
-            }
-            ResponseStreamStateProj::ReadingBody { body } => {
-                let next_element = ready!(body.poll_frame(cx));
-                match next_element.transpose() {
-                    Ok(Some(frame)) if frame.is_data() => {
-                        let buf = frame.into_data().unwrap();
-                        poll_acquire_budget(
-                            this.budget,
-                            this.pending_frame,
-                            this.budget_notified,
-                            cx,
-                            buf,
-                        )
-                    }
-                    Ok(_) => {
-                        this.state.set(ResponseStreamState::Terminated);
-                        Poll::Ready(None)
-                    }
-                    Err(err) => {
-                        this.state.set(ResponseStreamState::Terminated);
-                        Poll::Ready(Some(Err(InvokerError::ClientBody(err))))
+        // Acquire a data frame — either stashed from a prior poll or fresh
+        // from the HTTP body.
+        let buf = if let Some(buf) = this.pending_frame.take() {
+            buf
+        } else {
+            match this.state.as_mut().project() {
+                ResponseStreamStateProj::WaitingHeaders { join_handle } => {
+                    let http_response = match ready!(join_handle.poll_unpin(cx)) {
+                        Ok(Ok(res)) => res,
+                        Ok(Err(hyper_err)) => {
+                            this.state.set(ResponseStreamState::Terminated);
+                            return Poll::Ready(Some(Err(InvokerError::Client(Box::new(
+                                hyper_err,
+                            )))));
+                        }
+                        Err(join_err) => {
+                            this.state.set(ResponseStreamState::Terminated);
+                            return Poll::Ready(Some(Err(InvokerError::UnexpectedJoinError(
+                                join_err,
+                            ))));
+                        }
+                    };
+                    let (http_response_header, body) = http_response.into_parts();
+                    this.state.set(ResponseStreamState::ReadingBody { body });
+                    return Poll::Ready(Some(Ok(ResponseChunk::Parts(http_response_header))));
+                }
+                ResponseStreamStateProj::ReadingBody { body } => {
+                    let next_element = ready!(body.poll_frame(cx));
+                    match next_element.transpose() {
+                        Ok(Some(frame)) if frame.is_data() => frame.into_data().unwrap(),
+                        Ok(_) => {
+                            this.state.set(ResponseStreamState::Terminated);
+                            return Poll::Ready(None);
+                        }
+                        Err(err) => {
+                            this.state.set(ResponseStreamState::Terminated);
+                            return Poll::Ready(Some(Err(InvokerError::ClientBody(err))));
+                        }
                     }
                 }
+                ResponseStreamStateProj::Terminated => return Poll::Ready(None),
             }
-            ResponseStreamStateProj::Terminated => Poll::Ready(None),
-        }
-    }
-}
+        };
 
-/// Try to acquire a budget lease for `buf`. On success the frame and its
-/// lease are returned as `Ready`. On permanent OOM an error is returned.
-/// On transient failure the frame is stashed in `pending_frame` and an
-/// [`AvailabilityNotified`] future is armed to wake us when budget
-/// availability changes; the method returns `Pending` after polling the
-/// notification to register the waker.
-fn poll_acquire_budget(
-    budget: &mut LocalMemoryPool,
-    pending_frame: &mut Option<Bytes>,
-    mut budget_notified: Pin<&mut Option<AvailabilityNotified>>,
-    cx: &mut Context<'_>,
-    buf: Bytes,
-) -> Poll<Option<Result<ResponseChunk, InvokerError>>> {
-    match budget.poll_reserve(buf.len()) {
-        Poll::Ready(Ok(lease)) => Poll::Ready(Some(Ok(ResponseChunk::Data(buf, lease)))),
-        Poll::Ready(Err(_oom)) => Poll::Ready(Some(Err(InvokerError::OutOfMemory {
-            needed: buf.len(),
-            direction: MemoryDirection::Inbound,
-        }))),
-        Poll::Pending => {
-            *pending_frame = Some(buf);
-            budget_notified.set(Some(budget.availability_notified()));
-            // Poll the notification to register the waker so we get re-polled.
-            let _ = budget_notified
-                .as_mut()
-                .as_pin_mut()
-                .expect("just set")
-                .poll(cx);
-            Poll::Pending
+        // Budget acquisition: create the notification *before* try_reserve
+        // so a concurrent release between our check and the poll cannot be
+        // missed.
+        let notified = this.budget.availability_notified();
+        if let Some(lease) = this.budget.try_reserve(buf.len()) {
+            return Poll::Ready(Some(Ok(ResponseChunk::Data(buf, lease))));
         }
+        if this.budget.is_out_of_memory(buf.len()) {
+            return Poll::Ready(Some(Err(InvokerError::OutOfMemory {
+                needed: buf.len(),
+                direction: MemoryDirection::Inbound,
+            })));
+        }
+
+        // Transient failure — stash the frame and wait for budget.
+        *this.pending_frame = Some(buf);
+        this.budget_notified.set(Some(notified));
+        let _ = this
+            .budget_notified
+            .as_mut()
+            .as_pin_mut()
+            .expect("just set")
+            .poll(cx);
+        Poll::Pending
     }
 }
