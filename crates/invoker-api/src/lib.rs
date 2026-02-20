@@ -33,7 +33,7 @@ pub mod test_util {
 
     use restate_errors::NotRunningError;
     use restate_futures_util::concurrency::Permit;
-    use restate_memory::{Budget, BudgetLease};
+    use restate_memory::{Budget, BudgetLease, MemoryLease};
     use restate_types::identifiers::{
         EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch, ServiceId,
     };
@@ -166,6 +166,8 @@ pub mod test_util {
             _permit: Permit,
             _invocation_id: InvocationId,
             _invocation_target: InvocationTarget,
+            _inbound_seed: MemoryLease,
+            _outbound_seed: MemoryLease,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

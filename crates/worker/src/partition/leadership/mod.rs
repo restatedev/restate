@@ -597,7 +597,12 @@ where
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_actions(&mut self.invoker_tx, actions, vqueues)?;
+                leader_state.handle_actions(
+                    &mut self.invoker_tx,
+                    actions,
+                    vqueues,
+                    &self.invoker_capacity.memory_pool,
+                )?;
             }
         }
 

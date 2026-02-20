@@ -26,6 +26,7 @@ use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_futures_util::concurrency::Permit;
+use restate_memory::MemoryPool;
 use restate_partition_store::{PartitionDb, PartitionStore};
 use restate_storage_api::vqueue_table::EntryCard;
 use restate_types::identifiers::{
@@ -489,6 +490,7 @@ impl LeaderState {
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
         actions: impl Iterator<Item = Action>,
         vqueues: VQueuesMeta<'_>,
+        memory_pool: &MemoryPool,
     ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
@@ -503,7 +505,7 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(action, invoker_tx, vqueues)?;
+            self.handle_action(action, invoker_tx, vqueues, memory_pool)?;
         }
 
         Ok(())
@@ -514,6 +516,7 @@ impl LeaderState {
         action: Action,
         invoker_tx: &mut impl restate_invoker_api::InvokerHandle<InvokerStorageReader<PartitionStore>>,
         vqueues: VQueuesMeta<'_>,
+        memory_pool: &MemoryPool,
     ) -> Result<(), Error> {
         let partition_leader_epoch = (self.partition_id, self.leader_epoch);
         match action {
@@ -684,6 +687,8 @@ impl LeaderState {
                         permit,
                         invocation_id,
                         invocation_target,
+                        memory_pool.empty_lease(),
+                        memory_pool.empty_lease(),
                     )
                     .map_err(Error::Invoker)?
             }
