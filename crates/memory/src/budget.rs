@@ -419,6 +419,23 @@ impl BudgetLease {
         // Prevent `other`'s Drop from decrementing in-flight.
         std::mem::forget(other);
     }
+
+    pub fn split(&mut self, size: usize) -> BudgetLease {
+        assert!(size <= self.size);
+
+        self.size -= size;
+
+        BudgetLease {
+            shared: Arc::clone(&self.shared),
+            size,
+        }
+    }
+
+    pub fn shrink(&mut self, size: usize) {
+        assert!(size <= self.size);
+        self.shared.return_memory(size);
+        self.size -= size;
+    }
 }
 
 impl Drop for BudgetLease {
