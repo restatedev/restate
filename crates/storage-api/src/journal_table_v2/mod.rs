@@ -52,6 +52,19 @@ pub trait ReadJournalTable {
         completion_id: CompletionId,
     ) -> impl Future<Output = Result<bool>> + Send;
 
+    /// Budget-gated point read of a single journal entry.
+    ///
+    /// Fetches raw bytes from the store, peeks the serialized size, acquires a
+    /// [`LocalMemoryLease`] from `budget`, and only then decodes the entry.
+    fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> impl Future<
+        Output = std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError>,
+    > + Send;
+
     /// Budget-gated journal stream.
     ///
     /// Each entry's raw byte size is peeked from the underlying store **before**

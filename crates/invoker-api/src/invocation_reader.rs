@@ -113,14 +113,12 @@ pub trait InvocationReader {
         journal_kind: JournalKind,
     ) -> impl Future<Output = Result<Option<JournalEntry>, Self::Error>> + Send;
 
-    /// LocalMemoryPool-aware point read of a single journal entry.
+    /// Budget-gated point read of a single journal entry.
     ///
-    /// Reads the entry and acquires a [`LocalMemoryLease`] for its serialized size from
-    /// the given outbound budget. The lease tracks the memory until the caller
-    /// releases it (typically when hyper consumes the corresponding frame).
-    ///
-    // TODO: Push the budget into the lower storage layers so that the lease is
-    //  acquired *before* the entry is decoded into memory.
+    /// Delegates to the storage-api `get_journal_entry_budgeted` trait method
+    /// which peeks the raw byte size from RocksDB, acquires a
+    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
+    /// decoded, then decodes and returns the entry together with its lease.
     fn read_journal_entry_budgeted(
         &mut self,
         invocation_id: &InvocationId,

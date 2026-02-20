@@ -136,6 +136,74 @@ fn get_journal_entry<S: StorageAccess>(
     storage.get_value_proto(key)
 }
 
+/// Budget-gated point read with a unified reserve-read-adjust loop.
+///
+/// Each iteration reads the raw value from RocksDB, compares the actual byte
+/// size against the lease held so far, and either:
+/// - **decodes immediately** when the lease already covers the value,
+/// - **tops up synchronously** via [`LocalMemoryPool::try_reserve`] when the
+///   delta is small enough,
+/// - **drops the pinned slice** (to avoid pinning RocksDB memtable memory
+///   across `.await`), awaits the deficit via [`LocalMemoryPool::reserve`],
+///   then retries.
+///
+/// On the very first iteration the lease is empty, so the first `try_reserve`
+/// acts as the fast path (single RocksDB read, no `.await` when budget is
+/// immediately available).
+async fn get_journal_entry_budgeted<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    journal_index: u32,
+    budget: &mut LocalMemoryPool,
+) -> std::result::Result<Option<(JournalEntry, LocalMemoryLease)>, BudgetedReadError> {
+    let key = write_journal_entry_key(invocation_id, journal_index);
+
+    // Serialize key once — reused for all reads.
+    let buf = {
+        let key_buf = storage.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(key_buf);
+        key_buf.split()
+    };
+
+    let mut lease = budget.empty_lease();
+
+    loop {
+        // Read raw value from RocksDB.
+        // RocksDbPerfGuard is !Send and must not live across .await.
+        let deficit = {
+            let _x = RocksDbPerfGuard::new("get-journal-entry-budgeted");
+            let Some(pinned) = storage.get(Journal, &buf)? else {
+                return Ok(None);
+            };
+
+            let raw_size = pinned.as_ref().len();
+            if raw_size <= lease.size() {
+                // Lease already covers (or exceeds) the value — shrink and decode.
+                lease.shrink(lease.size() - raw_size);
+                let mut slice = pinned.as_ref();
+                let entry = JournalEntry::decode(&mut slice)?;
+                return Ok(Some((entry, lease)));
+            }
+
+            // Need more budget. Try synchronous top-up first.
+            let deficit = raw_size - lease.size();
+            if let Some(extra) = budget.try_reserve(deficit) {
+                lease.merge(extra);
+                let mut slice = pinned.as_ref();
+                let entry = JournalEntry::decode(&mut slice)?;
+                return Ok(Some((entry, lease)));
+            }
+
+            deficit
+        };
+
+        // Pinned slice dropped — safe to .await now.
+        let extra = budget.reserve(deficit).await?;
+        lease.merge(extra);
+        // Loop back: re-read to check whether the value changed while we waited.
+    }
+}
+
 fn get_journal<'a, S: StorageAccess>(
     storage: &'a S,
     invocation_id: &InvocationId,
@@ -190,6 +258,16 @@ impl ReadJournalTable for PartitionStore {
             invocation_id,
             journal_length,
         )?))
+    }
+
+    async fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> std::result::Result<Option<(JournalEntry, LocalMemoryLease)>, BudgetedReadError> {
+        self.assert_partition_key(invocation_id)?;
+        get_journal_entry_budgeted(self, invocation_id, journal_index, budget).await
     }
 
     fn get_journal_budgeted<'a>(
@@ -251,6 +329,16 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
         self.assert_partition_key(invocation_id)?;
         let _x = RocksDbPerfGuard::new("get-journal-entry");
         get_journal_entry(self, invocation_id, journal_index)
+    }
+
+    async fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: &InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> std::result::Result<Option<(JournalEntry, LocalMemoryLease)>, BudgetedReadError> {
+        self.assert_partition_key(invocation_id)?;
+        get_journal_entry_budgeted(self, invocation_id, journal_index, budget).await
     }
 
     fn get_journal<'a>(

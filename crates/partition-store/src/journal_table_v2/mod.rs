@@ -186,6 +186,67 @@ fn get_journal_entry<S: StorageAccess>(
     Ok(opt.map(|e| e.0))
 }
 
+/// Budget-gated point read with a unified reserve-read-adjust loop (V2 journal).
+///
+/// See the V1 counterpart in `journal_table/mod.rs` for the full design
+/// rationale. The only difference is the decode step: V2 entries go through
+/// `StoredEntry::decode` and are unwrapped to `StoredRawEntry`.
+async fn get_journal_entry_budgeted<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    journal_index: u32,
+    budget: &mut LocalMemoryPool,
+) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
+    let key = write_journal_entry_key(invocation_id, journal_index);
+
+    // Serialize key once — reused for all reads.
+    let buf = {
+        let key_buf = storage.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(key_buf);
+        key_buf.split()
+    };
+
+    let mut lease = budget.empty_lease();
+
+    loop {
+        // Read raw value from RocksDB.
+        // RocksDbPerfGuard is !Send and must not live across .await.
+        let deficit = {
+            let _x = RocksDbPerfGuard::new("get-journal-entry-budgeted");
+            let Some(pinned) = storage.get(Journal, &buf)? else {
+                return Ok(None);
+            };
+
+            let raw_size = pinned.as_ref().len();
+            if raw_size <= lease.size() {
+                // Lease already covers (or exceeds) the value — shrink and decode.
+                lease.shrink(lease.size() - raw_size);
+                let mut slice = pinned.as_ref();
+                let entry = StoredEntry::decode(&mut slice)
+                    .map_err(|e| BudgetedReadError::Storage(StorageError::Generic(e.into())))?;
+                return Ok(Some((entry.0, lease)));
+            }
+
+            // Need more budget. Try synchronous top-up first.
+            let deficit = raw_size - lease.size();
+            if let Some(extra) = budget.try_reserve(deficit) {
+                lease.merge(extra);
+                let mut slice = pinned.as_ref();
+                let entry = StoredEntry::decode(&mut slice)
+                    .map_err(|e| BudgetedReadError::Storage(StorageError::Generic(e.into())))?;
+                return Ok(Some((entry.0, lease)));
+            }
+
+            deficit
+        };
+
+        // Pinned slice dropped — safe to .await now.
+        let extra = budget.reserve(deficit).await?;
+        lease.merge(extra);
+        // Loop back: re-read to check whether the value changed while we waited.
+    }
+}
+
 fn get_journal<'a, S: StorageAccess>(
     storage: &'a S,
     invocation_id: &InvocationId,
@@ -399,6 +460,16 @@ impl ReadJournalTable for PartitionStore {
         has_completion(self, invocation_id, completion_id)
     }
 
+    async fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
+        self.assert_partition_key(&invocation_id)?;
+        get_journal_entry_budgeted(self, &invocation_id, journal_index, budget).await
+    }
+
     fn get_journal_budgeted<'a>(
         &'a self,
         invocation_id: InvocationId,
@@ -502,6 +573,16 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
         completion_id: CompletionId,
     ) -> Result<bool> {
         has_completion(self, invocation_id, completion_id)
+    }
+
+    async fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
+        self.assert_partition_key(&invocation_id)?;
+        get_journal_entry_budgeted(self, &invocation_id, journal_index, budget).await
     }
 
     fn get_journal_budgeted<'a>(

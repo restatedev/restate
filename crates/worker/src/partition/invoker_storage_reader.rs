@@ -114,8 +114,6 @@ where
         }
     }
 
-    // Note: point-read budget is still acquired post-hoc (after decode).
-    // Stream-based budget gating uses the pre-deserialization path below.
     async fn read_journal_entry_budgeted(
         &mut self,
         invocation_id: &InvocationId,
@@ -123,19 +121,34 @@ where
         journal_kind: JournalKind,
         budget: &mut LocalMemoryPool,
     ) -> Result<Option<(JournalEntry, LocalMemoryLease)>, InvokerStorageReaderError> {
-        let entry = self
-            .read_journal_entry(invocation_id, entry_index, journal_kind)
+        if journal_kind == JournalKind::V2 {
+            let result = journal_table_v2::ReadJournalTable::get_journal_entry_budgeted(
+                &mut self.0,
+                *invocation_id,
+                entry_index,
+                budget,
+            )
             .await?;
-        match entry {
-            Some(je) => {
-                let size = estimate_journal_entry_size(&je);
-                let lease = budget
-                    .reserve(size)
-                    .await
-                    .map_err(|e| InvokerStorageReaderError::OutOfMemory { needed: e.needed })?;
-                Ok(Some((je, lease)))
-            }
-            None => Ok(None),
+            Ok(result.map(|(entry, lease)| (JournalEntry::JournalV2(entry), lease)))
+        } else {
+            let result = journal_table_v1::ReadJournalTable::get_journal_entry_budgeted(
+                &mut self.0,
+                invocation_id,
+                entry_index,
+                budget,
+            )
+            .await?;
+            Ok(result.map(|(je, lease)| {
+                let entry = match je {
+                    journal_table_v1::JournalEntry::Entry(entry) => {
+                        JournalEntry::JournalV1(entry.erase_enrichment())
+                    }
+                    journal_table_v1::JournalEntry::Completion(result) => {
+                        JournalEntry::JournalV1Completion(result)
+                    }
+                };
+                (entry, lease)
+            }))
         }
     }
 }
@@ -309,27 +322,5 @@ where
                 .map(|(key, value, lease)| ((key, value), lease))
                 .map_err(InvokerStorageReaderError::from)
         }))))
-    }
-}
-
-/// Estimates the in-memory byte size of a journal entry for budget accounting.
-///
-/// This is an approximation of the serialized content that will be sent over the
-/// wire to the service deployment. The exact on-wire encoding may differ slightly,
-/// but this is sufficient for backpressure purposes.
-fn estimate_journal_entry_size(entry: &JournalEntry) -> usize {
-    match entry {
-        JournalEntry::JournalV1(raw) => raw.serialized_entry().len(),
-        JournalEntry::JournalV1Completion(result) => match result {
-            restate_types::journal::CompletionResult::Empty => 0,
-            restate_types::journal::CompletionResult::Success(b) => b.len(),
-            restate_types::journal::CompletionResult::Failure(_, msg) => msg.len(),
-        },
-        JournalEntry::JournalV2(stored) => match &stored.inner {
-            restate_types::journal_v2::raw::RawEntry::Command(cmd) => cmd.serialized_content.len(),
-            restate_types::journal_v2::raw::RawEntry::Notification(notif) => {
-                notif.serialized_content().len()
-            }
-        },
     }
 }
