@@ -33,11 +33,14 @@
 //! the same task.
 
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::task::Poll;
+use std::task::{Context, Poll};
 
 use tokio::sync::Notify;
+use tokio::sync::futures::OwnedNotified;
 
 use crate::{MemoryLease, MemoryPool};
 
@@ -151,7 +154,7 @@ struct SharedState {
     /// owning [`LocalMemoryPool`] has been dropped.
     in_flight: AtomicUsize,
     /// Wakes waiters when in-flight decreases.
-    notify: Notify,
+    notify: Arc<Notify>,
 }
 
 /// Sentinel bit in `in_flight` indicating the budget is dead.
@@ -205,7 +208,7 @@ impl LocalMemoryPool {
             shared: Arc::new(SharedState {
                 pool,
                 in_flight: AtomicUsize::new(0),
-                notify: Notify::new(),
+                notify: Arc::new(Notify::new()),
             }),
             local_capacity,
             min_reserved,
@@ -262,14 +265,12 @@ impl LocalMemoryPool {
     /// effect on the budget (no memory is reserved until the method returns).
     pub async fn reserve(&mut self, size: usize) -> Result<LocalMemoryLease, OutOfMemory> {
         loop {
-            // Create notification futures *before* checking availability so
+            // Create the notification future *before* checking availability so
             // that a concurrent release (local in-flight drop or global pool
             // return) between our check and the `.await` is guaranteed to
             // wake us.
-            let shared = Arc::clone(&self.shared);
-            let local_reclaim = shared.notify.notified();
-            let global_reclaim = shared.pool.availability_notified();
-            tokio::pin!(local_reclaim);
+            let notified = self.availability_notified();
+            tokio::pin!(notified);
 
             if let Some(lease) = self.try_reserve(size) {
                 return Ok(lease);
@@ -279,15 +280,9 @@ impl LocalMemoryPool {
             }
 
             // try_reserve failed but the request is feasible. Wait for either
-            // a local in-flight lease to be dropped (which frees available
-            // capacity) or global pool availability to change, then retry.
-            match global_reclaim {
-                Some(global) => tokio::select! {
-                    () = local_reclaim => {}
-                    () = global => {}
-                },
-                None => local_reclaim.await,
-            }
+            // a local in-flight lease to be dropped or global pool availability
+            // to change, then retry.
+            notified.await;
         }
     }
 
@@ -374,6 +369,22 @@ impl LocalMemoryPool {
         LocalMemoryLease {
             shared: Arc::clone(&self.shared),
             size: 0,
+        }
+    }
+
+    /// Returns a future that resolves when budget availability may have changed.
+    ///
+    /// The returned [`AvailabilityNotified`] combines local in-flight reclaim
+    /// notifications with global pool availability changes. It resolves when
+    /// either source fires.
+    ///
+    /// This future should be created *before* checking availability (e.g.
+    /// before calling [`try_reserve`](Self::try_reserve)) to avoid missing
+    /// concurrent notifications.
+    pub fn availability_notified(&self) -> AvailabilityNotified {
+        AvailabilityNotified {
+            local: Arc::clone(&self.shared.notify).notified_owned(),
+            global: self.shared.pool.availability_notified_owned(),
         }
     }
 }
@@ -472,12 +483,45 @@ impl std::fmt::Debug for LocalMemoryLease {
     }
 }
 
+pin_project_lite::pin_project! {
+    /// Future that resolves when budget availability may have changed.
+    ///
+    /// Combines local in-flight reclaim notifications with global pool
+    /// availability changes. Resolves when either source fires.
+    ///
+    /// Created by [`LocalMemoryPool::availability_notified`].
+    pub struct AvailabilityNotified {
+        #[pin]
+        local: OwnedNotified,
+        #[pin]
+        global: Option<OwnedNotified>,
+    }
+}
+
+impl Future for AvailabilityNotified {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.project();
+        if this.local.poll(cx).is_ready() {
+            return Poll::Ready(());
+        }
+        if let Some(global) = this.global.as_pin_mut()
+            && Future::poll(global, cx).is_ready()
+        {
+            return Poll::Ready(());
+        }
+        Poll::Pending
+    }
+}
+
 // Ensure Send + Sync
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<LocalMemoryPool>();
     assert_send_sync::<InvocationMemory>();
     assert_send_sync::<LocalMemoryLease>();
+    assert_send_sync::<AvailabilityNotified>();
 };
 
 #[cfg(test)]

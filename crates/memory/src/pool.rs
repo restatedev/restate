@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
+use tokio::sync::futures::OwnedNotified;
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 
@@ -37,7 +38,7 @@ pub struct MemoryPool {
 struct BoundedBudgetInner {
     capacity: AtomicUsize,
     used: AtomicUsize,
-    notify: Notify,
+    notify: Arc<Notify>,
 }
 
 impl MemoryPool {
@@ -53,7 +54,7 @@ impl MemoryPool {
             inner: Some(Arc::new(BoundedBudgetInner {
                 capacity: AtomicUsize::new(capacity.as_usize()),
                 used: AtomicUsize::new(0),
-                notify: Notify::new(),
+                notify: Arc::new(Notify::new()),
             })),
         }
     }
@@ -197,11 +198,12 @@ impl MemoryPool {
     /// (memory returned or capacity adjusted).
     ///
     /// Returns `None` for unlimited pools (which have no internal tracking).
-    /// The returned [`Notified`](tokio::sync::futures::Notified) future should
-    /// be created *before* checking availability to avoid missing concurrent
-    /// notifications.
-    pub(crate) fn availability_notified(&self) -> Option<tokio::sync::futures::Notified<'_>> {
-        self.inner.as_ref().map(|inner| inner.notify.notified())
+    /// The returned [`OwnedNotified`] future should be created *before*
+    /// checking availability to avoid missing concurrent notifications.
+    pub(crate) fn availability_notified_owned(&self) -> Option<OwnedNotified> {
+        self.inner
+            .as_ref()
+            .map(|inner| Arc::clone(&inner.notify).notified_owned())
     }
 
     #[inline]
