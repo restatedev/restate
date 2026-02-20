@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
+use restate_memory::MemoryLease;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
@@ -29,6 +30,7 @@ pub trait InvokerHandle<SR> {
         invocation_target: InvocationTarget,
     ) -> Result<(), NotRunningError>;
 
+    #[allow(clippy::too_many_arguments)]
     fn vqueue_invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
@@ -36,6 +38,8 @@ pub trait InvokerHandle<SR> {
         permit: Permit,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
+        inbound_seed: MemoryLease,
+        outbound_seed: MemoryLease,
     ) -> Result<(), NotRunningError>;
 
     fn notify_completion(

@@ -83,9 +83,11 @@ pub use input_command::InvokerHandle;
 
 use self::input_command::VQueueInvokeCommand;
 
-/// Size of the seed lease acquired before dequeuing from the segment queue.
-/// Approximately two HTTP/2 frames worth of data.
-const INVOCATION_SEED_SIZE: usize = 64 * 1024;
+/// Size of the inbound seed lease (~2 HTTP/2 frames).
+const INBOUND_SEED_SIZE: usize = 64 * 1024;
+/// Size of the outbound seed lease. Zero for now; will be non-zero once
+/// outbound budget is pushed into the storage layer.
+const OUTBOUND_SEED_SIZE: usize = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -442,7 +444,9 @@ where
         // Pre-acquire a seed lease from the memory pool so the segment queue arm
         // can create a budget without blocking inside select!.
         if self.pending_seed_lease.is_none() && !segmented_input_queue.inner().is_empty() {
-            self.pending_seed_lease = self.memory_pool.try_reserve(INVOCATION_SEED_SIZE);
+            self.pending_seed_lease = self
+                .memory_pool
+                .try_reserve(INBOUND_SEED_SIZE + OUTBOUND_SEED_SIZE);
         }
 
         tokio::select! {
@@ -498,11 +502,12 @@ where
                 }
             },
             Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() && self.pending_seed_lease.is_some() => {
-                let seed = self.pending_seed_lease.take().unwrap();
-                let budget = self.create_invocation_budget(seed);
+                let mut seed = self.pending_seed_lease.take().unwrap();
+                let outbound_seed = seed.split(OUTBOUND_SEED_SIZE);
+                let budget = self.create_invocation_budget(options, seed, outbound_seed);
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, budget);
             },
-            memory_lease = self.memory_pool.reserve(INVOCATION_SEED_SIZE), if !segmented_input_queue.inner().is_empty() && self.pending_seed_lease.is_none() => {
+            memory_lease = self.memory_pool.reserve(INBOUND_SEED_SIZE + OUTBOUND_SEED_SIZE), if !segmented_input_queue.inner().is_empty() && self.pending_seed_lease.is_none() => {
                 self.pending_seed_lease = Some(memory_lease);
             }
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
@@ -648,9 +653,8 @@ where
                 .invocation_state_machine_manager
                 .partition_storage_reader(command.partition)
                 .expect("partition is registered");
-            // VQueue path: use an empty-seeded budget for now. A follow-up will
-            // have the vqueue scheduler supply a pre-acquired MemoryLease.
-            let budget = self.create_invocation_budget(self.memory_pool.empty_lease());
+            let budget =
+                self.create_invocation_budget(options, command.inbound_seed, command.outbound_seed);
             self.start_invocation_task(
                 options,
                 command.partition,
@@ -1669,17 +1673,19 @@ where
         }
     }
 
-    /// Create a per-invocation memory budget from the given seed lease.
+    /// Create a per-invocation memory budget from the given seed leases.
     ///
     /// The upper bound is set to the pool's total capacity (or `usize::MAX` for
     /// unlimited pools) to prevent a single invocation from monopolizing the pool.
-    fn create_invocation_budget(&self, seed: MemoryLease) -> InvocationBudget {
-        let upper_bound = match self.memory_pool.capacity().as_usize() {
-            0 => usize::MAX,
-            cap => cap,
-        };
-        let outbound_seed = self.memory_pool.empty_lease();
-        InvocationBudget::new(seed, upper_bound, outbound_seed, upper_bound)
+    fn create_invocation_budget(
+        &self,
+        options: &InvokerOptions,
+        inbound_seed: MemoryLease,
+        outbound_seed: MemoryLease,
+    ) -> InvocationBudget {
+        // todo figure out the proper upper bound for the inboud and outbound budgets
+        let upper_bound = options.message_size_limit().get();
+        InvocationBudget::new(inbound_seed, upper_bound, outbound_seed, upper_bound)
     }
 
     fn start_invocation_task(
