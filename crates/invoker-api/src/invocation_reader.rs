@@ -178,12 +178,12 @@ pub trait InvocationReaderTransaction {
         service_id: &ServiceId,
     ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error>;
 
-    /// LocalMemoryPool-gated journal replay stream.
+    /// Budget-gated journal replay stream.
     ///
-    /// Each entry's raw byte size is peeked from RocksDB first. A [`LocalMemoryLease`]
-    /// is acquired from `budget` for that size *before* the entry is decoded.
-    /// The lease flows through to the caller and must be held until the
-    /// corresponding data is no longer needed (e.g., until hyper consumes the frame).
+    /// Delegates to the storage-api `get_journal_budgeted` trait method which
+    /// peeks each entry's raw byte size from RocksDB, acquires a
+    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
+    /// decoded, then decodes and yields the entry together with its lease.
     fn read_journal_budgeted<'a>(
         &'a self,
         invocation_id: &InvocationId,
@@ -192,10 +192,12 @@ pub trait InvocationReaderTransaction {
         budget: &'a mut LocalMemoryPool,
     ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error>;
 
-    /// LocalMemoryPool-gated state loading stream.
+    /// Budget-gated state loading stream.
     ///
-    /// Each state entry's raw byte size is peeked first. A [`LocalMemoryLease`]
-    /// is acquired from `budget` for that size *before* the entry is decoded.
+    /// Delegates to the storage-api `get_all_user_states_budgeted` trait method
+    /// which peeks each state entry's raw byte size from RocksDB, acquires a
+    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
+    /// decoded, then decodes and yields the key-value pair together with its lease.
     fn read_state_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
