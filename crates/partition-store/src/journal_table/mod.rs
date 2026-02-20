@@ -39,10 +39,9 @@ define_table_key!(
     )
 );
 
-/// Lazy iterator over journal entries. Supports two-phase iteration:
-/// [`peek_value_size`](Self::peek_value_size) to inspect the raw byte size before
-/// decoding, then [`decode_and_advance`](Self::decode_and_advance) to decode and
-/// move forward. Also implements [`Iterator`] for convenience.
+/// Lazy iterator over journal entries. Exposes [`peek_item`](Self::peek_item)
+/// for zero-copy access to raw key/value slices and [`advance`](Self::advance)
+/// to move forward. Also implements [`Iterator`] for convenience.
 pub struct JournalEntryIter<'a, DB: DBAccess> {
     iter: DBRawIteratorWithThreadMode<'a, DB>,
     remaining: u32,
@@ -56,14 +55,14 @@ impl<'a, DB: DBAccess> JournalEntryIter<'a, DB> {
         }
     }
 
-    /// Returns the raw serialized byte size of the value at the current iterator
+    /// Returns the raw `(key, value)` byte slices at the current iterator
     /// position without decoding or advancing. Returns `None` when exhausted.
-    pub fn peek_value_size(&self) -> Option<Result<usize>> {
+    pub fn peek_item(&self) -> Option<Result<(&[u8], &[u8])>> {
         if self.remaining == 0 {
             return None;
         }
         match self.iter.item() {
-            Some((_k, v)) => Some(Ok(v.len())),
+            Some((k, v)) => Some(Ok((k, v))),
             None => self
                 .iter
                 .status()
@@ -72,38 +71,33 @@ impl<'a, DB: DBAccess> JournalEntryIter<'a, DB> {
         }
     }
 
-    /// Decodes the current entry and advances the iterator.
-    /// Must only be called after [`peek_value_size`](Self::peek_value_size) returned
-    /// `Some(Ok(_))`.
-    pub fn decode_and_advance(&mut self) -> Option<Result<(EntryIndex, JournalEntry)>> {
-        if self.remaining == 0 {
-            return None;
-        }
-
-        let Some((mut k, mut v)) = self.iter.item() else {
-            return self
-                .iter
-                .status()
-                .err()
-                .map(|err| Err(StorageError::Generic(err.into())));
-        };
-
-        let key_result =
-            JournalKey::deserialize_from(&mut k).map(|journal_key| journal_key.journal_index);
-        let entry_result = JournalEntry::decode(&mut v);
-
+    /// Advances the iterator to the next entry.
+    pub fn advance(&mut self) {
         self.iter.next();
         self.remaining -= 1;
-
-        Some(key_result.and_then(|key| entry_result.map(|entry| (key, entry))))
     }
+}
+
+/// Decodes a journal key/value pair from raw byte slices.
+fn decode_journal_entry(k: &[u8], v: &[u8]) -> Result<(EntryIndex, JournalEntry)> {
+    let mut k = k;
+    let mut v = v;
+    let index = JournalKey::deserialize_from(&mut k)?.journal_index;
+    let entry = JournalEntry::decode(&mut v)?;
+    Ok((index, entry))
 }
 
 impl<DB: DBAccess> Iterator for JournalEntryIter<'_, DB> {
     type Item = Result<(EntryIndex, JournalEntry)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.decode_and_advance()
+        let (k, v) = match self.peek_item()? {
+            Ok(item) => item,
+            Err(e) => return Some(Err(e)),
+        };
+        let result = decode_journal_entry(k, v);
+        self.advance();
+        Some(result)
     }
 }
 
@@ -375,7 +369,14 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
 }
 
 /// Wraps a [`JournalEntryIter`] into an async [`Stream`] that acquires a memory
-/// lease from `budget` **before** decoding each entry (peek → reserve → decode).
+/// lease from `budget` **before** decoding each entry.
+///
+/// Each entry is produced via a unified reserve-read-adjust loop: peek the raw
+/// byte size, attempt synchronous [`LocalMemoryPool::try_reserve`], and decode
+/// from the same iterator slices on success (fast path — no `.await`). When
+/// `try_reserve` fails the borrow is dropped and the deficit is awaited via
+/// [`LocalMemoryPool::reserve`], then the loop re-peeks the (unchanged)
+/// iterator position.
 fn budgeted_journal_stream<'a, DB: DBAccess + Send>(
     iter: JournalEntryIter<'a, DB>,
     budget: &'a mut LocalMemoryPool,
@@ -384,28 +385,51 @@ fn budgeted_journal_stream<'a, DB: DBAccess + Send>(
 > + Send
 + 'a {
     futures::stream::unfold((iter, budget), |(mut iter, budget)| async move {
-        // Phase 1: peek raw byte size without decoding
-        let raw_size = match iter.peek_value_size() {
-            Some(Ok(size)) => size,
-            Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
-            None => return None,
-        };
+        let mut lease = budget.empty_lease();
+        loop {
+            let deficit = {
+                let (k, v) = match iter.peek_item() {
+                    Some(Ok(item)) => item,
+                    Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
+                    None => return None,
+                };
 
-        // Phase 2: acquire lease before allocating any memory for the decoded entry
-        let lease = match budget.reserve(raw_size).await {
-            Ok(lease) => lease,
-            Err(e) => return Some((Err(e.into()), (iter, budget))),
-        };
+                let raw_size = v.len();
+                if raw_size <= lease.size() {
+                    // Lease already covers the value — shrink excess and decode.
+                    lease.shrink(lease.size() - raw_size);
+                    match decode_journal_entry(k, v) {
+                        Ok((idx, entry)) => {
+                            iter.advance();
+                            return Some((Ok((idx, entry, lease)), (iter, budget)));
+                        }
+                        Err(e) => return Some((Err(e.into()), (iter, budget))),
+                    }
+                }
 
-        // Phase 3: decode (budget already secured)
-        match iter.decode_and_advance() {
-            Some(Ok((idx, entry))) => Some((Ok((idx, entry, lease)), (iter, budget))),
-            Some(Err(e)) => Some((Err(e.into()), (iter, budget))),
-            None => {
-                // peek_value_size returned Some but decode returned None — should not happen.
-                // Defensive: treat as stream exhaustion and drop the lease.
-                None
-            }
+                // Need more budget. Try synchronous top-up first.
+                let deficit = raw_size - lease.size();
+                if let Some(extra) = budget.try_reserve(deficit) {
+                    lease.merge(extra);
+                    match decode_journal_entry(k, v) {
+                        Ok((idx, entry)) => {
+                            iter.advance();
+                            return Some((Ok((idx, entry, lease)), (iter, budget)));
+                        }
+                        Err(e) => return Some((Err(e.into()), (iter, budget))),
+                    }
+                }
+
+                deficit
+            };
+
+            // Slow path: borrow dropped — safe to .await now.
+            let extra = match budget.reserve(deficit).await {
+                Ok(l) => l,
+                Err(e) => return Some((Err(e.into()), (iter, budget))),
+            };
+            lease.merge(extra);
+            // Loop back: iterator hasn't moved, peek_item returns the same data.
         }
     })
 }
