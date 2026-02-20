@@ -175,8 +175,14 @@ where
             &service_invocation_span_context,
         );
 
-        // Initialize the response stream state
-        let mut http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
+        // Initialize the response stream state. The inbound budget is moved into
+        // the ResponseStream so that raw HTTP body chunks are gated before reaching
+        // the decoder (pre-deserialization back-pressure).
+        let mut http_stream_rx = std::pin::pin!(ResponseStream::initialize(
+            &self.invocation_task.client,
+            request,
+            inbound_budget,
+        ));
 
         // === Replay phase (transaction alive) ===
         {
@@ -244,7 +250,6 @@ where
                     &mut http_stream_rx,
                     invocation_reader,
                     outbound_budget,
-                    inbound_budget,
                 )
                 .await
             );
@@ -258,11 +263,7 @@ where
         // We don't have the invoker_rx, so we simply consume the response
         trace!("Sender side of the request has been dropped, now processing the response");
         let result = self
-            .response_stream_loop(
-                &service_invocation_span_context,
-                &mut http_stream_rx,
-                inbound_budget,
-            )
+            .response_stream_loop(&service_invocation_span_context, &mut http_stream_rx)
             .await;
 
         // Sanity check of the stream decoder
@@ -353,14 +354,15 @@ where
     // --- Loops
 
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
-    async fn replay_loop<JournalStream, E>(
+    async fn replay_loop<JournalStream, S, E>(
         &mut self,
         http_stream_tx: &mut InvokerBodySender,
-        http_stream_rx: &mut ResponseStream,
+        http_stream_rx: &mut S,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
     where
         JournalStream: Stream<Item = Result<(JournalEntry, LocalMemoryLease), E>> + Unpin,
+        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
         E: InvocationReaderError,
     {
         let mut journal_stream = journal_stream.fuse();
@@ -378,7 +380,7 @@ where
                         Some(ResponseChunk::Parts(headers)) => {
                             crate::shortcircuit!(self.handle_response_headers(headers));
                         }
-                        Some(ResponseChunk::Data(_)) => {
+                        Some(ResponseChunk::Data(..)) => {
                             panic!("Unexpected poll after the headers have been resolved already")
                         }
                     };
@@ -433,16 +435,16 @@ where
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
-    async fn bidi_stream_loop<IR>(
+    async fn bidi_stream_loop<S, IR>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         mut http_stream_tx: InvokerBodySender,
-        http_stream_rx: &mut ResponseStream,
+        http_stream_rx: &mut S,
         mut invocation_reader: IR,
         outbound_budget: &mut LocalMemoryPool,
-        inbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
+        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
         IR: InvocationReader,
     {
         let mut release_interval = tokio::time::interval(Self::BUDGET_RELEASE_INTERVAL);
@@ -485,14 +487,14 @@ where
                             return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(ResponseChunk::Data(buf)) => {
-                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, inbound_budget).await);
+                        Some(ResponseChunk::Data(buf, lease)) => {
+                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, lease));
                         }
                     }
                 },
                 _ = release_interval.tick() => {
                     outbound_budget.release_excess();
-                    inbound_budget.release_excess();
+                    // Inbound release_excess is handled inside ResponseStream::poll_next.
                 },
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
@@ -504,12 +506,14 @@ where
         }
     }
 
-    async fn response_stream_loop(
+    async fn response_stream_loop<S>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        http_stream_rx: &mut ResponseStream,
-        inbound_budget: &mut LocalMemoryPool,
-    ) -> TerminalLoopState<()> {
+        http_stream_rx: &mut S,
+    ) -> TerminalLoopState<()>
+    where
+        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+    {
         loop {
             tokio::select! {
                 chunk = http_stream_rx.next() => {
@@ -518,8 +522,8 @@ where
                             return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(ResponseChunk::Data(buf)) => {
-                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, inbound_budget).await);
+                        Some(ResponseChunk::Data(buf, lease)) => {
+                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, lease));
                         }
                     }
                 },
@@ -666,24 +670,14 @@ where
         Ok(())
     }
 
-    async fn handle_read(
+    fn handle_read(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         buf: Bytes,
-        inbound_budget: &mut LocalMemoryPool,
+        chunk_lease: LocalMemoryLease,
     ) -> TerminalLoopState<()> {
-        // Acquire inbound budget for the raw chunk before pushing
-        // to the decoder. On OutOfMemory, yield the invocation.
-        let chunk_lease = match inbound_budget.reserve(buf.len()).await {
-            Ok(lease) => lease,
-            Err(exhausted) => {
-                return TerminalLoopState::ShouldYield {
-                    needed: exhausted.needed,
-                    direction: MemoryDirection::Inbound,
-                };
-            }
-        };
-
+        // Budget was already acquired by ResponseStream before yielding
+        // this chunk. Merge the chunk's lease into the cumulative lease.
         match self.cumulative_inbound_lease.as_mut() {
             Some(cumulative) => cumulative.merge(chunk_lease),
             None => self.cumulative_inbound_lease = Some(chunk_lease),

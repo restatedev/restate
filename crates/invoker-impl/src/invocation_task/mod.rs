@@ -25,7 +25,7 @@ use http::response::Parts as ResponseParts;
 use http::{HeaderName, HeaderValue, Response};
 use http_body::{Body, Frame};
 use metrics::histogram;
-use restate_memory::{InvocationMemory, LocalMemoryLease};
+use restate_memory::{InvocationMemory, LocalMemoryLease, LocalMemoryPool};
 use tokio::sync::mpsc;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::instrument;
@@ -581,12 +581,42 @@ fn invocation_id_to_header_value(invocation_id: &InvocationId) -> HeaderValue {
 
 enum ResponseChunk {
     Parts(ResponseParts),
-    Data(Bytes),
+    Data(Bytes, LocalMemoryLease),
+}
+
+/// How often [`ResponseStream`] calls [`LocalMemoryPool::release_excess`] in its
+/// `poll_next` implementation. Matches the interval used by the protocol runner
+/// loops for the outbound budget.
+const INBOUND_RELEASE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How long to sleep before retrying a budget reservation in [`ResponseStream`].
+const BUDGET_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+pin_project_lite::pin_project! {
+    /// HTTP response stream that gates raw body chunks on an inbound memory
+    /// budget before yielding them.
+    ///
+    /// Each `Data` chunk is accompanied by a [`LocalMemoryLease`] covering its
+    /// byte length. This ensures budget is acquired **before** the bytes reach
+    /// the protocol decoder, providing true pre-deserialization back-pressure.
+    struct ResponseStream<'a> {
+        #[pin]
+        state: ResponseStreamState,
+        budget: &'a mut LocalMemoryPool,
+        // A body frame that was read but couldn't be budgeted yet.
+        pending_frame: Option<Bytes>,
+        // Short sleep used to re-poll when budget acquisition is deferred.
+        #[pin]
+        budget_retry_delay: Option<tokio::time::Sleep>,
+        // Tracks when release_excess was last called so we can piggyback
+        // periodic releases on poll_next without an external timer.
+        last_excess_release: tokio::time::Instant,
+    }
 }
 
 pin_project_lite::pin_project! {
-    #[project = ResponseStreamProj]
-    enum ResponseStream {
+    #[project = ResponseStreamStateProj]
+    enum ResponseStreamState {
         WaitingHeaders {
             join_handle: AbortOnDropHandle<Result<Response<ResponseBody>, ServiceClientError>>,
         },
@@ -598,35 +628,76 @@ pin_project_lite::pin_project! {
     }
 }
 
-impl ResponseStream {
-    fn initialize(client: &ServiceClient, req: Request<InvokerBody>) -> Self {
+impl<'a> ResponseStream<'a> {
+    fn initialize(
+        client: &ServiceClient,
+        req: Request<InvokerBody>,
+        inbound_budget: &'a mut LocalMemoryPool,
+    ) -> Self {
         // Because the body sender blocks on waiting for the request body buffer to be available,
         // we need to spawn the request initiation separately, otherwise the loop below
         // will deadlock on the journal entry write.
         // This task::spawn won't be required by hyper 1.0, as the connection will be driven by a task
         // spawned somewhere else (perhaps in the connection pool).
         // See: https://github.com/restatedev/restate/issues/96 and https://github.com/restatedev/restate/issues/76
-        Self::WaitingHeaders {
-            join_handle: AbortOnDropHandle::new(tokio::task::spawn(client.call(req))),
+        Self {
+            state: ResponseStreamState::WaitingHeaders {
+                join_handle: AbortOnDropHandle::new(tokio::task::spawn(client.call(req))),
+            },
+            budget: inbound_budget,
+            pending_frame: None,
+            budget_retry_delay: None,
+            last_excess_release: tokio::time::Instant::now(),
         }
     }
 }
 
-impl Stream for ResponseStream {
+impl Stream for ResponseStream<'_> {
     type Item = Result<ResponseChunk, InvokerError>;
 
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.as_mut().project();
-        match this {
-            ResponseStreamProj::WaitingHeaders { join_handle } => {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        // Periodic release_excess — piggyback on every poll.
+        if this.last_excess_release.elapsed() >= INBOUND_RELEASE_INTERVAL {
+            this.budget.release_excess();
+            *this.last_excess_release = tokio::time::Instant::now();
+        }
+
+        // If we have a pending frame waiting for budget, try to acquire first.
+        if this.pending_frame.is_some() {
+            // Poll the retry delay — if it hasn't fired yet, stay pending.
+            if this
+                .budget_retry_delay
+                .as_mut()
+                .as_pin_mut()
+                .is_some_and(|delay| delay.poll(cx).is_pending())
+            {
+                return Poll::Pending;
+            }
+            this.budget_retry_delay.set(None);
+
+            let buf = this.pending_frame.take().unwrap();
+            return poll_acquire_budget(
+                this.budget,
+                this.pending_frame,
+                this.budget_retry_delay,
+                cx,
+                buf,
+            );
+        }
+
+        // Normal path: poll the inner HTTP state machine.
+        match this.state.as_mut().project() {
+            ResponseStreamStateProj::WaitingHeaders { join_handle } => {
                 let http_response = match ready!(join_handle.poll_unpin(cx)) {
                     Ok(Ok(res)) => res,
                     Ok(Err(hyper_err)) => {
-                        *self = ResponseStream::Terminated;
+                        this.state.set(ResponseStreamState::Terminated);
                         return Poll::Ready(Some(Err(InvokerError::Client(Box::new(hyper_err)))));
                     }
                     Err(join_err) => {
-                        *self = ResponseStream::Terminated;
+                        this.state.set(ResponseStreamState::Terminated);
                         return Poll::Ready(Some(Err(InvokerError::UnexpectedJoinError(join_err))));
                     }
                 };
@@ -635,26 +706,65 @@ impl Stream for ResponseStream {
                 let (http_response_header, body) = http_response.into_parts();
 
                 // Transition to reading body
-                *self = ResponseStream::ReadingBody { body };
+                this.state.set(ResponseStreamState::ReadingBody { body });
                 Poll::Ready(Some(Ok(ResponseChunk::Parts(http_response_header))))
             }
-            ResponseStreamProj::ReadingBody { body } => {
+            ResponseStreamStateProj::ReadingBody { body } => {
                 let next_element = ready!(body.poll_frame(cx));
                 match next_element.transpose() {
                     Ok(Some(frame)) if frame.is_data() => {
-                        Poll::Ready(Some(Ok(ResponseChunk::Data(frame.into_data().unwrap()))))
+                        let buf = frame.into_data().unwrap();
+                        poll_acquire_budget(
+                            this.budget,
+                            this.pending_frame,
+                            this.budget_retry_delay,
+                            cx,
+                            buf,
+                        )
                     }
                     Ok(_) => {
-                        *self = ResponseStream::Terminated;
+                        this.state.set(ResponseStreamState::Terminated);
                         Poll::Ready(None)
                     }
                     Err(err) => {
-                        *self = ResponseStream::Terminated;
+                        this.state.set(ResponseStreamState::Terminated);
                         Poll::Ready(Some(Err(InvokerError::ClientBody(err))))
                     }
                 }
             }
-            ResponseStreamProj::Terminated => Poll::Ready(None),
+            ResponseStreamStateProj::Terminated => Poll::Ready(None),
+        }
+    }
+}
+
+/// Try to acquire a budget lease for `buf`. On success the frame and its
+/// lease are returned as `Ready`. On permanent OOM an error is returned.
+/// On transient failure the frame is stashed in `pending_frame` and a
+/// retry delay is armed; the method returns `Pending` after polling the
+/// delay to register the waker.
+fn poll_acquire_budget(
+    budget: &mut LocalMemoryPool,
+    pending_frame: &mut Option<Bytes>,
+    mut budget_retry_delay: Pin<&mut Option<tokio::time::Sleep>>,
+    cx: &mut Context<'_>,
+    buf: Bytes,
+) -> Poll<Option<Result<ResponseChunk, InvokerError>>> {
+    match budget.poll_reserve(buf.len()) {
+        Poll::Ready(Ok(lease)) => Poll::Ready(Some(Ok(ResponseChunk::Data(buf, lease)))),
+        Poll::Ready(Err(_oom)) => Poll::Ready(Some(Err(InvokerError::OutOfMemory {
+            needed: buf.len(),
+            direction: MemoryDirection::Inbound,
+        }))),
+        Poll::Pending => {
+            *pending_frame = Some(buf);
+            budget_retry_delay.set(Some(tokio::time::sleep(BUDGET_RETRY_DELAY)));
+            // Poll the sleep to register the waker so we get re-polled.
+            let _ = budget_retry_delay
+                .as_mut()
+                .as_pin_mut()
+                .expect("just set")
+                .poll(cx);
+            Poll::Pending
         }
     }
 }

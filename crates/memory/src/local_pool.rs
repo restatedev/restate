@@ -35,6 +35,7 @@
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::Poll;
 
 use tokio::sync::Notify;
 
@@ -299,6 +300,28 @@ impl LocalMemoryPool {
 
     /// How often to re-check feasibility while waiting in [`reserve`].
     const FEASIBILITY_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// Non-blocking reserve for use in [`poll_next`](futures::Stream::poll_next)
+    /// implementations.
+    ///
+    /// Returns:
+    /// - `Poll::Ready(Ok(lease))` if the reservation succeeded immediately.
+    /// - `Poll::Ready(Err(OutOfMemory))` if the request is permanently infeasible.
+    /// - `Poll::Pending` if the reservation failed but may succeed later (e.g.
+    ///   after in-flight leases are dropped or global capacity is returned).
+    ///
+    /// **Waker registration:** This method does *not* register a waker. The
+    /// caller is responsible for arranging a retry, for example via a
+    /// `tokio::time::Sleep` that re-polls after a short delay.
+    pub fn poll_reserve(&mut self, size: usize) -> Poll<Result<LocalMemoryLease, OutOfMemory>> {
+        if let Some(lease) = self.try_reserve(size) {
+            return Poll::Ready(Ok(lease));
+        }
+        if self.is_out_of_memory(size) {
+            return Poll::Ready(Err(OutOfMemory { needed: size }));
+        }
+        Poll::Pending
+    }
 
     /// Returns surplus local capacity (above `min_reserved`) to the global pool.
     ///
