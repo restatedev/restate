@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
+use tokio::sync::futures::OwnedNotified;
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 
@@ -37,7 +38,7 @@ pub struct MemoryPool {
 struct BoundedBudgetInner {
     capacity: AtomicUsize,
     used: AtomicUsize,
-    notify: Notify,
+    notify: Arc<Notify>,
 }
 
 impl MemoryPool {
@@ -53,7 +54,7 @@ impl MemoryPool {
             inner: Some(Arc::new(BoundedBudgetInner {
                 capacity: AtomicUsize::new(capacity.as_usize()),
                 used: AtomicUsize::new(0),
-                notify: Notify::new(),
+                notify: Arc::new(Notify::new()),
             })),
         }
     }
@@ -87,6 +88,21 @@ impl MemoryPool {
         match &self.inner {
             Some(inner) => ByteCount::from(inner.used.load(Ordering::Relaxed)),
             None => ByteCount::ZERO,
+        }
+    }
+
+    /// Returns the number of bytes currently available (capacity - used).
+    ///
+    /// For unlimited pools, returns `usize::MAX`.
+    #[inline]
+    pub fn available(&self) -> usize {
+        match &self.inner {
+            Some(inner) => {
+                let capacity = inner.capacity.load(Ordering::Relaxed);
+                let used = inner.used.load(Ordering::Relaxed);
+                capacity.saturating_sub(used)
+            }
+            None => usize::MAX,
         }
     }
 
@@ -162,8 +178,13 @@ impl MemoryPool {
         }
     }
 
+    /// Returns `amount` bytes back to the pool.
+    ///
+    /// Typically called via [`MemoryLease::drop`], but exposed publicly for cases
+    /// where memory tracking is managed externally (e.g., directional budgets that
+    /// act as local caches on top of this pool).
     #[inline]
-    fn return_memory(&self, amount: usize) {
+    pub fn return_memory(&self, amount: usize) {
         if amount == 0 {
             return;
         }
@@ -171,6 +192,18 @@ impl MemoryPool {
             inner.used.fetch_sub(amount, Ordering::Relaxed);
             inner.notify.notify_waiters();
         }
+    }
+
+    /// Returns a future that resolves when pool availability may have changed
+    /// (memory returned or capacity adjusted).
+    ///
+    /// Returns `None` for unlimited pools (which have no internal tracking).
+    /// The returned [`OwnedNotified`] future should be created *before*
+    /// checking availability to avoid missing concurrent notifications.
+    pub(crate) fn availability_notified_owned(&self) -> Option<OwnedNotified> {
+        self.inner
+            .as_ref()
+            .map(|inner| Arc::clone(&inner.notify).notified_owned())
     }
 
     #[inline]

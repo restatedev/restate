@@ -90,6 +90,18 @@ message CompletionMessage {
   };
 }
 
+// Internal-only message for extracting the completion result from journal entry bytes.
+// Uses the same tags (13/14/15) as all completable entry types, but has no other fields.
+// Unlike CompletionMessage, this safely skips entry-specific fields (e.g. tag 1 = bytes key
+// in GetStateEntryMessage) that would cause wire-type mismatches during protobuf decoding.
+message CompletionResultExtractor {
+  oneof result {
+    Empty empty = 13;
+    bytes value = 14;
+    Failure failure = 15;
+  };
+}
+
 // Type: 0x0000 + 2
 // Implementations MUST send this message when suspending an invocation.
 message SuspensionMessage {

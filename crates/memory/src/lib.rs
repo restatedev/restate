@@ -18,10 +18,14 @@
 
 mod controller;
 mod footprint;
+pub mod local_pool;
 mod metric_definitions;
 mod pool;
 
 pub use controller::MemoryController;
+pub use local_pool::{
+    AvailabilityNotified, InvocationMemory, LocalMemoryLease, LocalMemoryPool, OutOfMemory,
+};
 pub use pool::{MemoryLease, MemoryPool};
 pub use restate_serde_util::NonZeroByteCount;
 

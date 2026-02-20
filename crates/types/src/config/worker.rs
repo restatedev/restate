@@ -345,6 +345,15 @@ pub struct InvokerOptions {
     /// When `unset`, no throttling is applied and actions are processed
     /// without throttling.
     pub action_throttling: Option<ThrottlingOptions>,
+
+    /// # Memory limit
+    ///
+    /// Global memory budget for the invoker, shared across all partitions on this node.
+    /// This controls how much memory can be used for in-flight journal entries, state,
+    /// and protocol messages between the invoker and service deployments.
+    ///
+    /// To effectively disable memory limiting, set this to a very large value.
+    pub memory_limit: NonZeroByteCount,
 }
 
 impl InvokerOptions {
@@ -401,6 +410,9 @@ impl Default for InvokerOptions {
             disable_eager_state: false,
             invocation_throttling: None,
             action_throttling: None,
+            memory_limit: NonZeroByteCount::new(
+                NonZeroUsize::new(256 * 1024 * 1024).unwrap(), // 256 MiB
+            ),
         }
     }
 }

@@ -16,9 +16,10 @@ use futures::Stream;
 use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::TableKind::State;
@@ -54,8 +55,10 @@ fn user_state_key_from_slice(mut key: &[u8]) -> Result<Bytes> {
     Ok(StateKey::deserialize_from(&mut key)?.state_key)
 }
 
-/// Lazy iterator over state entries. Decodes entries on-demand from RocksDB.
-struct StateEntryIter<'a, DB: DBAccess> {
+/// Lazy iterator over state entries. Exposes [`peek_item`](Self::peek_item)
+/// for zero-copy access to raw key/value slices and [`advance`](Self::advance)
+/// to move forward. Also implements [`Iterator`] for convenience.
+pub struct StateEntryIter<'a, DB: DBAccess> {
     iter: DBRawIteratorWithThreadMode<'a, DB>,
 }
 
@@ -63,21 +66,36 @@ impl<'a, DB: DBAccess> StateEntryIter<'a, DB> {
     fn new(iter: DBRawIteratorWithThreadMode<'a, DB>) -> Self {
         Self { iter }
     }
+
+    /// Returns the raw `(key, value)` byte slices at the current iterator
+    /// position without decoding or advancing. Returns `None` when exhausted.
+    pub fn peek_item(&self) -> Option<Result<(&[u8], &[u8])>> {
+        match self.iter.item() {
+            Some((k, v)) => Some(Ok((k, v))),
+            None => self
+                .iter
+                .status()
+                .err()
+                .map(|err| Err(StorageError::Generic(err.into()))),
+        }
+    }
+
+    /// Advances the iterator to the next entry.
+    pub fn advance(&mut self) {
+        self.iter.next();
+    }
 }
 
 impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
     type Item = Result<(Bytes, Bytes)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Some((k, v)) = self.iter.item() else {
-            return self
-                .iter
-                .status()
-                .err()
-                .map(|err| Err(StorageError::Generic(err.into())));
+        let (k, v) = match self.peek_item()? {
+            Ok(item) => item,
+            Err(e) => return Some(Err(e)),
         };
         let result = decode_user_state_key_value(k, v);
-        self.iter.next();
+        self.advance();
         Some(result)
     }
 }
@@ -167,6 +185,20 @@ impl ReadStateTable for PartitionStore {
             self, service_id,
         )?))
     }
+
+    fn get_all_user_states_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
+        + Send
+        + 'a,
+    > {
+        self.assert_partition_key(service_id)?;
+        let iter = get_all_user_states_for_service(self, service_id)?;
+        Ok(budgeted_state_stream(iter, budget))
+    }
 }
 
 impl ScanStateTable for PartitionStore {
@@ -213,6 +245,20 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
             self, service_id,
         )?))
     }
+
+    fn get_all_user_states_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
+        + Send
+        + 'a,
+    > {
+        self.assert_partition_key(service_id)?;
+        let iter = get_all_user_states_for_service(self, service_id)?;
+        Ok(budgeted_state_stream(iter, budget))
+    }
 }
 
 impl WriteStateTable for PartitionStoreTransaction<'_> {
@@ -239,6 +285,67 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
         self.assert_partition_key(service_id)?;
         delete_all_user_state(self, service_id)
     }
+}
+
+/// Wraps a [`StateEntryIter`] into an async [`Stream`] that acquires a memory
+/// lease from `budget` **before** decoding each entry.
+///
+/// Each entry is produced via a unified reserve-read-adjust loop: peek the raw
+/// byte size, attempt synchronous [`LocalMemoryPool::try_reserve`], and decode
+/// from the same iterator slices on success (fast path — no `.await`). When
+/// `try_reserve` fails the borrow is dropped and the deficit is awaited via
+/// [`LocalMemoryPool::reserve`], then the loop re-peeks the (unchanged)
+/// iterator position.
+fn budgeted_state_stream<'a, DB: DBAccess + Send>(
+    iter: StateEntryIter<'a, DB>,
+    budget: &'a mut LocalMemoryPool,
+) -> impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
++ Send
++ 'a {
+    futures::stream::unfold((iter, budget), |(mut iter, budget)| async move {
+        let mut lease = budget.empty_lease();
+        loop {
+            let deficit = {
+                let (k, v) = match iter.peek_item() {
+                    Some(Ok(item)) => item,
+                    Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
+                    None => return None,
+                };
+
+                let raw_size = k.len() + v.len();
+                if raw_size <= lease.size() {
+                    lease.shrink(lease.size() - raw_size);
+                    match decode_user_state_key_value(k, v) {
+                        Ok((key, value)) => {
+                            iter.advance();
+                            return Some((Ok((key, value, lease)), (iter, budget)));
+                        }
+                        Err(e) => return Some((Err(e.into()), (iter, budget))),
+                    }
+                }
+
+                let deficit = raw_size - lease.size();
+                if let Some(extra) = budget.try_reserve(deficit) {
+                    lease.merge(extra);
+                    match decode_user_state_key_value(k, v) {
+                        Ok((key, value)) => {
+                            iter.advance();
+                            return Some((Ok((key, value, lease)), (iter, budget)));
+                        }
+                        Err(e) => return Some((Err(e.into()), (iter, budget))),
+                    }
+                }
+
+                deficit
+            };
+
+            let extra = match budget.reserve(deficit).await {
+                Ok(l) => l,
+                Err(e) => return Some((Err(e.into()), (iter, budget))),
+            };
+            lease.merge(extra);
+        }
+    })
 }
 
 fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {

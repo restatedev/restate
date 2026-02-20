@@ -46,7 +46,9 @@ fn decode_packages(lua: &Lua, buf_lua: Value) -> LuaResult<Table> {
     };
     dec.push(buf);
 
-    while let Some((header, message)) = dec.consume_next().map_err(LuaError::external)? {
+    while let Some((header, message, _payload_size)) =
+        dec.consume_next().map_err(LuaError::external)?
+    {
         let message_table = lua.create_table()?;
 
         // Pass info
