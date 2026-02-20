@@ -18,7 +18,7 @@ use restate_invoker_api::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
     JournalKind,
 };
-use restate_memory::{BudgetLease, DirectionalBudget};
+use restate_memory::{Budget, BudgetLease};
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
 use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
@@ -111,7 +111,7 @@ where
         invocation_id: &InvocationId,
         entry_index: restate_types::identifiers::EntryIndex,
         journal_kind: JournalKind,
-        budget: &mut DirectionalBudget,
+        budget: &mut Budget,
     ) -> Result<Option<(JournalEntry, BudgetLease)>, InvokerStorageReaderError> {
         let entry = self
             .read_journal_entry(invocation_id, entry_index, journal_kind)
@@ -246,7 +246,7 @@ where
         invocation_id: &InvocationId,
         length: restate_types::identifiers::EntryIndex,
         journal_kind: JournalKind,
-        budget: &'a mut DirectionalBudget,
+        budget: &'a mut Budget,
     ) -> Result<Self::BudgetedJournalStream<'a>, Self::Error> {
         let inner = self.read_journal(invocation_id, length, journal_kind)?;
         Ok(Box::pin(futures::stream::unfold(
@@ -275,7 +275,7 @@ where
     fn read_state_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
-        budget: &'a mut DirectionalBudget,
+        budget: &'a mut Budget,
     ) -> Result<EagerState<Self::BudgetedStateStream<'a>>, Self::Error> {
         let inner_stream = self
             .txn
