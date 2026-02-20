@@ -252,16 +252,9 @@ impl LocalMemoryPool {
     ///
     /// Returns [`Err(OutOfMemory)`] if the request is infeasible — meaning
     /// even after reclaiming all in-flight memory and tapping the entire global
-    /// pool, the request cannot be satisfied. This check is performed on every
-    /// iteration, so the caller does not need to call a separate
-    /// `is_out_of_memory` check.
-    ///
-    /// On each iteration the method:
-    /// 1. Attempts a non-blocking [`try_reserve`](Self::try_reserve).
-    /// 2. If that fails, checks feasibility and returns `Err(OutOfMemory)`
-    ///    if the request is impossible.
-    /// 3. Otherwise, waits for an in-flight lease to be dropped (which increases
-    ///    available capacity) or a periodic timeout, then retries.
+    /// pool, the request cannot be satisfied. This is checked on every
+    /// iteration after a notification wakes us, so transient exhaustion is
+    /// retried while permanent exhaustion is detected promptly.
     ///
     /// # Cancel safety
     ///
@@ -269,6 +262,15 @@ impl LocalMemoryPool {
     /// effect on the budget (no memory is reserved until the method returns).
     pub async fn reserve(&mut self, size: usize) -> Result<LocalMemoryLease, OutOfMemory> {
         loop {
+            // Create notification futures *before* checking availability so
+            // that a concurrent release (local in-flight drop or global pool
+            // return) between our check and the `.await` is guaranteed to
+            // wake us.
+            let shared = Arc::clone(&self.shared);
+            let local_reclaim = shared.notify.notified();
+            let global_reclaim = shared.pool.availability_notified();
+            tokio::pin!(local_reclaim);
+
             if let Some(lease) = self.try_reserve(size) {
                 return Ok(lease);
             }
@@ -276,30 +278,18 @@ impl LocalMemoryPool {
                 return Err(OutOfMemory { needed: size });
             }
 
-            // try_reserve failed but the request is feasible. Wait for either a
-            // local in-flight lease to be dropped (which frees available capacity)
-            // or a periodic timeout to re-check feasibility.
-            //
-            // The timeout is needed because the global pool's available capacity
-            // can decrease (another invocation reserving memory) without any
-            // notification to us. On timeout we loop back, re-check is_out_of_memory
-            // with fresh data, and either yield or wait again.
-            //
-            // TODO: This timeout could be eliminated if MemoryPool notified
-            // waiters on reservations (not just returns). That would let us
-            // react immediately when global pool capacity changes in either
-            // direction.
-            let shared = Arc::clone(&self.shared);
-            let local_reclaim = shared.notify.notified();
-            tokio::select! {
-                () = local_reclaim => {}
-                () = tokio::time::sleep(Self::FEASIBILITY_RECHECK_INTERVAL) => {}
+            // try_reserve failed but the request is feasible. Wait for either
+            // a local in-flight lease to be dropped (which frees available
+            // capacity) or global pool availability to change, then retry.
+            match global_reclaim {
+                Some(global) => tokio::select! {
+                    () = local_reclaim => {}
+                    () = global => {}
+                },
+                None => local_reclaim.await,
             }
         }
     }
-
-    /// How often to re-check feasibility while waiting in [`reserve`].
-    const FEASIBILITY_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
     /// Non-blocking reserve for use in [`poll_next`](futures::Stream::poll_next)
     /// implementations.
@@ -777,6 +767,50 @@ mod tests {
 
         drop(lease);
         drop(external);
+        drop(budget);
+        assert_eq!(global.used().as_usize(), 0);
+    }
+
+    /// Verifies that `reserve()` wakes promptly when an *external* consumer
+    /// returns memory to the global pool (not via local in-flight reclaim).
+    /// Before the global notification mechanism, this path relied on a 500ms
+    /// periodic timeout — this test would fail or be very slow without it.
+    #[tokio::test]
+    async fn reserve_wakes_on_global_pool_return() {
+        let global = pool(200);
+        let seed = global.try_reserve(100).unwrap();
+        let mut budget = LocalMemoryPool::new(global.clone(), seed, 0, 500);
+
+        // Exhaust local capacity with an in-flight lease.
+        let local_lease = budget.try_reserve(100).unwrap();
+        // Exhaust the remaining global pool with an external reservation.
+        let external = global.try_reserve(100).unwrap();
+        assert_eq!(global.available(), 0);
+
+        // Budget has local_capacity=100 (all in-flight) + global_available=0.
+        // is_out_of_memory(50): 50 <= 100 + 0 → feasible (in-flight will reclaim).
+        // try_reserve(50): available=0 → fails. Growth needs 50 from global → fails.
+        assert!(budget.try_reserve(50).is_none());
+        assert!(!budget.is_out_of_memory(50));
+
+        // Drop the external lease on another task — this returns memory to
+        // the global pool (not to our local SharedState::notify). This lets
+        // the budget grow from the global pool.
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            drop(external);
+        });
+
+        // reserve() should wake up promptly via the global pool notification
+        // and grow local capacity from the freed global pool memory.
+        let lease = tokio::time::timeout(std::time::Duration::from_millis(100), budget.reserve(50))
+            .await
+            .expect("should resolve promptly via global notification, not timeout")
+            .unwrap();
+        assert_eq!(lease.size(), 50);
+
+        drop(local_lease);
+        drop(lease);
         drop(budget);
         assert_eq!(global.used().as_usize(), 0);
     }
