@@ -11,12 +11,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tracing::info;
 use tracing::{error, instrument, warn};
 
 use restate_bifrost::Bifrost;
-use restate_core::network::TransportConnect;
+use restate_core::network::{ShardSender, TransportConnect};
 use restate_core::{Metadata, RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
 use restate_invoker_api::capacity::InvokerCapacity;
@@ -127,9 +127,7 @@ where
         let status_reader = invoker.status_reader();
 
         let (control_tx, control_rx) = watch::channel(TargetLeaderState::Follower);
-        // todo(asoli): This channel should be replaced by a memory-aware channel to cap the
-        // budget per processor.
-        let (net_tx, net_rx) = mpsc::channel(128);
+        let (net_tx, net_rx) = ShardSender::new();
         let status = PartitionProcessorStatus::new();
         let (watch_tx, watch_rx) = watch::channel(status.clone());
 
