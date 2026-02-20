@@ -542,6 +542,26 @@ mod tests {
             ready(Ok(self.has_completion))
         }
 
+        fn get_journal_entry_budgeted(
+            &mut self,
+            invocation_id: InvocationId,
+            journal_index: u32,
+            budget: &mut restate_memory::LocalMemoryPool,
+        ) -> impl Future<
+            Output = std::result::Result<
+                Option<(StoredRawEntry, restate_memory::LocalMemoryLease)>,
+                BudgetedReadError,
+            >,
+        > + Send {
+            assert_eq!(self.expected_invocation_id, invocation_id);
+            let res = self
+                .entries
+                .get(journal_index as usize)
+                .cloned()
+                .map(|e| (e, budget.empty_lease()));
+            ready(Ok(res))
+        }
+
         fn get_journal_budgeted<'a>(
             &'a self,
             invocation_id: InvocationId,
@@ -612,6 +632,35 @@ mod tests {
                 vec![]
             };
             Ok(stream::iter(items.into_iter().map(Ok)))
+        }
+
+        fn get_journal_entry_budgeted(
+            &mut self,
+            _invocation_id: &InvocationId,
+            journal_index: u32,
+            budget: &mut restate_memory::LocalMemoryPool,
+        ) -> impl Future<
+            Output = std::result::Result<
+                Option<(
+                    journal_table_v1::JournalEntry,
+                    restate_memory::LocalMemoryLease,
+                )>,
+                BudgetedReadError,
+            >,
+        > + Send {
+            let entry = if journal_index == 0
+                && let (Some(payload), Some(headers)) =
+                    (self.v1_input_payload.clone(), self.v1_input_headers.clone())
+            {
+                let enr = OldProtocolEntryCodec::serialize_as_input_entry(headers, payload);
+                Some((
+                    journal_table_v1::JournalEntry::Entry(enr),
+                    budget.empty_lease(),
+                ))
+            } else {
+                None
+            };
+            ready(Ok(entry))
         }
 
         fn get_journal_budgeted<'a>(
