@@ -14,19 +14,19 @@ use futures::Stream;
 use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table::{
     JournalEntry, ReadJournalTable, ScanJournalTable, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
 
 use crate::TableKind::Journal;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::partition_store::DB;
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
 
 define_table_key!(
@@ -191,6 +191,25 @@ impl ReadJournalTable for PartitionStore {
             journal_length,
         )?))
     }
+
+    fn get_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: &InvocationId,
+        journal_length: EntryIndex,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<
+            Item = std::result::Result<
+                (EntryIndex, JournalEntry, LocalMemoryLease),
+                BudgetedReadError,
+            >,
+        > + Send
+        + 'a,
+    > {
+        self.assert_partition_key(invocation_id)?;
+        let iter = get_journal(self, invocation_id, journal_length)?;
+        Ok(budgeted_journal_stream(iter, budget))
+    }
 }
 
 impl ScanJournalTable for PartitionStore {
@@ -246,25 +265,61 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
             journal_length,
         )?))
     }
-}
 
-impl PartitionStoreTransaction<'_> {
-    // TODO: Thread the peekable iterator through the ReadJournalTable trait (storage-api)
-    //  instead of exposing partition-store internals directly.
-
-    /// Returns a peekable journal entry iterator for the given invocation.
-    ///
-    /// Unlike [`ReadJournalTable::get_journal`] which returns a `Stream`, this
-    /// returns the raw iterator supporting two-phase peek/decode for memory
-    /// budget gating.
-    pub fn get_journal_v1_peekable(
-        &self,
+    fn get_journal_budgeted<'a>(
+        &'a self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
-    ) -> Result<JournalEntryIter<'_, DB>> {
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<
+            Item = std::result::Result<
+                (EntryIndex, JournalEntry, LocalMemoryLease),
+                BudgetedReadError,
+            >,
+        > + Send
+        + 'a,
+    > {
         self.assert_partition_key(invocation_id)?;
-        get_journal(self, invocation_id, journal_length)
+        let iter = get_journal(self, invocation_id, journal_length)?;
+        Ok(budgeted_journal_stream(iter, budget))
     }
+}
+
+/// Wraps a [`JournalEntryIter`] into an async [`Stream`] that acquires a memory
+/// lease from `budget` **before** decoding each entry (peek → reserve → decode).
+fn budgeted_journal_stream<'a, DB: DBAccess + Send>(
+    iter: JournalEntryIter<'a, DB>,
+    budget: &'a mut LocalMemoryPool,
+) -> impl Stream<
+    Item = std::result::Result<(EntryIndex, JournalEntry, LocalMemoryLease), BudgetedReadError>,
+> + Send
++ 'a {
+    futures::stream::unfold((iter, budget), |(mut iter, budget)| async move {
+        // Phase 1: peek raw byte size without decoding
+        let raw_size = match iter.peek_value_size() {
+            Some(Ok(size)) => size,
+            Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
+            None => return None,
+        };
+
+        // Phase 2: acquire lease before allocating any memory for the decoded entry
+        let lease = match budget.reserve(raw_size).await {
+            Ok(lease) => lease,
+            Err(e) => return Some((Err(e.into()), (iter, budget))),
+        };
+
+        // Phase 3: decode (budget already secured)
+        match iter.decode_and_advance() {
+            Some(Ok((idx, entry))) => Some((Ok((idx, entry, lease)), (iter, budget))),
+            Some(Err(e)) => Some((Err(e.into()), (iter, budget))),
+            None => {
+                // peek_value_size returned Some but decode returned None — should not happen.
+                // Defensive: treat as stream exhaustion and drop the lease.
+                None
+            }
+        }
+    })
 }
 
 impl WriteJournalTable for PartitionStoreTransaction<'_> {

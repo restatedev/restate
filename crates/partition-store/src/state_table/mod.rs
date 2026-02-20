@@ -16,14 +16,14 @@ use futures::Stream;
 use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 
 use crate::TableKind::State;
 use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::partition_store::DB;
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
@@ -191,6 +191,20 @@ impl ReadStateTable for PartitionStore {
             self, service_id,
         )?))
     }
+
+    fn get_all_user_states_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
+        + Send
+        + 'a,
+    > {
+        self.assert_partition_key(service_id)?;
+        let iter = get_all_user_states_for_service(self, service_id)?;
+        Ok(budgeted_state_stream(iter, budget))
+    }
 }
 
 impl ScanStateTable for PartitionStore {
@@ -237,23 +251,19 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
             self, service_id,
         )?))
     }
-}
 
-impl PartitionStoreTransaction<'_> {
-    // TODO: Thread the peekable iterator through the ReadStateTable trait (storage-api)
-    //  instead of exposing partition-store internals directly.
-
-    /// Returns a peekable state entry iterator for the given service.
-    ///
-    /// Unlike [`ReadStateTable::get_all_user_states_for_service`] which returns a
-    /// `Stream`, this returns the raw iterator supporting two-phase peek/decode for
-    /// memory budget gating.
-    pub fn get_all_user_states_peekable(
-        &self,
+    fn get_all_user_states_budgeted<'a>(
+        &'a self,
         service_id: &ServiceId,
-    ) -> Result<StateEntryIter<'_, DB>> {
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
+        + Send
+        + 'a,
+    > {
         self.assert_partition_key(service_id)?;
-        get_all_user_states_for_service(self, service_id)
+        let iter = get_all_user_states_for_service(self, service_id)?;
+        Ok(budgeted_state_stream(iter, budget))
     }
 }
 
@@ -281,6 +291,37 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
         self.assert_partition_key(service_id)?;
         delete_all_user_state(self, service_id)
     }
+}
+
+/// Wraps a [`StateEntryIter`] into an async [`Stream`] that acquires a memory
+/// lease from `budget` **before** decoding each entry (peek → reserve → decode).
+fn budgeted_state_stream<'a, DB: DBAccess + Send>(
+    iter: StateEntryIter<'a, DB>,
+    budget: &'a mut LocalMemoryPool,
+) -> impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
++ Send
++ 'a {
+    futures::stream::unfold((iter, budget), |(mut iter, budget)| async move {
+        // Phase 1: peek raw byte size without decoding
+        let raw_size = match iter.peek_value_size() {
+            Some(Ok(size)) => size,
+            Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
+            None => return None,
+        };
+
+        // Phase 2: acquire lease before allocating any memory for the decoded entry
+        let lease = match budget.reserve(raw_size).await {
+            Ok(lease) => lease,
+            Err(e) => return Some((Err(e.into()), (iter, budget))),
+        };
+
+        // Phase 3: decode (budget already secured)
+        match iter.decode_and_advance() {
+            Some(Ok((key, value))) => Some((Ok((key, value, lease)), (iter, budget))),
+            Some(Err(e)) => Some((Err(e.into()), (iter, budget))),
+            None => None,
+        }
+    })
 }
 
 fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {

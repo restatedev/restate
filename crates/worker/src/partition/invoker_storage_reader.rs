@@ -21,7 +21,9 @@ use restate_invoker_api::invocation_reader::{
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::state_table::ReadStateTable;
-use restate_storage_api::{IsolationLevel, journal_table as journal_table_v1, journal_table_v2};
+use restate_storage_api::{
+    BudgetedReadError, IsolationLevel, journal_table as journal_table_v1, journal_table_v2,
+};
 use restate_types::identifiers::{InvocationId, ServiceId};
 
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +39,15 @@ impl InvocationReaderError for InvokerStorageReaderError {
         match self {
             Self::OutOfMemory { needed } => Some(*needed),
             _ => None,
+        }
+    }
+}
+
+impl From<BudgetedReadError> for InvokerStorageReaderError {
+    fn from(e: BudgetedReadError) -> Self {
+        match e {
+            BudgetedReadError::Storage(e) => Self::Storage(e),
+            BudgetedReadError::OutOfMemory { needed } => Self::OutOfMemory { needed },
         }
     }
 }
@@ -103,9 +114,8 @@ where
         }
     }
 
-    // Note: budget is currently acquired after decode. A follow-up PR will push
-    // the budget into the storage layer (two-phase peek/decode) so that leases
-    // are reserved before entries are decoded into memory.
+    // Note: point-read budget is still acquired post-hoc (after decode).
+    // Stream-based budget gating uses the pre-deserialization path below.
     async fn read_journal_entry_budgeted(
         &mut self,
         invocation_id: &InvocationId,
@@ -251,26 +261,41 @@ where
         journal_kind: JournalKind,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error> {
-        let inner = self.read_journal(invocation_id, length, journal_kind)?;
-        Ok(Box::pin(futures::stream::unfold(
-            (inner, budget),
-            |(mut stream, budget)| async move {
-                let item = stream.next().await?;
-                match item {
-                    Ok(je) => {
-                        let size = estimate_journal_entry_size(&je);
-                        match budget.reserve(size).await {
-                            Ok(lease) => Some((Ok((je, lease)), (stream, budget))),
-                            Err(e) => Some((
-                                Err(InvokerStorageReaderError::OutOfMemory { needed: e.needed }),
-                                (stream, budget),
-                            )),
-                        }
-                    }
-                    Err(e) => Some((Err(e), (stream, budget))),
-                }
-            },
-        )))
+        if journal_kind == JournalKind::V2 {
+            let stream = journal_table_v2::ReadJournalTable::get_journal_budgeted(
+                &self.txn,
+                *invocation_id,
+                length,
+                budget,
+            )?;
+            Ok(Box::pin(stream.map(|result| {
+                result
+                    .map(|(_, entry, lease)| (JournalEntry::JournalV2(entry), lease))
+                    .map_err(InvokerStorageReaderError::from)
+            })))
+        } else {
+            let stream = journal_table_v1::ReadJournalTable::get_journal_budgeted(
+                &self.txn,
+                invocation_id,
+                length,
+                budget,
+            )?;
+            Ok(Box::pin(stream.map(|result| {
+                result
+                    .map(|(_, journal_entry, lease)| {
+                        let je = match journal_entry {
+                            journal_table_v1::JournalEntry::Entry(entry) => {
+                                JournalEntry::JournalV1(entry.erase_enrichment())
+                            }
+                            journal_table_v1::JournalEntry::Completion(_) => {
+                                panic!("should only read entries when reading the journal")
+                            }
+                        };
+                        (je, lease)
+                    })
+                    .map_err(InvokerStorageReaderError::from)
+            })))
+        }
     }
 
     fn read_state_budgeted<'a>(
@@ -278,30 +303,12 @@ where
         service_id: &ServiceId,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
-        let inner_stream = self
-            .txn
-            .get_all_user_states_for_service(service_id)?
-            .map_err(InvokerStorageReaderError::Storage);
-        let budgeted = futures::stream::unfold(
-            (Box::pin(inner_stream), budget),
-            |(mut stream, budget)| async move {
-                let item = stream.next().await?;
-                match item {
-                    Ok(kv) => {
-                        let size = kv.0.len() + kv.1.len();
-                        match budget.reserve(size).await {
-                            Ok(lease) => Some((Ok((kv, lease)), (stream, budget))),
-                            Err(e) => Some((
-                                Err(InvokerStorageReaderError::OutOfMemory { needed: e.needed }),
-                                (stream, budget),
-                            )),
-                        }
-                    }
-                    Err(e) => Some((Err(e), (stream, budget))),
-                }
-            },
-        );
-        Ok(EagerState::new_complete(Box::pin(budgeted)))
+        let stream = self.txn.get_all_user_states_budgeted(service_id, budget)?;
+        Ok(EagerState::new_complete(Box::pin(stream.map(|result| {
+            result
+                .map(|(key, value, lease)| ((key, value), lease))
+                .map_err(InvokerStorageReaderError::from)
+        }))))
     }
 }
 
