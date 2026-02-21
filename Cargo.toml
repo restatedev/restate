@@ -97,6 +97,7 @@ restate-ingestion-client = { path = "crates/ingestion-client" }
 restate-workspace-hack = "0.0.1"
 
 # External crates
+adaptive-timeout = { version = "0.0.1-alpha.4" }
 ahash = "0.8.12"
 anyhow = "1.0.100"
 arc-swap = "1.8"
