@@ -735,13 +735,18 @@ impl Default for CommonOptions {
     schemars(rename = "ServiceClientOptions", default)
 )]
 #[builder(default)]
-#[derive(Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct ServiceClientOptions {
     #[serde(flatten)]
     pub http: HttpOptions,
     #[serde(flatten)]
     pub lambda: AwsLambdaOptions,
+
+    /// # Number of HTTP clients
+    ///
+    /// The number of HTTP clients to use for outgoing requests. Each client maintains its own
+    /// connection pool. Requests are distributed across clients randomly.
+    pub num_http_clients: NonZeroUsize,
 
     /// # Request identity private key PEM file
     ///
@@ -760,6 +765,18 @@ pub struct ServiceClientOptions {
     /// Defaults to `x-restate-cluster-name: <cluster name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_request_headers: Option<SerdeableHeaderHashMap>,
+}
+
+impl Default for ServiceClientOptions {
+    fn default() -> Self {
+        Self {
+            http: HttpOptions::default(),
+            lambda: AwsLambdaOptions::default(),
+            num_http_clients: NonZeroUsize::new(1).unwrap(),
+            request_identity_private_key_pem_file: None,
+            additional_request_headers: None,
+        }
+    }
 }
 
 /// # Log format

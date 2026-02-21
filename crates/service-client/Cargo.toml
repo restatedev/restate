@@ -13,6 +13,7 @@ options_schema = ["dep:schemars", "restate-types/schemars"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
+rand = { workspace = true}
 
 restate-types = { workspace = true }
 
