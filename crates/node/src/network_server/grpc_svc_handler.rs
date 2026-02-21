@@ -28,12 +28,14 @@ use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
 use restate_core::protobuf::node_ctl_svc::{
-    ClusterHealthResponse, EmbeddedMetadataClusterHealth, GetMetadataRequest, GetMetadataResponse,
-    IdentResponse, ProvisionClusterRequest, ProvisionClusterResponse,
+    ClusterHealthResponse, DatabaseCompactionResult, DatabaseKind, EmbeddedMetadataClusterHealth,
+    GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
+    ProvisionClusterResponse, TriggerCompactionRequest, TriggerCompactionResponse,
 };
 use restate_core::{Identification, MetadataWriter};
 use restate_core::{Metadata, MetadataKind};
 use restate_metadata_store::{MetadataStoreClient, WriteError};
+use restate_rocksdb::RocksDbManager;
 use restate_types::Version;
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::ConversionError;
@@ -45,6 +47,21 @@ use restate_types::replication::ReplicationProperty;
 use restate_types::storage::StorageCodec;
 
 use crate::{ClusterConfiguration, provision_cluster_metadata};
+
+/// Maps database names to their corresponding DatabaseKind
+fn db_name_to_kind(name: &str) -> DatabaseKind {
+    if name == "log-server" {
+        DatabaseKind::LogServer
+    } else if name == "replicated-metadata-server" {
+        DatabaseKind::MetadataServer
+    } else if name == "local-loglet" {
+        DatabaseKind::LocalLoglet
+    } else if name == "db" || name.starts_with("db-") {
+        DatabaseKind::PartitionStore
+    } else {
+        DatabaseKind::Unknown
+    }
+}
 
 pub struct NodeCtlSvcHandler {
     metadata_writer: MetadataWriter,
@@ -259,6 +276,59 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
 
         Ok(Response::new(cluster_state_response))
     }
+
+    async fn trigger_compaction(
+        &self,
+        request: Request<TriggerCompactionRequest>,
+    ) -> Result<Response<TriggerCompactionResponse>, Status> {
+        let request = request.into_inner();
+
+        // Determine which database kinds to compact
+        let requested_kinds: Vec<DatabaseKind> = if request.databases.is_empty() {
+            vec![DatabaseKind::All]
+        } else {
+            request
+                .databases
+                .into_iter()
+                .map(|k| DatabaseKind::try_from(k).unwrap_or(DatabaseKind::Unknown))
+                .collect()
+        };
+
+        let compact_all = requested_kinds.contains(&DatabaseKind::All);
+
+        let Some(manager) = RocksDbManager::maybe_get() else {
+            return Err(Status::unavailable("RocksDB manager not initialized"));
+        };
+
+        let all_dbs = manager.get_all_dbs();
+        let mut results = Vec::new();
+
+        for db in all_dbs {
+            let db_name = db.name().to_string();
+
+            // Check if this database should be compacted
+            let should_compact = compact_all || {
+                let kind = db_name_to_kind(&db_name);
+                requested_kinds.contains(&kind)
+            };
+
+            if !should_compact {
+                continue;
+            }
+
+            let cf_count = db.cfs().len() as u32;
+            db.compact_all().await;
+
+            results.push(DatabaseCompactionResult {
+                db_name,
+                success: true,
+                error: None,
+                column_families_compacted: cf_count,
+            });
+        }
+
+        Ok(Response::new(TriggerCompactionResponse { results }))
+    }
 }
 
 pub struct MetadataProxySvcHandler {
@@ -379,5 +449,41 @@ impl MetadataProxySvc for MetadataProxySvcHandler {
             })?;
 
         Ok(Response::new(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_db_name_to_kind_partition_store() {
+        assert_eq!(db_name_to_kind("db"), DatabaseKind::PartitionStore);
+        assert_eq!(db_name_to_kind("db-0"), DatabaseKind::PartitionStore);
+        assert_eq!(db_name_to_kind("db-123"), DatabaseKind::PartitionStore);
+    }
+
+    #[test]
+    fn test_db_name_to_kind_log_server() {
+        assert_eq!(db_name_to_kind("log-server"), DatabaseKind::LogServer);
+    }
+
+    #[test]
+    fn test_db_name_to_kind_metadata_server() {
+        assert_eq!(
+            db_name_to_kind("replicated-metadata-server"),
+            DatabaseKind::MetadataServer
+        );
+    }
+
+    #[test]
+    fn test_db_name_to_kind_local_loglet() {
+        assert_eq!(db_name_to_kind("local-loglet"), DatabaseKind::LocalLoglet);
+    }
+
+    #[test]
+    fn test_db_name_to_kind_unknown() {
+        assert_eq!(db_name_to_kind("unknown"), DatabaseKind::Unknown);
+        assert_eq!(db_name_to_kind("random-name"), DatabaseKind::Unknown);
     }
 }
