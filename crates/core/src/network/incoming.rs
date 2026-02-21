@@ -93,6 +93,15 @@ impl RpcReplyPort {
         let (tx, rx) = oneshot::channel();
         (Self(tx), rx)
     }
+
+    pub fn reply_with_verdict(verdict: Verdict) -> oneshot::Receiver<ReplyEnvelope> {
+        let (tx, rx) = oneshot::channel();
+        let status = rpc_reply::Status::from(verdict);
+        let _ = tx.send(ReplyEnvelope {
+            body: rpc_reply::Body::Status(status.into()),
+        });
+        rx
+    }
 }
 
 /// Untyped RPC message
@@ -155,11 +164,15 @@ pub struct WatchUpdateEnvelope {
 // streaming watch updates
 pub(crate) struct WatchUpdatePort(watch::Sender<WatchUpdateEnvelope>);
 
+#[derive(derive_more::Debug)]
 pub struct RawSvcWatch<S> {
+    #[debug(skip)]
     updates_port: WatchUpdatePort,
+    #[debug("Bytes({} bytes)", payload.len())]
     pub(super) payload: Bytes,
     pub(super) sort_code: Option<u64>,
     msg_type: String,
+    #[debug(skip)]
     reservation: MemoryLease,
     _phantom: PhantomData<S>,
 }
@@ -280,6 +293,22 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
         }
     }
 
+    #[cfg(feature = "test-util")]
+    pub(crate) fn into_raw_rpc(self) -> Incoming<RawRpc> {
+        Incoming {
+            protocol_version: self.protocol_version,
+            inner: RawRpc {
+                reply_port: self.inner.reply_port,
+                payload: self.inner.payload,
+                sort_code: self.inner.sort_code,
+                msg_type: self.inner.msg_type,
+                reservation: self.inner.reservation,
+            },
+            peer: self.peer,
+            metadata_version: self.metadata_version,
+        }
+    }
+
     #[inline(always)]
     pub fn msg_type(&self) -> &str {
         &self.inner.msg_type
@@ -381,6 +410,21 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
         }
     }
 
+    #[cfg(feature = "test-util")]
+    pub(crate) fn into_raw_unary(self) -> Incoming<RawUnary> {
+        Incoming {
+            protocol_version: self.protocol_version,
+            inner: RawUnary {
+                payload: self.inner.payload,
+                sort_code: self.inner.sort_code,
+                msg_type: self.inner.msg_type,
+                reservation: self.inner.reservation,
+            },
+            peer: self.peer,
+            metadata_version: self.metadata_version,
+        }
+    }
+
     #[inline(always)]
     pub fn msg_type(&self) -> &str {
         &self.inner.msg_type
@@ -479,6 +523,22 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
+        }
+    }
+
+    #[cfg(feature = "test-util")]
+    pub(crate) fn into_raw_watch(self) -> Incoming<RawWatch> {
+        Incoming {
+            protocol_version: self.protocol_version,
+            inner: RawWatch {
+                reply_port: self.inner.updates_port,
+                payload: self.inner.payload,
+                sort_code: self.inner.sort_code,
+                msg_type: self.inner.msg_type,
+                reservation: self.inner.reservation,
+            },
+            peer: self.peer,
+            metadata_version: self.metadata_version,
         }
     }
 
