@@ -83,13 +83,6 @@ impl<T: TransportConnect> Handler for SequencerDataRpcHandler<T> {
 
 impl<T: TransportConnect> SequencerDataRpcHandler<T> {
     /// Infallible handle_append method
-    #[instrument(
-        level="trace",
-        skip_all,
-        fields(
-            otel.name = "replicatged_loglet::network: handle_append",
-        )
-    )]
     async fn handle_append(&mut self, incoming: Incoming<Rpc<Append>>) {
         let peer_logs_version = incoming.metadata_version().get(MetadataKind::Logs);
         let (reciprocal, append) = incoming.split();
