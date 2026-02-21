@@ -31,6 +31,11 @@ pub(crate) const BIFROST_SEQ_STORE_DURATION: &str =
     "restate.bifrost.sequencer.store_duration.seconds";
 pub(crate) const BIFROST_SEQ_APPEND_DURATION: &str =
     "restate.bifrost.sequencer.append_duration.seconds";
+pub(crate) const BIFROST_SEQ_APPEND_WAVES: &str = "restate.bifrost.sequencer.append_waves";
+pub(crate) const BIFROST_SEQ_APPEND_WAVE_DURATION: &str =
+    "restate.bifrost.sequencer.append_wave_duration.seconds";
+pub(crate) const BIFROST_SEQ_RECORD_SIZE: &str =
+    "restate.bifrost.sequencer.record_size_bytes";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -85,5 +90,23 @@ pub(crate) fn describe_metrics() {
         BIFROST_SEQ_STORE_DURATION,
         Unit::Seconds,
         "Log server store duration in seconds as measured by the sequencer"
+    );
+
+    describe_histogram!(
+        BIFROST_SEQ_APPEND_WAVE_DURATION,
+        Unit::Seconds,
+        "Latency per sequencer append wave"
+    );
+
+    describe_histogram!(
+        BIFROST_SEQ_APPEND_WAVES,
+        Unit::Count,
+        "Distribution of the number of store waves per sequencer append"
+    );
+
+    describe_histogram!(
+        BIFROST_SEQ_RECORD_SIZE,
+        Unit::Bytes,
+        "Distribution of record sizes sent by the sequencer"
     );
 }
