@@ -3903,6 +3903,7 @@ pub mod v1 {
         use std::fmt::Display;
 
         use bytes::Bytes;
+        use enumset::EnumSet;
         use prost::Message;
         use restate_types::{
             errors::ConversionError,
@@ -3911,10 +3912,13 @@ pub mod v1 {
             service_protocol::ServiceProtocolVersion,
         };
 
-        use crate::protobuf_types::v1::{
-            InvocationTarget, ResponseResult, Source, SpanContextLite,
-            pb_conversion::{expect_or_fail, try_bytes_into_trace_id},
-            response_result, source,
+        use crate::{
+            invocation_status_table::InvocationStatusDiscriminants,
+            protobuf_types::v1::{
+                InvocationTarget, ResponseResult, Source, SpanContextLite,
+                pb_conversion::{expect_or_fail, try_bytes_into_trace_id},
+                response_result, source,
+            },
         };
 
         fn merge_bytes_zerocopy<'a>(
@@ -3933,6 +3937,48 @@ pub mod v1 {
 
             (*value, *buf) = buf.split_at(len);
             Ok(())
+        }
+
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        /// Low-level filter for short-circuiting lazy deserialization.
+        /// Operates on raw protobuf field values for zero-overhead checks.
+        #[derive(Debug, Clone)]
+        pub struct InvocationStatusLazyFilter {
+            pub statuses: EnumSet<InvocationStatusDiscriminants>,
+            // TODO: target_service_name is a good candidate for a lazy filter
+            /// If set, only include rows with creation_time >= this value.
+            pub created_after: Option<Arc<AtomicU64>>,
+            /// If set, only include rows with modification_time >= this value.
+            pub modified_after: Option<Arc<AtomicU64>>,
+        }
+
+        impl InvocationStatusLazyFilter {
+            /// Returns true if no filter criteria are set (matches everything).
+            pub fn is_empty(&self) -> bool {
+                self.statuses == EnumSet::all()
+                    && self.created_after.is_none()
+                    && self.modified_after.is_none()
+            }
+
+            pub fn completed() -> Self {
+                Self {
+                    statuses: EnumSet::from(InvocationStatusDiscriminants::Completed),
+                    created_after: None,
+                    modified_after: None,
+                }
+            }
+        }
+
+        impl Default for InvocationStatusLazyFilter {
+            fn default() -> Self {
+                Self {
+                    statuses: EnumSet::all(),
+                    created_after: None,
+                    modified_after: None,
+                }
+            }
         }
 
         #[derive(Debug, Default)]
@@ -3958,6 +4004,10 @@ pub mod v1 {
             pub created_using_restate_version: &'a [u8],
         }
 
+        const INVOCATION_STATUS_STATUS_TAG: u32 = 1;
+        const INVOCATION_STATUS_CREATED_AT_TAG: u32 = 5;
+        const INVOCATION_STATUS_MODIFIED_AT_TAG: u32 = 6;
+
         impl<'a> InvocationStatusV2Lazy<'a> {
             pub fn merge(&mut self, mut buf: &'a [u8]) -> Result<(), prost::DecodeError> {
                 let ctx = prost::encoding::DecodeContext::default();
@@ -3967,6 +4017,55 @@ pub mod v1 {
                 }
 
                 Ok(())
+            }
+
+            /// Decode protobuf fields, checking the filter as early as possible.
+            /// Returns `Ok(true)` if the row matches the filter, `Ok(false)` if
+            /// it should be skipped. The struct is only partially populated when
+            /// `Ok(false)` is returned.
+            pub fn merge_with_filter(
+                &mut self,
+                mut buf: &'a [u8],
+                filter: &InvocationStatusLazyFilter,
+            ) -> Result<bool, prost::DecodeError> {
+                let ctx = prost::encoding::DecodeContext::default();
+                while !buf.is_empty() {
+                    let (tag, wire_type) = prost::encoding::decode_key(&mut buf)?;
+                    self.merge_field(tag, wire_type, &mut buf, ctx.clone())?;
+
+                    // Check filter as soon as the relevant field is decoded.
+                    // Fields typically appear in tag order, so status (1) comes
+                    // first, allowing us to skip most of the deserialization.
+                    match tag {
+                        INVOCATION_STATUS_STATUS_TAG => {
+                            if filter.statuses != EnumSet::all()
+                                && let Ok(status) = self.status()
+                                // We let through any unrecognised status
+                                && !filter.statuses.contains(status)
+                            {
+                                return Ok(false);
+                            }
+                        }
+                        INVOCATION_STATUS_CREATED_AT_TAG => {
+                            if let Some(created_after) = &filter.created_after
+                                && created_after.load(Ordering::Relaxed) > self.inner.creation_time
+                            {
+                                return Ok(false);
+                            }
+                        }
+                        INVOCATION_STATUS_MODIFIED_AT_TAG => {
+                            if let Some(created_after) = &filter.modified_after
+                                && created_after.load(Ordering::Relaxed)
+                                    > self.inner.modification_time
+                            {
+                                return Ok(false);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                Ok(true)
             }
 
             fn merge_field<'b>(
@@ -4051,6 +4150,27 @@ pub mod v1 {
                     }
                     _ => prost::Message::merge_field(&mut self.inner, tag, wire_type, buf, ctx),
                 }
+            }
+
+            pub fn status(
+                &self,
+            ) -> std::result::Result<
+                crate::invocation_status_table::InvocationStatusDiscriminants,
+                ConversionError,
+            > {
+                use super::invocation_status_v2::Status;
+                use crate::invocation_status_table::InvocationStatusDiscriminants;
+                Ok(match self.inner.status() {
+                    Status::UnknownStatus => {
+                        return Err(ConversionError::invalid_data("status"));
+                    }
+                    Status::Scheduled => InvocationStatusDiscriminants::Scheduled,
+                    Status::Inboxed => InvocationStatusDiscriminants::Inboxed,
+                    Status::Invoked => InvocationStatusDiscriminants::Invoked,
+                    Status::Suspended => InvocationStatusDiscriminants::Suspended,
+                    Status::Completed => InvocationStatusDiscriminants::Completed,
+                    Status::Paused => InvocationStatusDiscriminants::Paused,
+                })
             }
 
             pub fn service_protocol_version(

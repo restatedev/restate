@@ -11,15 +11,17 @@
 use std::ops::ControlFlow;
 
 use futures::Stream;
-use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::invocation_status_table::{
-    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvokedInvocationStatusLite,
-    ReadInvocationStatusTable, ScanInvocationStatusTable, ScanInvocationStatusTableRange,
-    WriteInvocationStatusTable,
+    InvocationLite, InvocationStatus, InvocationStatusDiscriminants, InvocationStatusFilter,
+    InvocationStatusRange, InvokedInvocationStatusLite, ReadInvocationStatusTable,
+    ScanInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_storage_api::protobuf_types::v1::lazy::{
+    InvocationStatusLazyFilter, InvocationStatusV2Lazy,
+};
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey, WithPartitionKey};
 
@@ -137,14 +139,18 @@ impl ScanInvocationStatusTable for PartitionStore {
             + 'static,
     >(
         &self,
-        range: ScanInvocationStatusTableRange,
+        filter: InvocationStatusFilter,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
+        let InvocationStatusFilter {
+            range,
+            lazy: lazy_filter,
+        } = filter;
         let scan = match range {
-            ScanInvocationStatusTableRange::PartitionKey(partition_key) => {
+            InvocationStatusRange::PartitionKey(partition_key) => {
                 TableScan::FullScanPartitionKeyRange::<InvocationStatusKeyBuilder>(partition_key)
             }
-            ScanInvocationStatusTableRange::InvocationId(invocation_id) => {
+            InvocationStatusRange::InvocationId(invocation_id) => {
                 let start = InvocationStatusKey::builder()
                     .partition_key(invocation_id.start().partition_key())
                     .invocation_uuid(invocation_id.start().invocation_uuid());
@@ -183,7 +189,11 @@ impl ScanInvocationStatusTable for PartitionStore {
                         };
 
                         let mut inv_status_v2_lazy = restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::default();
-                        break_on_err(inv_status_v2_lazy.merge(value).map_err(|e| StorageError::Conversion(e.into())))?;
+                        let matched = break_on_err(inv_status_v2_lazy.merge_with_filter(value, &lazy_filter).map_err(|e| StorageError::Conversion(e.into())))?;
+
+                        if !matched {
+                            return ControlFlow::Continue(());
+                        }
 
                         let (partition_key, invocation_uuid) = status_key.split();
 
@@ -214,6 +224,7 @@ impl ScanInvocationStatusTable for PartitionStore {
             + 'static,
     >(
         &self,
+        filter: InvocationStatusLazyFilter,
         mut f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send> {
         let new_status_keys = self
@@ -243,7 +254,11 @@ impl ScanInvocationStatusTable for PartitionStore {
                         };
 
                         let mut inv_status_v2_lazy = restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy::default();
-                        inv_status_v2_lazy.merge(value).map_err(|e| StorageError::Conversion(e.into()))?;
+                        let matched = inv_status_v2_lazy.merge_with_filter(value, &filter).map_err(|e| StorageError::Conversion(e.into()))?;
+
+                        if !matched {
+                            return Ok(None);
+                        }
 
                         let (partition_key, invocation_uuid) = status_key.split();
 
