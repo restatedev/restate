@@ -384,6 +384,19 @@ pub struct Schema {
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
     subscriptions: HashMap<SubscriptionId, Subscription>,
+
+    // Kafka clusters
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde_as(as = "restate_serde_util::MapAsVec")]
+    kafka_clusters: HashMap<String, KafkaCluster>,
+}
+
+impl restate_serde_util::MapAsVecItem for KafkaCluster {
+    type Key = String;
+
+    fn key(&self) -> Self::Key {
+        self.name.to_string()
+    }
 }
 
 impl From<super::Schema> for Schema {
@@ -392,6 +405,7 @@ impl From<super::Schema> for Schema {
             version,
             deployments,
             subscriptions,
+            kafka_clusters,
             ..
         }: super::Schema,
     ) -> Self {
@@ -401,6 +415,7 @@ impl From<super::Schema> for Schema {
             deployments_v2: Some(deployments.into_values().collect()),
             version,
             subscriptions,
+            kafka_clusters,
         }
     }
 }
@@ -413,6 +428,7 @@ impl From<Schema> for super::Schema {
             deployments_v2,
             version,
             subscriptions,
+            kafka_clusters,
         }: Schema,
     ) -> Self {
         if let Some(deployments_v2) = deployments_v2 {
@@ -424,6 +440,7 @@ impl From<Schema> for super::Schema {
                     .map(|deployment| (deployment.id, deployment))
                     .collect(),
                 subscriptions,
+                kafka_clusters,
             }
         } else if let (Some(services), Some(deployments)) = (services, deployments) {
             let conversions::V2Schemas { deployments } = conversions::V1Schemas {
@@ -440,6 +457,7 @@ impl From<Schema> for super::Schema {
                     .map(|deployment| (deployment.id, deployment))
                     .collect(),
                 subscriptions,
+                kafka_clusters,
             }
         } else {
             panic!(
