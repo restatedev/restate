@@ -80,6 +80,7 @@ restate-types = { workspace = true, features = ["test-util"] }
 mock-service-endpoint = { workspace = true }
 
 anyhow = { workspace = true }
+bytes = { workspace = true }
 bytestring = { workspace = true}
 googletest = { workspace = true }
 tempfile = { workspace = true }
@@ -90,6 +91,10 @@ rand = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+spectroscope = "0.1.0"
+tokio-util = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true }
