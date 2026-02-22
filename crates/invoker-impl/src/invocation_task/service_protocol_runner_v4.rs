@@ -535,7 +535,43 @@ where
         S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
         E: std::error::Error + Send + Sync + 'static,
     {
-        // Collect state if present, mapping to StateEntry while collecting
+        if self.service_protocol_version >= ServiceProtocolVersion::V7 {
+            self.write_start_v7(
+                http_stream_tx,
+                journal_size,
+                state,
+                retry_count_since_last_stored_entry,
+                duration_since_last_stored_entry,
+                random_seed,
+            )
+            .await
+        } else {
+            self.write_start_legacy(
+                http_stream_tx,
+                journal_size,
+                state,
+                retry_count_since_last_stored_entry,
+                duration_since_last_stored_entry,
+                random_seed,
+            )
+            .await
+        }
+    }
+
+    /// V1-V6: Collect all state into a single StartMessage.
+    async fn write_start_legacy<S, E>(
+        &mut self,
+        http_stream_tx: &mut InvokerRequestStreamSender,
+        journal_size: u32,
+        state: Option<EagerState<S>>,
+        retry_count_since_last_stored_entry: u32,
+        duration_since_last_stored_entry: Duration,
+        random_seed: u64,
+    ) -> Result<(), InvokerError>
+    where
+        S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
+        E: std::error::Error + Send + Sync + 'static,
+    {
         let (partial_state, state_map) = if let Some(state) = state {
             let is_partial = state.is_partial();
             let entries: Vec<StateEntry> = state
@@ -549,7 +585,6 @@ where
             (true, Vec::new())
         };
 
-        // Send the invoke frame
         self.write(
             http_stream_tx,
             Message::new_start_message(
@@ -566,6 +601,92 @@ where
                 duration_since_last_stored_entry,
                 random_seed,
             ),
+        )
+        .await
+    }
+
+    /// V7+: Stream state entries in batches after StartMessage, terminated by
+    /// EagerStateCompleteMessage.
+    async fn write_start_v7<S, E>(
+        &mut self,
+        http_stream_tx: &mut InvokerRequestStreamSender,
+        journal_size: u32,
+        state: Option<EagerState<S>>,
+        retry_count_since_last_stored_entry: u32,
+        duration_since_last_stored_entry: Duration,
+        random_seed: u64,
+    ) -> Result<(), InvokerError>
+    where
+        S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        /// Target byte size per EagerStateEntryMessage batch. Each batch stays well
+        /// under the default max message size limit while being large enough to
+        /// amortize per-message overhead.
+        const EAGER_STATE_BATCH_BYTE_TARGET: usize = 1024 * 1024; // 1 MB
+
+        // Send StartMessage with empty state_map — state is streamed separately
+        self.write(
+            http_stream_tx,
+            Message::new_start_message(
+                Bytes::copy_from_slice(&self.invocation_task.invocation_id.to_bytes()),
+                self.invocation_task.invocation_id.to_string(),
+                self.invocation_task
+                    .invocation_target
+                    .key()
+                    .map(|bs| bs.as_bytes().clone()),
+                journal_size,
+                false,  // partial_state on StartMessage is irrelevant for V7
+                vec![], // empty — state streamed via EagerStateEntryMessage
+                retry_count_since_last_stored_entry,
+                duration_since_last_stored_entry,
+                random_seed,
+            ),
+        )
+        .await?;
+
+        // Stream state entries in batches
+        let partial_state = if let Some(state) = state {
+            let is_partial = state.is_partial();
+            let mut stream = std::pin::pin!(state.into_inner());
+            let mut batch = Vec::new();
+            let mut batch_bytes = 0usize;
+
+            while let Some(result) = stream.next().await {
+                let (key, value) = result.map_err(|e| InvokerError::StateReader(e.into()))?;
+                batch_bytes += key.len() + value.len();
+                batch.push(StateEntry { key, value });
+
+                if batch_bytes >= EAGER_STATE_BATCH_BYTE_TARGET {
+                    self.write(
+                        http_stream_tx,
+                        Message::EagerStateEntry(proto::EagerStateEntryMessage {
+                            state_map: std::mem::take(&mut batch),
+                        }),
+                    )
+                    .await?;
+                    batch_bytes = 0;
+                }
+            }
+
+            // Flush remaining entries
+            if !batch.is_empty() {
+                self.write(
+                    http_stream_tx,
+                    Message::EagerStateEntry(proto::EagerStateEntryMessage { state_map: batch }),
+                )
+                .await?;
+            }
+
+            is_partial
+        } else {
+            true // no state available → partial
+        };
+
+        // Send terminator
+        self.write(
+            http_stream_tx,
+            Message::EagerStateComplete(proto::EagerStateCompleteMessage { partial_state }),
         )
         .await
     }
@@ -721,6 +842,13 @@ where
             Message::Suspension(suspension) => self.handle_suspension_message(suspension),
             Message::Error(e) => self.handle_error_message(e),
             Message::End(_) => TerminalLoopState::Closed,
+            // Server-to-SDK only; receiving from SDK is a protocol error
+            Message::EagerStateEntry(_) => TerminalLoopState::Failed(
+                InvokerError::UnexpectedMessageV4(MessageType::EagerStateEntry),
+            ),
+            Message::EagerStateComplete(_) => TerminalLoopState::Failed(
+                InvokerError::UnexpectedMessageV4(MessageType::EagerStateComplete),
+            ),
 
             // Run completion proposal
             Message::ProposeRunCompletion(run_completion) => {

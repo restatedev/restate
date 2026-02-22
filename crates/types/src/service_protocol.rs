@@ -16,7 +16,7 @@ use std::ops::RangeInclusive;
 pub const MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
     ServiceProtocolVersion::V1;
 pub const MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
-    ServiceProtocolVersion::V6;
+    ServiceProtocolVersion::V7;
 
 pub const MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
     ServiceProtocolVersion::V5;
