@@ -315,8 +315,17 @@ struct ServiceRevision {
 
     /// If true, lazy state will be enabled for all invocations to this service.
     /// This is relevant only for Workflows and Virtual Objects.
+    ///
+    /// Deprecated: Use `eager_state_size_limit` instead. `enable_lazy_state: true`
+    /// is equivalent to `eager_state_size_limit: Some(0)`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     enable_lazy_state: Option<bool>,
+
+    /// Maximum total size (in bytes) of state entries to send eagerly.
+    /// `Some(0)` means no eager state (equivalent to lazy state).
+    /// `None` means no per-service override (use server default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eager_state_size_limit: Option<usize>,
 
     #[serde(
         default,
@@ -437,6 +446,7 @@ impl ServiceRevision {
                 .abort_timeout
                 .unwrap_or_else(|| configuration.worker.invoker.abort_timeout.into()),
             enable_lazy_state: self.enable_lazy_state.unwrap_or(false),
+            eager_state_size_limit: self.eager_state_size_limit,
             retry_policy,
             info,
         }
@@ -496,6 +506,11 @@ struct Handler {
     documentation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     enable_lazy_state: Option<bool>,
+    /// Maximum total size (in bytes) of state entries to send eagerly.
+    /// `Some(0)` means no eager state (equivalent to lazy state).
+    /// `None` means no per-handler override (use service/server default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    eager_state_size_limit: Option<usize>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
     #[serde(
@@ -575,6 +590,7 @@ impl Handler {
             },
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
+            eager_state_size_limit: self.eager_state_size_limit,
             retry_policy: HandlerRetryPolicyMetadata {
                 initial_interval: self.retry_policy_initial_interval,
                 exponentiation_factor: self.retry_policy_exponentiation_factor,
@@ -750,14 +766,26 @@ impl InvocationTargetResolver for Schema {
         let service_revision = deployment.services.get(service_name)?;
         let handler = service_revision.handlers.get(handler_name)?;
 
+        // Resolve eager_state_size_limit: explicit limit takes precedence,
+        // then fall back to enable_lazy_state (true => Some(0), false/None => None).
+        let enable_lazy_state = handler
+            .enable_lazy_state
+            .or(service_revision.enable_lazy_state);
+        let eager_state_size_limit = handler
+            .eager_state_size_limit
+            .or(service_revision.eager_state_size_limit)
+            .or(if enable_lazy_state == Some(true) {
+                Some(0)
+            } else {
+                None
+            });
+
         Some(InvocationAttemptOptions {
             abort_timeout: handler.abort_timeout.or(service_revision.abort_timeout),
             inactivity_timeout: handler
                 .inactivity_timeout
                 .or(service_revision.inactivity_timeout),
-            enable_lazy_state: handler
-                .enable_lazy_state
-                .or(service_revision.enable_lazy_state),
+            eager_state_size_limit,
         })
     }
 

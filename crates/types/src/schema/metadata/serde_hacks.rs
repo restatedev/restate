@@ -79,6 +79,9 @@ mod v1_data_model {
 
         #[serde(skip_serializing_if = "Option::is_none", default)]
         pub enable_lazy_state: Option<bool>,
+
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub eager_state_size_limit: Option<usize>,
     }
 
     impl MapAsVecItem for ServiceMetadata {
@@ -164,6 +167,9 @@ mod v1_data_model {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         pub enable_lazy_state: Option<bool>,
 
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub eager_state_size_limit: Option<usize>,
+
         #[serde(default = "restate_serde_util::default::bool::<true>")]
         pub public: bool,
 
@@ -230,6 +236,8 @@ mod v1_data_model {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         pub enable_lazy_state: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub eager_state_size_limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub documentation: Option<String>,
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
         pub metadata: HashMap<String, String>,
@@ -250,6 +258,8 @@ mod v1_data_model {
         pub abort_timeout: Option<Duration>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         pub enable_lazy_state: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub eager_state_size_limit: Option<usize>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub documentation: Option<String>,
         #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -504,6 +514,7 @@ mod conversions {
                             abort_timeout: handler.abort_timeout,
                             documentation: handler.documentation,
                             enable_lazy_state: handler.enable_lazy_state,
+                            eager_state_size_limit: handler.eager_state_size_limit,
                             metadata: handler.metadata,
                             retry_policy_initial_interval: None,
                             retry_policy_exponentiation_factor: None,
@@ -528,6 +539,7 @@ mod conversions {
                         inactivity_timeout: service.inactivity_timeout,
                         abort_timeout: service.abort_timeout,
                         enable_lazy_state: service.enable_lazy_state,
+                        eager_state_size_limit: service.eager_state_size_limit,
                         retry_policy_initial_interval: None,
                         retry_policy_exponentiation_factor: None,
                         retry_policy_max_attempts: None,
@@ -616,6 +628,7 @@ mod conversions {
                                 inactivity_timeout: handler.inactivity_timeout,
                                 abort_timeout: handler.abort_timeout,
                                 enable_lazy_state: handler.enable_lazy_state,
+                                eager_state_size_limit: handler.eager_state_size_limit,
                                 public: handler.public.unwrap_or(service.public),
                                 input_description: handler.input_rules.to_string(),
                                 output_description: handler.output_rules.to_string(),
@@ -642,6 +655,7 @@ mod conversions {
                             inactivity_timeout: service.inactivity_timeout,
                             abort_timeout: service.abort_timeout,
                             enable_lazy_state: service.enable_lazy_state,
+                            eager_state_size_limit: service.eager_state_size_limit,
                         },
                     );
                     current_service_revision_to_deployment
@@ -723,6 +737,7 @@ mod conversions {
                                 inactivity_timeout: handler.inactivity_timeout,
                                 abort_timeout: handler.abort_timeout,
                                 enable_lazy_state: handler.enable_lazy_state,
+                                eager_state_size_limit: handler.eager_state_size_limit,
                                 documentation: handler.documentation.clone(),
                                 metadata: handler.metadata.clone(),
                             },
@@ -745,6 +760,7 @@ mod conversions {
                             inactivity_timeout: service.inactivity_timeout,
                             abort_timeout: service.abort_timeout,
                             enable_lazy_state: service.enable_lazy_state,
+                            eager_state_size_limit: service.eager_state_size_limit,
                             documentation: service.documentation.clone(),
                             metadata: service.metadata.clone(),
                         },
@@ -838,6 +854,7 @@ mod conversions {
                                     inactivity_timeout: None,
                                     abort_timeout: None,
                                     enable_lazy_state: None,
+                                    eager_state_size_limit: None,
                                     retry_policy_initial_interval: None,
                                     retry_policy_exponentiation_factor: None,
                                     retry_policy_max_attempts: None,
@@ -859,6 +876,7 @@ mod conversions {
                                             abort_timeout: None,
                                             documentation: None,
                                             enable_lazy_state: None,
+                                            eager_state_size_limit: None,
                                             metadata: Default::default(),
                                             retry_policy_initial_interval: None,
                                             retry_policy_exponentiation_factor: None,
@@ -884,6 +902,7 @@ mod conversions {
                                     inactivity_timeout: None,
                                     abort_timeout: None,
                                     enable_lazy_state: None,
+                                    eager_state_size_limit: None,
                                     retry_policy_initial_interval: None,
                                     retry_policy_exponentiation_factor: None,
                                     retry_policy_max_attempts: None,
@@ -908,6 +927,7 @@ mod conversions {
                                                 abort_timeout: None,
                                                 documentation: None,
                                                 enable_lazy_state: None,
+                                                eager_state_size_limit: None,
                                                 metadata: Default::default(),
                                                 retry_policy_initial_interval: None,
                                                 retry_policy_exponentiation_factor: None,
@@ -933,6 +953,7 @@ mod conversions {
                                                 abort_timeout: None,
                                                 documentation: None,
                                                 enable_lazy_state: None,
+                                                eager_state_size_limit: None,
                                                 metadata: Default::default(),
                                                 retry_policy_initial_interval: None,
                                                 retry_policy_exponentiation_factor: None,
@@ -973,6 +994,7 @@ mod conversions {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
+                                eager_state_size_limit: None,
                                 retry_policy_initial_interval: None,
                                 retry_policy_exponentiation_factor: None,
                                 retry_policy_max_attempts: None,
@@ -994,6 +1016,7 @@ mod conversions {
                                         abort_timeout: None,
                                         documentation: None,
                                         enable_lazy_state: None,
+                                        eager_state_size_limit: None,
                                         metadata: Default::default(),
                                         retry_policy_initial_interval: None,
                                         retry_policy_exponentiation_factor: None,
@@ -1116,6 +1139,7 @@ mod conversions {
                                         inactivity_timeout: None,
                                         abort_timeout: None,
                                         enable_lazy_state: None,
+                                        eager_state_size_limit: None,
                                         handlers: HashMap::from([(
                                             "greet".to_owned(),
                                             HandlerMetadata {
@@ -1127,6 +1151,7 @@ mod conversions {
                                                 abort_timeout: None,
                                                 documentation: None,
                                                 enable_lazy_state: None,
+                                                eager_state_size_limit: None,
                                                 public: true,
                                                 input_description: "".to_string(),
                                                 output_description: "".to_string(),
@@ -1153,6 +1178,7 @@ mod conversions {
                                         inactivity_timeout: None,
                                         abort_timeout: None,
                                         enable_lazy_state: None,
+                                        eager_state_size_limit: None,
                                         public: true,
                                         handlers: HashMap::from([
                                             (
@@ -1166,6 +1192,7 @@ mod conversions {
                                                     abort_timeout: None,
                                                     documentation: None,
                                                     enable_lazy_state: None,
+                                                    eager_state_size_limit: None,
                                                     public: true,
                                                     input_description: "".to_string(),
                                                     output_description: "".to_string(),
@@ -1188,6 +1215,7 @@ mod conversions {
                                                     abort_timeout: None,
                                                     documentation: None,
                                                     enable_lazy_state: None,
+                                                    eager_state_size_limit: None,
                                                     public: true,
                                                     input_description: "".to_string(),
                                                     output_description: "".to_string(),
@@ -1233,6 +1261,7 @@ mod conversions {
                                     inactivity_timeout: None,
                                     abort_timeout: None,
                                     enable_lazy_state: None,
+                                    eager_state_size_limit: None,
                                     handlers: HashMap::from([(
                                         "greet".to_owned(),
                                         HandlerMetadata {
@@ -1247,6 +1276,7 @@ mod conversions {
                                             abort_timeout: None,
                                             documentation: None,
                                             enable_lazy_state: None,
+                                            eager_state_size_limit: None,
                                             metadata: Default::default(),
                                             ty: None,
                                             output_json_schema: None,
@@ -1276,6 +1306,7 @@ mod conversions {
                             inactivity_timeout: None,
                             abort_timeout: None,
                             enable_lazy_state: None,
+                            eager_state_size_limit: None,
                             handlers: HashMap::from([(
                                 "greet".to_owned(),
                                 HandlerSchemas {
@@ -1294,6 +1325,7 @@ mod conversions {
                                     abort_timeout: None,
                                     documentation: None,
                                     enable_lazy_state: None,
+                                    eager_state_size_limit: None,
                                     metadata: Default::default(),
                                 },
                             )]),
@@ -1316,6 +1348,7 @@ mod conversions {
                             inactivity_timeout: None,
                             abort_timeout: None,
                             enable_lazy_state: None,
+                            eager_state_size_limit: None,
                             handlers: HashMap::from([
                                 (
                                     "greet".to_owned(),
@@ -1337,6 +1370,7 @@ mod conversions {
                                         abort_timeout: None,
                                         documentation: None,
                                         enable_lazy_state: None,
+                                        eager_state_size_limit: None,
                                         metadata: Default::default(),
                                     },
                                 ),
@@ -1360,6 +1394,7 @@ mod conversions {
                                         abort_timeout: None,
                                         documentation: None,
                                         enable_lazy_state: None,
+                                        eager_state_size_limit: None,
                                         metadata: Default::default(),
                                     },
                                 ),
