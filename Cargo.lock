@@ -2066,7 +2066,7 @@ checksum = "2a2330da5de22e8a3cb63252ce2abb30116bf5265e89c0e01bc17015ce30a476"
 [[package]]
 name = "datafusion"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -2114,7 +2114,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2138,7 +2138,7 @@ dependencies = [
 [[package]]
 name = "datafusion-catalog-listing"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2160,7 +2160,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "ahash",
  "arrow",
@@ -2182,7 +2182,7 @@ dependencies = [
 [[package]]
 name = "datafusion-common-runtime"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "futures",
  "log",
@@ -2192,7 +2192,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2220,7 +2220,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-arrow"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -2243,7 +2243,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-csv"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2265,7 +2265,7 @@ dependencies = [
 [[package]]
 name = "datafusion-datasource-json"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2286,12 +2286,12 @@ dependencies = [
 [[package]]
 name = "datafusion-doc"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 
 [[package]]
 name = "datafusion-execution"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2311,7 +2311,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2333,7 +2333,7 @@ dependencies = [
 [[package]]
 name = "datafusion-expr-common"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2345,7 +2345,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "arrow-buffer",
@@ -2375,7 +2375,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "ahash",
  "arrow",
@@ -2395,7 +2395,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-aggregate-common"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "ahash",
  "arrow",
@@ -2419,7 +2419,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-nested"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "arrow-ord",
@@ -2441,7 +2441,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-table"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2456,7 +2456,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2473,7 +2473,7 @@ dependencies = [
 [[package]]
 name = "datafusion-functions-window-common"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "datafusion-common",
  "datafusion-physical-expr-common",
@@ -2482,7 +2482,7 @@ dependencies = [
 [[package]]
 name = "datafusion-macros"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "datafusion-doc",
  "quote",
@@ -2492,7 +2492,7 @@ dependencies = [
 [[package]]
 name = "datafusion-optimizer"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "chrono",
@@ -2511,7 +2511,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "ahash",
  "arrow",
@@ -2534,7 +2534,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-adapter"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2548,7 +2548,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-expr-common"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "ahash",
  "arrow",
@@ -2564,7 +2564,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-optimizer"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2582,7 +2582,7 @@ dependencies = [
 [[package]]
 name = "datafusion-physical-plan"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "ahash",
  "arrow",
@@ -2612,7 +2612,7 @@ dependencies = [
 [[package]]
 name = "datafusion-proto"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "chrono",
@@ -2637,7 +2637,7 @@ dependencies = [
 [[package]]
 name = "datafusion-proto-common"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2647,7 +2647,7 @@ dependencies = [
 [[package]]
 name = "datafusion-pruning"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "datafusion-common",
@@ -2663,7 +2663,7 @@ dependencies = [
 [[package]]
 name = "datafusion-session"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "async-trait",
  "datafusion-common",
@@ -2676,7 +2676,7 @@ dependencies = [
 [[package]]
 name = "datafusion-sql"
 version = "52.1.0"
-source = "git+https://github.com/restatedev/datafusion?branch=branch-52#680f3699b83507ba27ef54573e7e6eb54d0d6206"
+source = "git+https://github.com/restatedev/datafusion?branch=branch-52#fd253adce931cbede5fcbca61c114ef631544905"
 dependencies = [
  "arrow",
  "bigdecimal",
@@ -2847,7 +2847,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3938,7 +3938,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.0",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -4391,7 +4391,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4726,7 +4726,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -5218,7 +5218,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5682,7 +5682,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -6114,7 +6114,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac6c3320f9abac597dcbc668774ef006702672474aad53c6d596b62e487b40b1"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "once_cell",
@@ -6136,7 +6136,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9120690fafc389a67ba3803df527d0ec9cbbc9cc45e4cc20b332996dfb672425"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.114",
@@ -8729,7 +8729,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9614,7 +9614,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -10846,7 +10846,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
