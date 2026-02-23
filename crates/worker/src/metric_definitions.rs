@@ -15,6 +15,9 @@ use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 pub const TYPE_LABEL: &str = "type";
 pub const PARTITION_LABEL: &str = "partition";
 pub const REASON_LABEL: &str = "reason";
+pub const LEADER_LABEL: &str = "leader";
+pub const LEADER_LABEL_LEADER: &str = "1";
+pub const LEADER_LABEL_FOLLOWER: &str = "0";
 
 // contains `reason' label and `partition`labels:
 // - `version_barrier` indicates that the partition processor manager was unable to start

@@ -120,7 +120,10 @@ use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, vqueues};
 
 use self::utils::SpanExt;
-use crate::metric_definitions::{PARTITION_APPLY_COMMAND, USAGE_LEADER_JOURNAL_ENTRY_COUNT};
+use crate::metric_definitions::{
+    LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
+    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+};
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
 use crate::partition::types::{InvokerEffect, InvokerEffectKind, OutboxMessageExt};
 
@@ -304,7 +307,7 @@ impl StateMachine {
             }
             .on_apply(command)
             .await;
-            histogram!(PARTITION_APPLY_COMMAND, "command" => command_type).record(start.elapsed());
+            histogram!(PARTITION_APPLY_COMMAND, "command" => command_type, LEADER_LABEL => if is_leader { LEADER_LABEL_LEADER } else { LEADER_LABEL_FOLLOWER }).record(start.elapsed());
             res
         }
         .instrument(span)

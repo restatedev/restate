@@ -77,9 +77,9 @@ use restate_wal_protocol::{Command, Destination, Envelope, Header};
 
 use self::leadership::trim_queue::TrimQueue;
 use crate::metric_definitions::{
-    FLARE_REASON_VERSION_BARRIER, PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN,
-    PARTITION_INGESTION_REQUEST_SIZE, PARTITION_LABEL,
-    PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
+    FLARE_REASON_VERSION_BARRIER, LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER,
+    PARTITION_BLOCKED_FLARE, PARTITION_INGESTION_REQUEST_LEN, PARTITION_INGESTION_REQUEST_SIZE,
+    PARTITION_LABEL, PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, REASON_LABEL,
 };
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::LeadershipState;
@@ -485,10 +485,8 @@ where
         let mut live_schemas = Metadata::with_current(|m| m.updateable_schema());
 
         // Telemetry setup
-        let leader_record_write_to_read_latency =
-            histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, "leader" => "1");
-        let follower_record_write_to_read_latency =
-            histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, "leader" => "0");
+        let leader_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, LEADER_LABEL => LEADER_LABEL_LEADER);
+        let follower_record_write_to_read_latency = histogram!(PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS, LEADER_LABEL => LEADER_LABEL_FOLLOWER);
         // Start reading after the last applied lsn
 
         let mut record_stream = self.bifrost.create_reader(
