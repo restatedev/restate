@@ -273,13 +273,27 @@ async fn rebalance_memory(
             // Flushes take time, let's make sure we don't do them if we're shutting down.
             break;
         }
-        info!(
-            "Flushing partition {} to reclaim memory. partition_usage: {}/{}",
-            partition_db.partition().id(),
-            ByteCount::from(usage.total_bytes),
-            ByteCount::from(current_per_partition_budget),
-        );
-        partition_db.flush_memtables(true).await?;
+        if Configuration::pinned()
+            .worker
+            .storage
+            .rocksdb_disable_auto_memory_reclaimer
+        {
+            info!(
+                "partition {} exceeded its memory budget. partition_usage: {}/{}. \
+                    Not reclaiming memory because 'worker.storage.rocksdb-disable-auto-memory-reclaimer' is set to 'true'",
+                partition_db.partition().id(),
+                ByteCount::from(usage.total_bytes),
+                ByteCount::from(current_per_partition_budget),
+            );
+        } else {
+            info!(
+                "Flushing partition {} to reclaim memory. partition_usage: {}/{}",
+                partition_db.partition().id(),
+                ByteCount::from(usage.total_bytes),
+                ByteCount::from(current_per_partition_budget),
+            );
+            partition_db.flush_memtables(true).await?;
+        }
     }
 
     Ok(())
