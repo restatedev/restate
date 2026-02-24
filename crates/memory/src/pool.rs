@@ -17,8 +17,10 @@
 //!   ensuring that at least one lease of that size can always proceed
 //! - **Zero-overhead unlimited mode**: Unlimited budgets skip all tracking
 
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::Poll;
 
 use tokio::sync::Notify;
 use tokio::sync::futures::OwnedNotified;
@@ -385,6 +387,79 @@ impl Drop for MemoryLease {
     fn drop(&mut self) {
         if self.size > 0 {
             self.budget.return_memory(self.size);
+        }
+    }
+}
+
+/// A poll-compatible wrapper around [`MemoryPool`] for use in manual
+/// [`Future::poll`] implementations.
+///
+/// Caches an internal [`OwnedNotified`] future so that waker registration
+/// survives across poll calls — mirroring `PollSemaphore` from tokio-util.
+///
+/// Create the notified **before** checking availability so that a concurrent
+/// `return_memory()` (fired between our check and the next `.poll()`) is
+/// guaranteed to wake us.
+pub struct PollMemoryPool {
+    pool: MemoryPool,
+    /// Boxed to make it `Unpin` (`OwnedNotified` is `!Unpin`).
+    notified: Option<Pin<Box<OwnedNotified>>>,
+}
+
+impl PollMemoryPool {
+    pub fn new(pool: MemoryPool) -> Self {
+        Self {
+            pool,
+            notified: None,
+        }
+    }
+
+    /// Attempts to reserve `size` bytes, registering `cx` for wakeup if the
+    /// pool is currently exhausted.
+    ///
+    /// Returns `Poll::Ready(lease)` on success, `Poll::Pending` when memory
+    /// is unavailable (waker is registered for notification).
+    pub fn poll_reserve(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        size: usize,
+    ) -> Poll<MemoryLease> {
+        // Fast path: unlimited pools and zero-size reservations always succeed.
+        if self.pool.is_unlimited() || size == 0 {
+            return Poll::Ready(
+                self.pool
+                    .try_reserve(size)
+                    .expect("unlimited pool or zero-size reserve must succeed"),
+            );
+        }
+
+        loop {
+            // Ensure we have a notified future *before* trying to reserve,
+            // so we don't miss a concurrent `return_memory()` notification.
+            let notified = self.notified.get_or_insert_with(|| {
+                Box::pin(
+                    self.pool
+                        .availability_notified_owned()
+                        .expect("bounded pool must provide notified"),
+                )
+            });
+
+            if let Some(lease) = self.pool.try_reserve(size) {
+                // Success — discard the cached notified so a fresh one is
+                // created on the next call.
+                self.notified = None;
+                return Poll::Ready(lease);
+            }
+
+            // Poll the notified future to register the waker.
+            match notified.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(()) => {
+                    // We were notified — discard the consumed future and loop
+                    // to retry `try_reserve` with a fresh notified.
+                    self.notified = None;
+                }
+            }
         }
     }
 }
