@@ -29,7 +29,7 @@ pub mod test_util {
     use std::ops::RangeInclusive;
 
     use bytes::Bytes;
-    use tokio::sync::mpsc::Sender;
+    use tokio::sync::mpsc;
 
     use restate_errors::NotRunningError;
     use restate_futures_util::concurrency::Permit;
@@ -236,7 +236,7 @@ pub mod test_util {
             _partition: PartitionLeaderEpoch,
             _partition_key_range: RangeInclusive<PartitionKey>,
             _storage_reader: SR,
-            _sender: Sender<Box<Effect>>,
+            _sender: mpsc::UnboundedSender<InvokerEffect>,
         ) -> Result<(), NotRunningError> {
             Ok(())
         }

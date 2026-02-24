@@ -20,7 +20,7 @@ use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::vqueue::VQueueId;
 
-use restate_invoker_api::{Effect, InvocationStatusReport, StatusHandle};
+use restate_invoker_api::{InvocationStatusReport, InvokerEffect, StatusHandle};
 // -- Input messages
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -97,7 +97,7 @@ pub(crate) enum InputCommand<SR> {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
-        sender: mpsc::Sender<Box<Effect>>,
+        sender: mpsc::UnboundedSender<InvokerEffect>,
     },
 }
 
@@ -247,7 +247,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
-        sender: mpsc::Sender<Box<Effect>>,
+        sender: mpsc::UnboundedSender<InvokerEffect>,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::RegisterPartition {

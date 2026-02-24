@@ -8,6 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashSet;
+
+use restate_memory::LocalMemoryLease;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationId;
@@ -19,7 +22,6 @@ use restate_types::journal_v2::CommandIndex;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
-use std::collections::HashSet;
 
 use crate::EffectKind::JournalEntryV2;
 
@@ -122,4 +124,27 @@ pub enum YieldReason {
     /// processor applies the default strategy (re-schedule immediately).
     #[cfg_attr(feature = "serde", serde(other))]
     Unknown,
+}
+
+/// An invoker effect paired with an optional inbound memory lease.
+///
+/// The lease tracks the memory consumed by the effect's payload as it travels
+/// from the invoker through the partition processor into Bifrost. Attaching
+/// the lease here allows the bounded→unbounded channel migration: backpressure
+/// is provided by the memory budget rather than channel capacity.
+pub struct InvokerEffect {
+    pub effect: Box<Effect>,
+    pub inbound_lease: Option<LocalMemoryLease>,
+}
+
+impl std::fmt::Debug for InvokerEffect {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvokerEffect")
+            .field("effect", &self.effect)
+            .field(
+                "inbound_lease_bytes",
+                &self.inbound_lease.as_ref().map(|l| l.size()),
+            )
+            .finish()
+    }
 }

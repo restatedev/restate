@@ -11,7 +11,7 @@
 use super::*;
 use std::ops::RangeInclusive;
 
-use restate_invoker_api::Effect;
+use restate_invoker_api::InvokerEffect;
 use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_types::identifiers::PartitionKey;
 
@@ -31,7 +31,7 @@ impl<SR> Default for InvocationStateMachineManager<SR> {
 
 #[derive(Debug)]
 struct PartitionInvocationStateMachineCoordinator<IR> {
-    output_tx: mpsc::Sender<Box<Effect>>,
+    output_tx: mpsc::UnboundedSender<InvokerEffect>,
     invocation_state_machines: HashMap<InvocationId, InvocationStateMachine>,
     partition_key_range: RangeInclusive<PartitionKey>,
     storage_reader: IR,
@@ -55,7 +55,7 @@ where
     pub(super) fn resolve_partition_sender(
         &self,
         partition: PartitionLeaderEpoch,
-    ) -> Option<&mpsc::Sender<Box<Effect>>> {
+    ) -> Option<&mpsc::UnboundedSender<InvokerEffect>> {
         self.partitions.get(&partition).map(|p| &p.output_tx)
     }
 
@@ -64,7 +64,10 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-    ) -> Option<(&mpsc::Sender<Box<Effect>>, &mut InvocationStateMachine)> {
+    ) -> Option<(
+        &mpsc::UnboundedSender<InvokerEffect>,
+        &mut InvocationStateMachine,
+    )> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
                 .get_mut(invocation_id)
@@ -77,7 +80,7 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-        f: impl FnOnce(&mpsc::Sender<Box<Effect>>, &mut InvocationStateMachine) -> R,
+        f: impl FnOnce(&mpsc::UnboundedSender<InvokerEffect>, &mut InvocationStateMachine) -> R,
     ) -> Option<R> {
         if let Some((tx, ism)) = self.resolve_invocation(partition, invocation_id) {
             Some(f(tx, ism))
@@ -93,7 +96,11 @@ where
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: &InvocationId,
-    ) -> Option<(&mpsc::Sender<Box<Effect>>, &IR, InvocationStateMachine)> {
+    ) -> Option<(
+        &mpsc::UnboundedSender<InvokerEffect>,
+        &IR,
+        InvocationStateMachine,
+    )> {
         self.resolve_partition(partition).and_then(|p| {
             p.invocation_state_machines
                 .remove(invocation_id)
@@ -117,7 +124,7 @@ where
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: IR,
-        sender: mpsc::Sender<Box<Effect>>,
+        sender: mpsc::UnboundedSender<InvokerEffect>,
     ) {
         self.partitions.insert(
             partition,

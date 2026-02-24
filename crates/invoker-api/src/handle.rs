@@ -20,7 +20,7 @@ use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, Partiti
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 
-use super::Effect;
+use super::InvokerEffect;
 
 pub trait InvokerHandle<SR> {
     fn invoke(
@@ -93,6 +93,6 @@ pub trait InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
-        sender: mpsc::Sender<Box<Effect>>,
+        sender: mpsc::UnboundedSender<InvokerEffect>,
     ) -> Result<(), NotRunningError>;
 }

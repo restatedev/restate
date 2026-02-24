@@ -342,9 +342,10 @@ impl LeaderState {
                 }
                 ActionEffect::Invoker(invoker_effect) => {
                     self.self_proposer
-                        .propose(
-                            invoker_effect.invocation_id.partition_key(),
-                            Command::InvokerEffect(invoker_effect),
+                        .propose_with_lease(
+                            invoker_effect.effect.invocation_id.partition_key(),
+                            Command::InvokerEffect(invoker_effect.effect),
+                            invoker_effect.inbound_lease,
                         )
                         .await?;
                 }
