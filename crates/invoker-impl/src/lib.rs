@@ -41,9 +41,10 @@ use restate_errors::warn_it;
 use restate_invoker_api::capacity::TokenBucket;
 use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
-    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport, YieldReason,
+    Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
+    InvokerEffect, YieldReason,
 };
-use restate_memory::{InvocationMemory, MemoryLease, MemoryPool};
+use restate_memory::{InvocationMemory, LocalMemoryLease, MemoryLease, MemoryPool};
 use restate_queue::SegmentQueue;
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_time_util::DurationExt;
@@ -485,7 +486,7 @@ where
                         self.handle_retry_now_invocation(options, partition, invocation_id);
                     }
                     InputCommand::Pause { partition, invocation_id } => {
-                        self.handle_pause_invocation( partition, invocation_id).await;
+                        self.handle_pause_invocation(partition, invocation_id);
                     }
                     InputCommand::AbortAllPartition { partition } => {
                         self.handle_abort_partition(partition);
@@ -532,49 +533,48 @@ where
                             x_restate_server_header
                         )
                     }
-                    // Inbound budget leases on payload-carrying variants are held
-                    // alive through handler .await points (including the bounded
-                    // output_tx.send(Effect).await), then dropped at the end of
-                    // this select arm to release budget.
-                    InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack, inbound_lease: _inbound_lease } => {
+                    InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack, inbound_lease } => {
                         self.handle_new_entry(
                             partition,
                             invocation_id,
                             entry_index,
                             *entry,
-                            requires_ack
-                        ).await
+                            requires_ack,
+                            inbound_lease,
+                        )
                     },
-                    InvocationTaskOutputInner::NewNotificationProposal { notification, inbound_lease: _inbound_lease } => {
+                    InvocationTaskOutputInner::NewNotificationProposal { notification, inbound_lease } => {
                         self.handle_new_notification_proposal(
                             partition,
                             invocation_id,
-                            notification
-                        ).await
+                            notification,
+                            inbound_lease,
+                        )
                     },
                     InvocationTaskOutputInner::Closed => {
-                        self.handle_invocation_task_closed(partition, invocation_id).await
+                        self.handle_invocation_task_closed(partition, invocation_id)
                     },
                     InvocationTaskOutputInner::Failed(e, returned_budget) => {
-                        self.handle_invocation_task_failed(partition, invocation_id, e, returned_budget).await
+                        self.handle_invocation_task_failed(partition, invocation_id, e, returned_budget)
                     },
                     InvocationTaskOutputInner::Suspended(indexes) => {
-                        self.handle_invocation_task_suspended(partition, invocation_id, indexes).await
+                        self.handle_invocation_task_suspended(partition, invocation_id, indexes)
                     }
-                    InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack, inbound_lease: _inbound_lease } => {
+                    InvocationTaskOutputInner::NewCommand { command, command_index, requires_ack, inbound_lease } => {
                         self.handle_new_command(
                             partition,
                             invocation_id,
                             command_index,
                             command,
-                            requires_ack
-                        ).await
+                            requires_ack,
+                            inbound_lease,
+                        )
                     }
                     InvocationTaskOutputInner::SuspendedV2(notification_ids) => {
-                        self.handle_invocation_task_suspended_v2(partition, invocation_id, notification_ids).await
+                        self.handle_invocation_task_suspended_v2(partition, invocation_id, notification_ids)
                     }
                     InvocationTaskOutputInner::ShouldYield { inbound_needed, outbound_needed, budget } => {
-                        self.handle_invocation_task_should_yield(partition, invocation_id, inbound_needed, outbound_needed, budget).await
+                        self.handle_invocation_task_should_yield(partition, invocation_id, inbound_needed, outbound_needed, budget)
                     }
                 };
             },
@@ -616,7 +616,7 @@ where
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: IR,
-        sender: mpsc::Sender<Box<Effect>>,
+        sender: mpsc::UnboundedSender<InvokerEffect>,
     ) {
         self.invocation_state_machine_manager.register_partition(
             partition,
@@ -864,13 +864,14 @@ where
             restate.journal.entry_type = ?entry.ty(),
         )
     )]
-    async fn handle_new_entry(
+    fn handle_new_entry(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         entry_index: EntryIndex,
         entry: EnrichedRawEntry,
         requires_ack: bool,
+        inbound_lease: LocalMemoryLease,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
@@ -885,19 +886,21 @@ where
             self.status_store
                 .on_progress_made(&partition, &invocation_id);
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
-                let _ = output_tx
-                    .send(Box::new(Effect {
+                let _ = output_tx.send(InvokerEffect {
+                    effect: Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
-                    }))
-                    .await;
+                    }),
+                    inbound_lease: None,
+                });
             }
-            let _ = output_tx
-                .send(Box::new(Effect {
+            let _ = output_tx.send(InvokerEffect {
+                effect: Box::new(Effect {
                     invocation_id,
                     kind: EffectKind::JournalEntry { entry_index, entry },
-                }))
-                .await;
+                }),
+                inbound_lease: Some(inbound_lease),
+            });
         } else {
             // If no state machine, this might be an entry for an aborted invocation.
             trace!("No state machine found for given entry");
@@ -914,11 +917,12 @@ where
             restate.journal.notification.id = ?notification.id(),
         )
     )]
-    async fn handle_new_notification_proposal(
+    fn handle_new_notification_proposal(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         notification: RawNotification,
+        inbound_lease: LocalMemoryLease,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
@@ -933,19 +937,21 @@ where
             self.status_store
                 .on_progress_made(&partition, &invocation_id);
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
-                let _ = output_tx
-                    .send(Box::new(Effect {
+                let _ = output_tx.send(InvokerEffect {
+                    effect: Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
-                    }))
-                    .await;
+                    }),
+                    inbound_lease: None,
+                });
             }
-            let _ = output_tx
-                .send(Box::new(Effect {
+            let _ = output_tx.send(InvokerEffect {
+                effect: Box::new(Effect {
                     invocation_id,
                     kind: EffectKind::journal_entry(notification, None),
-                }))
-                .await;
+                }),
+                inbound_lease: Some(inbound_lease),
+            });
         } else {
             // If no state machine, this might be an entry for an aborted invocation.
             trace!("No state machine found for given notification");
@@ -962,13 +968,14 @@ where
             restate.journal.entry.ty = %command.ty(),
         )
     )]
-    async fn handle_new_command(
+    fn handle_new_command(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         command_index: CommandIndex,
         command: RawCommand,
         requires_ack: bool,
+        inbound_lease: LocalMemoryLease,
     ) {
         if let Some((output_tx, ism)) = self
             .invocation_state_machine_manager
@@ -983,19 +990,21 @@ where
             self.status_store
                 .on_progress_made(&partition, &invocation_id);
             if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
-                let _ = output_tx
-                    .send(Box::new(Effect {
+                let _ = output_tx.send(InvokerEffect {
+                    effect: Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::PinnedDeployment(pinned_deployment),
-                    }))
-                    .await;
+                    }),
+                    inbound_lease: None,
+                });
             }
-            let _ = output_tx
-                .send(Box::new(Effect {
+            let _ = output_tx.send(InvokerEffect {
+                effect: Box::new(Effect {
                     invocation_id,
                     kind: EffectKind::journal_entry(command, Some(command_index)),
-                }))
-                .await;
+                }),
+                inbound_lease: Some(inbound_lease),
+            });
         } else {
             // If no state machine, this might be an entry for an aborted invocation.
             trace!("No state machine found for given entry");
@@ -1065,7 +1074,7 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_invocation_task_closed(
+    fn handle_invocation_task_closed(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -1083,12 +1092,13 @@ where
                 self.quota.unreserve_slot();
             }
             self.status_store.on_end(&partition, &invocation_id);
-            let _ = sender
-                .send(Box::new(Effect {
+            let _ = sender.send(InvokerEffect {
+                effect: Box::new(Effect {
                     invocation_id,
                     kind: EffectKind::End,
-                }))
-                .await;
+                }),
+                inbound_lease: None,
+            });
         } else {
             // If no state machine, this might be a result for an aborted invocation.
             trace!("No state machine found for invocation task closed signal");
@@ -1103,7 +1113,7 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_invocation_task_suspended(
+    fn handle_invocation_task_suspended(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -1124,30 +1134,32 @@ where
                     "Pausing invocation after suspension"
                 );
 
-                let _ = sender
-                    .send(Box::new(Effect {
+                let _ = sender.send(InvokerEffect {
+                    effect: Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::Paused {
                             paused_event: RawEvent::from(Event::Paused(PausedEvent {
                                 last_failure: None,
                             })),
                         },
-                    }))
-                    .await;
+                    }),
+                    inbound_lease: None,
+                });
             } else {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
                     "Suspending invocation"
                 );
 
-                let _ = sender
-                    .send(Box::new(Effect {
+                let _ = sender.send(InvokerEffect {
+                    effect: Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::Suspended {
                             waiting_for_completed_entries: entry_indexes,
                         },
-                    }))
-                    .await;
+                    }),
+                    inbound_lease: None,
+                });
             }
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -1163,7 +1175,7 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_invocation_task_suspended_v2(
+    fn handle_invocation_task_suspended_v2(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -1185,30 +1197,32 @@ where
                     "Pausing invocation after suspension"
                 );
 
-                let _ = sender
-                    .send(Box::new(Effect {
+                let _ = sender.send(InvokerEffect {
+                    effect: Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::Paused {
                             paused_event: RawEvent::from(Event::Paused(PausedEvent {
                                 last_failure: None,
                             })),
                         },
-                    }))
-                    .await;
+                    }),
+                    inbound_lease: None,
+                });
             } else {
                 trace!(
                     restate.invocation.target = %ism.invocation_target,
                     "Suspending invocation"
                 );
 
-                let _ = sender
-                    .send(Box::new(Effect {
+                let _ = sender.send(InvokerEffect {
+                    effect: Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::SuspendedV2 {
                             waiting_for_notifications,
                         },
-                    }))
-                    .await;
+                    }),
+                    inbound_lease: None,
+                });
             }
         } else {
             // If no state machine, this might be a result for an aborted invocation.
@@ -1224,7 +1238,7 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_invocation_task_failed(
+    fn handle_invocation_task_failed(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -1237,8 +1251,7 @@ where
         {
             // Stash the budget on the ISM so it can be reused if we retry.
             ism.budget = Some(returned_budget);
-            self.handle_error_event(partition, invocation_id, error, ism)
-                .await;
+            self.handle_error_event(partition, invocation_id, error, ism);
         } else {
             // If no state machine, this might be a result for an aborted invocation.
             trace!("No state machine found for invocation task error signal");
@@ -1253,7 +1266,7 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_invocation_task_should_yield(
+    fn handle_invocation_task_should_yield(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -1280,15 +1293,16 @@ where
                     self.quota.unreserve_slot();
                 }
                 self.status_store.on_end(&partition, &invocation_id);
-                let _ = sender
-                    .send(Box::new(Effect {
+                let _ = sender.send(InvokerEffect {
+                    effect: Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::Yield(YieldReason::OutOfMemory {
                             inbound_needed_memory: inbound_needed,
                             outbound_needed_memory: outbound_needed,
                         }),
-                    }))
-                    .await;
+                    }),
+                    inbound_lease: None,
+                });
             } else {
                 // Flag disabled: fall back to retry.
                 let error = if inbound_needed > budget.inbound.min_reserved() {
@@ -1303,8 +1317,7 @@ where
                     }
                 };
                 ism.budget = Some(budget);
-                self.handle_error_event(partition, invocation_id, error, ism)
-                    .await;
+                self.handle_error_event(partition, invocation_id, error, ism);
             }
         } else {
             trace!("No state machine found for invocation task yield signal");
@@ -1385,7 +1398,7 @@ where
             restate.invoker.partition_leader_epoch = ?partition,
         )
     )]
-    async fn handle_pause_invocation(
+    fn handle_pause_invocation(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -1401,16 +1414,17 @@ where
 
             if ism.notify_pause() {
                 // If returns true, we need to pause now
-                let _ = sender
-                    .send(Box::new(Effect {
+                let _ = sender.send(InvokerEffect {
+                    effect: Box::new(Effect {
                         invocation_id,
                         kind: EffectKind::Paused {
                             paused_event: RawEvent::from(Event::Paused(PausedEvent {
                                 last_failure: ism.last_transient_error_event,
                             })),
                         },
-                    }))
-                    .await;
+                    }),
+                    inbound_lease: None,
+                });
             } else {
                 // Invocation still in flight, pause will happen later on
                 self.invocation_state_machine_manager.register_invocation(
@@ -1469,7 +1483,7 @@ where
 
     // --- Helpers
 
-    async fn handle_error_event(
+    fn handle_error_event(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
@@ -1559,13 +1573,15 @@ where
                         .invocation_state_machine_manager
                         .resolve_partition_sender(partition)
                         .expect("Partition should be registered")
-                        .send(Box::new(Effect {
-                            invocation_id,
-                            kind: EffectKind::JournalEvent {
-                                event: RawEvent::from(Event::TransientError(event)),
-                            },
-                        }))
-                        .await;
+                        .send(InvokerEffect {
+                            effect: Box::new(Effect {
+                                invocation_id,
+                                kind: EffectKind::JournalEvent {
+                                    event: RawEvent::from(Event::TransientError(event)),
+                                },
+                            }),
+                            inbound_lease: None,
+                        });
                 }
 
                 self.status_store.on_failure(
@@ -1636,13 +1652,15 @@ where
                     .invocation_state_machine_manager
                     .resolve_partition_sender(partition)
                     .expect("Partition should be registered")
-                    .send(Box::new(Effect {
-                        invocation_id,
-                        kind: EffectKind::Paused {
-                            paused_event: RawEvent::from(Event::Paused(paused_event)),
-                        },
-                    }))
-                    .await;
+                    .send(InvokerEffect {
+                        effect: Box::new(Effect {
+                            invocation_id,
+                            kind: EffectKind::Paused {
+                                paused_event: RawEvent::from(Event::Paused(paused_event)),
+                            },
+                        }),
+                        inbound_lease: None,
+                    });
             }
             OnTaskError::Kill => {
                 counter!(INVOKER_INVOCATION_TASKS,
@@ -1664,11 +1682,13 @@ where
                     .invocation_state_machine_manager
                     .resolve_partition_sender(partition)
                     .expect("Partition should be registered")
-                    .send(Box::new(Effect {
-                        invocation_id,
-                        kind: EffectKind::Failed(error.into_invocation_error()),
-                    }))
-                    .await;
+                    .send(InvokerEffect {
+                        effect: Box::new(Effect {
+                            invocation_id,
+                            kind: EffectKind::Failed(error.into_invocation_error()),
+                        }),
+                        inbound_lease: None,
+                    });
             }
         }
     }
@@ -1883,11 +1903,14 @@ mod tests {
             (input_tx, status_tx, service_inner)
         }
 
-        fn register_mock_partition(&mut self, storage_reader: IR) -> mpsc::Receiver<Box<Effect>>
+        fn register_mock_partition(
+            &mut self,
+            storage_reader: IR,
+        ) -> mpsc::UnboundedReceiver<InvokerEffect>
         where
             ITR: InvocationTaskRunner<IR>,
         {
-            let (partition_tx, partition_rx) = mpsc::channel(1024);
+            let (partition_tx, partition_rx) = mpsc::unbounded_channel();
             self.handle_register_partition(
                 MOCK_PARTITION,
                 RangeInclusive::new(0, 0),
@@ -2133,7 +2156,7 @@ mod tests {
         let invocation_target = InvocationTarget::mock_service();
         let invocation_id = InvocationId::mock_generate(&invocation_target);
 
-        let (output_tx, mut output_rx) = mpsc::channel(1);
+        let (output_tx, mut output_rx) = mpsc::unbounded_channel();
 
         handle
             .register_partition(
@@ -2232,9 +2255,7 @@ mod tests {
         assert!(!service_inner.quota.is_slot_available());
 
         // Send the close signal
-        service_inner
-            .handle_invocation_task_closed(MOCK_PARTITION, invocation_id_1)
-            .await;
+        service_inner.handle_invocation_task_closed(MOCK_PARTITION, invocation_id_1);
 
         // Slot should be available again
         assert!(service_inner.quota.is_slot_available());
@@ -2326,14 +2347,12 @@ mod tests {
         assert_eq!(service_inner.quota.available_slots(), 2);
 
         // Handle error coming after the abort (this should be noop)
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                InvokerError::EmptySuspensionMessage, /* any error is fine */
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            InvokerError::EmptySuspensionMessage, /* any error is fine */
+            service_inner.test_budget(),
+        );
 
         // Check the quota, should not be changed
         assert_eq!(service_inner.quota.available_slots(), 2);
@@ -2406,14 +2425,12 @@ mod tests {
         service_inner
             .invocation_state_machine_manager
             .register_invocation(MOCK_PARTITION, invocation_id, ism);
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
+            service_inner.test_budget(),
+        );
 
         // Fire the retry timer using the helper that retrieves the key from the ISM
         service_inner.process_retry_timers(&invoker_options).await;
@@ -2452,14 +2469,12 @@ mod tests {
         );
 
         // Simulate a transient failure to populate last_retry_attempt_failure
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
+            service_inner.test_budget(),
+        );
 
         // After failure, the status store should record the last failure
         let report = service_inner
@@ -2477,22 +2492,19 @@ mod tests {
             .await;
 
         // Now a new command proposal should clear the last failure (progress made)
-        service_inner
-            .handle_new_command(
-                MOCK_PARTITION,
-                invocation_id,
-                1,
-                ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(
-                    OutputCommand {
-                        result: OutputResult::Success(Bytes::default()),
-                        name: Default::default(),
-                    },
-                )))
-                .try_as_command()
-                .unwrap(),
-                false,
-            )
-            .await;
+        service_inner.handle_new_command(
+            MOCK_PARTITION,
+            invocation_id,
+            1,
+            ServiceProtocolV4Codec::encode_entry(Entry::Command(Command::Output(OutputCommand {
+                result: OutputResult::Success(Bytes::default()),
+                name: Default::default(),
+            })))
+            .try_as_command()
+            .unwrap(),
+            false,
+            test_empty_inbound_lease(),
+        );
 
         let report_after = service_inner
             .status_store
@@ -2552,18 +2564,17 @@ mod tests {
             next_retry_interval_override: Some(Duration::from_millis(1)),
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                error_a,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            error_a,
+            service_inner.test_budget(),
+        );
         assert_that!(
             *effects_rx
                 .try_recv()
-                .expect("expected a proposed transient error event"),
+                .expect("expected a proposed transient error event")
+                .effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::JournalEvent {
@@ -2581,14 +2592,12 @@ mod tests {
             next_retry_interval_override: Some(Duration::from_millis(1)),
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                error_a_same,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            error_a_same,
+            service_inner.test_budget(),
+        );
         assert!(
             effects_rx.try_recv().is_err(),
             "duplicate transient error event should not be proposed"
@@ -2603,18 +2612,17 @@ mod tests {
             next_retry_interval_override: Some(Duration::from_millis(1)),
             error: InvocationError::new(codes::INTERNAL, "boom-2").into(),
         });
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                error_b,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            error_b,
+            service_inner.test_budget(),
+        );
         assert_that!(
             *effects_rx
                 .try_recv()
-                .expect("expected a newly proposed transient error event for different content"),
+                .expect("expected a newly proposed transient error event for different content")
+                .effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::JournalEvent {
@@ -2645,14 +2653,12 @@ mod tests {
         );
 
         // Abort error
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                InvokerError::AbortTimeoutFired(Duration::from_secs(10).into()),
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            InvokerError::AbortTimeoutFired(Duration::from_secs(10).into()),
+            service_inner.test_budget(),
+        );
 
         // Check the ISM is in WaitingRetry state and retry count is 1
         assert!(service_inner.is_invocation_waiting_retry(MOCK_PARTITION, &invocation_id));
@@ -2700,14 +2706,12 @@ mod tests {
 
         // First transient error -> schedules retry (because 1 attempt available)
         let error_a = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                error_a,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            error_a,
+            service_inner.test_budget(),
+        );
         // There might be an extra transient error event proposed; drain if present
         let _ = effects_rx.try_recv();
 
@@ -2716,20 +2720,18 @@ mod tests {
 
         // Second transient error -> retries exhausted and Pause behavior -> expect Paused effect
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                error_b,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            error_b,
+            service_inner.test_budget(),
+        );
 
         let effect = effects_rx
             .try_recv()
             .expect("expected an effect to be emitted after pause");
         assert_that!(
-            *effect,
+            *effect.effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::Paused {
@@ -2810,28 +2812,24 @@ mod tests {
 
         // First transient failure after pin -> schedules retry
         let err1 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                err1,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            err1,
+            service_inner.test_budget(),
+        );
         // Drain any proposed event
         effects_rx.try_recv().unwrap();
         service_inner.process_retry_timers(&invoker_options).await;
 
         // Second transient failure after pin -> schedules retry (attempts now exhausted)
         let err2 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                err2,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            err2,
+            service_inner.test_budget(),
+        );
         effects_rx.try_recv().unwrap_err();
         service_inner.process_retry_timers(&invoker_options).await;
 
@@ -2841,20 +2839,18 @@ mod tests {
 
         // Next failure should hit OnMaxAttempts::Kill immediately (no more retries)
         let err3 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                err3,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            err3,
+            service_inner.test_budget(),
+        );
 
         let effect = effects_rx
             .try_recv()
             .expect("expected an effect to be emitted after kill");
         assert_that!(
-            *effect,
+            *effect.effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::Failed(_))
@@ -2889,14 +2885,12 @@ mod tests {
 
         // Simulate a transient error to put invocation in WaitingRetry state
         let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                error,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            error,
+            service_inner.test_budget(),
+        );
         // Drain any proposed event
         let _ = effects_rx.try_recv();
 
@@ -2905,16 +2899,14 @@ mod tests {
         assert!(!service_inner.retry_timers.is_empty());
 
         // Call manual pause while waiting for retry
-        service_inner
-            .handle_pause_invocation(MOCK_PARTITION, invocation_id)
-            .await;
+        service_inner.handle_pause_invocation(MOCK_PARTITION, invocation_id);
 
         // Should emit Paused effect immediately with no last_failure
         let effect = effects_rx
             .try_recv()
             .expect("expected Paused effect to be emitted");
         assert_that!(
-            *effect,
+            *effect.effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::Paused {
@@ -2956,9 +2948,7 @@ mod tests {
         );
 
         // Call manual pause while in flight
-        service_inner
-            .handle_pause_invocation(MOCK_PARTITION, invocation_id)
-            .await;
+        service_inner.handle_pause_invocation(MOCK_PARTITION, invocation_id);
 
         // State machine should still be registered with requested_pause = true
         let (_, ism) = service_inner
@@ -2968,20 +2958,18 @@ mod tests {
         assert!(ism.requested_pause);
 
         // Simulate the invocation task suspending
-        service_inner
-            .handle_invocation_task_suspended(
-                MOCK_PARTITION,
-                invocation_id,
-                HashSet::new(), // No pending entries
-            )
-            .await;
+        service_inner.handle_invocation_task_suspended(
+            MOCK_PARTITION,
+            invocation_id,
+            HashSet::new(), // No pending entries
+        );
 
         // Should emit Paused effect (not Suspended) with no last_failure
         let effect = effects_rx
             .try_recv()
             .expect("expected Paused effect to be emitted");
         assert_that!(
-            *effect,
+            *effect.effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::Paused {
@@ -3017,9 +3005,7 @@ mod tests {
         );
 
         // Call manual pause while in flight
-        service_inner
-            .handle_pause_invocation(MOCK_PARTITION, invocation_id)
-            .await;
+        service_inner.handle_pause_invocation(MOCK_PARTITION, invocation_id);
 
         // State machine should still be registered with requested_pause = true
         let (_, ism) = service_inner
@@ -3030,21 +3016,19 @@ mod tests {
 
         // Simulate the invocation task failing with a transient error
         let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                error,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            error,
+            service_inner.test_budget(),
+        );
 
         // Should emit Paused effect (not Kill or ScheduleRetry) with last_failure set
         let effect = effects_rx
             .try_recv()
             .expect("expected Paused effect to be emitted");
         assert_that!(
-            *effect,
+            *effect.effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::Paused {
@@ -3085,14 +3069,12 @@ mod tests {
 
         // Simulate a transient error to put invocation in WaitingRetry state
         let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
-        service_inner
-            .handle_invocation_task_failed(
-                MOCK_PARTITION,
-                invocation_id,
-                error,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_failed(
+            MOCK_PARTITION,
+            invocation_id,
+            error,
+            service_inner.test_budget(),
+        );
         // Drain any proposed event
         let _ = effects_rx.try_recv();
 
@@ -3100,16 +3082,14 @@ mod tests {
         assert!(service_inner.is_invocation_waiting_retry(MOCK_PARTITION, &invocation_id));
 
         // Call manual pause while waiting for retry (after error was notified)
-        service_inner
-            .handle_pause_invocation(MOCK_PARTITION, invocation_id)
-            .await;
+        service_inner.handle_pause_invocation(MOCK_PARTITION, invocation_id);
 
         // Should emit Paused effect immediately with last_failure populated from the error
         let effect = effects_rx
             .try_recv()
             .expect("expected Paused effect to be emitted");
         assert_that!(
-            *effect,
+            *effect.effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::Paused {
@@ -3157,15 +3137,13 @@ mod tests {
         );
 
         // Simulate yield from invocation task (flag disabled by default)
-        service_inner
-            .handle_invocation_task_should_yield(
-                MOCK_PARTITION,
-                invocation_id,
-                65536,
-                32768,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_should_yield(
+            MOCK_PARTITION,
+            invocation_id,
+            65536,
+            32768,
+            service_inner.test_budget(),
+        );
 
         // Should NOT emit EffectKind::Yield — instead the error goes through retry
         // The ISM should be in WaitingRetry state (error was handled as OutOfMemory)
@@ -3176,7 +3154,7 @@ mod tests {
             .try_recv()
             .expect("expected a transient error event");
         assert_that!(
-            *effect,
+            *effect.effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::JournalEvent {
@@ -3225,22 +3203,20 @@ mod tests {
         );
 
         // Simulate yield from invocation task
-        service_inner
-            .handle_invocation_task_should_yield(
-                MOCK_PARTITION,
-                invocation_id,
-                65536,
-                32768,
-                service_inner.test_budget(),
-            )
-            .await;
+        service_inner.handle_invocation_task_should_yield(
+            MOCK_PARTITION,
+            invocation_id,
+            65536,
+            32768,
+            service_inner.test_budget(),
+        );
 
         // Should emit EffectKind::Yield
         let effect = effects_rx
             .try_recv()
             .expect("expected Yield effect to be emitted");
         assert_that!(
-            *effect,
+            *effect.effect,
             pat!(Effect {
                 invocation_id: eq(invocation_id),
                 kind: pat!(EffectKind::Yield(pat!(YieldReason::OutOfMemory {

@@ -178,6 +178,60 @@ impl From<(&str, Keys)> for Record {
     }
 }
 
+/// A [`Record`] paired with an optional drop guard that tracks memory ownership.
+///
+/// This type is intentionally **not** `Clone` and **not** serializable. The lease is a
+/// runtime-only concept that ties the record's payload lifetime to a memory budget.
+/// When this value is dropped, the lease (if any) is released back to the memory pool.
+///
+/// On the write path the lease travels alongside the record until the data is durably
+/// committed to Bifrost, at which point the lease is released.
+pub struct RecordWithLease {
+    record: Record,
+    lease: Option<Box<dyn Send + Sync>>,
+}
+
+impl RecordWithLease {
+    pub fn new(record: Record, lease: Option<Box<dyn Send + Sync>>) -> Self {
+        Self { record, lease }
+    }
+
+    /// Consumes self and returns just the inner [`Record`], dropping the lease.
+    pub fn into_record(self) -> Record {
+        self.record
+    }
+
+    /// Splits into the inner [`Record`] and the lease.
+    pub fn split(self) -> (Record, Option<Box<dyn Send + Sync>>) {
+        (self.record, self.lease)
+    }
+
+    pub fn record(&self) -> &Record {
+        &self.record
+    }
+
+    pub fn estimated_encode_size(&self) -> usize {
+        self.record.estimated_encode_size()
+    }
+
+    /// Ensures the record body is encoded, preserving the lease.
+    pub fn ensure_encoded(self, buf: &mut BytesMut) -> Self {
+        Self {
+            record: self.record.ensure_encoded(buf),
+            lease: self.lease,
+        }
+    }
+}
+
+impl std::fmt::Debug for RecordWithLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecordWithLease")
+            .field("record", &self.record)
+            .field("has_lease", &self.lease.is_some())
+            .finish()
+    }
+}
+
 mod record_encoding {
     use bilrost::encoding::Proxiable;
     use bytes::{Bytes, BytesMut};
