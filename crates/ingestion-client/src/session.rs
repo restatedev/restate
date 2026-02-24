@@ -211,6 +211,7 @@ enum SessionState {
 
 /// Background task that drives the lifecycle of a single partition connection.
 pub struct PartitionSession<T> {
+    manager: Arc<SessionManagerInner<T>>,
     partition: PartitionId,
     partition_routing: PartitionRouting,
     networking: Networking<T>,
@@ -222,6 +223,7 @@ pub struct PartitionSession<T> {
 
 impl<T> PartitionSession<T> {
     fn new(
+        manager: Arc<SessionManagerInner<T>>,
         networking: Networking<T>,
         partition_routing: PartitionRouting,
         partition: PartitionId,
@@ -231,6 +233,7 @@ impl<T> PartitionSession<T> {
         let rx = UnboundedReceiverStream::new(rx);
 
         Self {
+            manager,
             partition,
             partition_routing,
             networking,
@@ -246,6 +249,12 @@ impl<T> PartitionSession<T> {
         SessionHandle {
             tx: self.tx.clone(),
         }
+    }
+}
+
+impl<T> Drop for PartitionSession<T> {
+    fn drop(&mut self) {
+        self.manager.handles.remove(&self.partition);
     }
 }
 
@@ -448,33 +457,36 @@ where
 {
     /// Gets or start a new session to partition with given partition id.
     /// It guarantees that only one session is started per partition id.
-    pub fn get(&self, id: PartitionId) -> SessionHandle {
+    pub fn get(self: &Arc<Self>, id: PartitionId) -> SessionHandle {
         self.handles
             .entry(id)
-            .or_insert_with(|| {
-                let session = PartitionSession::new(
-                    self.networking.clone(),
-                    self.partition_routing.clone(),
-                    id,
-                    self.opts.clone(),
-                );
-
-                let handle = session.handle();
-
-                let cancellation = self.cancellation.child_token();
-                let _ = TaskCenter::spawn(
-                    TaskKind::Background,
-                    "ingestion-partition-session",
-                    async move {
-                        session.start(cancellation).await;
-                        Ok(())
-                    },
-                );
-
-                handle
-            })
+            .or_insert_with(|| self.start_session(id))
             .value()
             .clone()
+    }
+
+    fn start_session(self: &Arc<Self>, id: PartitionId) -> SessionHandle {
+        let session = PartitionSession::new(
+            Arc::clone(self),
+            self.networking.clone(),
+            self.partition_routing.clone(),
+            id,
+            self.opts.clone(),
+        );
+
+        let handle = session.handle();
+
+        let cancellation = self.cancellation.child_token();
+        let _ = TaskCenter::spawn(
+            TaskKind::Background,
+            "ingestion-partition-session",
+            async move {
+                session.start(cancellation).await;
+                Ok(())
+            },
+        );
+
+        handle
     }
 }
 
