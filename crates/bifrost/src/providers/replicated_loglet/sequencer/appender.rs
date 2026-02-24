@@ -42,10 +42,6 @@ use restate_types::{
 
 use super::{RecordsExt, SequencerSharedState};
 use crate::loglet::{AppendError, LogletCommitResolver};
-use crate::providers::replicated_loglet::metric_definitions::{
-    BIFROST_SEQ_APPEND_DURATION, BIFROST_SEQ_RECORDS_COMMITTED_BYTES,
-    BIFROST_SEQ_RECORDS_COMMITTED_TOTAL,
-};
 use crate::providers::replicated_loglet::replication::spread_selector::SpreadSelectorError;
 
 static STORE_LATENCY_TRACKER: LazyLock<Mutex<LatencyTracker<PlainNodeId, Instant>>> =
@@ -107,8 +103,13 @@ impl<T: TransportConnect> SequencerAppender<T> {
         let nodeset_status =
             DecoratedNodeSet::from(sequencer_shared_state.selector.nodeset().clone());
 
-        let payload_size: u32 =
-            u32::try_from(records.estimated_encode_size()).expect("record batch must be < 4GiB");
+        let mut payload_size: u32 = 0;
+        for record in records.iter() {
+            // it's safe to cast since a record would be never be larger than 4GiB.
+            let record_size = record.estimated_encode_size() as u32;
+            sequencer_shared_state.stats.record_size(record_size);
+            payload_size += record_size;
+        }
 
         Self {
             sequencer_shared_state,
@@ -173,12 +174,16 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     // and safe result because we didn't acknowledge the append to the writer and from
                     // their perspective it has failed, and because the global tail was not moved, all
                     // appends after this one cannot move the global tail as well.
+                    let wave_start = Instant::now();
                     let Some(next_state) = cancellation_token
                         .run_until_cancelled(self.send_wave(store_backoff))
                         .await
                     else {
                         break State::Cancelled;
                     };
+                    self.sequencer_shared_state
+                        .stats
+                        .record_wave_latency(wave_start.elapsed());
                     next_state
                 }
                 State::Backoff => {
@@ -225,12 +230,21 @@ impl<T: TransportConnect> SequencerAppender<T> {
         match final_state {
             State::Done => {
                 assert!(self.commit_resolver.is_none());
+                self.sequencer_shared_state
+                    .stats
+                    .record_waves_per_append(self.current_wave);
 
-                metrics::counter!(BIFROST_SEQ_RECORDS_COMMITTED_TOTAL)
-                    .increment(self.records.len() as u64);
-                metrics::counter!(BIFROST_SEQ_RECORDS_COMMITTED_BYTES)
-                    .increment(self.records.estimated_encode_size() as u64);
-                metrics::histogram!(BIFROST_SEQ_APPEND_DURATION).record(start.elapsed());
+                self.sequencer_shared_state
+                    .stats
+                    .increment_committed(self.records.len() as u64);
+
+                self.sequencer_shared_state
+                    .stats
+                    .increment_bytes_committed(self.records.estimated_encode_size() as u64);
+
+                self.sequencer_shared_state
+                    .stats
+                    .record_append_latency(start.elapsed());
 
                 trace!(
                     wave = %self.current_wave,
