@@ -24,7 +24,7 @@ use hyper::{HeaderMap, Method, Request, Response, Uri};
 use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
 use hyper_util::client::legacy::connect::HttpConnector;
 use restate_types::config::HttpOptions;
-use rustls::ClientConfig;
+use rustls::{ClientConfig, KeyLogFile};
 use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
@@ -37,12 +37,16 @@ static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
     // We need to explicitly configure the crypto provider since we activate the ring as well as
     // aws_lc_rs rustls feature, and they are mutually exclusive wrt auto installation. Moreover,
     // we don't want that tests need to install a crypto provider when using the HttpClient
-    ClientConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
-        .with_protocol_versions(rustls::DEFAULT_VERSIONS)
-        .expect("default versions are supported")
-        .with_native_roots()
-        .expect("Can load native certificates")
-        .with_no_client_auth()
+    let mut builder = ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_protocol_versions(rustls::DEFAULT_VERSIONS)
+    .expect("default versions are supported")
+    .with_native_roots()
+    .expect("Can load native certificates")
+    .with_no_client_auth();
+    builder.dangerous().cfg.key_log = Arc::new(KeyLogFile::new());
+    builder
 });
 
 // TODO
