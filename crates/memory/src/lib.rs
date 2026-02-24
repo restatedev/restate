@@ -26,7 +26,7 @@ pub use controller::MemoryController;
 pub use local_pool::{
     AvailabilityNotified, InvocationMemory, LocalMemoryLease, LocalMemoryPool, OutOfMemory,
 };
-pub use pool::{MemoryLease, MemoryPool};
+pub use pool::{MemoryLease, MemoryPool, PollMemoryPool};
 pub use restate_serde_util::NonZeroByteCount;
 
 pub use footprint::*;

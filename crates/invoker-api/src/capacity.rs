@@ -16,6 +16,16 @@ use restate_types::config::ThrottlingOptions;
 
 pub type TokenBucket<C = gardal::TokioClock> = gardal::SharedTokenBucket<C>;
 
+/// Size of the inbound seed lease (~2 HTTP/2 frames).
+pub const INBOUND_SEED_SIZE: usize = 64 * 1024;
+
+/// Size of the outbound seed lease. Zero for now; will be non-zero once
+/// outbound budget is pushed into the storage layer.
+pub const OUTBOUND_SEED_SIZE: usize = 0;
+
+/// Combined seed size reserved from the memory pool per invocation.
+pub const SEED_SIZE: usize = INBOUND_SEED_SIZE + OUTBOUND_SEED_SIZE;
+
 #[derive(Clone)]
 pub struct InvokerCapacity {
     pub concurrency: Concurrency,
