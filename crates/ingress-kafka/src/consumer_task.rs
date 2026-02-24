@@ -47,7 +47,7 @@ use crate::metric_definitions::{KAFKA_INGRESS_CONSUMER_LAG, KAFKA_INGRESS_REQUES
 impl From<IngestionError> for Error {
     fn from(value: IngestionError) -> Self {
         match value {
-            IngestionError::Closed => Self::IngestionClosed,
+            IngestionError::Closed(reason) => Self::IngestionClosed(reason.into()),
             IngestionError::PartitionTableError(err) => Self::PartitionTableError(err),
         }
     }
@@ -510,7 +510,7 @@ where
                 biased;
                 Some(committed) = Self::head_committed(&mut inflight) => {
                     _ = inflight.pop_front().expect("to exist");
-                    let offset = committed.map_err(|_| Error::IngestionClosed)?;
+                    let offset = committed.map_err(|_| Error::IngestionClosed("commit cancelled".into()))?;
 
                     ingress_request_counter.increment(1);
                     trace!(

@@ -45,7 +45,7 @@ pub enum Error {
     #[error(transparent)]
     Kafka(#[from] KafkaError),
     #[error(
-        "error processing message subscription {subscription} topic {topic} partition {partition} offset {offset}: {cause}"
+        "Error processing message subscription {subscription} topic {topic} partition {partition} offset {offset}: {cause}"
     )]
     Event {
         subscription: String,
@@ -55,16 +55,16 @@ pub enum Error {
         #[source]
         cause: anyhow::Error,
     },
-    #[error("ingress stream is closed")]
-    IngestionClosed,
+    #[error("Ingress stream is closed: {0}")]
+    IngestionClosed(Box<dyn std::error::Error + Send + Sync>),
     #[error(transparent)]
     PartitionTableError(#[from] PartitionTableError),
     #[error(
-        "received a message on the main partition queue for topic {0} partition {1} despite partitioned queues"
+        "Received a message on the main partition queue for topic {0} partition {1} despite partitioned queues"
     )]
     UnexpectedMainQueueMessage(String, i32),
     #[error(
-        "consumption task exited unexpectedly for subscription '{subscription}', topic: {topic} and partition: {partition}"
+        "Consumption task exited unexpectedly for subscription '{subscription}', topic: {topic} and partition: {partition}"
     )]
     UnexpectedConsumptionTaskExited {
         subscription: String,

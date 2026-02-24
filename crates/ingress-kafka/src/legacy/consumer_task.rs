@@ -162,7 +162,7 @@ impl MessageSender {
             .dispatch_kafka_event(req)
             .instrument(ingress_span)
             .await
-            .map_err(|_| Error::IngestionClosed)?;
+            .map_err(|err| Error::IngestionClosed(err.into()))?;
         Ok(())
     }
 
