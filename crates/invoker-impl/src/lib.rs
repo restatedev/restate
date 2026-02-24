@@ -38,7 +38,7 @@ use tracing::{debug, trace, warn};
 
 use restate_core::cancellation_token;
 use restate_errors::warn_it;
-use restate_invoker_api::capacity::TokenBucket;
+use restate_invoker_api::capacity::{OUTBOUND_SEED_SIZE, SEED_SIZE, TokenBucket};
 use restate_invoker_api::invocation_reader::InvocationReader;
 use restate_invoker_api::{
     Effect, EffectKind, EntryEnricher, InvocationErrorReport, InvocationStatusReport,
@@ -83,12 +83,6 @@ pub use input_command::ChannelStatusReader;
 pub use input_command::InvokerHandle;
 
 use self::input_command::VQueueInvokeCommand;
-
-/// Size of the inbound seed lease (~2 HTTP/2 frames).
-const INBOUND_SEED_SIZE: usize = 64 * 1024;
-/// Size of the outbound seed lease. Zero for now; will be non-zero once
-/// outbound budget is pushed into the storage layer.
-const OUTBOUND_SEED_SIZE: usize = 0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
@@ -445,9 +439,7 @@ where
         // Pre-acquire a seed lease from the memory pool so the segment queue arm
         // can create a budget without blocking inside select!.
         if self.pending_seed_lease.is_none() && !segmented_input_queue.inner().is_empty() {
-            self.pending_seed_lease = self
-                .memory_pool
-                .try_reserve(INBOUND_SEED_SIZE + OUTBOUND_SEED_SIZE);
+            self.pending_seed_lease = self.memory_pool.try_reserve(SEED_SIZE);
         }
 
         tokio::select! {
@@ -508,7 +500,7 @@ where
                 let budget = self.create_invocation_memory(options, seed, outbound_seed);
                 self.handle_invoke(options, invoke_input_command.partition, invoke_input_command.invocation_id, invoke_input_command.invocation_target, budget);
             },
-            memory_lease = self.memory_pool.reserve(INBOUND_SEED_SIZE + OUTBOUND_SEED_SIZE), if !segmented_input_queue.inner().is_empty() && self.pending_seed_lease.is_none() => {
+            memory_lease = self.memory_pool.reserve(SEED_SIZE), if !segmented_input_queue.inner().is_empty() && self.pending_seed_lease.is_none() => {
                 self.pending_seed_lease = Some(memory_lease);
             }
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {

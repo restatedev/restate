@@ -675,12 +675,17 @@ impl LeaderState {
                 invocation_id,
                 invocation_target,
             } => {
-                let permit = self.scheduler.pop_permit(item_hash).unwrap_or_else(|| {
-                    tracing::warn!(
-                        "Cannot find a permit for item hash {item_hash} in scheduler. Will not respect the invoker limit for this invocation"
-                    );
-                    Permit::new_empty()
-                });
+                let (permit, mut memory_lease) = match self.scheduler.pop_resources(item_hash) {
+                    Some(resources) => (resources.permit, resources.memory_lease),
+                    None => {
+                        tracing::warn!(
+                            "Cannot find resources for item hash {item_hash} in scheduler. Will not respect the invoker limit for this invocation"
+                        );
+                        (Permit::new_empty(), memory_pool.empty_lease())
+                    }
+                };
+                let outbound_seed =
+                    memory_lease.split(restate_invoker_api::capacity::OUTBOUND_SEED_SIZE);
                 invoker_tx
                     .vqueue_invoke(
                         partition_leader_epoch,
@@ -688,8 +693,8 @@ impl LeaderState {
                         permit,
                         invocation_id,
                         invocation_target,
-                        memory_pool.empty_lease(),
-                        memory_pool.empty_lease(),
+                        memory_lease,
+                        outbound_seed,
                     )
                     .map_err(Error::Invoker)?
             }

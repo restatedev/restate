@@ -8274,6 +8274,7 @@ dependencies = [
  "restate-clock",
  "restate-core",
  "restate-futures-util",
+ "restate-memory",
  "restate-partition-store",
  "restate-rocksdb",
  "restate-storage-api",
