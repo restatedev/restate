@@ -65,11 +65,11 @@ impl LogletId {
         Self(self.0 + 1)
     }
 
-    fn log_id(&self) -> LogId {
+    pub fn log_id(&self) -> LogId {
         LogId::new(u32::try_from(self.0 >> 32).expect("upper 32 bits should fit into u32"))
     }
 
-    fn segment_index(&self) -> SegmentIndex {
+    pub fn segment_index(&self) -> SegmentIndex {
         SegmentIndex::from(
             u32::try_from(self.0 & 0xFFFFFFFF).expect("lower 32 bits should fit into u32"),
         )
