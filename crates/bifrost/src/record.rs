@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn, Record};
+use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys, Lsn, Record, RecordWithLease};
 use restate_types::logs::{LogletOffset, SequenceNumber};
 use restate_types::storage::{PolyBytes, StorageDecode, StorageDecodeError, StorageEncode};
 use restate_types::time::NanosSinceEpoch;
@@ -201,19 +201,39 @@ pub struct Gap<S> {
     pub to: S,
 }
 
-#[derive(Clone)]
 pub struct InputRecord<T> {
     created_at: NanosSinceEpoch,
     keys: Keys,
     body: PolyBytes,
+    lease: Option<Box<dyn Send + Sync>>,
     _phantom: PhantomData<T>,
 }
 
-// This is a zero-cost transformation. The type is erased at runtime, but the underlying
-// layout is identical.
+/// Clone produces a copy of the record data but intentionally drops the lease.
+/// The lease is a runtime-only memory tracking guard and must not be duplicated.
+impl<T> Clone for InputRecord<T> {
+    fn clone(&self) -> Self {
+        Self {
+            created_at: self.created_at,
+            keys: self.keys.clone(),
+            body: self.body.clone(),
+            lease: None,
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<T: StorageEncode> InputRecord<T> {
     pub fn into_record(self) -> Record {
         Record::from_parts(self.created_at, self.keys, self.body)
+    }
+
+    /// Converts into a [`RecordWithLease`], carrying any attached lease along.
+    pub fn into_record_with_lease(self) -> RecordWithLease {
+        RecordWithLease::new(
+            Record::from_parts(self.created_at, self.keys, self.body),
+            self.lease,
+        )
     }
 }
 
@@ -223,6 +243,7 @@ impl<T: StorageEncode> InputRecord<T> {
             created_at,
             keys,
             body: PolyBytes::Typed(body),
+            lease: None,
             _phantom: PhantomData,
         }
     }
@@ -240,12 +261,20 @@ impl<T: StorageEncode> InputRecord<T> {
             created_at,
             keys,
             body: PolyBytes::Bytes(body),
+            lease: None,
             _phantom: PhantomData,
         }
     }
 
     pub fn created_at(&self) -> NanosSinceEpoch {
         self.created_at
+    }
+
+    /// Attaches a memory lease to this record. The lease will be carried through
+    /// the Bifrost pipeline and released when the record is durably committed.
+    pub fn with_lease(mut self, lease: impl Send + Sync + 'static) -> Self {
+        self.lease = Some(Box::new(lease));
+        self
     }
 }
 
@@ -255,6 +284,7 @@ impl<T: StorageEncode + HasRecordKeys> From<Arc<T>> for InputRecord<T> {
             created_at: NanosSinceEpoch::now(),
             keys: val.record_keys(),
             body: PolyBytes::Typed(val),
+            lease: None,
             _phantom: PhantomData,
         }
     }
@@ -266,6 +296,7 @@ impl From<String> for InputRecord<String> {
             created_at: NanosSinceEpoch::now(),
             keys: Keys::None,
             body: PolyBytes::Typed(Arc::new(val)),
+            lease: None,
             _phantom: PhantomData,
         }
     }
@@ -277,6 +308,7 @@ impl From<&str> for InputRecord<String> {
             created_at: NanosSinceEpoch::now(),
             keys: Keys::None,
             body: PolyBytes::Typed(Arc::new(String::from(val))),
+            lease: None,
             _phantom: PhantomData,
         }
     }
@@ -288,6 +320,7 @@ impl<T: StorageEncode> From<BodyWithKeys<T>> for InputRecord<T> {
             created_at: NanosSinceEpoch::now(),
             keys: val.record_keys(),
             body: PolyBytes::Typed(Arc::new(val.into_inner())),
+            lease: None,
             _phantom: PhantomData,
         }
     }

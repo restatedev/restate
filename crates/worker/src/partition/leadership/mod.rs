@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
@@ -75,13 +75,13 @@ use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::{Action, StateMachine};
-use crate::partition::types::InvokerEffect;
+use restate_invoker_api::InvokerEffect;
 
 use self::durability_tracker::DurabilityTracker;
 use self::trim_queue::{LogTrimmer, TrimQueue};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
-type InvokerStream = ReceiverStream<InvokerEffect>;
+type InvokerStream = UnboundedReceiverStream<InvokerEffect>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -133,7 +133,7 @@ pub(crate) enum TaskTermination {
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
     Scheduler(Result<scheduler::Decision<vqueue_table::EntryCard>, StorageError>),
-    Invoker(Box<restate_invoker_api::Effect>),
+    Invoker(InvokerEffect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
     Cleaner(cleaner::CleanerEffect),
@@ -386,8 +386,8 @@ where
             self_proposer,
         } = &mut self.state
         {
-            let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
-            let invoker_rx = ReceiverStream::new(invoker_rx);
+            let (invoker_tx, invoker_rx) = mpsc::unbounded_channel();
+            let invoker_rx = UnboundedReceiverStream::new(invoker_rx);
 
             self.invoker_tx
                 .register_partition(
