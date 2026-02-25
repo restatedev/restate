@@ -16,8 +16,8 @@ The `rpc_timeout` configuration field under
 rpc_timeout = "250ms..15s"   # default
 ```
 
-The old `sequencer_retry_policy` field is deprecated and will be ignored if
-present. Remove it from your configuration.
+The old `sequencer_retry_policy` and `log_server_retry_policy` fields are
+deprecated and will be ignored if present. Remove them from your configuration.
 
 ### Why This Matters
 
@@ -31,21 +31,25 @@ they are slow — without any manual tuning.
 ### Impact on Users
 
 - **Existing deployments**: Will automatically benefit from adaptive timeouts
-  on upgrade. No action required unless you have customised `sequencer_retry_policy`.
-- **Customised retry policy**: If you previously tuned `sequencer_retry_policy`,
-  migrate to `rpc_timeout` (see Migration Guidance below). The new field
-  covers both the per-wave timeout and the inter-wave backoff delay.
+  on upgrade. No action required unless you have customised
+  `sequencer_retry_policy` or `log_server_retry_policy`.
+- **Customised retry policy**: If you previously tuned `sequencer_retry_policy`
+  or `log_server_retry_policy`, migrate to `rpc_timeout` (see Migration Guidance
+  below). The new field covers both the per-wave timeout and the inter-wave
+  backoff delay.
 - **New deployments**: The default `"250ms..60s"` range applies.
 
 ### Migration Guidance
 
-Remove `sequencer_retry_policy` from your configuration and, if needed, set
-`rpc_timeout` to reflect your desired min/max bounds:
+Remove `sequencer_retry_policy` and `log_server_retry_policy` from your
+configuration and, if needed, set `rpc_timeout` to reflect your desired
+min/max bounds:
 
 ```toml
 # Before (deprecated, will be ignored)
 [bifrost.replicated-loglet]
 sequencer_retry_policy = { type = "exponential", initial_delay = "250ms", max_delay = "5s" }
+log_server_retry_policy = { type = "exponential", initial_delay = "250ms", max_delay = "2s" }
 
 # After
 [bifrost.replicated-loglet]

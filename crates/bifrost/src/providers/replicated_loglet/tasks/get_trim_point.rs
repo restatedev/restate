@@ -8,20 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU8;
+
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, instrument, trace};
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber, TailOffsetWatch};
 use restate_types::net::log_server::{GetLogletInfo, LogServerRequestHeader, LogletInfo, Status};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::{FMajorityResult, NodeSetChecker};
 
 use crate::loglet::OperationError;
-use crate::providers::replicated_loglet::tasks::util::{Disposition, RunOnSingleNode};
+use crate::providers::replicated_loglet::tasks::util::{Attempts, Disposition, RunOnSingleNode};
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not determine the trim point of the loglet")]
@@ -108,11 +109,7 @@ impl<'a> GetTrimPointTask<'a> {
                             node_id,
                             request,
                             &known_global_tail,
-                            Configuration::pinned()
-                                .bifrost
-                                .replicated_loglet
-                                .log_server_retry_policy
-                                .clone(),
+                            Attempts::exact(NonZeroU8::new(3).unwrap()),
                         );
 
                         (node_id, task.run(on_info_response, &networking).await)

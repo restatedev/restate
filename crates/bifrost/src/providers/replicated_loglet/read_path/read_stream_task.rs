@@ -10,13 +10,14 @@
 
 use std::time::Duration;
 
+use adaptive_timeout::{AdaptiveTimeout, TimeoutConfig};
 use metrics::{Counter, counter};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tracing::{info, trace};
 
-use restate_core::network::{NetworkSender, Networking, Swimlane, TransportConnect};
+use restate_core::network::{NetworkSender, Networking, RpcError, Swimlane, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind, my_node_id};
-use restate_types::PlainNodeId;
 use restate_types::config::{Configuration, ReplicatedLogletOptions};
 use restate_types::logs::{
     KeyFilter, LogletOffset, MatchKeyQuery, RecordCache, SequenceNumber, TailOffsetWatch,
@@ -24,9 +25,11 @@ use restate_types::logs::{
 use restate_types::net::log_server::{GetRecords, LogServerRequestHeader, MaybeRecord};
 use restate_types::replicated_loglet::{EffectiveNodeSet, LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::NodeSet;
+use restate_types::{NodeId, PlainNodeId};
 
 use crate::LogEntry;
 use crate::loglet::OperationError;
+use crate::providers::replicated_loglet::LATENCY_TRACKER;
 use crate::providers::replicated_loglet::metric_definitions::{
     BIFROST_REPLICATED_READ_CACHE_FILTERED, BIFROST_REPLICATED_READ_CACHE_HIT,
     BIFROST_REPLICATED_READ_TOTAL,
@@ -190,6 +193,7 @@ impl ReadStreamTask {
                     None
                 }
             };
+        let cluster_state = TaskCenter::with_current(|tc| tc.cluster_state().clone());
 
         // [important]
         // We rely on the periodic task owned by the provider to refresh our view of the tail.
@@ -295,12 +299,24 @@ impl ReadStreamTask {
             }
 
             // Read from logservers
-            let effective_nodeset =
-                EffectiveNodeSet::new(self.my_params.nodeset.clone(), nodes_config.live_load());
-            // Order the nodeset such that our node is the first one to attempt
-            let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node);
+            let effective_nodeset = if cluster_state.is_alive(my_node.into()) {
+                EffectiveNodeSet::from_iter(
+                    self.my_params
+                        .nodeset
+                        .iter()
+                        .filter(|id| cluster_state.is_alive(NodeId::from(*id)))
+                        .copied(),
+                    nodes_config.live_load(),
+                )
+            } else {
+                // if my own node is not alive, we shouldn't trust the state of cluster-state.
+                EffectiveNodeSet::from_iter(
+                    self.my_params.nodeset.iter().copied(),
+                    nodes_config.live_load(),
+                )
+            };
 
-            if mutable_effective_nodeset.is_empty() {
+            if effective_nodeset.is_empty() {
                 // if nodeset is all disabled, no readable nodes. impossible situation to resolve,
                 if self
                     .my_params
@@ -323,6 +339,9 @@ impl ReadStreamTask {
                     continue 'main;
                 }
             }
+
+            // Order the nodeset such that our node is the first one to attempt
+            let mut mutable_effective_nodeset = effective_nodeset.shuffle_for_reads(my_node);
 
             'attempt_from_servers: loop {
                 // Read from _somewhere_ until we reach the tail, target, or the available permits.
@@ -568,13 +587,22 @@ impl ReadStreamTask {
             server
         );
 
+        let adaptive_timeout = AdaptiveTimeout::new(TimeoutConfig {
+            backoff: options.rpc_timeout,
+            quantile: 0.9999, // base timeout on P99.99
+            safety_factor: 2.0,
+        });
+        let timeout =
+            adaptive_timeout.select_timeout_sync(&LATENCY_TRACKER, &[server], 1, Instant::now());
+
+        let read_start = Instant::now();
         let maybe_records = networking
             .call_rpc(
                 server,
                 Swimlane::BifrostReads,
                 request,
                 Some(self.my_params.loglet_id.into()),
-                Some(*options.log_server_rpc_timeout),
+                Some(timeout),
             )
             .await;
 
@@ -589,6 +617,7 @@ impl ReadStreamTask {
                     records.records.len(),
                     server,
                 );
+                LATENCY_TRACKER.record_latency_from(&server, read_start, Instant::now());
                 self.global_tail_watch
                     .notify_offset_update(records.known_global_tail);
                 // note: next_offset == read_pointer(aka. from_offset) if the server has no results
@@ -601,6 +630,9 @@ impl ReadStreamTask {
                 })
             }
             Err(e) => {
+                if let RpcError::Timeout(spent) = e {
+                    LATENCY_TRACKER.record_latency(&server, spent, Instant::now());
+                }
                 trace!(
                     loglet_id = %self.my_params.loglet_id,
                     from_offset = %self.read_pointer,

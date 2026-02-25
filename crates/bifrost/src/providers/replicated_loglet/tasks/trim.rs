@@ -8,20 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU8;
+
 use tokio::task::JoinSet;
 use tracing::{Instrument, Span, debug, instrument, trace, warn};
 
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::{Metadata, TaskCenterFutureExt};
 use restate_types::PlainNodeId;
-use restate_types::config::Configuration;
 use restate_types::logs::{LogletOffset, SequenceNumber, TailOffsetWatch};
 use restate_types::net::log_server::{LogServerRequestHeader, Status, Trim, Trimmed};
 use restate_types::replicated_loglet::{LogNodeSetExt, ReplicatedLogletParams};
 use restate_types::replication::{NodeSet, NodeSetChecker};
 
 use crate::loglet::OperationError;
-use crate::providers::replicated_loglet::tasks::util::RunOnSingleNode;
+use crate::providers::replicated_loglet::tasks::util::{Attempts, RunOnSingleNode};
 
 use super::util::Disposition;
 
@@ -121,11 +122,7 @@ impl<'a> TrimTask<'a> {
                             node_id,
                             request,
                             &known_global_tail,
-                            Configuration::pinned()
-                                .bifrost
-                                .replicated_loglet
-                                .log_server_retry_policy
-                                .clone(),
+                            Attempts::exact(NonZeroU8::new(3).unwrap()),
                         );
 
                         (node_id, task.run(on_trim_response, &networking).await)
