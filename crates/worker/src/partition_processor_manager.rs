@@ -34,8 +34,9 @@ use tracing::{debug, error, info, info_span, instrument, trace, warn};
 use restate_bifrost::Bifrost;
 use restate_bifrost::loglet::FindTailOptions;
 use restate_core::network::{
-    BackPressureMode, Incoming, MessageRouterBuilder, Rpc, ServiceMessage, ServiceReceiver,
-    TransportConnect, Verdict,
+    BackPressureMode, ControlServiceShards, Incoming, MessageRouterBuilder, Rpc, ServiceMessage,
+    ServiceReceiver, ShardControlMessage, ShardRegistrationDecision, Sharded, TransportConnect,
+    Verdict,
 };
 use restate_core::worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use restate_core::{
@@ -104,7 +105,8 @@ pub struct PartitionProcessorManager<T> {
     metadata_writer: MetadataWriter,
     partition_store_manager: Arc<PartitionStoreManager>,
     ppm_svc_rx: ServiceReceiver<PartitionManagerService>,
-    pp_rpc_rx: ServiceReceiver<PartitionLeaderService>,
+    pp_rpc_svc: Sharded<PartitionLeaderService>,
+    pp_rpc_shards: Option<ControlServiceShards<PartitionLeaderService>>,
     bifrost: Bifrost,
     rx: mpsc::Receiver<ProcessorsManagerCommand>,
     tx: mpsc::Sender<ProcessorsManagerCommand>,
@@ -252,20 +254,16 @@ where
         let config = updateable_config.pinned();
         let ppm_svc_rx = router_builder.register_service(BackPressureMode::Lossy);
 
-        // NOTE: this is a shared pool for RPC requests from ingress and ingestion clients across all
-        // partitions.
-        //
-        // NOTE: This is a transitional solution until we allow partitions to auto-register
-        // their sort-codes into the message router.
-        // todo(asoli): Make sort-code-based routing happen directly in MessageRouter.
+        // NOTE: this is a shared pool for RPC requests from ingress and ingestion
+        // clients across all partitions.
         let pp_rpc_pool = TaskCenter::with_current(|tc| {
             tc.memory_controller()
                 .create_pool("partition-leader-rpc", || {
                     Configuration::pinned().worker.data_service_memory_limit
                 })
         });
-        let pp_rpc_rx =
-            router_builder.register_service_with_pool(pp_rpc_pool, BackPressureMode::PushBack);
+        let pp_rpc_svc = router_builder
+            .register_sharded_service_with_pool(pp_rpc_pool, BackPressureMode::PushBack);
 
         let invoker_capacity = InvokerCapacity::new(
             config.worker.invoker.concurrent_invocations_limit(),
@@ -282,7 +280,8 @@ where
             metadata_writer,
             partition_store_manager,
             ppm_svc_rx,
-            pp_rpc_rx,
+            pp_rpc_svc,
+            pp_rpc_shards: None,
             bifrost,
             rx,
             tx,
@@ -329,7 +328,8 @@ where
         update_target_tail_lsns.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         let mut ppm_svc_rx = self.ppm_svc_rx.take().start();
-        let mut pp_rpc_rx = self.pp_rpc_rx.take().start();
+        let (mut pp_rpc_control, pp_rpc_shards) = self.pp_rpc_svc.take().start();
+        self.pp_rpc_shards = Some(pp_rpc_shards);
         self.health_status.update(WorkerStatus::Ready);
 
         provision_worker(&self.metadata_writer).await?;
@@ -367,10 +367,8 @@ where
                 Some(event) = self.asynchronous_operations.join_next() => {
                     self.on_asynchronous_event(event.context("asynchronous operations must not panic")?);
                 }
-                // todo(asoli): Move this out of the PPM's loop and let each partition handle their
-                // own RPC queue directly.
-                Some(partition_processor_rpc) = pp_rpc_rx.next() => {
-                    self.on_partition_processor_rpc(partition_processor_rpc);
+                Some(ShardControlMessage::RegisterSortCode { sort_code, decision }) = pp_rpc_control.next() => {
+                    self.on_register_pp_rpc_shard(sort_code, decision);
                 }
                 Some(result) = self.snapshot_export_tasks.next() => {
                     match result {
@@ -386,6 +384,7 @@ where
                     self.on_replica_set_state_changes(&replica_set_states);
                 }
                 _ = &mut shutdown => {
+                    drop(pp_rpc_control);
                     break
                 }
             }
@@ -451,27 +450,43 @@ where
         }
     }
 
-    fn on_partition_processor_rpc(&self, msg: ServiceMessage<PartitionLeaderService>) {
-        // We want the partition processor to decode the request and that we we only do the routing here.
-        let Some(sort_code) = msg.sort_code() else {
-            msg.fail(Verdict::SortCodeNotFound);
-            return;
-        };
-
-        // if this doesn't fit, then the partition id is not valid.
+    fn on_register_pp_rpc_shard(
+        &self,
+        sort_code: u64,
+        decision: ShardRegistrationDecision<PartitionLeaderService>,
+    ) {
         let Ok(partition_id) = u16::try_from(sort_code) else {
             error!(%sort_code, "Invalid partition id in RPC request. This indicates a protocol bug!");
-            msg.fail(Verdict::MessageUnrecognized);
+            decision.fail(Verdict::MessageUnrecognized);
             return;
         };
 
         let partition_id = PartitionId::from(partition_id);
         match self.processor_states.get(&partition_id) {
-            None => msg.fail(Verdict::SortCodeNotFound),
-            Some(processor_state) => {
-                processor_state.try_send_rpc(msg);
+            Some(ProcessorState::Started { processor, .. }) => {
+                // The PP is running but its shard wasn't pre-registered (race between
+                // start and first message). Register it now.
+                let pp = processor.as_ref().expect("must be some");
+                decision.accept(pp.rpc_shard_sender());
+            }
+            _ => {
+                // Not started (or starting/stopping) — reject.
+                //
+                // todo(asoli): consider other strategies here:
+                //   1. If the partition is still starting up, latch the registration
+                //      token onto it and resolve when read, or drop if it fails.
+                //   2. If partition is starting, up still maybe we can add a "sort-code not ready"
+                //   error to make it clear that the shard is still starting up?
+                decision.fail(Verdict::SortCodeNotFound);
             }
         }
+    }
+
+    fn unregister_pp_rpc_shard(&self, partition_id: PartitionId) {
+        self.pp_rpc_shards
+            .as_ref()
+            .unwrap()
+            .force_unregister_sort_code(u64::from(u16::from(partition_id)));
     }
 
     #[instrument(
@@ -502,6 +517,17 @@ where
                                         started_processor.key_range().clone(),
                                         started_processor.invoker_status_reader().clone(),
                                     );
+
+                                    // Pre-register the shard so messages route
+                                    // directly to this PP without going through
+                                    // the control stream.
+                                    self.pp_rpc_shards
+                                        .as_ref()
+                                        .unwrap()
+                                        .force_register_sort_code(
+                                            u64::from(u16::from(partition_id)),
+                                            started_processor.rpc_shard_sender(),
+                                        );
 
                                     let mut new_state = ProcessorState::started(
                                         started_processor,
@@ -567,6 +593,7 @@ where
                 gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
             }
             EventKind::Stopped(result) => {
+                self.unregister_pp_rpc_shard(partition_id);
                 let delay = match self.processor_states.remove(&partition_id) {
                     None => {
                         debug!("Stopped partition processor which is no longer running.");
