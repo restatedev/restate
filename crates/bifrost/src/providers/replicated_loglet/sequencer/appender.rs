@@ -20,6 +20,7 @@ use tokio::{sync::OwnedSemaphorePermit, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, instrument, trace, warn};
 
+use restate_core::TaskCenter;
 use restate_core::network::{NetworkSender, RpcError, Swimlane};
 use restate_core::{
     Metadata, TaskCenterFutureExt,
@@ -279,6 +280,15 @@ impl<T: TransportConnect> SequencerAppender<T> {
     fn generate_spread(&mut self) -> Result<Spread, SpreadSelectorError> {
         let rng = &mut rand::rng();
         let nodes_config = Metadata::with_current(|m| m.nodes_config_ref());
+        TaskCenter::with_current(|tc| {
+            let cs = tc.cluster_state();
+            for node_id in self.sequencer_shared_state.nodeset().iter() {
+                if !cs.is_alive(node_id.into()) {
+                    self.graylist.insert(*node_id);
+                }
+            }
+        });
+
         match self
             .sequencer_shared_state
             .selector
@@ -292,6 +302,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     %err,
                     "Cannot select a spread, perhaps too many nodes are graylisted, will clear the list and try again"
                 );
+                // In this case, we will ignore the cluster state and try all nodes.
                 self.reset_graylist();
                 self.sequencer_shared_state
                     .selector
