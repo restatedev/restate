@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU16, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use adaptive_timeout::BackoffInterval;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::warn;
@@ -283,7 +284,15 @@ pub struct ReplicatedLogletOptions {
     /// Sequencer retry policy
     ///
     /// Backoff introduced when sequencer fail to find a suitable spread of log servers
-    pub sequencer_retry_policy: RetryPolicy,
+    #[deprecated(since = "1.6.3", note = "Use `rpc_timeout` instead")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequencer_retry_policy: Option<RetryPolicy>,
+
+    /// Adaptive timeout for LogServer RPC
+    ///
+    /// This configures the adaptive timeout range for RPC operations from this node to log servers.
+    /// The timeout range is also used to determine the appropriate retry delay between retry attempts.
+    pub rpc_timeout: BackoffInterval,
 
     /// Sequencer inactivity timeout
     ///
@@ -364,12 +373,11 @@ impl Default for ReplicatedLogletOptions {
         Self {
             maximum_inflight_records: NonZeroUsize::new(1000).unwrap(),
 
-            sequencer_retry_policy: RetryPolicy::exponential(
-                Duration::from_millis(250),
-                2.0,
-                None,
-                Some(Duration::from_millis(5000)),
-            ),
+            sequencer_retry_policy: None,
+            rpc_timeout: BackoffInterval {
+                min_ms: NonZeroU32::new(250).unwrap(),
+                max_ms: NonZeroU32::new(60_000).unwrap(),
+            },
             sequencer_inactivity_timeout: NonZeroFriendlyDuration::from_secs_unchecked(15),
             read_batch_size: NonZeroByteCount::new(
                 NonZeroUsize::new(32 * 1024).expect("Non zero number"),

@@ -9,8 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use std::ops::Deref;
+use std::sync::LazyLock;
 use std::{cmp::Ordering, fmt::Display, sync::Arc, time::Duration};
 
+use adaptive_timeout::{AdaptiveTimeout, BackoffInterval, TimeoutConfig};
+use adaptive_timeout::{LatencyTracker, TrackerConfig};
+use parking_lot::Mutex;
 use tokio::time::Instant;
 use tokio::{sync::OwnedSemaphorePermit, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -21,6 +25,8 @@ use restate_core::{
     Metadata, TaskCenterFutureExt,
     network::{Networking, TransportConnect},
 };
+use restate_serde_util::ByteCount;
+use restate_time_util::DurationExt;
 use restate_types::replicated_loglet::Spread;
 use restate_types::retries::with_jitter;
 use restate_types::{
@@ -34,20 +40,21 @@ use restate_types::{
 };
 
 use super::{RecordsExt, SequencerSharedState};
-use crate::providers::replicated_loglet::metric_definitions::BIFROST_SEQ_APPEND_DURATION;
-use crate::providers::replicated_loglet::replication::spread_selector::SpreadSelectorError;
-use crate::{
-    loglet::{AppendError, LogletCommitResolver},
-    providers::replicated_loglet::{
-        log_server_manager::RemoteLogServer,
-        metric_definitions::{
-            BIFROST_SEQ_RECORDS_COMMITTED_BYTES, BIFROST_SEQ_RECORDS_COMMITTED_TOTAL,
-        },
-    },
+use crate::loglet::{AppendError, LogletCommitResolver};
+use crate::providers::replicated_loglet::metric_definitions::{
+    BIFROST_SEQ_APPEND_DURATION, BIFROST_SEQ_RECORDS_COMMITTED_BYTES,
+    BIFROST_SEQ_RECORDS_COMMITTED_TOTAL,
 };
+use crate::providers::replicated_loglet::replication::spread_selector::SpreadSelectorError;
 
-const DEFAULT_BACKOFF_TIME: Duration = Duration::from_millis(1000);
-const TONE_ESCALATION_THRESHOLD: usize = 5;
+static STORE_LATENCY_TRACKER: LazyLock<Mutex<LatencyTracker<PlainNodeId, Instant>>> =
+    LazyLock::new(|| {
+        Mutex::new(LatencyTracker::<PlainNodeId, Instant>::new(
+            TrackerConfig::default(),
+        ))
+    });
+
+const TONE_ESCALATION_THRESHOLD: u32 = 5;
 
 enum State {
     Wave,
@@ -64,9 +71,10 @@ pub(crate) struct SequencerAppender<T> {
     networking: Networking<T>,
     first_offset: LogletOffset,
     records: Arc<[Record]>,
+    payload_size: u32,
     checker: NodeSetChecker<NodeAttributes>,
     nodeset_status: DecoratedNodeSet<PerNodeStatus>,
-    current_wave: usize,
+    current_wave: u32,
     // permit is held during the entire live
     // of the batch to limit the number of
     // inflight batches
@@ -78,7 +86,6 @@ pub(crate) struct SequencerAppender<T> {
 }
 
 impl<T: TransportConnect> SequencerAppender<T> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sequencer_shared_state: Arc<SequencerSharedState>,
         networking: Networking<T>,
@@ -99,14 +106,18 @@ impl<T: TransportConnect> SequencerAppender<T> {
         let nodeset_status =
             DecoratedNodeSet::from(sequencer_shared_state.selector.nodeset().clone());
 
+        let payload_size: u32 =
+            u32::try_from(records.estimated_encode_size()).expect("record batch must be < 4GiB");
+
         Self {
             sequencer_shared_state,
             networking,
+            first_offset,
+            records,
+            payload_size,
             checker,
             nodeset_status,
             current_wave: 0,
-            first_offset,
-            records,
             permit: Some(permit),
             commit_resolver: Some(commit_resolver),
             configuration: Configuration::live(),
@@ -118,11 +129,11 @@ impl<T: TransportConnect> SequencerAppender<T> {
         level="debug",
         skip(self),
         fields(
+            log_id=%self.sequencer_shared_state.loglet_id().log_id(),
             loglet_id=%self.sequencer_shared_state.loglet_id(),
             first_offset=%self.first_offset,
             to_offset=%self.records.last_offset(self.first_offset).unwrap(),
             length=%self.records.len(),
-            otel.name="replicated_loglet::sequencer::appender: run"
         )
     )]
     pub async fn run(mut self, cancellation_token: CancellationToken) {
@@ -130,25 +141,27 @@ impl<T: TransportConnect> SequencerAppender<T> {
         // initial wave has 0 replicated and 0 gray listed node
         let mut state = State::Wave;
 
-        let retry_policy = self
-            .configuration
-            .live_load()
-            .bifrost
-            .replicated_loglet
-            .sequencer_retry_policy
-            .clone();
-
-        let mut retry = retry_policy.iter();
-
         // this loop retries forever or until the task is cancelled
         let final_state = loop {
+            let store_backoff = self
+                .configuration
+                .live_load()
+                .bifrost
+                .replicated_loglet
+                .rpc_timeout;
+
+            let delay_config = AdaptiveTimeout::new(TimeoutConfig {
+                backoff: store_backoff,
+                quantile: 0.90,     // base timeout on P90
+                safety_factor: 1.0, // do not overshoot the delay between waves
+            });
             state = match state {
                 // termination conditions
                 State::Done | State::Cancelled | State::Sealed | State::WriteUnavailable => {
                     break state;
                 }
                 State::Wave => {
-                    self.current_wave += 1;
+                    self.current_wave = self.current_wave.wrapping_add(1);
                     // # Why is this cancellation safe?
                     // Because we don't await any futures inside the join_next() loop, so we are
                     // confident that have cancelled before resolving the commit token.
@@ -160,7 +173,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     // their perspective it has failed, and because the global tail was not moved, all
                     // appends after this one cannot move the global tail as well.
                     let Some(next_state) = cancellation_token
-                        .run_until_cancelled(self.send_wave())
+                        .run_until_cancelled(self.send_wave(store_backoff))
                         .await
                     else {
                         break State::Cancelled;
@@ -168,27 +181,30 @@ impl<T: TransportConnect> SequencerAppender<T> {
                     next_state
                 }
                 State::Backoff => {
-                    // since backoff can be None, or run out of iterations,
-                    // but appender should never give up we fall back to fixed backoff
-                    let delay = retry
-                        .next()
-                        .unwrap_or(with_jitter(DEFAULT_BACKOFF_TIME, 0.5));
+                    // we delay the next wave by the same amount as store timeout of the wave.
+                    let delay = delay_config.select_timeout(
+                        &mut STORE_LATENCY_TRACKER.lock(),
+                        self.sequencer_shared_state.nodeset().iter(),
+                        self.current_wave,
+                        Instant::now(),
+                    );
+
+                    let delay = with_jitter(delay, 0.3);
                     if self.current_wave >= TONE_ESCALATION_THRESHOLD {
-                        let estimated_bytes = self.records.estimated_encode_size();
                         warn!(
                             wave = %self.current_wave,
-                            loglet_id=%self.sequencer_shared_state.loglet_id(),
-                            first_offset=%self.first_offset,
-                            to_offset=%self.records.last_offset(self.first_offset).unwrap(),
-                            length=%self.records.len(),
-                            estimated_bytes=%estimated_bytes,
-                            otel.name="replicated_loglet::sequencer::appender: run",
-                            "Append wave failed, retrying with a new wave after {:?}. Status is {}", delay, self.nodeset_status
+                            log_id = %self.sequencer_shared_state.loglet_id().log_id(),
+                            loglet_id = %self.sequencer_shared_state.loglet_id(),
+                            first_offset = %self.first_offset,
+                            to_offset = %self.records.last_offset(self.first_offset).unwrap(),
+                            length = %self.records.len(),
+                            size = %ByteCount::from(self.payload_size),
+                            "Append wave failed, retrying with a new wave after {}. Status is {}", delay.friendly(), self.nodeset_status
                         );
                     } else {
                         debug!(
                             wave = %self.current_wave,
-                            "Append wave failed, retrying with a new wave after {:?}. Status is {}", delay, self.nodeset_status
+                            "Append wave failed, retrying with a new wave after {}. Status is {}", delay.friendly(), self.nodeset_status
                         );
                     }
 
@@ -285,7 +301,13 @@ impl<T: TransportConnect> SequencerAppender<T> {
     }
 
     #[instrument(skip_all, fields(wave = %self.current_wave))]
-    async fn send_wave(&mut self) -> State {
+    async fn send_wave(&mut self, store_backoff: BackoffInterval) -> State {
+        let timeout_config = AdaptiveTimeout::new(TimeoutConfig {
+            backoff: store_backoff,
+            quantile: 0.9999,   // base timeout on P99.99
+            safety_factor: 2.0, // 2x headroom over the observed quantile
+        });
+
         // select the spread
         let spread = match self.generate_spread() {
             Ok(spread) => spread,
@@ -301,31 +323,34 @@ impl<T: TransportConnect> SequencerAppender<T> {
         trace!(graylist = %self.graylist, %spread, wave = %self.current_wave, nodeset_status = %self.nodeset_status, "Sending append wave");
         let last_offset = self.records.last_offset(self.first_offset).unwrap();
 
-        // todo: should be exponential backoff
-        let store_timeout = *self
-            .configuration
-            .live_load()
-            .bifrost
-            .replicated_loglet
-            .log_server_rpc_timeout;
-
         // track the in flight server ids
-        let mut pending_servers = NodeSet::from_iter(spread.iter().copied());
+        let mut pending_servers: NodeSet = spread
+            .iter()
+            .filter(|node_id| {
+                // do not attempt on nodes that we know they're committed || sealed
+                !self
+                    .checker
+                    .get_attribute(node_id)
+                    .is_some_and(|status| status.committed || status.sealed)
+            })
+            .copied()
+            .collect();
         let mut store_tasks = JoinSet::new();
 
-        for node_id in spread.iter().copied() {
-            // do not attempt on nodes that we know they're committed || sealed
-            if let Some(status) = self.checker.get_attribute(&node_id)
-                && (status.committed || status.sealed)
-            {
-                pending_servers.remove(node_id);
-                continue;
-            }
+        let store_timeout = timeout_config.select_timeout(
+            &mut STORE_LATENCY_TRACKER.lock(),
+            pending_servers.iter(),
+            self.current_wave,
+            Instant::now(),
+        );
+
+        for node_id in pending_servers.iter().copied() {
             store_tasks
                 .build_task()
                 .name(&format!("store-to-{node_id}"))
                 .spawn({
                     let store_task = LogServerStoreTask {
+                        state: StoreState::default(),
                         node_id,
                         sequencer_shared_state: self.sequencer_shared_state.clone(),
                         networking: self.networking.clone(),
@@ -346,6 +371,7 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 trace!(%pending_servers, %spread, "Loglet was sealed, stopping this sequencer appender");
                 return State::Sealed;
             }
+
             let Ok((node_id, store_result)) = store_result else {
                 // task panicked, ignore
                 continue;
@@ -563,9 +589,22 @@ impl From<Result<StoreTaskStatus, RpcError>> for StoreTaskStatus {
     }
 }
 
+#[derive(Default)]
+enum StoreState {
+    #[default]
+    New,
+    WaitingTail,
+    Sending {
+        started_at: Instant,
+    },
+    Failed,
+    StoredReceived,
+}
+
 /// The task will retry to connect to the remote server if connection
 /// was lost.
 struct LogServerStoreTask<T> {
+    state: StoreState,
     node_id: PlainNodeId,
     sequencer_shared_state: Arc<SequencerSharedState>,
     networking: Networking<T>,
@@ -574,11 +613,30 @@ struct LogServerStoreTask<T> {
     store_timeout: Duration,
 }
 
+impl<T> Drop for LogServerStoreTask<T> {
+    fn drop(&mut self) {
+        if let StoreState::Sending { started_at } = self.state {
+            trace!(
+                log_id = %self.sequencer_shared_state.loglet_id().log_id(),
+                loglet_id = %self.sequencer_shared_state.loglet_id(),
+                first_offset=%self.first_offset,
+                "Sequencer: store task for peer {} dropped, age={}",
+                self.node_id,
+                started_at.elapsed().friendly()
+            );
+            STORE_LATENCY_TRACKER.lock().record_latency_from(
+                &self.node_id,
+                started_at,
+                Instant::now(),
+            );
+        }
+    }
+}
+
 impl<T: TransportConnect> LogServerStoreTask<T> {
     #[instrument(
         skip_all,
         fields(
-            otel.name = "sequencer: store_task",
             loglet_id = %self.sequencer_shared_state.loglet_id(),
             first_offset=%self.first_offset,
             last_offset = %self.records.last_offset(self.first_offset).unwrap(),
@@ -589,16 +647,19 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
         let result = self.send().await;
         match &result {
             Ok(status) => {
-                tracing::trace!(
+                trace!(
                     result = ?status,
                     "Got store result from log server"
                 );
             }
             Err(err) => {
-                tracing::trace!(
+                self.state = StoreState::Failed;
+                debug!(
+                    log_id = %self.sequencer_shared_state.loglet_id().log_id(),
+                    loglet_id = %self.sequencer_shared_state.loglet_id(),
                     error = %err,
-                    "Failed to send store to log server"
-                )
+                    "Failed to send store to log server node {}", self.node_id
+                );
             }
         }
 
@@ -606,6 +667,7 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
     }
 
     async fn send(&mut self) -> Result<StoreTaskStatus, RpcError> {
+        self.state = StoreState::WaitingTail;
         let server = self
             .sequencer_shared_state
             .log_server_manager
@@ -643,8 +705,18 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
             }
         }
 
-        let stored = self.try_send(server).await?;
+        let started_at = Instant::now();
+        self.state = StoreState::Sending { started_at };
+        let stored = self.try_send().await?;
 
+        let latency = STORE_LATENCY_TRACKER.lock().record_latency_from(
+            &self.node_id,
+            started_at,
+            Instant::now(),
+        );
+
+        server.store_latency().record(latency);
+        self.state = StoreState::StoredReceived;
         server.local_tail().notify_offset_update(stored.local_tail);
 
         match stored.status {
@@ -661,7 +733,7 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
         Ok(StoreTaskStatus::Stored(stored))
     }
 
-    async fn try_send(&self, server: &RemoteLogServer) -> Result<Stored, RpcError> {
+    async fn try_send(&self) -> Result<Stored, RpcError> {
         let timeout_at = MillisSinceEpoch::after(self.store_timeout);
         let loglet_id = *self.sequencer_shared_state.loglet_id();
         let store = Store {
@@ -679,7 +751,6 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
             timeout_at: Some(timeout_at),
         };
 
-        let store_start_time = Instant::now();
         // note: we are over-indexing on the fact that currently the sequencer will send one
         // message at a time per log-server. My argument to make us not sticking to a single
         // connection is that the complexity with the previous design didn't add any value. When we
@@ -694,9 +765,18 @@ impl<T: TransportConnect> LogServerStoreTask<T> {
                 Some(loglet_id.into()),
                 Some(self.store_timeout),
             )
-            .await?;
+            .await
+            .inspect_err(|err| {
+                if let RpcError::Timeout(spent) = err {
+                    // record the time spent
+                    STORE_LATENCY_TRACKER.lock().record_latency(
+                        &self.node_id,
+                        *spent,
+                        Instant::now(),
+                    );
+                }
+            })?;
 
-        server.store_latency().record(store_start_time.elapsed());
         Ok(stored)
     }
 }
