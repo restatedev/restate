@@ -22,5 +22,16 @@ mod tasks;
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
 
+// Re-export
 pub use provider::Factory;
 pub use restate_types::replicated_loglet::logserver_candidate_filter;
+
+use std::sync::LazyLock;
+
+use adaptive_timeout::{SyncLatencyTracker, TrackerConfig};
+use tokio::time::Instant;
+
+use restate_types::PlainNodeId;
+
+static LATENCY_TRACKER: LazyLock<SyncLatencyTracker<PlainNodeId, Instant>> =
+    LazyLock::new(|| SyncLatencyTracker::<PlainNodeId, Instant>::new(TrackerConfig::default()));
