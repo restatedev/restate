@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod appender;
+mod stats;
 
 use std::sync::{
     Arc,
@@ -32,7 +33,7 @@ use restate_types::{
     replication::{NodeSet, ReplicationProperty},
 };
 
-use self::appender::SequencerAppender;
+use self::{appender::SequencerAppender, stats::SequencerStats};
 use super::{
     log_server_manager::RemoteLogServerManager,
     replication::spread_selector::{SelectorStrategy, SpreadSelector},
@@ -61,6 +62,7 @@ pub struct SequencerSharedState {
     selector: SpreadSelector,
     log_server_manager: RemoteLogServerManager,
     maybe_sealed: AtomicBool,
+    stats: SequencerStats,
 }
 
 impl SequencerSharedState {
@@ -168,6 +170,7 @@ impl<T: TransportConnect> Sequencer<T> {
             my_params,
             selector,
             maybe_sealed: AtomicBool::new(false),
+            stats: SequencerStats::default(),
         });
 
         Self {
