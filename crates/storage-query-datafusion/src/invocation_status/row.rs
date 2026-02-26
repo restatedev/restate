@@ -75,72 +75,69 @@ pub(crate) fn append_invocation_status_row<'a>(
 
     fill_timestamps(&mut row, invocation_status);
 
-    // Additional invocation metadata
-    use restate_storage_api::protobuf_types::v1::invocation_status_v2::Status;
-    match invocation_status.inner.status() {
-        Status::Scheduled => {
-            row.status("scheduled");
-            if row.is_created_using_restate_version_defined() {
-                row.created_using_restate_version(
-                    invocation_status.created_using_restate_version()?,
-                );
-            }
-            if row.is_scheduled_at_defined()
-                && let Some(execution_time) = invocation_status.inner.execution_time
-            {
-                row.scheduled_start_at(execution_time as i64)
-            }
-            if row.is_completion_retention_defined() {
-                row.completion_retention(
-                    invocation_status
-                        .completion_retention_duration()?
-                        .as_millis() as i64,
-                );
-            }
-            if row.is_journal_retention_defined() {
-                row.journal_retention(
-                    invocation_status.journal_retention_duration()?.as_millis() as i64
-                );
-            }
-        }
-        Status::Inboxed => {
-            row.status("inboxed");
-            if row.is_created_using_restate_version_defined() {
-                row.created_using_restate_version(
-                    invocation_status.created_using_restate_version()?,
-                );
-            }
-            if row.is_scheduled_at_defined()
-                && let Some(execution_time) = invocation_status.inner.execution_time
-            {
-                row.scheduled_start_at(execution_time as i64)
-            }
-            if row.is_completion_retention_defined() {
-                row.completion_retention(
-                    invocation_status
-                        .completion_retention_duration()?
-                        .as_millis() as i64,
-                );
-            }
-            if row.is_journal_retention_defined() {
-                row.journal_retention(
-                    invocation_status.journal_retention_duration()?.as_millis() as i64
-                );
-            }
-        }
-        Status::Invoked => {
-            row.status("invoked");
-            fill_journal_metadata(&mut row, invocation_status)?;
-            fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
-        }
-        Status::Paused => {
-            row.status("paused");
-            fill_journal_metadata(&mut row, invocation_status)?;
-            fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
-        }
-        Status::Suspended => {
-            row.status("suspended");
+    let status = invocation_status.status()?;
+    row.status(status);
 
+    // Additional invocation metadata
+    use restate_storage_api::invocation_status_table::InvocationStatusDiscriminants;
+    match status {
+        InvocationStatusDiscriminants::Scheduled => {
+            if row.is_created_using_restate_version_defined() {
+                row.created_using_restate_version(
+                    invocation_status.created_using_restate_version()?,
+                );
+            }
+            if row.is_scheduled_at_defined()
+                && let Some(execution_time) = invocation_status.inner.execution_time
+            {
+                row.scheduled_start_at(execution_time as i64)
+            }
+            if row.is_completion_retention_defined() {
+                row.completion_retention(
+                    invocation_status
+                        .completion_retention_duration()?
+                        .as_millis() as i64,
+                );
+            }
+            if row.is_journal_retention_defined() {
+                row.journal_retention(
+                    invocation_status.journal_retention_duration()?.as_millis() as i64
+                );
+            }
+        }
+        InvocationStatusDiscriminants::Inboxed => {
+            if row.is_created_using_restate_version_defined() {
+                row.created_using_restate_version(
+                    invocation_status.created_using_restate_version()?,
+                );
+            }
+            if row.is_scheduled_at_defined()
+                && let Some(execution_time) = invocation_status.inner.execution_time
+            {
+                row.scheduled_start_at(execution_time as i64)
+            }
+            if row.is_completion_retention_defined() {
+                row.completion_retention(
+                    invocation_status
+                        .completion_retention_duration()?
+                        .as_millis() as i64,
+                );
+            }
+            if row.is_journal_retention_defined() {
+                row.journal_retention(
+                    invocation_status.journal_retention_duration()?.as_millis() as i64
+                );
+            }
+        }
+        InvocationStatusDiscriminants::Invoked => {
+            fill_journal_metadata(&mut row, invocation_status)?;
+            fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
+        }
+        InvocationStatusDiscriminants::Paused => {
+            fill_journal_metadata(&mut row, invocation_status)?;
+            fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
+        }
+        InvocationStatusDiscriminants::Suspended => {
             if row.is_suspended_waiting_for_completions_defined() {
                 row.suspended_waiting_for_completions(
                     invocation_status
@@ -164,8 +161,7 @@ pub(crate) fn append_invocation_status_row<'a>(
             fill_journal_metadata(&mut row, invocation_status)?;
             fill_in_flight_invocation_metadata(&mut row, invocation_status)?;
         }
-        Status::Completed => {
-            row.status("completed");
+        InvocationStatusDiscriminants::Completed => {
             fill_journal_metadata(&mut row, invocation_status)?;
 
             if row.is_pinned_deployment_id_defined()
@@ -231,7 +227,6 @@ pub(crate) fn append_invocation_status_row<'a>(
                 }
             }
         }
-        Status::UnknownStatus => return Err(ConversionError::invalid_data("status")),
     };
 
     Ok(())

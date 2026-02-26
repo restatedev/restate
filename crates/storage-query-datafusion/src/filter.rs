@@ -154,20 +154,21 @@ where
 }
 
 /// A normalized representation of predicates that compare a column to literal values.
-/// Handles `col = lit`, `col IN (lit, ...)`, and `col = lit OR col = lit ...` patterns.
-struct InList<'a> {
-    col: &'a Column,
-    list: HashSet<&'a ScalarValue>,
-    negated: bool,
+/// Handles `col = lit`, `col != lit`, `col IN (lit, ...)`, `col NOT IN (lit, ...)`,
+/// `(expr) IS [NOT] DISTINCT FROM true`, and OR trees of same-polarity filters.
+pub(crate) struct InList<'a> {
+    pub col: &'a Column,
+    pub list: HashSet<&'a ScalarValue>,
+    pub negated: bool,
 }
 
 impl<'a> InList<'a> {
-    fn parse(predicate: &'a Arc<dyn PhysicalExpr>, depth_limit: usize) -> Option<Self> {
+    pub(crate) fn parse(predicate: &'a Arc<dyn PhysicalExpr>, depth_limit: usize) -> Option<Self> {
         if depth_limit <= 1 {
             return None;
         }
 
-        // Handle IN list: col IN ('a', 'b', ...)
+        // Handle IN / NOT IN list: col [NOT] IN ('a', 'b', ...)
         if let Some(in_list) = predicate.as_any().downcast_ref::<InListExpr>() {
             let col = in_list.expr().as_any().downcast_ref::<Column>()?;
 
@@ -187,31 +188,62 @@ impl<'a> InList<'a> {
         let binary = predicate.as_any().downcast_ref::<BinaryExpr>()?;
 
         match binary.op() {
-            // Handle simple equality: col = 'a'
-            Operator::Eq => {
+            // col = 'a', col != 'a'
+            Operator::Eq | Operator::NotEq => {
                 let (col, lit) = extract_column_literal(binary.left(), binary.right())
                     .or_else(|| extract_column_literal(binary.right(), binary.left()))?;
 
                 Some(InList {
                     col,
                     list: HashSet::from_iter([lit.value()]),
-                    negated: false,
+                    negated: *binary.op() == Operator::NotEq,
                 })
             }
-            // Handle OR: col = 'a' OR col = 'b'
+            // (expr) IS NOT DISTINCT FROM true  /  (expr) IS DISTINCT FROM true
+            // These come from pushing the `status` case expr through a join
+            Operator::IsNotDistinctFrom | Operator::IsDistinctFrom => {
+                let inner = match (binary.left(), binary.right()) {
+                    (inner, bool) | (bool, inner)
+                        if bool.as_any().downcast_ref::<Literal>().is_some_and(|lit| {
+                            *lit.value() == ScalarValue::Boolean(Some(true))
+                        }) =>
+                    {
+                        Some(inner)
+                    }
+                    _ => None,
+                }?;
+                let mut result = Self::parse(inner, depth_limit - 1)?;
+                if *binary.op() == Operator::IsDistinctFrom {
+                    result.negated = !result.negated;
+                }
+                Some(result)
+            }
+            // OR: merge lists on the same column
             Operator::Or => {
-                let mut left = Self::parse(binary.left(), depth_limit - 1)?;
+                let left = Self::parse(binary.left(), depth_limit - 1)?;
                 let right = Self::parse(binary.right(), depth_limit - 1)?;
 
-                if left.col.name() == right.col.name() && !left.negated && !right.negated {
-                    left.list.extend(right.list);
-                    Some(InList {
-                        col: left.col,
-                        list: left.list,
-                        negated: false,
-                    })
-                } else {
-                    None
+                if left.col.name() != right.col.name() {
+                    return None;
+                }
+
+                match (left.negated, right.negated, left, right) {
+                    // IN (a,b) OR IN (b,c) = IN (a,b,c)
+                    (false, false, mut left, right) => {
+                        left.list.extend(right.list);
+                        Some(left)
+                    }
+                    // NOT IN (a,b) OR NOT IN (b,c) = NOT IN (b)
+                    (true, true, mut left, right) => {
+                        left.list.retain(|v| right.list.contains(v));
+                        Some(left)
+                    }
+                    // NOT IN (a,b) OR IN (b,c) = NOT IN ({a,b} - {b,c}) = NOT IN (a)
+                    (true, false, mut negative, positive)
+                    | (false, true, positive, mut negative) => {
+                        negative.list.retain(|v| !positive.list.contains(v));
+                        Some(negative)
+                    }
                 }
             }
             _ => None,
@@ -219,7 +251,7 @@ impl<'a> InList<'a> {
     }
 }
 
-fn extract_column_literal<'a>(
+pub(super) fn extract_column_literal<'a>(
     column: &'a Arc<dyn PhysicalExpr>,
     literal: &'a Arc<dyn PhysicalExpr>,
 ) -> Option<(&'a Column, &'a Literal)> {
@@ -618,5 +650,232 @@ mod tests {
 
         let filter = InvocationIdFilter::new(FULL_RANGE, Some(predicate));
         assert!(filter.invocation_ids.is_none());
+    }
+
+    // --- InList unit tests ---
+
+    fn not_eq(left: Arc<dyn PhysicalExpr>, right: Arc<dyn PhysicalExpr>) -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            left,
+            datafusion::logical_expr::Operator::NotEq,
+            right,
+        ))
+    }
+
+    fn not_in_list(col_name: &str, list: Vec<Arc<dyn PhysicalExpr>>) -> Arc<dyn PhysicalExpr> {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        let schema = Schema::new(vec![Field::new(col_name, DataType::LargeUtf8, true)]);
+        Arc::new(InListExpr::try_new(col(col_name), list, true, &schema).expect("valid in-list"))
+    }
+
+    fn bool_lit(value: bool) -> Arc<dyn PhysicalExpr> {
+        Arc::new(Literal::new(ScalarValue::Boolean(Some(value))))
+    }
+
+    fn is_not_distinct_from(
+        left: Arc<dyn PhysicalExpr>,
+        right: Arc<dyn PhysicalExpr>,
+    ) -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            left,
+            datafusion::logical_expr::Operator::IsNotDistinctFrom,
+            right,
+        ))
+    }
+
+    fn is_distinct_from(
+        left: Arc<dyn PhysicalExpr>,
+        right: Arc<dyn PhysicalExpr>,
+    ) -> Arc<dyn PhysicalExpr> {
+        Arc::new(BinaryExpr::new(
+            left,
+            datafusion::logical_expr::Operator::IsDistinctFrom,
+            right,
+        ))
+    }
+
+    #[test]
+    fn inlist_not_eq() {
+        let pred = not_eq(col("status"), utf8_lit("active"));
+        let result = super::InList::parse(&pred, 5).expect("should parse");
+        assert_eq!(result.col.name(), "status");
+        assert!(result.negated);
+        assert_eq!(result.list.len(), 1);
+        assert!(
+            result
+                .list
+                .contains(&ScalarValue::LargeUtf8(Some("active".into())))
+        );
+    }
+
+    #[test]
+    fn inlist_not_eq_reversed() {
+        let pred = not_eq(utf8_lit("active"), col("status"));
+        let result = super::InList::parse(&pred, 5).expect("should parse");
+        assert_eq!(result.col.name(), "status");
+        assert!(result.negated);
+    }
+
+    #[test]
+    fn inlist_not_in() {
+        let pred = not_in_list("status", vec![utf8_lit("a"), utf8_lit("b")]);
+        let result = super::InList::parse(&pred, 5).expect("should parse");
+        assert_eq!(result.col.name(), "status");
+        assert!(result.negated);
+        assert_eq!(result.list.len(), 2);
+    }
+
+    #[test]
+    fn inlist_is_not_distinct_from_true() {
+        // (status = 'active') IS NOT DISTINCT FROM true  =>  same as status = 'active'
+        let inner = eq(col("status"), utf8_lit("active"));
+        let pred = is_not_distinct_from(inner, bool_lit(true));
+        let result = super::InList::parse(&pred, 5).expect("should parse");
+        assert_eq!(result.col.name(), "status");
+        assert!(!result.negated);
+        assert_eq!(result.list.len(), 1);
+    }
+
+    #[test]
+    fn inlist_is_distinct_from_true() {
+        // (status = 'active') IS DISTINCT FROM true  =>  negated
+        let inner = eq(col("status"), utf8_lit("active"));
+        let pred = is_distinct_from(inner, bool_lit(true));
+        let result = super::InList::parse(&pred, 5).expect("should parse");
+        assert_eq!(result.col.name(), "status");
+        assert!(result.negated);
+        assert_eq!(result.list.len(), 1);
+    }
+
+    #[test]
+    fn inlist_is_distinct_from_true_reversed() {
+        // true IS DISTINCT FROM (status = 'active')  =>  negated
+        let inner = eq(col("status"), utf8_lit("active"));
+        let pred = is_distinct_from(bool_lit(true), inner);
+        let result = super::InList::parse(&pred, 5).expect("should parse");
+        assert!(result.negated);
+    }
+
+    #[test]
+    fn inlist_is_distinct_from_false_literal_rejected() {
+        let inner = eq(col("status"), utf8_lit("active"));
+        let pred = is_distinct_from(inner, bool_lit(false));
+        assert!(super::InList::parse(&pred, 5).is_none());
+    }
+
+    #[test]
+    fn inlist_or_negated() {
+        // status NOT IN ('a', 'b') OR status NOT IN ('b', 'c') => NOT IN ('b')
+        let left = not_in_list("status", vec![utf8_lit("a"), utf8_lit("b")]);
+        let right = not_in_list("status", vec![utf8_lit("b"), utf8_lit("c")]);
+        let pred = or(left, right);
+        let result = super::InList::parse(&pred, 5).expect("should parse");
+        assert!(result.negated);
+        assert_eq!(result.list.len(), 1);
+        assert!(
+            result
+                .list
+                .contains(&ScalarValue::LargeUtf8(Some("b".into())))
+        );
+    }
+
+    #[test]
+    fn inlist_or_positive_or_negated() {
+        // status = 'a' OR status != 'b' => NOT IN ({b} - {a}) = NOT IN (b)
+        let left = eq(col("status"), utf8_lit("a"));
+        let right = not_eq(col("status"), utf8_lit("b"));
+        let pred = or(left, right);
+        let result = super::InList::parse(&pred, 5).expect("should parse");
+        assert!(result.negated);
+        assert_eq!(result.list.len(), 1);
+        assert!(
+            result
+                .list
+                .contains(&ScalarValue::LargeUtf8(Some("b".into())))
+        );
+    }
+
+    #[test]
+    fn inlist_or_negated_or_positive() {
+        // status != 'a' OR status = 'b' => NOT IN ({a} - {b}) = NOT IN (a)
+        let left = not_eq(col("status"), utf8_lit("a"));
+        let right = eq(col("status"), utf8_lit("b"));
+        let pred = or(left, right);
+        let result = super::InList::parse(&pred, 5).expect("should parse");
+        assert!(result.negated);
+        assert_eq!(result.list.len(), 1);
+        assert!(
+            result
+                .list
+                .contains(&ScalarValue::LargeUtf8(Some("a".into())))
+        );
+    }
+
+    #[test]
+    fn inlist_or_positive_overlaps_negated() {
+        // status = 'a' OR status != 'a' => NOT IN ({a} - {a}) = NOT IN () = everything
+        let left = eq(col("status"), utf8_lit("a"));
+        let right = not_eq(col("status"), utf8_lit("a"));
+        let pred = or(left, right);
+        let result = super::InList::parse(&pred, 10).expect("should parse");
+        assert!(result.negated);
+        assert!(result.list.is_empty());
+    }
+
+    #[test]
+    fn inlist_deep_is_distinct_chain() {
+        // 5 statuses ORed with IS [NOT] DISTINCT wrappers
+        let pred = or(
+            is_distinct_from(eq(col("status"), utf8_lit("paused")), bool_lit(true)),
+            or(
+                is_not_distinct_from(eq(col("status"), utf8_lit("inboxed")), bool_lit(true)),
+                or(
+                    is_not_distinct_from(eq(col("status"), utf8_lit("scheduled")), bool_lit(true)),
+                    or(
+                        is_not_distinct_from(
+                            eq(col("status"), utf8_lit("completed")),
+                            bool_lit(true),
+                        ),
+                        is_not_distinct_from(
+                            eq(col("status"), utf8_lit("suspended")),
+                            bool_lit(true),
+                        ),
+                    ),
+                ),
+            ),
+        );
+        let result = super::InList::parse(&pred, 10).expect("should parse");
+        assert_eq!(result.col.name(), "status");
+        assert!(result.negated);
+        assert_eq!(result.list.len(), 1);
+        assert!(
+            result
+                .list
+                .contains(&ScalarValue::LargeUtf8(Some("paused".into())))
+        );
+    }
+    #[test]
+    fn inlist_is_distinct_or_is_not_distinct() {
+        // (status = 'completed') IS DISTINCT FROM true
+        //   OR (status = 'inboxed') IS NOT DISTINCT FROM true
+        //   OR (status = 'scheduled') IS NOT DISTINCT FROM true
+        // => NOT IN (completed) OR IN (inboxed, scheduled)
+        // => NOT IN ({completed} - {inboxed, scheduled}) = NOT IN (completed)
+        let pred = or(
+            is_distinct_from(eq(col("status"), utf8_lit("completed")), bool_lit(true)),
+            or(
+                is_not_distinct_from(eq(col("status"), utf8_lit("inboxed")), bool_lit(true)),
+                is_not_distinct_from(eq(col("status"), utf8_lit("scheduled")), bool_lit(true)),
+            ),
+        );
+        let result = super::InList::parse(&pred, 10).expect("should parse");
+        assert_eq!(result.col.name(), "status");
+        assert!(result.negated);
+        assert_eq!(result.list.len(), 1);
+        assert!(
+            result
+                .list
+                .contains(&ScalarValue::LargeUtf8(Some("completed".into())))
+        );
     }
 }
