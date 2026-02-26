@@ -15,23 +15,25 @@ use futures::Stream;
 use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
-use crate::TableKind::Journal;
-use crate::keys::{KeyKind, TableKey, define_table_key};
-use crate::owned_iter::OwnedIterator;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_rocksdb::{Priority, RocksDbPerfGuard};
 use restate_storage_api::journal_table_v2::{
     JournalEntryIndex, ReadJournalTable, ScanJournalTable, ScanJournalTableRange, StoredEntry,
     WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
-use restate_storage_api::{Result, StorageError};
+use restate_storage_api::{BudgetedReadError, Result, StorageError};
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
 use restate_types::journal_v2::raw::{RawCommand, RawEntry};
 use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+
+use crate::TableKind::Journal;
+use crate::keys::{KeyKind, TableKey, define_table_key};
+use crate::owned_iter::OwnedIterator;
+use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
 
 define_table_key!(
     Journal,
@@ -63,8 +65,10 @@ define_table_key!(
     )
 );
 
-/// Lazy iterator over journal entries. Decodes entries on-demand from RocksDB.
-struct JournalEntryIter<'a, DB: DBAccess> {
+/// Lazy iterator over journal V2 entries. Exposes [`peek_item`](Self::peek_item)
+/// for zero-copy access to raw key/value slices and [`advance`](Self::advance)
+/// to move forward. Also implements [`Iterator`] for convenience.
+pub struct JournalEntryIter<'a, DB: DBAccess> {
     iter: DBRawIteratorWithThreadMode<'a, DB>,
     remaining: u32,
 }
@@ -76,36 +80,50 @@ impl<'a, DB: DBAccess> JournalEntryIter<'a, DB> {
             remaining: journal_length,
         }
     }
+
+    /// Returns the raw `(key, value)` byte slices at the current iterator
+    /// position without decoding or advancing. Returns `None` when exhausted.
+    pub fn peek_item(&self) -> Option<Result<(&[u8], &[u8])>> {
+        if self.remaining == 0 {
+            return None;
+        }
+        match self.iter.item() {
+            Some((k, v)) => Some(Ok((k, v))),
+            None => self
+                .iter
+                .status()
+                .err()
+                .map(|err| Err(StorageError::Generic(err.into()))),
+        }
+    }
+
+    /// Advances the iterator to the next entry.
+    pub fn advance(&mut self) {
+        self.iter.next();
+        self.remaining -= 1;
+    }
+}
+
+/// Decodes a V2 journal key/value pair from raw byte slices.
+fn decode_journal_entry_v2(k: &[u8], v: &[u8]) -> Result<(EntryIndex, StoredRawEntry)> {
+    let mut k = k;
+    let mut v = v;
+    let index = JournalKey::deserialize_from(&mut k)?.journal_index;
+    let entry = StoredEntry::decode(&mut v).map_err(|e| StorageError::Generic(e.into()))?;
+    Ok((index, entry.0))
 }
 
 impl<DB: DBAccess> Iterator for JournalEntryIter<'_, DB> {
     type Item = Result<(EntryIndex, StoredRawEntry)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            return None;
-        }
-
-        let Some((mut k, mut v)) = self.iter.item() else {
-            return self
-                .iter
-                .status()
-                .err()
-                .map(|err| Err(StorageError::Generic(err.into())));
+        let (k, v) = match self.peek_item()? {
+            Ok(item) => item,
+            Err(e) => return Some(Err(e)),
         };
-
-        let key_result =
-            JournalKey::deserialize_from(&mut k).map(|journal_key| journal_key.journal_index);
-
-        // Todo: Evaluate whether copying v into Bytes before decoding JournalEntry is superior.
-        //  Depending on how many internal Bytes/ByteStrings are decoded, we might save allocations
-        //  at the cost of pinning more memory by copying v first to Bytes
-        let entry_result = StoredEntry::decode(&mut v).map_err(|e| StorageError::Generic(e.into()));
-
-        self.iter.next();
-        self.remaining -= 1;
-
-        Some(key_result.and_then(|key| entry_result.map(|entry| (key, entry.0))))
+        let result = decode_journal_entry_v2(k, v);
+        self.advance();
+        Some(result)
     }
 }
 
@@ -160,6 +178,67 @@ fn get_journal_entry<S: StorageAccess>(
     let key = write_journal_entry_key(invocation_id, journal_index);
     let opt: Option<StoredEntry> = storage.get_value_proto(key)?;
     Ok(opt.map(|e| e.0))
+}
+
+/// Budget-gated point read with a unified reserve-read-adjust loop (V2 journal).
+///
+/// See the V1 counterpart in `journal_table/mod.rs` for the full design
+/// rationale. The only difference is the decode step: V2 entries go through
+/// `StoredEntry::decode` and are unwrapped to `StoredRawEntry`.
+async fn get_journal_entry_budgeted<S: StorageAccess>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+    journal_index: u32,
+    budget: &mut LocalMemoryPool,
+) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
+    let key = write_journal_entry_key(invocation_id, journal_index);
+
+    // Serialize key once — reused for all reads.
+    let buf = {
+        let key_buf = storage.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(key_buf);
+        key_buf.split()
+    };
+
+    let mut lease = budget.empty_lease();
+
+    loop {
+        // Read raw value from RocksDB.
+        // RocksDbPerfGuard is !Send and must not live across .await.
+        let deficit = {
+            let _x = RocksDbPerfGuard::new("get-journal-entry-budgeted");
+            let Some(pinned) = storage.get(Journal, &buf)? else {
+                return Ok(None);
+            };
+
+            let raw_size = pinned.as_ref().len();
+            if raw_size <= lease.size() {
+                // Lease already covers (or exceeds) the value — shrink and decode.
+                lease.shrink(lease.size() - raw_size);
+                let mut slice = pinned.as_ref();
+                let entry = StoredEntry::decode(&mut slice)
+                    .map_err(|e| BudgetedReadError::Storage(StorageError::Generic(e.into())))?;
+                return Ok(Some((entry.0, lease)));
+            }
+
+            // Need more budget. Try synchronous top-up first.
+            let deficit = raw_size - lease.size();
+            if let Some(extra) = budget.try_reserve(deficit) {
+                lease.merge(extra);
+                let mut slice = pinned.as_ref();
+                let entry = StoredEntry::decode(&mut slice)
+                    .map_err(|e| BudgetedReadError::Storage(StorageError::Generic(e.into())))?;
+                return Ok(Some((entry.0, lease)));
+            }
+
+            deficit
+        };
+
+        // Pinned slice dropped — safe to .await now.
+        let extra = budget.reserve(deficit).await?;
+        lease.merge(extra);
+        // Loop back: re-read to check whether the value changed while we waited.
+    }
 }
 
 fn get_journal<'a, S: StorageAccess>(
@@ -374,6 +453,35 @@ impl ReadJournalTable for PartitionStore {
     ) -> Result<bool> {
         has_completion(self, invocation_id, completion_id)
     }
+
+    async fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
+        self.assert_partition_key(&invocation_id)?;
+        get_journal_entry_budgeted(self, &invocation_id, journal_index, budget).await
+    }
+
+    fn get_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<
+            Item = std::result::Result<
+                (EntryIndex, StoredRawEntry, LocalMemoryLease),
+                BudgetedReadError,
+            >,
+        > + Send
+        + 'a,
+    > {
+        self.assert_partition_key(&invocation_id)?;
+        let iter = get_journal(self, &invocation_id, journal_length)?;
+        Ok(budgeted_journal_v2_stream(iter, budget))
+    }
 }
 
 impl ScanJournalTable for PartitionStore {
@@ -477,6 +585,93 @@ impl ReadJournalTable for PartitionStoreTransaction<'_> {
     ) -> Result<bool> {
         has_completion(self, invocation_id, completion_id)
     }
+
+    async fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError> {
+        self.assert_partition_key(&invocation_id)?;
+        get_journal_entry_budgeted(self, &invocation_id, journal_index, budget).await
+    }
+
+    fn get_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<
+            Item = std::result::Result<
+                (EntryIndex, StoredRawEntry, LocalMemoryLease),
+                BudgetedReadError,
+            >,
+        > + Send
+        + 'a,
+    > {
+        self.assert_partition_key(&invocation_id)?;
+        let iter = get_journal(self, &invocation_id, journal_length)?;
+        Ok(budgeted_journal_v2_stream(iter, budget))
+    }
+}
+
+/// Wraps a [`JournalEntryIter`] into an async [`Stream`] that acquires a memory
+/// lease from `budget` **before** decoding each entry.
+///
+/// See the V1 counterpart in `journal_table/mod.rs` for the full design
+/// rationale — identical fast/slow path with `try_reserve` + `reserve`.
+fn budgeted_journal_v2_stream<'a, DB: DBAccess + Send>(
+    iter: JournalEntryIter<'a, DB>,
+    budget: &'a mut LocalMemoryPool,
+) -> impl Stream<
+    Item = std::result::Result<(EntryIndex, StoredRawEntry, LocalMemoryLease), BudgetedReadError>,
+> + Send
++ 'a {
+    futures::stream::unfold((iter, budget), |(mut iter, budget)| async move {
+        let mut lease = budget.empty_lease();
+        loop {
+            let deficit = {
+                let (k, v) = match iter.peek_item() {
+                    Some(Ok(item)) => item,
+                    Some(Err(e)) => return Some((Err(e.into()), (iter, budget))),
+                    None => return None,
+                };
+
+                let raw_size = v.len();
+                if raw_size <= lease.size() {
+                    lease.shrink(lease.size() - raw_size);
+                    match decode_journal_entry_v2(k, v) {
+                        Ok((idx, entry)) => {
+                            iter.advance();
+                            return Some((Ok((idx, entry, lease)), (iter, budget)));
+                        }
+                        Err(e) => return Some((Err(e.into()), (iter, budget))),
+                    }
+                }
+
+                let deficit = raw_size - lease.size();
+                if let Some(extra) = budget.try_reserve(deficit) {
+                    lease.merge(extra);
+                    match decode_journal_entry_v2(k, v) {
+                        Ok((idx, entry)) => {
+                            iter.advance();
+                            return Some((Ok((idx, entry, lease)), (iter, budget)));
+                        }
+                        Err(e) => return Some((Err(e.into()), (iter, budget))),
+                    }
+                }
+
+                deficit
+            };
+
+            let extra = match budget.reserve(deficit).await {
+                Ok(l) => l,
+                Err(e) => return Some((Err(e.into()), (iter, budget))),
+            };
+            lease.merge(extra);
+        }
+    })
 }
 
 impl WriteJournalTable for PartitionStoreTransaction<'_> {

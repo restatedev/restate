@@ -21,7 +21,7 @@ use crate::partition::state_machine::tests::fixtures::{
     background_invoke_entry, incomplete_invoke_entry,
 };
 use crate::partition::state_machine::tests::matchers::storage::is_entry;
-use crate::partition::state_machine::tests::matchers::success_completion;
+
 use crate::partition::types::InvokerEffectKind;
 use ::tracing::info;
 use bytes::Bytes;
@@ -29,7 +29,7 @@ use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat};
 use restate_core::TaskCenter;
-use restate_invoker_api::{Effect, EffectKind, InvokeInputJournal};
+use restate_invoker_api::{Effect, EffectKind};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -58,9 +58,7 @@ use restate_types::invocation::{
     ServiceInvocation, ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,
 };
 use restate_types::journal::enriched::EnrichedRawEntry;
-use restate_types::journal::{
-    CompleteAwakeableEntry, Completion, CompletionResult, EntryResult, InvokeRequest,
-};
+use restate_types::journal::{CompleteAwakeableEntry, EntryResult, InvokeRequest};
 use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
@@ -416,10 +414,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
         actions,
         contains(pat!(Action::ForwardCompletion {
             invocation_id: eq(invocation_id),
-            completion: eq(Completion::new(
-                1,
-                CompletionResult::Success(Bytes::default())
-            ))
+            entry_index: eq(1),
         }))
     );
 
@@ -450,10 +445,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
         actions,
         not(contains(pat!(Action::ForwardCompletion {
             invocation_id: eq(invocation_id),
-            completion: eq(Completion::new(
-                1,
-                CompletionResult::Success(Bytes::default())
-            ))
+            entry_index: eq(1),
         })))
     );
 
@@ -745,16 +737,7 @@ async fn get_state_keys() -> TestResult {
     // At this point we expect the completion to be forwarded to the invoker
     assert_that!(
         actions,
-        contains(matchers::actions::forward_completion(
-            invocation_id,
-            matchers::completion(
-                1,
-                ProtobufRawEntryCodec::serialize_get_state_keys_completion(vec![
-                    Bytes::copy_from_slice(b"key1"),
-                    Bytes::copy_from_slice(b"key2"),
-                ])
-            )
-        ))
+        contains(matchers::actions::forward_completion(invocation_id, 1))
     );
     test_env.shutdown().await;
     Ok(())
@@ -808,14 +791,8 @@ async fn get_invocation_id_entry() {
     assert_that!(
         actions,
         all!(
-            contains(matchers::actions::forward_completion(
-                invocation_id,
-                success_completion(3, callee_1.to_string())
-            )),
-            contains(matchers::actions::forward_completion(
-                invocation_id,
-                success_completion(4, callee_2.to_string())
-            ))
+            contains(matchers::actions::forward_completion(invocation_id, 3)),
+            contains(matchers::actions::forward_completion(invocation_id, 4))
         )
     );
 
@@ -944,10 +921,7 @@ async fn get_invocation_output_entry() {
         .await;
     assert_that!(
         actions,
-        contains(matchers::actions::forward_completion(
-            invocation_id,
-            eq(Completion::new(1, CompletionResult::Empty))
-        ))
+        contains(matchers::actions::forward_completion(invocation_id, 1))
     );
 
     test_env.shutdown().await;
@@ -979,7 +953,6 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         actions,
         contains(pat!(Action::Invoke {
             invocation_id: eq(invocation_id),
-            invoke_input_journal: pat!(InvokeInputJournal::CachedJournal(_, _))
         }))
     );
 
@@ -1271,4 +1244,42 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
 
     test_env.shutdown().await;
     Ok(())
+}
+
+#[restate_core::test]
+async fn yield_effect_resumes_invocation() {
+    let mut test_env = TestEnv::create().await;
+    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+    fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+    // Apply a Yield effect — the invocation should be immediately re-invoked
+    let actions = test_env
+        .apply(Command::InvokerEffect(Box::new(Effect {
+            invocation_id,
+            kind: EffectKind::Yield(restate_invoker_api::YieldReason::OutOfMemory {
+                inbound_needed_memory: 65536,
+                outbound_needed_memory: 32768,
+            }),
+        })))
+        .await;
+
+    // Yield should produce an Action::Invoke to re-schedule the invocation
+    assert_that!(
+        actions,
+        contains(matchers::actions::invoke_for_id(invocation_id))
+    );
+
+    // The invocation should still be in Invoked status (not ended or suspended)
+    assert_that!(
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        matchers::storage::is_variant(
+            restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Invoked
+        )
+    );
+
+    test_env.shutdown().await;
 }

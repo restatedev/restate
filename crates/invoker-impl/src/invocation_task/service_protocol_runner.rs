@@ -9,24 +9,25 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
-use std::convert::Infallible;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::{Stream, StreamExt, TryStreamExt, stream};
+use futures::{Stream, StreamExt};
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
+use prost::Message;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReaderTransaction, JournalEntry,
+    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
+    JournalKind,
 };
 use restate_invoker_api::{EntryEnricher, JournalMetadata};
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol::message::{
@@ -37,19 +38,21 @@ use restate_types::errors::InvocationError;
 use restate_types::identifiers::ServiceId;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::ServiceInvocationSpanContext;
-use restate_types::journal::EntryType;
 use restate_types::journal::raw::RawEntryCodec;
+use restate_types::journal::{Completion, CompletionResult, EntryType};
 use restate_types::journal_v2;
 use restate_types::journal_v2::EntryMetadata;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
-use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
+use crate::error::{
+    InvocationErrorRelatedEntry, InvokerError, MemoryDirection, SdkInvocationError,
+};
 use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
-    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
-    invocation_id_to_header_value, service_protocol_version_to_header_value,
+    InvocationTask, InvocationTaskOutputInner, InvokerBody, InvokerBodySender, ResponseChunk,
+    ResponseStream, TerminalLoopState, X_RESTATE_SERVER, invocation_id_to_header_value,
+    service_protocol_version_to_header_value,
 };
 
 ///  Provides the value of the invocation id
@@ -73,6 +76,11 @@ pub struct ServiceProtocolRunner<'a, EE, DMR> {
 
     // task state
     next_journal_index: EntryIndex,
+
+    /// Cumulative inbound budget lease. Chunks are merged in as raw HTTP data
+    /// arrives; wire_size portions are split off per decoded message and sent
+    /// through the invoker channel with the corresponding output.
+    cumulative_inbound_lease: Option<LocalMemoryLease>,
 }
 
 impl<'a, EE, DMR> ServiceProtocolRunner<'a, EE, DMR>
@@ -96,8 +104,12 @@ where
             encoder,
             decoder,
             next_journal_index: 0,
+            cumulative_inbound_lease: None,
         }
     }
+
+    /// How often to release excess outbound budget capacity during the bidi-stream phase.
+    const BUDGET_RELEASE_INTERVAL: Duration = Duration::from_secs(5);
 
     /// Run the service protocol interaction.
     ///
@@ -105,16 +117,20 @@ where
     /// * `keyed_service_id` - If `Some`, eager state loading is enabled and we'll read/send
     ///   state for this service upfront. If `None`, lazy state is used (either because this
     ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
-    pub async fn run<Txn>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run<Txn, IR>(
         mut self,
         txn: Txn,
         journal_metadata: JournalMetadata,
         keyed_service_id: Option<ServiceId>,
-        cached_journal_items: Option<Vec<JournalEntry>>,
         deployment: Deployment,
+        invocation_reader: IR,
+        outbound_budget: &mut LocalMemoryPool,
+        inbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
+        IR: InvocationReader,
     {
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
@@ -159,22 +175,31 @@ where
             &service_invocation_span_context,
         );
 
-        // Initialize the response stream state
-        let mut http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
+        // Initialize the response stream state. The inbound budget is moved into
+        // the ResponseStream so that raw HTTP body chunks are gated before reaching
+        // the decoder (pre-deserialization back-pressure).
+        let mut http_stream_rx = std::pin::pin!(ResponseStream::initialize(
+            &self.invocation_task.client,
+            request,
+            inbound_budget,
+        ));
 
         // === Replay phase (transaction alive) ===
         {
-            // Read state if needed (state is collected for the START message)
+            // Read state if needed (state is collected for the START message).
+            // LocalMemoryPool-gated: each state entry acquires a lease from the outbound
+            // budget. The per-entry leases are merged into a single lease that
+            // accompanies the start message frame.
             let state = if let Some(ref service_id) = keyed_service_id {
                 Some(crate::shortcircuit!(
-                    txn.read_state(service_id)
-                        .map_err(|e| InvokerError::StateReader(e.into()))
+                    txn.read_state_budgeted(service_id, outbound_budget)
+                        .map_err(InvokerError::from_state_reader)
                 ))
             } else {
                 None
             };
 
-            // Send start message with state
+            // Send start message with state (leases are merged inside write_start)
             crate::shortcircuit!(
                 self.write_start(
                     &mut http_stream_tx,
@@ -186,29 +211,21 @@ where
                 .await
             );
 
-            // Read journal stream (or use cached)
-            if let Some(items) = cached_journal_items {
-                let journal_stream = stream::iter(items.into_iter().map(Ok::<_, Infallible>));
-                // Execute the replay
-                crate::shortcircuit!(
-                    self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
-                        .await
-                );
-            } else {
-                let journal_stream = crate::shortcircuit!(
-                    txn.read_journal(
-                        &self.invocation_task.invocation_id,
-                        journal_size,
-                        journal_metadata.using_journal_table_v2,
-                    )
-                    .map_err(|e| InvokerError::JournalReader(e.into()))
-                );
-                // Execute the replay
-                crate::shortcircuit!(
-                    self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
-                        .await
-                );
-            }
+            // Read journal stream from storage and execute the replay.
+            // LocalMemoryPool-gated: each entry acquires a lease before it's sent.
+            let journal_stream = crate::shortcircuit!(
+                txn.read_journal_budgeted(
+                    &self.invocation_task.invocation_id,
+                    journal_size,
+                    journal_metadata.journal_kind,
+                    outbound_budget,
+                )
+                .map_err(InvokerError::from_journal_reader)
+            );
+            crate::shortcircuit!(
+                self.replay_loop(&mut http_stream_tx, &mut http_stream_rx, journal_stream)
+                    .await
+            );
         }
         // === End replay phase - streams dropped, transaction can be dropped ===
 
@@ -217,6 +234,10 @@ where
 
         // Check all the entries have been replayed
         debug_assert_eq!(self.next_journal_index, journal_size);
+
+        // Release excess local capacity accumulated during replay back to the
+        // global pool before entering the bidi stream phase.
+        outbound_budget.release_excess();
 
         // If we have the invoker_rx and the protocol type is bidi stream,
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
@@ -227,6 +248,8 @@ where
                     &service_invocation_span_context,
                     http_stream_tx,
                     &mut http_stream_rx,
+                    invocation_reader,
+                    outbound_budget,
                 )
                 .await
             );
@@ -260,12 +283,11 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
-    ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
-        // Make this channel a rendezvous channel to avoid unnecessary buffering between the service
-        // protocol runner and the underlying hyper HTTP client. This helps with keeping the overall
-        // memory consumption per invocation in check.
-        let (http_stream_tx, http_stream_rx) = mpsc::channel(1);
-        let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
+    ) -> (InvokerBodySender, Request<InvokerBody>) {
+        // Use an unbounded channel: backpressure is provided by the memory budget
+        // (each frame carries an optional LocalMemoryLease) rather than channel capacity.
+        let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
+        let req_body = InvokerBody::new(http_stream_rx);
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
@@ -332,15 +354,16 @@ where
     // --- Loops
 
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
-    async fn replay_loop<JournalStream, E>(
+    async fn replay_loop<JournalStream, S, E>(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
-        http_stream_rx: &mut ResponseStream,
+        http_stream_tx: &mut InvokerBodySender,
+        http_stream_rx: &mut S,
         journal_stream: JournalStream,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = Result<JournalEntry, E>> + Unpin,
-        E: std::error::Error + Send + Sync + 'static,
+        JournalStream: Stream<Item = Result<(JournalEntry, LocalMemoryLease), E>> + Unpin,
+        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+        E: InvocationReaderError,
     {
         let mut journal_stream = journal_stream.fuse();
         let mut got_headers = false;
@@ -357,7 +380,7 @@ where
                         Some(ResponseChunk::Parts(headers)) => {
                             crate::shortcircuit!(self.handle_response_headers(headers));
                         }
-                        Some(ResponseChunk::Data(_)) => {
+                        Some(ResponseChunk::Data(..)) => {
                             panic!("Unexpected poll after the headers have been resolved already")
                         }
                     };
@@ -365,25 +388,39 @@ where
                 },
                 opt_je = journal_stream.next() => {
                     match opt_je {
-                        Some(Ok(JournalEntry::JournalV1(je))) => {
-                            crate::shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(je)).await);
+                        Some(Ok((JournalEntry::JournalV1(je), lease))) => {
+                            crate::shortcircuit!(self.write_with_lease(http_stream_tx, ProtocolMessage::UnparsedEntry(je), Some(lease)));
                             self.next_journal_index += 1;
                         },
-                        Some(Ok(JournalEntry::JournalV2(re))) => {
+                        Some(Ok((JournalEntry::JournalV2(re), lease))) => {
                             if re.ty() == journal_v2::EntryType::Command(journal_v2::CommandType::Input) {
                                 let input_entry = crate::shortcircuit!(re.decode::<ServiceProtocolV4Codec, journal_v2::command::InputCommand>());
-                                  crate::shortcircuit!(self.write(http_stream_tx, ProtocolMessage::UnparsedEntry(
+                                  crate::shortcircuit!(self.write_with_lease(http_stream_tx, ProtocolMessage::UnparsedEntry(
                                     ProtobufRawEntryCodec::serialize_as_input_entry(
                                         input_entry.headers,
                                         input_entry.payload
                                     ).erase_enrichment()
-                                )).await);
+                                ), Some(lease)));
                             self.next_journal_index += 1;
                             } else {
                                 panic!("This is unexpected, when an entry is stored with journal v2, only input entry is allowed!")
                             }
                         }
+                        Some(Ok((JournalEntry::JournalV1Completion(_), _))) => {
+                            // During replay, a JournalV1Completion means the completion
+                            // arrived before the entry itself. This entry cannot be replayed
+                            // to the SDK because we don't have the original entry bytes.
+                            // This should not happen in normal operation since entries are
+                            // always stored before completions during replay.
+                            panic!("Unexpected JournalV1Completion during replay: completion arrived before entry was stored")
+                        }
                         Some(Err(e)) => {
+                            if let Some(needed) = e.budget_exhaustion() {
+                                return TerminalLoopState::ShouldYield {
+                                    needed,
+                                    direction: MemoryDirection::Outbound,
+                                };
+                            }
                             return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
                         }
                         None => {
@@ -398,25 +435,42 @@ where
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
-    async fn bidi_stream_loop(
+    async fn bidi_stream_loop<S, IR>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        mut http_stream_tx: InvokerRequestStreamSender,
-        http_stream_rx: &mut ResponseStream,
-    ) -> TerminalLoopState<()> {
+        mut http_stream_tx: InvokerBodySender,
+        http_stream_rx: &mut S,
+        mut invocation_reader: IR,
+        outbound_budget: &mut LocalMemoryPool,
+    ) -> TerminalLoopState<()>
+    where
+        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+        IR: InvocationReader,
+    {
+        let mut release_interval = tokio::time::interval(Self::BUDGET_RELEASE_INTERVAL);
+        release_interval.tick().await; // consume initial immediate tick
         loop {
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
                     match opt_completion {
-                        Some(Notification::Completion(completion)) => {
+                        Some(Notification::Completion(entry_index)) => {
+                            trace!(restate.journal.index = entry_index, "Reading completion from storage");
+                            let (completion, lease) = crate::shortcircuit!(
+                                read_completion_from_storage_budgeted(
+                                    &mut invocation_reader,
+                                    &self.invocation_task.invocation_id,
+                                    entry_index,
+                                    outbound_budget,
+                                ).await
+                            );
                             trace!("Sending the completion to the wire");
-                            crate::shortcircuit!(self.write(&mut http_stream_tx, completion.into()).await);
+                            crate::shortcircuit!(self.write_with_lease(&mut http_stream_tx, completion.into(), Some(lease)));
                         },
                         Some(Notification::Ack(entry_index)) => {
                             trace!("Sending the ack to the wire");
-                            crate::shortcircuit!(self.write(&mut http_stream_tx, ProtocolMessage::new_entry_ack(entry_index)).await);
+                            crate::shortcircuit!(self.write(&mut http_stream_tx, ProtocolMessage::new_entry_ack(entry_index)));
                         },
-                        Some(Notification::Entry(_)) => {
+                        Some(Notification::Entry { .. }) => {
                             panic!("We don't expect to receive journal_v2 entries, this is an invoker bug.")
                         },
                         None => {
@@ -433,8 +487,14 @@ where
                             return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(ResponseChunk::Data(buf)) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        Some(ResponseChunk::Data(buf, lease)) => {
+                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, lease));
+                        }
                     }
+                },
+                _ = release_interval.tick() => {
+                    outbound_budget.release_excess();
+                    // Inbound release_excess is handled inside ResponseStream::poll_next.
                 },
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
@@ -446,11 +506,14 @@ where
         }
     }
 
-    async fn response_stream_loop(
+    async fn response_stream_loop<S>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        http_stream_rx: &mut ResponseStream,
-    ) -> TerminalLoopState<()> {
+        http_stream_rx: &mut S,
+    ) -> TerminalLoopState<()>
+    where
+        S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+    {
         loop {
             tokio::select! {
                 chunk = http_stream_rx.next() => {
@@ -459,7 +522,9 @@ where
                             return TerminalLoopState::Failed(InvokerError::Sdk(SdkInvocationError::unknown()));
                         }
                         Some(ResponseChunk::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(ResponseChunk::Data(buf)) => crate::shortcircuit!(self.handle_read(parent_span_context, buf)),
+                        Some(ResponseChunk::Data(buf, lease)) => {
+                            crate::shortcircuit!(self.handle_read(parent_span_context, buf, lease));
+                        }
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
@@ -474,32 +539,39 @@ where
 
     async fn write_start<S, E>(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         journal_size: u32,
         state: Option<EagerState<S>>,
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
     ) -> Result<(), InvokerError>
     where
-        S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
-        E: std::error::Error + Send + Sync + 'static,
+        S: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), E>> + Send,
+        E: InvocationReaderError,
     {
-        // Collect state if present, mapping to StateEntry while collecting
-        let (partial_state, state_map) = if let Some(state) = state {
+        // Collect state if present, mapping to StateEntry while collecting.
+        // Per-entry budget leases are merged into a single combined lease that
+        // accompanies the start message frame.
+        let (partial_state, state_map, state_lease) = if let Some(state) = state {
             let is_partial = state.is_partial();
-            let entries: Vec<StateEntry> = state
-                .into_inner()
-                .map_ok(|(key, value)| StateEntry { key, value })
-                .try_collect()
-                .await
-                .map_err(|e| InvokerError::StateReader(e.into()))?;
-            (is_partial, entries)
+            let mut merged_lease: Option<LocalMemoryLease> = None;
+            let mut entries = Vec::new();
+            let mut stream = std::pin::pin!(state.into_inner());
+            while let Some(result) = stream.next().await {
+                let ((key, value), lease) = result.map_err(InvokerError::from_state_reader)?;
+                entries.push(StateEntry { key, value });
+                match &mut merged_lease {
+                    Some(existing) => existing.merge(lease),
+                    None => merged_lease = Some(lease),
+                }
+            }
+            (is_partial, entries, merged_lease)
         } else {
-            (true, Vec::new())
+            (true, Vec::new(), None)
         };
 
-        // Send the invoke frame
-        self.write(
+        // Send the invoke frame with the merged state lease
+        self.write_with_lease(
             http_stream_tx,
             ProtocolMessage::new_start_message(
                 Bytes::copy_from_slice(&self.invocation_task.invocation_id.to_bytes()),
@@ -514,19 +586,28 @@ where
                 retry_count_since_last_stored_entry,
                 duration_since_last_stored_entry,
             ),
+            state_lease,
         )
-        .await
     }
 
-    async fn write(
+    fn write(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         msg: ProtocolMessage,
+    ) -> Result<(), InvokerError> {
+        self.write_with_lease(http_stream_tx, msg, None)
+    }
+
+    fn write_with_lease(
+        &mut self,
+        http_stream_tx: &mut InvokerBodySender,
+        msg: ProtocolMessage,
+        lease: Option<LocalMemoryLease>,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
-        if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
+        if http_stream_tx.send((Frame::data(buf), lease)).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())
@@ -593,11 +674,35 @@ where
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
         buf: Bytes,
+        chunk_lease: LocalMemoryLease,
     ) -> TerminalLoopState<()> {
+        // Budget was already acquired by ResponseStream before yielding
+        // this chunk. Merge the chunk's lease into the cumulative lease.
+        match self.cumulative_inbound_lease.as_mut() {
+            Some(cumulative) => cumulative.merge(chunk_lease),
+            None => self.cumulative_inbound_lease = Some(chunk_lease),
+        }
+
         self.decoder.push(buf);
 
-        while let Some((frame_header, frame)) = crate::shortcircuit!(self.decoder.consume_next()) {
-            crate::shortcircuit!(self.handle_message(parent_span_context, frame_header, frame));
+        while let Some((frame_header, frame, payload_size)) =
+            crate::shortcircuit!(self.decoder.consume_next())
+        {
+            // Split off this message's payload_size from the cumulative inbound
+            // lease. The cumulative lease is always `Some` here because
+            // `handle_read` sets it from the chunk lease before entering
+            // this decode loop.
+            let msg_lease = self
+                .cumulative_inbound_lease
+                .as_mut()
+                .expect("cumulative lease set before decode loop")
+                .split(payload_size);
+            crate::shortcircuit!(self.handle_message(
+                parent_span_context,
+                frame_header,
+                frame,
+                msg_lease,
+            ));
         }
 
         TerminalLoopState::Continue(())
@@ -608,6 +713,7 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
         mh: MessageHeader,
         message: ProtocolMessage,
+        inbound_lease: LocalMemoryLease,
     ) -> TerminalLoopState<()> {
         trace!(restate.protocol.message_header = ?mh, restate.protocol.message = ?message, "Received message");
         match message {
@@ -677,10 +783,78 @@ where
                         requires_ack: mh
                             .requires_ack()
                             .expect("All entry messages support requires_ack"),
+                        inbound_lease,
                     });
                 self.next_journal_index += 1;
                 TerminalLoopState::Continue(())
             }
+        }
+    }
+}
+
+/// Reads a v1 completion from storage with budget tracking.
+///
+/// Reads the entry and acquires a [`LocalMemoryLease`] for its serialized size from
+/// the outbound budget. Only used by the v1-v3 protocol runner.
+async fn read_completion_from_storage_budgeted<IR: InvocationReader>(
+    invocation_reader: &mut IR,
+    invocation_id: &InvocationId,
+    entry_index: EntryIndex,
+    budget: &mut LocalMemoryPool,
+) -> Result<(Completion, LocalMemoryLease), InvokerError> {
+    let (entry, lease) = invocation_reader
+        .read_journal_entry_budgeted(invocation_id, entry_index, JournalKind::V1, budget)
+        .await
+        .map_err(InvokerError::from_journal_reader)?
+        .ok_or_else(|| {
+            InvokerError::JournalReader(anyhow::anyhow!(
+                "journal entry {entry_index} not found for completion read"
+            ))
+        })?;
+    let completion = extract_completion(entry_index, entry)?;
+    Ok((completion, lease))
+}
+
+/// Extracts a [`Completion`] from a journal entry read from storage.
+fn extract_completion(
+    entry_index: EntryIndex,
+    journal_entry: JournalEntry,
+) -> Result<Completion, InvokerError> {
+    use restate_types::service_protocol;
+
+    match journal_entry {
+        JournalEntry::JournalV1(plain_raw_entry) => {
+            let extractor = service_protocol::CompletionResultExtractor::decode(
+                plain_raw_entry.serialized_entry().clone(),
+            )
+            .map_err(|e| {
+                InvokerError::JournalReader(anyhow::anyhow!(
+                    "failed to decode completion from entry {entry_index}: {e}"
+                ))
+            })?;
+
+            let result = match extractor.result {
+                Some(service_protocol::completion_result_extractor::Result::Empty(_)) => {
+                    CompletionResult::Empty
+                }
+                Some(service_protocol::completion_result_extractor::Result::Value(b)) => {
+                    CompletionResult::Success(b)
+                }
+                Some(service_protocol::completion_result_extractor::Result::Failure(f)) => {
+                    CompletionResult::Failure(f.code.into(), f.message.into())
+                }
+                None => {
+                    return Err(InvokerError::JournalReader(anyhow::anyhow!(
+                        "journal entry {entry_index} has no completion result"
+                    )));
+                }
+            };
+
+            Ok(Completion::new(entry_index, result))
+        }
+        JournalEntry::JournalV1Completion(result) => Ok(Completion::new(entry_index, result)),
+        JournalEntry::JournalV2(_) => {
+            panic!("v1-v3 protocol runner should not encounter JournalV2 entries")
         }
     }
 }

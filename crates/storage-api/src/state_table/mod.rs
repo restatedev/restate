@@ -13,9 +13,10 @@ use std::ops::RangeInclusive;
 use bytes::Bytes;
 use futures::Stream;
 
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_types::identifiers::{PartitionKey, ServiceId};
 
-use crate::Result;
+use crate::{BudgetedReadError, Result};
 
 pub trait ReadStateTable {
     fn get_user_state(
@@ -30,6 +31,21 @@ pub trait ReadStateTable {
         &'a self,
         service_id: &ServiceId,
     ) -> Result<impl Stream<Item = Result<(Bytes, Bytes)>> + Send + 'a>;
+
+    /// Budget-gated state stream.
+    ///
+    /// Each state entry's raw byte size is peeked from the underlying store
+    /// **before** deserialization. A [`LocalMemoryLease`] is acquired from
+    /// `budget` for that size, and only then is the entry decoded.
+    fn get_all_user_states_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>>
+        + Send
+        + 'a,
+    >;
 }
 
 pub trait ScanStateTable {

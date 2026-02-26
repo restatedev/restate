@@ -55,6 +55,7 @@ mod tests {
     use restate_types::journal_v2::{
         AttachInvocationTarget, CommandType, Entry, EntryMetadata, EntryType,
         GetInvocationOutputCommand, GetInvocationOutputCompletion, GetInvocationOutputResult,
+        NotificationId,
     };
     use restate_wal_protocol::Command;
     use rstest::rstest;
@@ -136,7 +137,8 @@ mod tests {
                 })),
                 contains(matchers::actions::forward_notification(
                     invocation_id,
-                    get_invocation_output_completion.clone()
+                    2,
+                    NotificationId::CompletionId(completion_id),
                 ))
             ]
         );

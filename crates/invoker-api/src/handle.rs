@@ -15,23 +15,12 @@ use tokio::sync::mpsc;
 
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
-use restate_types::identifiers::PartitionKey;
-use restate_types::identifiers::{InvocationId, PartitionLeaderEpoch};
+use restate_memory::MemoryLease;
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
-use restate_types::journal::Completion;
-use restate_types::journal_v2::CommandIndex;
-use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::{CommandIndex, NotificationId};
 
-use super::Effect;
-use super::JournalMetadata;
-use crate::invocation_reader::JournalEntry;
-
-#[derive(Debug, Eq, PartialEq, Default)]
-pub enum InvokeInputJournal {
-    #[default]
-    NoCachedJournal,
-    CachedJournal(JournalMetadata, Vec<JournalEntry>),
-}
+use super::InvokerEffect;
 
 pub trait InvokerHandle<SR> {
     fn invoke(
@@ -39,9 +28,9 @@ pub trait InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError>;
 
+    #[allow(clippy::too_many_arguments)]
     fn vqueue_invoke(
         &mut self,
         partition: PartitionLeaderEpoch,
@@ -49,21 +38,23 @@ pub trait InvokerHandle<SR> {
         permit: Permit,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        journal: InvokeInputJournal,
+        inbound_seed: MemoryLease,
+        outbound_seed: MemoryLease,
     ) -> Result<(), NotRunningError>;
 
     fn notify_completion(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        completion: Completion,
+        entry_index: EntryIndex,
     ) -> Result<(), NotRunningError>;
 
     fn notify_notification(
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        entry: RawNotification,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
     ) -> Result<(), NotRunningError>;
 
     fn retry_invocation_now(
@@ -102,6 +93,6 @@ pub trait InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
-        sender: mpsc::Sender<Box<Effect>>,
+        sender: mpsc::UnboundedSender<InvokerEffect>,
     ) -> Result<(), NotRunningError>;
 }

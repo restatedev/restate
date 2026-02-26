@@ -8,17 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::ops::RangeInclusive;
+
+use tokio::sync::mpsc;
+
 use restate_errors::NotRunningError;
 use restate_futures_util::concurrency::Permit;
-use restate_invoker_api::{Effect, InvocationStatusReport, InvokeInputJournal, StatusHandle};
-use restate_types::identifiers::{InvocationId, PartitionKey, PartitionLeaderEpoch};
+use restate_memory::MemoryLease;
+use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey, PartitionLeaderEpoch};
 use restate_types::invocation::InvocationTarget;
-use restate_types::journal::Completion;
-use restate_types::journal_v2::CommandIndex;
-use restate_types::journal_v2::raw::RawNotification;
+use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::vqueue::VQueueId;
-use std::ops::RangeInclusive;
-use tokio::sync::mpsc;
+
+use restate_invoker_api::{InvocationStatusReport, InvokerEffect, StatusHandle};
 // -- Input messages
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -28,8 +30,6 @@ pub(crate) struct InvokeCommand {
     // removed in v1.6
     // pub(super) invocation_epoch: InvocationEpoch,
     pub(super) invocation_target: InvocationTarget,
-    #[serde(skip)]
-    pub(super) journal: InvokeInputJournal,
 }
 
 #[derive(derive_more::Debug)]
@@ -41,7 +41,9 @@ pub(crate) struct VQueueInvokeCommand {
     pub(super) invocation_id: InvocationId,
     pub(super) invocation_target: InvocationTarget,
     #[debug(skip)]
-    pub(super) journal: InvokeInputJournal,
+    pub(super) inbound_seed: MemoryLease,
+    #[debug(skip)]
+    pub(super) outbound_seed: MemoryLease,
 }
 
 #[derive(Debug)]
@@ -53,12 +55,13 @@ pub(crate) enum InputCommand<SR> {
     Completion {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        completion: Completion,
+        entry_index: EntryIndex,
     },
     Notification {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        notification: RawNotification,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
     },
     StoredCommandAck {
         partition: PartitionLeaderEpoch,
@@ -94,7 +97,7 @@ pub(crate) enum InputCommand<SR> {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
-        sender: mpsc::Sender<Box<Effect>>,
+        sender: mpsc::UnboundedSender<InvokerEffect>,
     },
 }
 
@@ -111,14 +114,12 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        journal: InvokeInputJournal,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Invoke(Box::new(InvokeCommand {
                 partition,
                 invocation_id,
                 invocation_target,
-                journal,
             })))
             .map_err(|_| NotRunningError)
     }
@@ -130,7 +131,8 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         permit: Permit,
         invocation_id: InvocationId,
         invocation_target: InvocationTarget,
-        journal: InvokeInputJournal,
+        inbound_seed: MemoryLease,
+        outbound_seed: MemoryLease,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::VQInvoke(Box::new(VQueueInvokeCommand {
@@ -139,7 +141,8 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
                 partition,
                 invocation_id,
                 invocation_target,
-                journal,
+                inbound_seed,
+                outbound_seed,
             })))
             .map_err(|_| NotRunningError)
     }
@@ -148,13 +151,13 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        completion: Completion,
+        entry_index: EntryIndex,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Completion {
                 partition,
                 invocation_id,
-                completion,
+                entry_index,
             })
             .map_err(|_| NotRunningError)
     }
@@ -163,13 +166,15 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         &mut self,
         partition: PartitionLeaderEpoch,
         invocation_id: InvocationId,
-        notification: RawNotification,
+        entry_index: EntryIndex,
+        notification_id: NotificationId,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Notification {
                 partition,
                 invocation_id,
-                notification,
+                entry_index,
+                notification_id,
             })
             .map_err(|_| NotRunningError)
     }
@@ -242,7 +247,7 @@ impl<SR: Send> restate_invoker_api::InvokerHandle<SR> for InvokerHandle<SR> {
         partition: PartitionLeaderEpoch,
         partition_key_range: RangeInclusive<PartitionKey>,
         storage_reader: SR,
-        sender: mpsc::Sender<Box<Effect>>,
+        sender: mpsc::UnboundedSender<InvokerEffect>,
     ) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::RegisterPartition {

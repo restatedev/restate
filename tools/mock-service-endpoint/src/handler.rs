@@ -99,7 +99,7 @@ pub async fn serve(
                         decoder.push(data);
                         loop {
                             match decoder.consume_next() {
-                                Ok(Some((_header, message))) => yield Ok(message),
+                                Ok(Some((_header, message, _payload_size))) => yield Ok(message),
                                 Ok(None) => {
                                     break
                                 },

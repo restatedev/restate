@@ -48,6 +48,7 @@ use restate_ingestion_client::IngestionClient;
 use restate_invoker_api::StatusHandle;
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_invoker_impl::ChannelStatusReader;
+
 use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
@@ -265,10 +266,17 @@ where
         let pp_rpc_svc = router_builder
             .register_sharded_service_with_pool(pp_rpc_pool, BackPressureMode::PushBack);
 
+        let invoker_memory_pool = TaskCenter::with_current(|tc| {
+            tc.memory_controller().create_pool("invoker", || {
+                Configuration::pinned().worker.invoker.memory_limit
+            })
+        });
+
         let invoker_capacity = InvokerCapacity::new(
             config.worker.invoker.concurrent_invocations_limit(),
             config.worker.invoker.invocation_throttling.as_ref(),
             config.worker.invoker.action_throttling.as_ref(),
+            invoker_memory_pool,
         );
 
         let (tx, rx) = mpsc::channel(updateable_config.pinned().worker.internal_queue_length());

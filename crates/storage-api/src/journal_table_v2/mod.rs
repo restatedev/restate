@@ -13,12 +13,14 @@ use std::ops::RangeInclusive;
 
 use futures::Stream;
 
-use crate::Result;
-use crate::protobuf_types::PartitionStoreProtobufValue;
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionKey};
 use restate_types::journal_v2::raw::RawCommand;
 use restate_types::journal_v2::{CompletionId, NotificationId};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+
+use crate::protobuf_types::PartitionStoreProtobufValue;
+use crate::{BudgetedReadError, Result};
 
 pub trait ReadJournalTable {
     fn get_journal_entry(
@@ -49,6 +51,40 @@ pub trait ReadJournalTable {
         invocation_id: InvocationId,
         completion_id: CompletionId,
     ) -> impl Future<Output = Result<bool>> + Send;
+
+    /// Budget-gated point read of a single journal entry.
+    ///
+    /// Fetches raw bytes from the store, peeks the serialized size, acquires a
+    /// [`LocalMemoryLease`] from `budget`, and only then decodes the entry.
+    fn get_journal_entry_budgeted(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_index: u32,
+        budget: &mut LocalMemoryPool,
+    ) -> impl Future<
+        Output = std::result::Result<Option<(StoredRawEntry, LocalMemoryLease)>, BudgetedReadError>,
+    > + Send;
+
+    /// Budget-gated journal stream.
+    ///
+    /// Each entry's raw byte size is peeked from the underlying store **before**
+    /// deserialization. A [`LocalMemoryLease`] is acquired from `budget` for that
+    /// size, and only then is the entry decoded. This prevents memory allocation
+    /// when the budget is exhausted.
+    fn get_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl Stream<
+            Item = std::result::Result<
+                (EntryIndex, StoredRawEntry, LocalMemoryLease),
+                BudgetedReadError,
+            >,
+        > + Send
+        + 'a,
+    >;
 }
 
 #[derive(Debug, Clone)]

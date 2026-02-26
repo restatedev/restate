@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashSet;
-use std::convert::Infallible;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -18,21 +17,22 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::{Stream, StreamExt, TryStreamExt, stream};
+use futures::{Stream, StreamExt};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use http_body::Frame;
 use opentelemetry::trace::TraceFlags;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
 use restate_invoker_api::JournalMetadata;
 use restate_invoker_api::invocation_reader::{
-    EagerState, InvocationReaderTransaction, JournalEntry,
+    EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
+    JournalKind,
 };
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -60,12 +60,13 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 
 use crate::Notification;
 use crate::error::{
-    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, SdkInvocationErrorV2,
+    CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError, MemoryDirection,
+    SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
-    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
-    invocation_id_to_header_value, service_protocol_version_to_header_value,
+    InvocationTask, InvocationTaskOutputInner, InvokerBody, InvokerBodySender, ResponseChunk,
+    ResponseStream, TerminalLoopState, X_RESTATE_SERVER, invocation_id_to_header_value,
+    service_protocol_version_to_header_value,
 };
 
 ///  Provides the value of the invocation id
@@ -108,22 +109,29 @@ where
         }
     }
 
+    /// How often to release excess outbound budget capacity during the bidi-stream phase.
+    const BUDGET_RELEASE_INTERVAL: Duration = Duration::from_secs(5);
+
     /// Run the service protocol interaction.
     ///
     /// # Arguments
     /// * `keyed_service_id` - If `Some`, eager state loading is enabled and we'll read/send
     ///   state for this service upfront. If `None`, lazy state is used (either because this
     ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
-    pub async fn run<Txn>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run<Txn, IR>(
         mut self,
         txn: Txn,
         journal_metadata: JournalMetadata,
         keyed_service_id: Option<ServiceId>,
-        cached_journal_items: Option<Vec<JournalEntry>>,
         deployment: Deployment,
+        invocation_reader: IR,
+        outbound_budget: &mut LocalMemoryPool,
+        inbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         Txn: InvocationReaderTransaction,
+        IR: InvocationReader,
     {
         // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
         let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
@@ -168,8 +176,11 @@ where
             &service_invocation_span_context,
         );
 
-        // Initialize the response stream state
-        let http_stream_rx = ResponseStream::initialize(&self.invocation_task.client, request);
+        // Initialize the response stream state. The inbound budget is moved into
+        // the ResponseStream so that raw HTTP body chunks are gated before reaching
+        // the decoder (pre-deserialization back-pressure).
+        let http_stream_rx =
+            ResponseStream::initialize(&self.invocation_task.client, request, inbound_budget);
 
         let mut decoder_stream = std::pin::pin!(
             DecoderStream::new(
@@ -183,17 +194,20 @@ where
 
         // === Replay phase (transaction alive) ===
         {
-            // Read state if needed (state is collected for the START message)
+            // Read state if needed (state is collected for the START message).
+            // LocalMemoryPool-gated: each state entry acquires a lease from the outbound
+            // budget. The per-entry leases are merged into a single lease that
+            // accompanies the start message frame.
             let state = if let Some(ref service_id) = keyed_service_id {
                 Some(crate::shortcircuit!(
-                    txn.read_state(service_id)
-                        .map_err(|e| InvokerError::StateReader(e.into()))
+                    txn.read_state_budgeted(service_id, outbound_budget)
+                        .map_err(InvokerError::from_state_reader)
                 ))
             } else {
                 None
             };
 
-            // Send start message with state
+            // Send start message with state (leases are merged inside write_start)
             crate::shortcircuit!(
                 self.write_start(
                     &mut http_stream_tx,
@@ -206,44 +220,35 @@ where
                 .await
             );
 
-            // Read journal stream (or use cached)
-            if let Some(items) = cached_journal_items {
-                let journal_stream = stream::iter(items.into_iter().map(Ok::<_, Infallible>));
-                // Execute the replay
-                crate::shortcircuit!(
-                    self.replay_loop(
-                        &mut http_stream_tx,
-                        &mut decoder_stream,
-                        journal_stream,
-                        journal_metadata.length
-                    )
-                    .await
-                );
-            } else {
-                let journal_stream = crate::shortcircuit!(
-                    txn.read_journal(
-                        &self.invocation_task.invocation_id,
-                        journal_size,
-                        journal_metadata.using_journal_table_v2,
-                    )
-                    .map_err(|e| InvokerError::JournalReader(e.into()))
-                );
-                // Execute the replay
-                crate::shortcircuit!(
-                    self.replay_loop(
-                        &mut http_stream_tx,
-                        &mut decoder_stream,
-                        journal_stream,
-                        journal_metadata.length
-                    )
-                    .await
-                );
-            }
+            // Read journal stream from storage and execute the replay.
+            // LocalMemoryPool-gated: each entry acquires a lease before it's sent.
+            let journal_stream = crate::shortcircuit!(
+                txn.read_journal_budgeted(
+                    &self.invocation_task.invocation_id,
+                    journal_size,
+                    journal_metadata.journal_kind,
+                    outbound_budget,
+                )
+                .map_err(InvokerError::from_journal_reader)
+            );
+            crate::shortcircuit!(
+                self.replay_loop(
+                    &mut http_stream_tx,
+                    &mut decoder_stream,
+                    journal_stream,
+                    journal_metadata.length
+                )
+                .await
+            );
         }
         // === End replay phase - streams dropped, transaction can be dropped ===
 
         // Transaction dropped - RocksDB snapshot released!
         drop(txn);
+
+        // Release excess local capacity accumulated during replay back to the
+        // global pool before entering the bidi stream phase.
+        outbound_budget.release_excess();
 
         // If we have the invoker_rx and the protocol type is bidi stream,
         // then we can use the bidi_stream loop reading the invoker_rx and the http_stream_rx
@@ -253,7 +258,10 @@ where
                 self.bidi_stream_loop(
                     &service_invocation_span_context,
                     http_stream_tx,
-                    &mut decoder_stream
+                    &mut decoder_stream,
+                    invocation_reader,
+                    journal_metadata.journal_kind,
+                    outbound_budget,
                 )
                 .await
             );
@@ -287,12 +295,11 @@ where
         service_protocol_version: ServiceProtocolVersion,
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
-    ) -> (InvokerRequestStreamSender, Request<InvokerBodyStream>) {
-        // Make this channel a rendezvous channel to avoid unnecessary buffering between the service
-        // protocol runner and the underlying hyper HTTP client. This helps with keeping the overall
-        // memory consumption per invocation in check.
-        let (http_stream_tx, http_stream_rx) = mpsc::channel(1);
-        let req_body = InvokerBodyStream::new(ReceiverStream::new(http_stream_rx));
+    ) -> (InvokerBodySender, Request<InvokerBody>) {
+        // Use an unbounded channel: backpressure is provided by the memory budget
+        // (each frame carries an optional LocalMemoryLease) rather than channel capacity.
+        let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
+        let req_body = InvokerBody::new(http_stream_rx);
 
         let service_protocol_header_value =
             service_protocol_version_to_header_value(service_protocol_version);
@@ -361,15 +368,15 @@ where
     /// This loop concurrently pushes journal entries and waits for the response headers and end of replay.
     async fn replay_loop<JournalStream, S, E>(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         http_stream_rx: &mut S,
         journal_stream: JournalStream,
         expected_entries_count: u32,
     ) -> TerminalLoopState<()>
     where
-        JournalStream: Stream<Item = Result<JournalEntry, E>> + Unpin,
+        JournalStream: Stream<Item = Result<(JournalEntry, LocalMemoryLease), E>> + Unpin,
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
-        E: std::error::Error + Send + Sync + 'static,
+        E: InvocationReaderError,
     {
         let mut journal_stream = journal_stream.fuse();
         let mut got_headers = false;
@@ -388,33 +395,43 @@ where
                         Some(DecoderStreamItem::Parts(headers)) => {
                             crate::shortcircuit!(self.handle_response_headers(headers));
                         }
-                        Some(DecoderStreamItem::Message(_, _)) => {
+                        Some(DecoderStreamItem::Message(..)) => {
                             panic!("Unexpected poll after the headers have been resolved already")
                         }
                     }
                 },
                 opt_je = journal_stream.next() => {
                     match opt_je {
-                        Some(Ok(JournalEntry::JournalV2(entry))) => {
+                        Some(Ok((JournalEntry::JournalV2(entry), lease))) => {
                             sent_entries += 1;
-                            crate::shortcircuit!(self.write_entry(http_stream_tx, entry.inner).await);
+                            crate::shortcircuit!(self.write_entry_with_lease(http_stream_tx, entry.inner, Some(lease)));
                         }
-                        Some(Ok(JournalEntry::JournalV1(old_entry))) => {
+                        Some(Ok((JournalEntry::JournalV1(old_entry), lease))) => {
                             sent_entries += 1;
                             if let journal::Entry::Input(input_entry) = crate::shortcircuit!(old_entry.deserialize_entry::<ProtobufRawEntryCodec>()) {
-                                crate::shortcircuit!(self.write_entry(
+                                crate::shortcircuit!(self.write_entry_with_lease(
                                     http_stream_tx,
                                     Entry::Command(InputCommand {
                                         headers: input_entry.headers,
                                         payload: input_entry.value,
                                         name: Default::default()
-                                    }.into()).encode::<ServiceProtocolV4Codec>()
-                                ).await);
+                                    }.into()).encode::<ServiceProtocolV4Codec>(),
+                                    Some(lease),
+                                ));
                             } else {
                                 panic!("This is unexpected, when an entry is stored with journal v1, only input entry is allowed!")
                             }
                         },
+                        Some(Ok((JournalEntry::JournalV1Completion(_), _))) => {
+                            panic!("Unexpected JournalV1Completion during replay: completion arrived before entry was stored")
+                        }
                         Some(Err(e)) => {
+                            if let Some(needed) = e.budget_exhaustion() {
+                                return TerminalLoopState::ShouldYield {
+                                    needed,
+                                    direction: MemoryDirection::Outbound,
+                                };
+                            }
                             return TerminalLoopState::Failed(InvokerError::JournalReader(e.into()));
                         }
                         None => {
@@ -437,29 +454,59 @@ where
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
-    async fn bidi_stream_loop<S>(
+    #[allow(clippy::too_many_arguments)]
+    async fn bidi_stream_loop<S, IR>(
         &mut self,
         parent_span_context: &ServiceInvocationSpanContext,
-        mut http_stream_tx: InvokerRequestStreamSender,
+        mut http_stream_tx: InvokerBodySender,
         http_stream_rx: &mut S,
+        mut invocation_reader: IR,
+        journal_kind: JournalKind,
+        outbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
+        IR: InvocationReader,
     {
+        let mut release_interval = tokio::time::interval(Self::BUDGET_RELEASE_INTERVAL);
+        release_interval.tick().await; // consume initial immediate tick
         loop {
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
                     match opt_completion {
-                        Some(Notification::Entry(entry)) => {
+                        Some(Notification::Entry(entry_index)) => {
+                            trace!(restate.journal.index = entry_index, "Reading entry from storage");
+                            let (journal_entry, lease) = crate::shortcircuit!(
+                                invocation_reader
+                                    .read_journal_entry_budgeted(
+                                        &self.invocation_task.invocation_id,
+                                        entry_index,
+                                        journal_kind,
+                                        outbound_budget,
+                                    )
+                                    .await
+                                    .map_err(InvokerError::from_journal_reader)
+                                    .and_then(|opt| opt.ok_or_else(|| InvokerError::JournalReader(
+                                        anyhow::anyhow!(
+                                            "journal entry {entry_index} not found for notification read"
+                                        ),
+                                    )))
+                            );
+                            let raw_entry = match journal_entry {
+                                JournalEntry::JournalV2(stored) => stored.inner,
+                                other => {
+                                    panic!("v4+ protocol runner expected JournalV2 entry but got {other:?}")
+                                }
+                            };
                             trace!("Sending the entry to the wire");
-                            crate::shortcircuit!(self.write_entry(&mut http_stream_tx, entry).await);
+                            crate::shortcircuit!(self.write_entry_with_lease(&mut http_stream_tx, raw_entry, Some(lease)));
                         }
                         Some(Notification::Completion(_)) => {
-                            panic!("We don't expect to receive Notification::Completion, this is an invoker bug.")
+                            panic!("We don't expect to receive Notification::Completion in v4+, this is an invoker bug.")
                         },
                         Some(Notification::Ack(entry_index)) => {
                             trace!("Sending the ack to the wire");
-                            crate::shortcircuit!(self.write(&mut http_stream_tx, Message::new_command_ack(entry_index)).await);
+                            crate::shortcircuit!(self.write(&mut http_stream_tx, Message::new_command_ack(entry_index)));
                         },
                         None => {
                             // Completion channel is closed,
@@ -475,10 +522,14 @@ where
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
                         Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(DecoderStreamItem::Message(message_header, message)) => {
-                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message));
+                        Some(DecoderStreamItem::Message(message_header, message, lease)) => {
+                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message, lease));
                         }
                     }
+                },
+                _ = release_interval.tick() => {
+                    outbound_budget.release_excess();
+                    // Inbound release_excess is handled inside ResponseStream::poll_next.
                 },
                 _ = tokio::time::sleep(self.invocation_task.inactivity_timeout) => {
                     debug!("Inactivity detected, going to suspend invocation");
@@ -509,7 +560,9 @@ where
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
                         Some(DecoderStreamItem::Parts(parts)) => crate::shortcircuit!(self.handle_response_headers(parts)),
-                        Some(DecoderStreamItem::Message(message_header, message)) => crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message)),
+                        Some(DecoderStreamItem::Message(message_header, message, lease)) => {
+                            crate::shortcircuit!(self.handle_message(parent_span_context, message_header, message, lease));
+                        }
                     }
                 },
                 _ = tokio::time::sleep(self.invocation_task.abort_timeout) => {
@@ -524,7 +577,7 @@ where
 
     async fn write_start<S, E>(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         journal_size: u32,
         state: Option<EagerState<S>>,
         retry_count_since_last_stored_entry: u32,
@@ -532,25 +585,32 @@ where
         random_seed: u64,
     ) -> Result<(), InvokerError>
     where
-        S: Stream<Item = Result<(Bytes, Bytes), E>> + Send,
-        E: std::error::Error + Send + Sync + 'static,
+        S: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), E>> + Send,
+        E: InvocationReaderError,
     {
-        // Collect state if present, mapping to StateEntry while collecting
-        let (partial_state, state_map) = if let Some(state) = state {
+        // Collect state if present, mapping to StateEntry while collecting.
+        // Per-entry budget leases are merged into a single combined lease that
+        // accompanies the start message frame.
+        let (partial_state, state_map, state_lease) = if let Some(state) = state {
             let is_partial = state.is_partial();
-            let entries: Vec<StateEntry> = state
-                .into_inner()
-                .map_ok(|(key, value)| StateEntry { key, value })
-                .try_collect()
-                .await
-                .map_err(|e| InvokerError::StateReader(e.into()))?;
-            (is_partial, entries)
+            let mut merged_lease: Option<LocalMemoryLease> = None;
+            let mut entries = Vec::new();
+            let mut stream = std::pin::pin!(state.into_inner());
+            while let Some(result) = stream.next().await {
+                let ((key, value), lease) = result.map_err(InvokerError::from_state_reader)?;
+                entries.push(StateEntry { key, value });
+                match &mut merged_lease {
+                    Some(existing) => existing.merge(lease),
+                    None => merged_lease = Some(lease),
+                }
+            }
+            (is_partial, entries, merged_lease)
         } else {
-            (true, Vec::new())
+            (true, Vec::new(), None)
         };
 
-        // Send the invoke frame
-        self.write(
+        // Send the invoke frame with the merged state lease
+        self.write_with_lease(
             http_stream_tx,
             Message::new_start_message(
                 Bytes::copy_from_slice(&self.invocation_task.invocation_id.to_bytes()),
@@ -566,62 +626,73 @@ where
                 duration_since_last_stored_entry,
                 random_seed,
             ),
+            state_lease,
         )
-        .await
     }
 
-    async fn write_entry(
+    fn write_entry_with_lease(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         entry: RawEntry,
+        lease: Option<LocalMemoryLease>,
     ) -> Result<(), InvokerError> {
         // TODO(slinkydeveloper) could this code be improved a tad bit more introducing something to our magic macro in message_codec?
         match entry {
             RawEntry::Command(cmd) => {
-                self.write_raw(
+                self.write_raw_with_lease(
                     http_stream_tx,
                     cmd.command_type().into(),
                     cmd.into_serialized_content(),
-                )
-                .await?;
+                    lease,
+                )?;
                 self.command_index += 1;
             }
             RawEntry::Notification(notif) => {
-                self.write_raw(
+                self.write_raw_with_lease(
                     http_stream_tx,
                     notif.ty().into(),
                     notif.into_serialized_content(),
-                )
-                .await?;
+                    lease,
+                )?;
             }
         }
         Ok(())
     }
 
-    async fn write(
+    fn write(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         msg: Message,
+    ) -> Result<(), InvokerError> {
+        self.write_with_lease(http_stream_tx, msg, None)
+    }
+
+    fn write_with_lease(
+        &mut self,
+        http_stream_tx: &mut InvokerBodySender,
+        msg: Message,
+        lease: Option<LocalMemoryLease>,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?msg, "Sending message");
         let buf = self.encoder.encode(msg);
 
-        if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
+        if http_stream_tx.send((Frame::data(buf), lease)).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())
     }
 
-    async fn write_raw(
+    fn write_raw_with_lease(
         &mut self,
-        http_stream_tx: &mut InvokerRequestStreamSender,
+        http_stream_tx: &mut InvokerBodySender,
         ty: MessageType,
         buf: Bytes,
+        lease: Option<LocalMemoryLease>,
     ) -> Result<(), InvokerError> {
         trace!(restate.protocol.message = ?ty, "Sending message");
         let buf = self.encoder.encode_raw(ty, buf);
 
-        if http_stream_tx.send(Ok(Frame::data(buf))).await.is_err() {
+        if http_stream_tx.send((Frame::data(buf), lease)).is_err() {
             return Err(InvokerError::UnexpectedClosedRequestStream);
         };
         Ok(())
@@ -687,7 +758,12 @@ where
         Ok(())
     }
 
-    fn handle_new_command(&mut self, mh: MessageHeader, command: RawCommand) {
+    fn handle_new_command(
+        &mut self,
+        mh: MessageHeader,
+        command: RawCommand,
+        inbound_lease: LocalMemoryLease,
+    ) {
         self.invocation_task
             .send_invoker_tx(InvocationTaskOutputInner::NewCommand {
                 command_index: self.command_index,
@@ -695,6 +771,7 @@ where
                     .requires_ack()
                     .expect("All command messages support requires_ack"),
                 command,
+                inbound_lease,
             });
         self.command_index += 1;
     }
@@ -704,6 +781,7 @@ where
         parent_span_context: &ServiceInvocationSpanContext,
         mh: MessageHeader,
         message: Message,
+        inbound_lease: LocalMemoryLease,
     ) -> TerminalLoopState<()> {
         trace!(
             restate.protocol.message_header = ?mh,
@@ -711,7 +789,7 @@ where
             "Received message"
         );
         match message {
-            // Control messages
+            // Control messages — lease is dropped (no data to track)
             Message::Start { .. } => {
                 TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(MessageType::Start))
             }
@@ -749,19 +827,28 @@ where
                 self.invocation_task.send_invoker_tx(
                     InvocationTaskOutputInner::NewNotificationProposal {
                         notification: raw_notification,
+                        inbound_lease,
                     },
                 );
 
                 TerminalLoopState::Continue(())
             }
 
-            // Commands
+            // Commands — inbound_lease is forwarded to track memory through the channel
             Message::OutputCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Output, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::Output, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::InputCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Input, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::Input, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetInvocationOutputCommand(cmd) => {
@@ -770,7 +857,11 @@ where
                     RawCommand::new(CommandType::GetInvocationOutput, cmd.clone())
                         .decode::<ServiceProtocolV4Codec, _>()
                 );
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetInvocationOutput, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetInvocationOutput, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::AttachInvocationCommand(cmd) => {
@@ -779,11 +870,15 @@ where
                     RawCommand::new(CommandType::AttachInvocation, cmd.clone())
                         .decode::<ServiceProtocolV4Codec, _>()
                 );
-                self.handle_new_command(mh, RawCommand::new(CommandType::AttachInvocation, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::AttachInvocation, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::RunCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Run, cmd));
+                self.handle_new_command(mh, RawCommand::new(CommandType::Run, cmd), inbound_lease);
                 TerminalLoopState::Continue(())
             }
             Message::SendSignalCommand(cmd) => {
@@ -792,7 +887,11 @@ where
                     RawCommand::new(CommandType::SendSignal, cmd.clone())
                         .decode::<ServiceProtocolV4Codec, _>()
                 );
-                self.handle_new_command(mh, RawCommand::new(CommandType::SendSignal, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::SendSignal, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::OneWayCallCommand(cmd) => {
@@ -827,6 +926,7 @@ where
                         .encode::<ServiceProtocolV4Codec>()
                         .try_into()
                         .expect("a raw command"),
+                    inbound_lease,
                 );
                 TerminalLoopState::Continue(())
             }
@@ -862,11 +962,16 @@ where
                         .encode::<ServiceProtocolV4Codec>()
                         .try_into()
                         .expect("a raw command"),
+                    inbound_lease,
                 );
                 TerminalLoopState::Continue(())
             }
             Message::SleepCommand(cmd) => {
-                self.handle_new_command(mh, RawCommand::new(CommandType::Sleep, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::Sleep, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::CompletePromiseCommand(cmd) => {
@@ -875,7 +980,11 @@ where
                     &EntryType::Command(CommandType::CompletePromise),
                     &self.invocation_task.invocation_target.service_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::CompletePromise, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::CompletePromise, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::PeekPromiseCommand(cmd) => {
@@ -884,7 +993,11 @@ where
                     &EntryType::Command(CommandType::PeekPromise),
                     &self.invocation_task.invocation_target.service_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::PeekPromise, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::PeekPromise, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetPromiseCommand(cmd) => {
@@ -893,7 +1006,11 @@ where
                     &EntryType::Command(CommandType::GetPromise),
                     &self.invocation_task.invocation_target.service_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetPromise, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetPromise, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetEagerStateKeysCommand(cmd) => {
@@ -905,7 +1022,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetEagerStateKeys, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetEagerStateKeys, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetEagerStateCommand(cmd) => {
@@ -917,7 +1038,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetEagerState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetEagerState, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetLazyStateKeysCommand(cmd) => {
@@ -929,7 +1054,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetLazyStateKeys, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetLazyStateKeys, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::ClearAllStateCommand(cmd) => {
@@ -941,7 +1070,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::ClearAllState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::ClearAllState, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::ClearStateCommand(cmd) => {
@@ -953,7 +1086,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::ClearState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::ClearState, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::SetStateCommand(cmd) => {
@@ -965,7 +1102,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::SetState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::SetState, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::GetLazyStateCommand(cmd) => {
@@ -977,7 +1118,11 @@ where
                         .invocation_target
                         .invocation_target_ty(),
                 ));
-                self.handle_new_command(mh, RawCommand::new(CommandType::GetLazyState, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::GetLazyState, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::CompleteAwakeableCommand(cmd) => {
@@ -986,7 +1131,11 @@ where
                     RawCommand::new(CommandType::CompleteAwakeable, cmd.clone())
                         .decode::<ServiceProtocolV4Codec, _>()
                 );
-                self.handle_new_command(mh, RawCommand::new(CommandType::CompleteAwakeable, cmd));
+                self.handle_new_command(
+                    mh,
+                    RawCommand::new(CommandType::CompleteAwakeable, cmd),
+                    inbound_lease,
+                );
                 TerminalLoopState::Continue(())
             }
             Message::SignalNotification(_) => TerminalLoopState::Failed(
@@ -1226,7 +1375,7 @@ fn can_write_state(
 }
 
 enum DecoderStreamItem {
-    Message(MessageHeader, Message),
+    Message(MessageHeader, Message, LocalMemoryLease),
     Parts(http::response::Parts),
 }
 
@@ -1235,6 +1384,9 @@ pin_project_lite::pin_project! {
         #[pin]
         inner: S,
         decoder: Decoder,
+        // Cumulative lease from raw HTTP body chunks. Per-message leases are
+        // split from this as messages are decoded.
+        cumulative_lease: Option<LocalMemoryLease>,
     }
 }
 
@@ -1252,6 +1404,7 @@ impl<S> DecoderStream<S> {
                 message_size_warning,
                 message_size_limit,
             ),
+            cumulative_lease: None,
         }
     }
 
@@ -1262,7 +1415,7 @@ impl<S> DecoderStream<S> {
 
 impl<S> Stream for DecoderStream<S>
 where
-    S: Stream<Item = Result<ResponseChunk, InvokerError>> + Unpin,
+    S: Stream<Item = Result<ResponseChunk, InvokerError>>,
 {
     type Item = Result<DecoderStreamItem, InvokerError>;
 
@@ -1270,15 +1423,29 @@ where
         let mut this = self.project();
         loop {
             match this.decoder.consume_next() {
-                Ok(Some((frame_header, frame))) => {
-                    return Poll::Ready(Some(Ok(DecoderStreamItem::Message(frame_header, frame))));
+                Ok(Some((frame_header, frame, payload_size))) => {
+                    // Split a per-message lease from the cumulative chunk lease.
+                    let msg_lease = this
+                        .cumulative_lease
+                        .as_mut()
+                        .expect("cumulative lease set before decode")
+                        .split(payload_size);
+                    return Poll::Ready(Some(Ok(DecoderStreamItem::Message(
+                        frame_header,
+                        frame,
+                        msg_lease,
+                    ))));
                 }
                 Ok(None) => match ready!(this.inner.as_mut().poll_next(cx)) {
                     Some(Ok(chunk)) => match chunk {
                         ResponseChunk::Parts(parts) => {
                             return Poll::Ready(Some(Ok(DecoderStreamItem::Parts(parts))));
                         }
-                        ResponseChunk::Data(buf) => {
+                        ResponseChunk::Data(buf, lease) => {
+                            match this.cumulative_lease.as_mut() {
+                                Some(cumulative) => cumulative.merge(lease),
+                                None => *this.cumulative_lease = Some(lease),
+                            }
                             this.decoder.push(buf);
                         }
                     },

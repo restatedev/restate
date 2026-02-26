@@ -8,16 +8,28 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::future::Future;
+
 use bytes::Bytes;
 use futures::Stream;
+
+use restate_memory::{LocalMemoryLease, LocalMemoryPool};
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
-use restate_types::journal::EntryIndex;
+use restate_types::journal::CompletionResult;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::storage::StoredRawEntry;
 use restate_types::time::MillisSinceEpoch;
-use std::future::Future;
+
+/// Which journal storage table an invocation's entries are stored in.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum JournalKind {
+    /// Legacy journal table (service protocol v1-v3).
+    V1,
+    /// New journal table (service protocol v4+).
+    V2,
+}
 
 /// Metadata associated with a journal
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -31,8 +43,7 @@ pub struct JournalMetadata {
     /// and the max time difference between two replicas applying the journal append command.
     pub last_modification_date: MillisSinceEpoch,
     pub random_seed: u64,
-    /// If true, the entries are stored in journal table v2
-    pub using_journal_table_v2: bool,
+    pub journal_kind: JournalKind,
 }
 
 impl JournalMetadata {
@@ -42,7 +53,7 @@ impl JournalMetadata {
         pinned_deployment: Option<PinnedDeployment>,
         last_modification_date: MillisSinceEpoch,
         random_seed: u64,
-        using_journal_table_v2: bool,
+        journal_kind: JournalKind,
     ) -> Self {
         Self {
             pinned_deployment,
@@ -50,7 +61,7 @@ impl JournalMetadata {
             length,
             last_modification_date,
             random_seed,
-            using_journal_table_v2,
+            journal_kind,
         }
     }
 }
@@ -58,7 +69,26 @@ impl JournalMetadata {
 #[derive(Debug, Eq, PartialEq)]
 pub enum JournalEntry {
     JournalV1(PlainRawEntry),
+    /// V1 journal entry where only the completion result is stored (completion arrived before entry).
+    JournalV1Completion(CompletionResult),
     JournalV2(StoredRawEntry),
+}
+
+/// Error trait for invocation reader operations.
+///
+/// Implementations should indicate when a failure is due to memory budget
+/// exhaustion so that callers can yield the invocation instead of treating
+/// it as a transient storage error.
+pub trait InvocationReaderError: std::error::Error + Send + Sync + 'static {
+    /// If this error represents a memory budget exhaustion, returns the number
+    /// of bytes that were requested but could not be allocated.
+    fn budget_exhaustion(&self) -> Option<usize>;
+}
+
+impl InvocationReaderError for std::convert::Infallible {
+    fn budget_exhaustion(&self) -> Option<usize> {
+        match *self {}
+    }
 }
 
 /// Read information about invocations from the underlying storage.
@@ -66,9 +96,36 @@ pub trait InvocationReader {
     type Transaction<'a>: InvocationReaderTransaction + Send
     where
         Self: 'a;
+    type Error: InvocationReaderError;
 
     /// Create a read transaction to read information about invocations from the underlying storage.
     fn transaction(&mut self) -> Self::Transaction<'_>;
+
+    /// Non-transactional point read of a single journal entry by index.
+    ///
+    /// Used during the bidi-stream phase (after the replay transaction is dropped)
+    /// to read notification/completion data on-demand when a signal-only notification arrives.
+    /// Non-transactional reads are appropriate here because entries are immutable once written.
+    fn read_journal_entry(
+        &mut self,
+        invocation_id: &InvocationId,
+        entry_index: EntryIndex,
+        journal_kind: JournalKind,
+    ) -> impl Future<Output = Result<Option<JournalEntry>, Self::Error>> + Send;
+
+    /// Budget-gated point read of a single journal entry.
+    ///
+    /// Delegates to the storage-api `get_journal_entry_budgeted` trait method
+    /// which peeks the raw byte size from RocksDB, acquires a
+    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
+    /// decoded, then decodes and returns the entry together with its lease.
+    fn read_journal_entry_budgeted(
+        &mut self,
+        invocation_id: &InvocationId,
+        entry_index: EntryIndex,
+        journal_kind: JournalKind,
+        budget: &mut LocalMemoryPool,
+    ) -> impl Future<Output = Result<Option<(JournalEntry, LocalMemoryLease)>, Self::Error>> + Send;
 }
 
 /// Read transaction to read information about invocations from the underlying storage.
@@ -81,7 +138,16 @@ pub trait InvocationReaderTransaction {
     type StateStream<'a>: Stream<Item = Result<(Bytes, Bytes), Self::Error>> + Send
     where
         Self: 'a;
-    type Error: std::error::Error + Send + Sync + 'static;
+    type LocalMemoryPooledJournalStream<'a>: Stream<Item = Result<(JournalEntry, LocalMemoryLease), Self::Error>>
+        + Unpin
+        + Send
+    where
+        Self: 'a;
+    type LocalMemoryPooledStateStream<'a>: Stream<Item = Result<((Bytes, Bytes), LocalMemoryLease), Self::Error>>
+        + Send
+    where
+        Self: 'a;
+    type Error: InvocationReaderError;
 
     /// Read only the journal metadata for the given invocation id.
     ///
@@ -100,7 +166,7 @@ pub trait InvocationReaderTransaction {
         &self,
         invocation_id: &InvocationId,
         length: EntryIndex,
-        using_journal_table_v2: bool,
+        journal_kind: JournalKind,
     ) -> Result<Self::JournalStream<'_>, Self::Error>;
 
     /// Read the state for the given service id.
@@ -109,6 +175,32 @@ pub trait InvocationReaderTransaction {
         &self,
         service_id: &ServiceId,
     ) -> Result<EagerState<Self::StateStream<'_>>, Self::Error>;
+
+    /// Budget-gated journal replay stream.
+    ///
+    /// Delegates to the storage-api `get_journal_budgeted` trait method which
+    /// peeks each entry's raw byte size from RocksDB, acquires a
+    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
+    /// decoded, then decodes and yields the entry together with its lease.
+    fn read_journal_budgeted<'a>(
+        &'a self,
+        invocation_id: &InvocationId,
+        length: EntryIndex,
+        journal_kind: JournalKind,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<Self::LocalMemoryPooledJournalStream<'a>, Self::Error>;
+
+    /// Budget-gated state loading stream.
+    ///
+    /// Delegates to the storage-api `get_all_user_states_budgeted` trait method
+    /// which peeks each state entry's raw byte size from RocksDB, acquires a
+    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
+    /// decoded, then decodes and yields the key-value pair together with its lease.
+    fn read_state_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error>;
 }
 
 /// Container for the state returned by [`InvocationReaderTransaction::read_state`].

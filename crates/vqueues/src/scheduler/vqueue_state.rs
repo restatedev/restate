@@ -18,6 +18,7 @@ use tokio::time::Instant;
 use tracing::trace;
 
 use restate_futures_util::concurrency::{Concurrency, Permit};
+use restate_memory::{MemoryLease, PollMemoryPool};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{
@@ -39,13 +40,22 @@ use super::{Entry, GlobalTokenBucket, IsPaused, ThrottleScope, VQueueHandle};
 
 const QUANTUM: i32 = 1;
 
+/// Resources reserved from global limiters for a single invocation.
+///
+/// Bundles a concurrency [`Permit`] and a [`MemoryLease`] so they travel
+/// together through the scheduler → leader handoff.
+pub struct ReservedResources {
+    pub permit: Permit,
+    pub memory_lease: MemoryLease,
+}
+
 pub(super) enum Pop<Item> {
     DeficitExhausted,
     Item {
         action: Action,
-        /// The permit is None if the action does not require a permit (e.g. yield).
-        /// or if the item itself doesn't require a permit (state mutation)
-        permit: Option<Permit>,
+        /// Reserved resources for this item. `None` for actions that don't
+        /// require global resources (e.g. yield, state mutations).
+        resources: Option<ReservedResources>,
         entry: Entry<Item>,
         updated_zt: Option<f64>,
     },
@@ -55,6 +65,7 @@ pub(super) enum Pop<Item> {
         scope: ThrottleScope,
     },
     BlockedOnCapacity,
+    BlockedOnMemory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::IsVariant)]
@@ -232,6 +243,8 @@ impl<S: VQueueStore> VQueueState<S> {
         cx: &mut std::task::Context<'_>,
         storage: &S,
         concurrency_limiter: &mut Concurrency,
+        memory_limiter: &mut PollMemoryPool,
+        seed_size: usize,
         global_throttling: Option<&GlobalTokenBucket>,
     ) -> Result<Pop<S::Item>, StorageError> {
         let (inbox_head, is_running) = match self.queue.head() {
@@ -262,7 +275,7 @@ impl<S: VQueueStore> VQueueState<S> {
             // only support yielding.
             let result = Pop::Item {
                 action: Action::Yield,
-                permit: None,
+                resources: None,
                 entry: Entry {
                     item: inbox_head.clone(),
                     stats: self.head_stats.finalize(),
@@ -296,7 +309,7 @@ impl<S: VQueueStore> VQueueState<S> {
             false
         };
 
-        let permit = match inbox_head.kind() {
+        let resources = match inbox_head.kind() {
             EntryKind::Invocation => {
                 let Poll::Ready(permit) = concurrency_limiter.poll_acquire(cx) else {
                     // Waker will be notified when capacity is available.
@@ -308,7 +321,23 @@ impl<S: VQueueStore> VQueueState<S> {
                     trace!("vqueue {:?} is blocked on global capacity", self.qid);
                     return Ok(Pop::BlockedOnCapacity);
                 };
-                Some(permit)
+
+                // Reserve memory from the invoker's pool. If unavailable,
+                // drop the concurrency permit (it will be re-acquired on the
+                // next poll) and signal blocked-on-memory.
+                let Poll::Ready(memory_lease) = memory_limiter.poll_reserve(cx, seed_size) else {
+                    if has_tb_token && let Some(ref start_tb) = self.start_tb {
+                        start_tb.add_tokens(1.0);
+                    }
+                    // permit is dropped here, will be re-acquired next poll
+                    trace!("vqueue {:?} is blocked on memory", self.qid);
+                    return Ok(Pop::BlockedOnMemory);
+                };
+
+                Some(ReservedResources {
+                    permit,
+                    memory_lease,
+                })
             }
             EntryKind::StateMutation | EntryKind::Unknown => None,
         };
@@ -327,7 +356,7 @@ impl<S: VQueueStore> VQueueState<S> {
             if has_tb_token && let Some(ref start_tb) = self.start_tb {
                 start_tb.add_tokens(1.0);
             }
-            // NOTE: the concurrency limiter's permit will be dropped here.
+            // NOTE: the concurrency limiter's permit and memory lease will be dropped here.
             return Ok(Pop::Throttle {
                 delay,
                 scope: ThrottleScope::Global,
@@ -338,7 +367,7 @@ impl<S: VQueueStore> VQueueState<S> {
             .insert(inbox_head.unique_hash());
         let result = Pop::Item {
             action: Action::MoveToRunning,
-            permit,
+            resources,
             entry: Entry {
                 item: inbox_head.clone(),
                 stats: self.head_stats.finalize(),

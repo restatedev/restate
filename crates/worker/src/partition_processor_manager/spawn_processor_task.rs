@@ -122,6 +122,7 @@ where
             schema,
             invoker_capacity.invocation_token_bucket.clone(),
             invoker_capacity.action_token_bucket.clone(),
+            invoker_capacity.memory_pool.clone(),
         )?;
 
         let status_reader = invoker.status_reader();

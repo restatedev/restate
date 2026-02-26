@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, cancellation_token};
-use restate_types::logs::Record;
+use restate_types::logs::RecordWithLease;
 use restate_types::storage::StorageEncode;
 
 use crate::error::EnqueueError;
@@ -160,13 +160,19 @@ impl<T: StorageEncode> BackgroundAppender<T> {
         notif_buffer: &mut Vec<oneshot::Sender<()>>,
     ) -> Result<()> {
         let mut batch = Vec::with_capacity(buffered_records.inner.len());
-        for record in buffered_records.inner.drain(..) {
-            match record {
-                AppendOperation::Enqueue(record) => {
+        let mut leases: Vec<Option<Box<dyn Send + Sync>>> =
+            Vec::with_capacity(buffered_records.inner.len());
+        for op in buffered_records.inner.drain(..) {
+            match op {
+                AppendOperation::Enqueue(record_with_lease) => {
+                    let (record, lease) = record_with_lease.split();
                     batch.push(record);
+                    leases.push(lease);
                 }
-                AppendOperation::EnqueueWithNotification(record, tx) => {
+                AppendOperation::EnqueueWithNotification(record_with_lease, tx) => {
+                    let (record, lease) = record_with_lease.split();
                     batch.push(record);
+                    leases.push(lease);
                     notif_buffer.push(tx);
                 }
                 AppendOperation::Canary(tx) => {
@@ -181,10 +187,13 @@ impl<T: StorageEncode> BackgroundAppender<T> {
             }
         }
 
-        // Failure to append will stop the whole task
+        // Failure to append will stop the whole task.
+        // Leases are held alive on the stack until append_batch_erased returns
+        // (i.e. the batch is durably committed), at which point they are dropped.
         if !batch.is_empty() {
             appender.append_batch_erased(batch.into()).await?;
         }
+        drop(leases);
 
         // Notify those who asked for a commit notification
         notif_buffer.drain(..).for_each(|tx| {
@@ -289,7 +298,7 @@ impl<T> Clone for LogSender<T> {
 }
 
 impl<T: StorageEncode> LogSender<T> {
-    fn check_record_size<E>(&self, record: &Record) -> Result<(), EnqueueError<E>> {
+    fn check_record_size<E>(&self, record: &RecordWithLease) -> Result<(), EnqueueError<E>> {
         let record_size = record.estimated_encode_size();
         if record_size > self.record_size_limit.get() {
             return Err(EnqueueError::RecordTooLarge {
@@ -312,7 +321,10 @@ impl<T: StorageEncode> LogSender<T> {
             Err(mpsc::error::TrySendError::Closed(_)) => return Err(EnqueueError::Closed(record)),
         };
 
-        let record = record.into().into_record().ensure_encoded(&mut self.arena);
+        let record = record
+            .into()
+            .into_record_with_lease()
+            .ensure_encoded(&mut self.arena);
         self.check_record_size(&record)?;
         permit.send(AppendOperation::Enqueue(record));
         Ok(())
@@ -333,7 +345,10 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         let (tx, rx) = oneshot::channel();
-        let record = record.into().into_record().ensure_encoded(&mut self.arena);
+        let record = record
+            .into()
+            .into_record_with_lease()
+            .ensure_encoded(&mut self.arena);
         self.check_record_size(&record)?;
         permit.send(AppendOperation::EnqueueWithNotification(record, tx));
         Ok(CommitToken { rx })
@@ -348,7 +363,10 @@ impl<T: StorageEncode> LogSender<T> {
         let Ok(permit) = self.tx.reserve().await else {
             return Err(EnqueueError::Closed(record));
         };
-        let record = record.into().into_record().ensure_encoded(&mut self.arena);
+        let record = record
+            .into()
+            .into_record_with_lease()
+            .ensure_encoded(&mut self.arena);
         self.check_record_size(&record)?;
         permit.send(AppendOperation::Enqueue(record));
 
@@ -372,7 +390,10 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            let record = record.into().into_record().ensure_encoded(&mut self.arena);
+            let record = record
+                .into()
+                .into_record_with_lease()
+                .ensure_encoded(&mut self.arena);
             self.check_record_size(&record)?;
             permit.send(AppendOperation::Enqueue(record));
         }
@@ -394,7 +415,10 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         for (permit, record) in std::iter::zip(permits, records) {
-            let record = record.into().into_record().ensure_encoded(&mut self.arena);
+            let record = record
+                .into()
+                .into_record_with_lease()
+                .ensure_encoded(&mut self.arena);
             self.check_record_size(&record)?;
             permit.send(AppendOperation::Enqueue(record));
         }
@@ -416,7 +440,10 @@ impl<T: StorageEncode> LogSender<T> {
         };
 
         let (tx, rx) = oneshot::channel();
-        let record = record.into().into_record().ensure_encoded(&mut self.arena);
+        let record = record
+            .into()
+            .into_record_with_lease()
+            .ensure_encoded(&mut self.arena);
         self.check_record_size(&record)?;
         permit.send(AppendOperation::EnqueueWithNotification(record, tx));
 
@@ -484,8 +511,8 @@ impl std::future::Future for CommitToken {
 }
 
 enum AppendOperation {
-    Enqueue(Record),
-    EnqueueWithNotification(Record, oneshot::Sender<()>),
+    Enqueue(RecordWithLease),
+    EnqueueWithNotification(RecordWithLease, oneshot::Sender<()>),
     // A message denoting a request to be notified when it's processed by the appender.
     // It's used to check if previously enqueued appends have been committed or not
     Canary(oneshot::Sender<()>),
@@ -544,15 +571,14 @@ mod tests {
     use restate_types::storage::PolyBytes;
     use restate_types::time::NanosSinceEpoch;
 
-    fn make_record_with_size(size: usize) -> Record {
-        // Create a record with approximately the given size
-        // The actual size will be dominated by the PolyBytes::Bytes variant
+    fn make_record_with_size(size: usize) -> RecordWithLease {
         let payload = vec![0u8; size];
-        Record::from_parts(
+        let record = Record::from_parts(
             NanosSinceEpoch::now(),
             Keys::None,
             PolyBytes::Bytes(payload.into()),
-        )
+        );
+        RecordWithLease::new(record, None)
     }
 
     #[test]

@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, instrument, warn};
 
 use restate_bifrost::Bifrost;
@@ -29,7 +29,7 @@ use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, my_node_id};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_api::InvokeInputJournal;
+
 use restate_invoker_api::capacity::InvokerCapacity;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::{StorageError, vqueue_table};
@@ -75,13 +75,13 @@ use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
 use crate::partition::state_machine::{Action, StateMachine};
-use crate::partition::types::InvokerEffect;
+use restate_invoker_api::InvokerEffect;
 
 use self::durability_tracker::DurabilityTracker;
 use self::trim_queue::{LogTrimmer, TrimQueue};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
-type InvokerStream = ReceiverStream<InvokerEffect>;
+type InvokerStream = UnboundedReceiverStream<InvokerEffect>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -133,7 +133,7 @@ pub(crate) enum TaskTermination {
 #[derive(Debug)]
 pub(crate) enum ActionEffect {
     Scheduler(Result<scheduler::Decision<vqueue_table::EntryCard>, StorageError>),
-    Invoker(Box<restate_invoker_api::Effect>),
+    Invoker(InvokerEffect),
     Shuffle(shuffle::OutboxTruncation),
     Timer(TimerKeyValue),
     Cleaner(cleaner::CleanerEffect),
@@ -386,8 +386,8 @@ where
             self_proposer,
         } = &mut self.state
         {
-            let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
-            let invoker_rx = ReceiverStream::new(invoker_rx);
+            let (invoker_tx, invoker_rx) = mpsc::unbounded_channel();
+            let invoker_rx = UnboundedReceiverStream::new(invoker_rx);
 
             self.invoker_tx
                 .register_partition(
@@ -402,6 +402,8 @@ where
                 SchedulerService::create(
                     self.invoker_capacity.concurrency.clone(),
                     self.invoker_capacity.invocation_token_bucket.clone(),
+                    self.invoker_capacity.memory_pool.clone(),
+                    restate_invoker_api::capacity::SEED_SIZE,
                     partition_store.partition_db().clone(),
                     vqueues_cache,
                 )
@@ -557,12 +559,7 @@ where
                     invocation_target,
                 } = invoked_invocation?;
                 invoker_handle
-                    .invoke(
-                        partition_leader_epoch,
-                        invocation_id,
-                        invocation_target,
-                        InvokeInputJournal::NoCachedJournal,
-                    )
+                    .invoke(partition_leader_epoch, invocation_id, invocation_target)
                     .map_err(Error::Invoker)?;
                 count += 1;
             }
@@ -602,7 +599,12 @@ where
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_actions(&mut self.invoker_tx, actions, vqueues)?;
+                leader_state.handle_actions(
+                    &mut self.invoker_tx,
+                    actions,
+                    vqueues,
+                    &self.invoker_capacity.memory_pool,
+                )?;
             }
         }
 
