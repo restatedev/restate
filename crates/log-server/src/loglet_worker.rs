@@ -45,11 +45,11 @@ impl LogletWorkerHandle {
         self.loglet_guard.cancel_and_wait().await
     }
 
-    pub(crate) fn data_tx(&self) -> ShardSender<LogServerDataService> {
+    pub fn data_tx(&self) -> ShardSender<LogServerDataService> {
         self.data_tx.clone()
     }
 
-    pub(crate) fn meta_tx(&self) -> ShardSender<LogServerMetaService> {
+    pub fn meta_tx(&self) -> ShardSender<LogServerMetaService> {
         self.meta_tx.clone()
     }
 }

@@ -10,7 +10,10 @@ publish = false
 [features]
 default = []
 clients = []
-test-util = []
+# Expose internal modules (loglet_worker, logstore, metadata, rocksdb_logstore) for
+# benchmarking tools that drive the log-server directly without networking.
+expose-internals = []
+test-util = ["expose-internals"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
