@@ -229,7 +229,7 @@ impl LeaderState {
 
         // Completely unnecessary but left here for being defensive against any potential future
         // re-use of the self proposer
-        self.self_proposer.mark_as_non_leader().await;
+        self.self_proposer.mark_as_non_leader();
 
         let cleaner_handle = OptionFuture::from(self.cleaner_handle.stop());
 
