@@ -59,6 +59,7 @@ flexbuffers = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true }
 generic-array = { version = "1.3.5" }
+heapless = { version = "0.9", default-features = false }
 hostname = { workspace = true }
 http = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
