@@ -1,0 +1,49 @@
+name: Fmt slash command
+on:
+  repository_dispatch:
+    types: [fmt-command]
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          token: ${{ secrets.PAT }}
+          repository: ${{ github.event.client_payload.github.payload.repository.full_name }}
+          ref: ${{ steps.vars.outputs.branch }}
+
+      - name: Setup CI environment
+        uses: ./.github/actions/rust-env-setup
+
+      - name: Run format
+        run: just fmt
+
+      - name: Commit and push changes (if any)
+        shell: bash
+        env:
+          CI_COMMIT_MESSAGE: Update template
+          CI_COMMIT_AUTHOR: github-actions[bot]
+          CI_COMMIT_EMAIL: username@users.noreply.github.com
+        run: |
+          cd destination
+          git config --global user.name "${{ env.CI_COMMIT_AUTHOR }}"
+          git config --global user.email "${{ env.CI_COMMIT_EMAIL }}"
+          if [[ `git status --porcelain --untracked-files=no` ]]; then
+            # Changes
+            git add .
+            git commit -m "${{ env.CI_COMMIT_MESSAGE }}"
+            git push
+          else
+            # No changes
+            echo "no changes to the destination"
+            exit 0
+          fi
+
+      # Add reaction to the comment
+      - name: Add reaction
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.PAT }}
+          repository: ${{ github.event.client_payload.github.payload.repository.full_name }}
+          comment-id: ${{ github.event.client_payload.github.payload.comment.id }}
+          reactions: hooray

@@ -51,38 +51,8 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          components: clippy
-          rustflags: ""
-          cache: false
-
-      - name: Setup Rust Caching
-        uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
-        with:
-          cache-on-failure: "true"
-
-      - name: Install cargo-hakari
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-hakari
-
-      - name: Disable hakari
-        run: cargo hakari disable
-
-      - name: Install protoc
-        uses: ./.github/actions/install-protoc
-
-      - name: Install nextest
-        uses: taiki-e/install-action@v2
-        with:
-          tool: nextest@0.9.98
-
-      - name: Setup just
-        uses: extractions/setup-just@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Setup CI environment
+        uses: ./.github/actions/rust-env-setup
 
       - name: Check Cargo.lock file is updated
         run: cargo update -w --locked
