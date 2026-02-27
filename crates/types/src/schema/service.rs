@@ -177,6 +177,14 @@ pub struct ServiceMetadata {
     #[serde(default = "restate_serde_util::default::bool::<false>")]
     pub enable_lazy_state: bool,
 
+    /// # Eager state size limit
+    ///
+    /// Maximum total size (in bytes) of state entries to send eagerly.
+    /// If set, it overrides the server-level `eager-state-size-limit` configuration.
+    /// A value of `0` is equivalent to enabling lazy state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eager_state_size_limit: Option<usize>,
+
     /// # Retry policy
     ///
     /// Retry policy applied to invocations of this service.
@@ -396,6 +404,14 @@ pub struct HandlerMetadata {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub enable_lazy_state: Option<bool>,
 
+    /// # Eager state size limit
+    ///
+    /// Maximum total size (in bytes) of state entries to send eagerly.
+    /// If set, it overrides the value set in the service.
+    /// A value of `0` is equivalent to enabling lazy state.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub eager_state_size_limit: Option<usize>,
+
     /// # Public
     ///
     /// If true, this handler can be invoked through the ingress.
@@ -557,6 +573,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
+                                eager_state_size_limit: None,
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
@@ -580,6 +597,7 @@ pub mod test_util {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
+                eager_state_size_limit: None,
                 retry_policy: Default::default(),
                 info: vec![],
             }
@@ -606,6 +624,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
+                                eager_state_size_limit: None,
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
@@ -629,6 +648,7 @@ pub mod test_util {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
+                eager_state_size_limit: None,
                 retry_policy: Default::default(),
                 info: vec![],
             }

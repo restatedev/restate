@@ -154,6 +154,13 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
 
     let mut table = Table::new_styled();
     table.add_kv_row("Enable lazy state:", service.enable_lazy_state);
+    table.add_kv_row(
+        "Eager state size limit:",
+        service
+            .eager_state_size_limit
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<UNSET>".to_string()),
+    );
     c_println!("{table}");
     c_tip!("{}", ENABLE_LAZY_STATE);
     c_println!();
@@ -199,6 +206,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
             || handler.inactivity_timeout.is_some()
             || handler.abort_timeout.is_some()
             || handler.enable_lazy_state.is_some()
+            || handler.eager_state_size_limit.is_some()
             || handler.public != service.public
             || !is_retry_policy_empty(&handler.retry_policy);
 
@@ -230,6 +238,10 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
 
             if let Some(enable_lazy_state) = handler.enable_lazy_state {
                 table.add_kv_row("  Enable lazy state:", enable_lazy_state);
+            }
+
+            if let Some(eager_state_size_limit) = handler.eager_state_size_limit {
+                table.add_kv_row("  Eager state size limit:", eager_state_size_limit);
             }
 
             if handler.public != service.public {

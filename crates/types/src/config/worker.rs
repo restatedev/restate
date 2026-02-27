@@ -315,7 +315,20 @@ pub struct InvokerOptions {
     /// Number of concurrent invocations that can be processed by the invoker.
     concurrent_invocations_limit: Option<NonZeroUsize>,
 
+    /// # Eager state size limit
+    ///
+    /// Maximum total size (in bytes) of state entries to send eagerly in the StartMessage.
+    /// When the total size of state entries exceeds this limit, only a partial state is sent
+    /// and the service will fetch remaining state lazily using GetEagerState commands.
+    ///
+    /// This helps reduce memory pressure on deployments for services with large state.
+    /// If unset, all state entries are sent eagerly (no limit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eager_state_size_limit: Option<NonZeroByteCount>,
+
     // -- Private config options (not exposed in the schema)
+    /// Deprecated: Use `eager_state_size_limit` with a value of `0` instead.
+    /// When true, treated as `eager_state_size_limit = 0` (no eager state).
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub disable_eager_state: bool,
@@ -398,6 +411,7 @@ impl Default for InvokerOptions {
             message_size_limit: None,
             tmp_dir: None,
             concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
+            eager_state_size_limit: None,
             disable_eager_state: false,
             invocation_throttling: None,
             action_throttling: None,
