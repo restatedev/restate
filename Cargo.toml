@@ -303,6 +303,12 @@ debug = true
 [profile.dev]
 panic = "unwind"
 
+# Reduce debug info for third-party dependencies to speed up linking.
+# Keeps full debuginfo for workspace crates (useful for debugging our code)
+# while only emitting line tables for deps (sufficient for backtraces/flamegraphs).
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
 [profile.release.package.service-protocol-wireshark-dissector]
 opt-level = "z" # Optimize for size.
 strip = true    # Automatically strip symbols from the binary.
