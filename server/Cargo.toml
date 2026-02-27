@@ -24,7 +24,6 @@ console = [
     "restate-types/console",
 ]
 options_schema = [
-    "dep:schemars",
     "restate-node/options_schema",
     "restate-tracing-instrumentation/options_schema",
     "restate-types/schemars",
@@ -60,7 +59,6 @@ octocrab = { workspace = true, features = ["stream"] }
 regex = { workspace = true }
 rlimit = { workspace = true }
 rustls = { workspace = true, features = ["aws-lc-rs"] }
-schemars = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }

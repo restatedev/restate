@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars", "restate-types/schemars"]
+options_schema = ["restate-types/schemars"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -40,7 +40,6 @@ itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 pin-project-lite = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
