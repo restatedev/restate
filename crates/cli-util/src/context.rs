@@ -97,6 +97,43 @@ impl CliContext {
     ///
     /// In tests, use this to inject mock environment variables.
     pub fn with_env(os_env: &OsEnv, opts: CommonOpts) -> Self {
+        let ctx = Self::build(os_env, &opts);
+
+        // Setup logging from env and from -v .. -vvvv
+        if let Err(err) = tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_max_level(opts.verbose.log_level_filter().as_trace())
+            .with_ansi(ctx.colors_enabled)
+            .try_init()
+        {
+            warn!("Failed to initialize tracing subscriber: {}", err);
+        }
+
+        // We only log after we've initialized the logger with the desired log
+        // level.
+        match &ctx.loaded_dotenv {
+            Some(path) => {
+                info!("Loaded .env file from: {}", path.display())
+            }
+            None => info!("Didn't load '.env' file"),
+        };
+
+        ctx
+    }
+
+    /// Like [`new`](Self::new), but skips installing a tracing subscriber.
+    ///
+    /// Use this when the application manages its own tracing setup (e.g. via
+    /// `restate_tracing_instrumentation`) but still wants CLI color detection,
+    /// table styling, and other UI features.
+    pub fn new_without_tracing(opts: CommonOpts) -> Self {
+        let os_env = OsEnv::default();
+        Self::build(&os_env, &opts)
+    }
+
+    /// Core builder: color detection, dotenv, and UI setup without tracing.
+    fn build(os_env: &OsEnv, opts: &CommonOpts) -> Self {
         // Load .env file. Best effort.
         let maybe_dotenv = dotenv();
 
@@ -139,33 +176,12 @@ impl CliContext {
         // without passing the environment around.
         dialoguer::console::set_colors_enabled(colorful);
 
-        // Setup logging from env and from -v .. -vvvv
-        if let Err(err) = tracing_subscriber::fmt()
-            .with_writer(std::io::stderr)
-            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-            .with_max_level(opts.verbose.log_level_filter().as_trace())
-            .with_ansi(colorful)
-            .try_init()
-        {
-            warn!("Failed to initialize tracing subscriber: {}", err);
-        }
-
-        // We only log after we've initialized the logger with the desired log
-        // level.
-        let loaded_dotenv = maybe_dotenv.ok();
-        match &loaded_dotenv {
-            Some(path) => {
-                info!("Loaded .env file from: {}", path.display())
-            }
-            None => info!("Didn't load '.env' file"),
-        };
-
         Self {
-            confirm_mode: opts.confirm,
-            ui: opts.ui,
-            network: opts.network,
+            confirm_mode: opts.confirm.clone(),
+            ui: opts.ui.clone(),
+            network: opts.network.clone(),
             colors_enabled: colorful,
-            loaded_dotenv,
+            loaded_dotenv: maybe_dotenv.ok(),
         }
     }
 

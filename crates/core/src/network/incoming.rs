@@ -293,7 +293,7 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
         }
     }
 
-    #[cfg(feature = "test-util")]
+    #[cfg(feature = "message-util")]
     pub(crate) fn into_raw_rpc(self) -> Incoming<RawRpc> {
         Incoming {
             protocol_version: self.protocol_version,
@@ -410,7 +410,7 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
         }
     }
 
-    #[cfg(feature = "test-util")]
+    #[cfg(feature = "message-util")]
     pub(crate) fn into_raw_unary(self) -> Incoming<RawUnary> {
         Incoming {
             protocol_version: self.protocol_version,
@@ -526,7 +526,7 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
         }
     }
 
-    #[cfg(feature = "test-util")]
+    #[cfg(feature = "message-util")]
     pub(crate) fn into_raw_watch(self) -> Incoming<RawWatch> {
         Incoming {
             protocol_version: self.protocol_version,

@@ -639,8 +639,8 @@ pub enum ServiceMessage<S> {
 }
 
 impl<S: Service> ServiceMessage<S> {
-    // For testing
-    #[cfg(feature = "test-util")]
+    // For testing and benchmarking
+    #[cfg(feature = "message-util")]
     pub fn fake_rpc<M>(
         msg: M,
         sort_code: Option<u64>,

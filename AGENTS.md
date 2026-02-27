@@ -76,3 +76,6 @@ propose to write a micro-benchmark with Criterion to help guide the user's decis
 However, to make sure our priorities are clear. The priority should always for correctness before considering performance.
 
 Be extra careful when making changes to the latency critical paths of the system. Primarily, Bifrost, the networking layer, restate-core, the partition-processor state machine, and the invoker.
+
+# Benchmarking Tools
+- **`tools/logserver-bench`** — A standalone benchmark tool for the log-server's RocksDB storage layer. Use it to measure write throughput, mixed read/write/trim workloads, and to validate that log-server changes don't regress performance. See `tools/logserver-bench/README.md` for usage details.
