@@ -45,12 +45,15 @@ use crate::schema::invocation_target::{
     InputRules, InvocationAttemptOptions, InvocationTargetMetadata, InvocationTargetResolver,
     OnMaxAttempts, OutputRules,
 };
+use crate::schema::kafka::{KafkaCluster, KafkaClusterResolver};
 use crate::schema::metadata::openapi::ServiceOpenAPI;
 use crate::schema::service::{
     HandlerRetryPolicyMetadata, ServiceMetadataResolver, ServiceRetryPolicyMetadata,
 };
-use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
-use crate::schema::{deployment, service};
+use crate::schema::subscriptions::{
+    ListSubscriptionFilter, Source, Subscription, SubscriptionResolver,
+};
+use crate::schema::{Redaction, deployment, service};
 use crate::service_protocol::ServiceProtocolVersion;
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
@@ -68,6 +71,7 @@ pub struct Schema {
     deployments: HashMap<DeploymentId, Deployment>,
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
     subscriptions: HashMap<SubscriptionId, Subscription>,
+    kafka_clusters: HashMap<String, KafkaCluster>,
 }
 
 impl Default for Schema {
@@ -77,6 +81,7 @@ impl Default for Schema {
             active_service_revisions: HashMap::default(),
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
+            kafka_clusters: HashMap::default(),
         }
     }
 }
@@ -860,11 +865,22 @@ impl ServiceMetadataResolver for Schema {
 }
 
 impl SubscriptionResolver for Schema {
-    fn get_subscription(&self, id: SubscriptionId) -> Option<Subscription> {
-        self.subscriptions.get(&id).cloned()
+    fn get_subscription(
+        &self,
+        id: SubscriptionId,
+        redact_secrets: Redaction,
+    ) -> Option<Subscription> {
+        self.subscriptions
+            .get(&id)
+            .cloned()
+            .map(|sub| sub.redact(redact_secrets))
     }
 
-    fn list_subscriptions(&self, filters: &[ListSubscriptionFilter]) -> Vec<Subscription> {
+    fn list_subscriptions(
+        &self,
+        filters: &[ListSubscriptionFilter],
+        redact_secrets: Redaction,
+    ) -> Vec<Subscription> {
         self.subscriptions
             .values()
             .filter(|sub| {
@@ -876,8 +892,149 @@ impl SubscriptionResolver for Schema {
                 true
             })
             .cloned()
+            .map(|sub| sub.redact(redact_secrets))
             .collect()
     }
+}
+
+impl KafkaClusterResolver for Schema {
+    fn get_kafka_cluster(
+        &self,
+        cluster_name: &str,
+        redact_secrets: Redaction,
+    ) -> Option<KafkaCluster> {
+        self.kafka_clusters
+            .get(cluster_name)
+            .cloned()
+            .or_else(|| {
+                Configuration::pinned()
+                    .ingress
+                    .get_kafka_cluster(cluster_name)
+                    .cloned()
+                    .map(Into::into)
+            })
+            .map(|cluster| cluster.redact(redact_secrets))
+    }
+
+    fn get_kafka_cluster_and_subscriptions(
+        &self,
+        cluster_name: &str,
+        redact_secrets: Redaction,
+    ) -> Option<(KafkaCluster, Vec<Subscription>)> {
+        let cluster = KafkaClusterResolver::get_kafka_cluster(self, cluster_name, redact_secrets)?;
+
+        let subscriptions = self
+            .subscriptions
+            .values()
+            .filter(|sub| {
+                let Source::Kafka { cluster, .. } = sub.source();
+                cluster == cluster_name
+            })
+            .map(|sub| sub.clone().redact(redact_secrets))
+            .collect();
+        Some((cluster, subscriptions))
+    }
+
+    fn list_kafka_clusters(&self, redact_secrets: Redaction) -> Vec<KafkaCluster> {
+        self.kafka_clusters
+            .values()
+            .map(|cluster| cluster.clone().redact(redact_secrets))
+            .chain(
+                Configuration::pinned()
+                    .ingress
+                    .kafka_clusters
+                    .iter()
+                    .map(|cluster| KafkaCluster::from(cluster.clone()).redact(redact_secrets)),
+            )
+            .collect()
+    }
+}
+
+const REDACTION_VALUE: &str = "***";
+
+impl KafkaCluster {
+    fn redact(mut self, redact_secrets: Redaction) -> KafkaCluster {
+        match redact_secrets {
+            Redaction::Yes => {
+                let redacted_properties = self.properties_mut();
+                for (key, value) in redacted_properties.iter_mut() {
+                    if is_sensitive_kafka_property(key) {
+                        *value = REDACTION_VALUE.to_string();
+                    }
+                }
+            }
+            Redaction::No => {}
+        };
+        self
+    }
+}
+
+impl Subscription {
+    fn redact(mut self, redact_secrets: Redaction) -> Subscription {
+        match redact_secrets {
+            Redaction::Yes => {
+                let redacted_properties = self.metadata_mut();
+                for (key, value) in redacted_properties.iter_mut() {
+                    if is_sensitive_kafka_property(key) {
+                        *value = REDACTION_VALUE.to_string();
+                    }
+                }
+            }
+            Redaction::No => {}
+        };
+        self
+    }
+}
+
+/// Checks if a Kafka property key is sensitive and should be redacted
+/// Based on librdkafka CONFIGURATION.md
+fn is_sensitive_kafka_property(key: &str) -> bool {
+    let key_lower = key.to_lowercase();
+
+    // Redact anything with password, secret, passphrase, or token in the name
+    if key_lower.contains("password")
+        || key_lower.contains("secret")
+        || key_lower.contains("passphrase")
+    {
+        return true;
+    }
+
+    // Redact SASL credentials
+    if key_lower.contains("sasl.username") {
+        return true;
+    }
+
+    // Redact SASL JAAS config (contains credentials)
+    if key_lower.contains("sasl.jaas.config") {
+        return true;
+    }
+
+    // Redact OAuth/OIDC configs (may contain credentials)
+    if key_lower.contains("sasl.oauthbearer.config") {
+        return true;
+    }
+
+    // Redact OAuth token endpoints (may contain secrets in URL params)
+    if key_lower.contains("token.endpoint.url") {
+        return true;
+    }
+
+    // Redact SSL/TLS private keys (PEM format or file locations)
+    if key_lower.contains("ssl.key.location") || key_lower.contains("ssl.key.pem") {
+        return true;
+    }
+
+    // Redact keystore and truststore locations (can reveal filesystem structure)
+    if key_lower.contains("keystore.location") || key_lower.contains("truststore.location") {
+        return true;
+    }
+
+    // Redact OAuth assertion private keys (JWT signing)
+    if key_lower.contains("sasl.oauthbearer.assertion.private.key") {
+        return true;
+    }
+
+    false
 }
 
 impl Configuration {

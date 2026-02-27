@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_ingress_kafka::SubscriptionCommandSender;
-use restate_types::identifiers::SubscriptionId;
+use restate_types::schema::kafka::KafkaCluster;
 use restate_types::schema::subscriptions::Subscription;
 
 use crate::{SubscriptionController, WorkerHandleError};
@@ -24,31 +24,14 @@ impl SubscriptionControllerHandle {
 }
 
 impl SubscriptionController for SubscriptionControllerHandle {
-    async fn start_subscription(
-        &self,
-        subscription: Subscription,
-    ) -> Result<(), WorkerHandleError> {
-        self.0
-            .send(restate_ingress_kafka::Command::StartSubscription(
-                subscription,
-            ))
-            .await
-            .map_err(|_| WorkerHandleError::Unreachable)
-    }
-
-    async fn stop_subscription(&self, id: SubscriptionId) -> Result<(), WorkerHandleError> {
-        self.0
-            .send(restate_ingress_kafka::Command::StopSubscription(id))
-            .await
-            .map_err(|_| WorkerHandleError::Unreachable)
-    }
-
     async fn update_subscriptions(
         &self,
+        kafka_clusters: Vec<KafkaCluster>,
         subscriptions: Vec<Subscription>,
     ) -> Result<(), WorkerHandleError> {
         self.0
             .send(restate_ingress_kafka::Command::UpdateSubscriptions(
+                kafka_clusters,
                 subscriptions,
             ))
             .await

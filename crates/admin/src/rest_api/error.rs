@@ -276,6 +276,8 @@ pub enum MetaApiError {
     },
     #[error("The requested subscription '{0}' does not exist")]
     SubscriptionNotFound(SubscriptionId),
+    #[error("The requested Kafka cluster '{0}' does not exist")]
+    KafkaClusterNotFound(String),
     #[error("Cannot {0} for service type {1}")]
     UnsupportedOperation(&'static str, ServiceType),
     #[error(transparent)]
@@ -306,7 +308,8 @@ impl IntoResponse for MetaApiError {
             MetaApiError::ServiceNotFound(_)
             | MetaApiError::HandlerNotFound { .. }
             | MetaApiError::DeploymentNotFound(_)
-            | MetaApiError::SubscriptionNotFound(_) => StatusCode::NOT_FOUND,
+            | MetaApiError::SubscriptionNotFound(_)
+            | MetaApiError::KafkaClusterNotFound(_) => StatusCode::NOT_FOUND,
             MetaApiError::InvalidField(_, _) | MetaApiError::UnsupportedOperation(_, _) => {
                 StatusCode::BAD_REQUEST
             }
