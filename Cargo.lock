@@ -7136,6 +7136,7 @@ version = "1.6.2"
 dependencies = [
  "anyhow",
  "async-channel",
+ "criterion",
  "futures",
  "pin-project",
  "pin-project-lite",

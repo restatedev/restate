@@ -23,7 +23,12 @@ tracing = { workspace = true }
 [dev-dependencies]
 restate-test-util = { workspace = true }
 
+criterion = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing = { workspace = true }
 tracing-test = { workspace = true }
+
+[[bench]]
+name = "waiter_queue"
+harness = false
