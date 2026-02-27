@@ -10,12 +10,24 @@
 
 mod error;
 mod grpc_svc_handler;
+#[cfg(feature = "expose-internals")]
+pub mod loglet_worker;
+#[cfg(not(feature = "expose-internals"))]
 mod loglet_worker;
+#[cfg(feature = "expose-internals")]
+pub mod logstore;
+#[cfg(not(feature = "expose-internals"))]
 mod logstore;
+#[cfg(feature = "expose-internals")]
+pub mod metadata;
+#[cfg(not(feature = "expose-internals"))]
 mod metadata;
 mod metric_definitions;
 mod network;
 pub mod protobuf;
+#[cfg(feature = "expose-internals")]
+pub mod rocksdb_logstore;
+#[cfg(not(feature = "expose-internals"))]
 mod rocksdb_logstore;
 mod service;
 

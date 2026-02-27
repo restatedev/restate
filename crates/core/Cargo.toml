@@ -9,7 +9,12 @@ publish = false
 
 [features]
 default = []
+# Lightweight feature that enables ServiceMessage::fake_rpc() and ShardSender::send()
+# without pulling in tokio/test-util or restate-types/test-util. Intended for
+# benchmark tooling that needs to inject messages into service workers directly.
+message-util = []
 test-util = [
+  "message-util",
   "restate-core-derive",
   "restate-metadata-store/test-util",
   "restate-types/test-util",

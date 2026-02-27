@@ -4763,6 +4763,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34080505efa8e45a4b816c349525ebe327ceaa8559756f0356cba97ef3bf7432"
 
 [[package]]
+name = "logserver-bench"
+version = "1.6.2"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clap",
+ "codederror",
+ "comfy-table",
+ "hdrhistogram",
+ "indexmap 2.13.0",
+ "libc",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "rand 0.9.2",
+ "restate-cli-util",
+ "restate-core",
+ "restate-errors",
+ "restate-log-server",
+ "restate-memory",
+ "restate-rocksdb",
+ "restate-serde-util",
+ "restate-time-util",
+ "restate-tracing-instrumentation",
+ "restate-types",
+ "restate-workspace-hack",
+ "rlimit",
+ "rust-rocksdb",
+ "tempfile",
+ "tikv-jemalloc-ctl",
+ "tikv-jemallocator",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "lz4-sys"
 version = "1.11.1+lz4-1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

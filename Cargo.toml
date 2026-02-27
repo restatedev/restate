@@ -9,6 +9,7 @@ members = [
     "lite",
     "benchmarks",
     "tools/bifrost-benchpress",
+    "tools/logserver-bench",
     "tools/mock-service-endpoint",
     "tools/restate-doctor",
     "tools/restatectl",

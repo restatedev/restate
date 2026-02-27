@@ -207,9 +207,9 @@ impl<S: Service> ShardSender<S> {
 
     /// Sends a service message directly through this shard sender.
     ///
-    /// This is intended for use in tests where messages are sent directly to a
-    /// loglet worker without going through the full message router.
-    #[cfg(feature = "test-util")]
+    /// This is intended for use in tests and benchmarks where messages are sent
+    /// directly to a loglet worker without going through the full message router.
+    #[cfg(feature = "message-util")]
     pub fn send(&self, msg: super::ServiceMessage<S>) {
         use super::ServiceOp;
         let op = match msg {
