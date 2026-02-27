@@ -456,7 +456,7 @@ where
             )?;
 
             let mut self_proposer = self_proposer.take().expect("must be present");
-            self_proposer.mark_as_leader().await;
+            self_proposer.mark_as_leader();
 
             let mut min_restate_version = partition_store.get_min_restate_version().await?;
 
