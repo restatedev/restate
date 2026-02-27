@@ -99,9 +99,6 @@ skip = [
     # Clash between datafusion and arrow
     { name = "hashbrown" },
 
-    # Clash between datafusion and invoker
-    { name = "tokio-rustls" },
-
     # Clash between pprof and datafusion :-(
     { name = "quick-xml" },
 

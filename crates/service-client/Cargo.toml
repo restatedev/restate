@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars", "restate-types/schemars"]
+options_schema = ["restate-types/schemars"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -37,7 +37,6 @@ jsonwebtoken = { workspace = true }
 pem = { version = "3.0.6" }
 ring = { version = "0.17.14" }
 rustls = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }

@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars"]
+options_schema = []
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -36,7 +36,6 @@ metrics = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 pin-project-lite = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
 serde_json = { workspace = true }

@@ -18,7 +18,6 @@ restate-encoding = { workspace = true }
 
 bilrost = { workspace = true }
 libc = { version = "0.2" }
-bytes = { workspace = true }
 jiff = { workspace = true, optional = true }
 prost-types = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }

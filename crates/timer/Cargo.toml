@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars"]
+options_schema = []
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -19,7 +19,6 @@ restate-types = { workspace = true }
 ahash = { workspace = true }
 pin-project = { workspace = true }
 priority-queue = { workspace = true }
-schemars = { workspace = true, optional = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }

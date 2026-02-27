@@ -9,13 +9,12 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars"]
+options_schema = []
 rt-tokio = ["dep:tokio"]
 prometheus = [
     "dep:tokio",
     "dep:metrics",
     "dep:metrics-exporter-prometheus",
-    "dep:metrics-util",
     "tokio/tracing",
 ]
 
@@ -30,7 +29,6 @@ http = { workspace = true }
 indexmap = { workspace = true }
 metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }
-metrics-util = { workspace = true, optional = true }
 nu-ansi-term = "0.50.3"
 opentelemetry = { workspace = true }
 opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", "rt-tokio"] }
@@ -38,7 +36,6 @@ opentelemetry-otlp = { workspace = true, features = ["http-json", "http-proto", 
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
 reqwest = { workspace = true }
-schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
 tonic = { workspace = true, features = ["tls-native-roots"]}

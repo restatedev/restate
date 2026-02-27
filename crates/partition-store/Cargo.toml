@@ -33,7 +33,6 @@ derive_more = { workspace = true, features = ["add", "deref", "display", "from",
 enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
-itertools = { workspace = true }
 jiff = { workspace = true }
 metrics = { workspace = true }
 object_store = { workspace = true }
