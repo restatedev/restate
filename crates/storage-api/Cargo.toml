@@ -21,7 +21,7 @@ anyhow = { workspace = true }
 bilrost = { workspace = true, features = ["smallvec"] }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["from", "into"] }
 futures = { workspace = true }
 opentelemetry = { workspace = true }
 prost = { workspace = true }

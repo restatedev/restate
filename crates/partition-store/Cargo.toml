@@ -29,7 +29,7 @@ bilrost = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["add", "deref", "display", "from", "from_str", "into"] }
 enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }

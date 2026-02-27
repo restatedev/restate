@@ -48,7 +48,7 @@ clap = { workspace = true, features = ["std", "derive", "env"], optional = true 
 codederror = { workspace = true }
 dashmap = { workspace = true }
 derive_builder = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "from_str", "index", "into", "into_iterator", "is_variant", "try_unwrap"] }
 downcast-rs = { workspace = true }
 dyn-clone = { version = "1.0" }
 enum-map = { workspace = true }

@@ -19,7 +19,7 @@ restate-serde-util = { workspace = true }
 restate-time-util = { workspace = true, features = ["serde_with"] }
 
 bytes = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["try_from"] }
 http = { workspace = true }
 http-serde = { workspace = true }
 humantime = { workspace = true }

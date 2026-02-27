@@ -27,7 +27,7 @@ assert2 = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["debug"] }
 flexbuffers = { workspace = true }
 futures = { workspace = true }
 metrics = { workspace = true }

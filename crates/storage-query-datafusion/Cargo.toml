@@ -33,7 +33,7 @@ dashmap = { workspace = true }
 datafusion = { workspace = true }
 datafusion-functions-json = { workspace = true }
 datafusion-proto = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["debug"] }
 enumset = { workspace = true }
 futures = { workspace = true }
 itertools = { workspace = true }

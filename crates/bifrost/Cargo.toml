@@ -36,7 +36,7 @@ bitflags = { workspace = true }
 bytes = { workspace = true }
 crossbeam-utils = { version = "0.8" }
 dashmap = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["debug", "display", "is_variant", "try_from"] }
 enum-map = { workspace = true, features = ["serde"] }
 futures = { workspace = true }
 googletest = { workspace = true, features = ["anyhow"], optional = true }

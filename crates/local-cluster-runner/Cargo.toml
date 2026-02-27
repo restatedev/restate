@@ -25,7 +25,7 @@ anyhow = { workspace = true }
 arc-swap = { workspace = true }
 clap = { workspace = true }
 clap-verbosity-flag = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["display"] }
 futures = { workspace = true }
 enumset = { workspace = true }
 http = { workspace = true }

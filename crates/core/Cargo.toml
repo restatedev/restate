@@ -36,7 +36,7 @@ axum = { workspace = true, default-features = false }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 dashmap = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["debug", "deref", "display", "from", "index", "index_mut", "into", "is_variant"] }
 prost-dto = { workspace = true }
 enum-map = { workspace = true }
 enumset = { workspace = true }

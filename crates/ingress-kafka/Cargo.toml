@@ -30,7 +30,7 @@ restate-wal-protocol = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["deref"] }
 futures = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }

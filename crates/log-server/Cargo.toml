@@ -31,7 +31,7 @@ bitflags = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 codederror = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["from", "try_from"] }
 futures = { workspace = true }
 metrics = { workspace = true }
 rocksdb = { workspace = true }

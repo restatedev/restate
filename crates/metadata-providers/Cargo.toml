@@ -66,7 +66,7 @@ serde = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 
 # Deps for replicated metadata client
-derive_more = { workspace = true, optional = true }
+derive_more = { workspace = true, optional = true, features = ["deref", "deref_mut", "from"] }
 indexmap = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

@@ -9,6 +9,11 @@
 // by the Apache License, Version 2.0.
 
 fn main() -> std::io::Result<()> {
+    // Only re-run when proto files or this build script change
+    println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=proto/");
+    println!("cargo:rerun-if-changed=../../service-protocol/dev/restate/service/protocol.proto");
+
     prost_build::Config::new()
         .bytes(["."])
         // allow older protobuf compiler to be used
