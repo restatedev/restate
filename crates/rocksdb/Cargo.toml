@@ -24,7 +24,7 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["as_ref", "debug", "deref", "display", "from", "into"] }
 metrics = {workspace = true }
 parking_lot = { workspace = true }
 rocksdb = { workspace = true }

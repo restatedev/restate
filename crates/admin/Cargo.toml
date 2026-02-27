@@ -48,7 +48,7 @@ bytestring = { workspace = true }
 codederror = { workspace = true }
 datafusion = { workspace = true }
 derive_builder = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["deref", "from"] }
 futures = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
@@ -62,7 +62,6 @@ prost-dto = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_with = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true, features = ["transport", "codegen", "gzip", "zstd"] }

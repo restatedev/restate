@@ -107,7 +107,7 @@ async-channel = "2.5.0"
 async-trait = "0.1.89"
 axum = { version = "0.8.8", default-features = false }
 aws-config = "1.8.12"
-aws-sdk-dynamodb = "1.101.0"
+aws-sdk-dynamodb = { version = "1.101.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"] }
 aws-credential-types = "1.2.11"
 aws-smithy-async = { version = "1.2.7", default-features = false }
 aws-smithy-runtime-api = "1.9.3"
@@ -144,7 +144,7 @@ datafusion = { version = "52.1.0", default-features = false, features = [
 datafusion-functions-json = { version = "0.52.0" }
 datafusion-proto = { version = "52.1.0", default-features = false }
 derive_builder = "0.20.2"
-derive_more = { version = "2.1.1", features = ["full"] }
+derive_more = { version = "2.1.1", default-features = false }
 dialoguer = { version = "0.12.0" }
 downcast-rs = { version = "2.0.2" }
 enum-map = { version = "2.7.3" }
@@ -302,6 +302,12 @@ debug = true
 
 [profile.dev]
 panic = "unwind"
+
+# Reduce debug info for third-party dependencies to speed up linking.
+# Keeps full debuginfo for workspace crates (useful for debugging our code)
+# while only emitting line tables for deps (sufficient for backtraces/flamegraphs).
+[profile.dev.package."*"]
+debug = "line-tables-only"
 
 [profile.release.package.service-protocol-wireshark-dissector]
 opt-level = "z" # Optimize for size.

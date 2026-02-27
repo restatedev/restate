@@ -18,7 +18,6 @@ all-metadata-providers = [
 
 memory-loglet = ["restate-bifrost/memory-loglet"]
 options_schema = [
-    "dep:schemars",
     "restate-admin/options_schema",
     "restate-worker/options_schema"
 ]
@@ -60,7 +59,7 @@ axum = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }
 derive_builder = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["debug"] }
 enumset = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
@@ -71,7 +70,6 @@ metrics-exporter-prometheus = { workspace = true }
 prost-dto = { workspace = true }
 rand = { workspace = true }
 rocksdb = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

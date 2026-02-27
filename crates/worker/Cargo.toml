@@ -11,7 +11,6 @@ publish = false
 default = []
 test-util = ["restate-partition-store/test-util"]
 options_schema = [
-  "dep:schemars",
   "restate-ingress-http/options_schema",
   "restate-ingress-kafka/options_schema",
   "restate-invoker-impl/options_schema",
@@ -33,7 +32,6 @@ restate-ingress-kafka = { workspace = true }
 restate-ingestion-client = { workspace = true }
 restate-invoker-api = { workspace = true }
 restate-invoker-impl = { workspace = true }
-restate-memory = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-partition-store = { workspace = true }
@@ -56,8 +54,7 @@ async-channel = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
-derive_more = { workspace = true }
-enumset = { workspace = true }
+derive_more = { workspace = true, features = ["debug", "display", "from"] }
 futures = { workspace = true }
 itertools = { workspace = true }
 metrics = { workspace = true }
@@ -65,7 +62,6 @@ opentelemetry = { workspace = true }
 parking_lot = { workspace = true }
 pin-project = { workspace = true }
 rand = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }

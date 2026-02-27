@@ -9,7 +9,7 @@ publish = false
 
 [features]
 default = []
-options_schema = ["dep:schemars", "restate-types/schemars"]
+options_schema = ["restate-types/schemars"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -30,7 +30,7 @@ bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 dashmap = { workspace = true }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["debug"] }
 futures = { workspace = true }
 gardal = { workspace = true , features = ["async"]}
 http = { workspace = true }
@@ -40,7 +40,6 @@ itertools = { workspace = true }
 metrics = { workspace = true }
 opentelemetry = { workspace = true }
 pin-project-lite = { workspace = true }
-schemars = { workspace = true, optional = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

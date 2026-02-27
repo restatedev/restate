@@ -17,7 +17,7 @@ restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 
 bilrost = { workspace = true, features = ["smallvec"] }
-derive_more = { workspace = true }
+derive_more = { workspace = true, features = ["debug", "into_iterator", "is_variant"] }
 gardal = { workspace = true, features = ["tokio"] }
 hashbrown = { workspace = true  }
 metrics = { workspace = true }
