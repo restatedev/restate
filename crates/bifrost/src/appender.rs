@@ -25,7 +25,7 @@ use restate_types::logs::metadata::SegmentIndex;
 use restate_types::logs::{LogId, Lsn, Record};
 use restate_types::storage::StorageEncode;
 
-use crate::bifrost::{BifrostInner, ErrorRecoveryStrategy, PreferenceToken};
+use crate::bifrost::{BifrostInner, ErrorRecoveryStrategy, PreferenceControl};
 use crate::loglet::AppendError;
 use crate::loglet_wrapper::LogletWrapper;
 use crate::{BifrostAdmin, Error, InputRecord, Result};
@@ -40,24 +40,9 @@ pub struct Appender<T> {
     #[debug(skip)]
     bifrost_inner: Arc<BifrostInner>,
     #[debug(skip)]
-    preference_token: Option<PreferenceToken>,
+    pub(super) preference: PreferenceControl,
     arena: BytesMut,
     _phantom: PhantomData<T>,
-}
-
-impl<T> Clone for Appender<T> {
-    fn clone(&self) -> Self {
-        Self {
-            log_id: self.log_id,
-            config: self.config.clone(),
-            error_recovery_strategy: self.error_recovery_strategy,
-            loglet_cache: self.loglet_cache.clone(),
-            bifrost_inner: self.bifrost_inner.clone(),
-            preference_token: self.preference_token.clone(),
-            arena: BytesMut::default(),
-            _phantom: PhantomData,
-        }
-    }
 }
 
 impl<T: StorageEncode> Appender<T> {
@@ -67,13 +52,14 @@ impl<T: StorageEncode> Appender<T> {
         bifrost_inner: Arc<BifrostInner>,
     ) -> Self {
         let config = Configuration::live();
+        let preference = bifrost_inner.control_preference(log_id);
         Self {
             log_id,
             config,
             error_recovery_strategy,
             loglet_cache: Default::default(),
             bifrost_inner,
-            preference_token: None,
+            preference,
             arena: BytesMut::default(),
             _phantom: PhantomData,
         }
@@ -85,15 +71,13 @@ impl<T: StorageEncode> Appender<T> {
     }
 
     /// Marks this node as a preferred writer for the underlying log
-    pub fn mark_as_preferred(&mut self) {
-        if self.preference_token.is_none() {
-            self.preference_token = Some(self.bifrost_inner.acquire_preference_token(self.log_id));
-        }
+    pub fn mark_as_preferred(&self) {
+        self.preference.mark_as_preferred();
     }
 
     /// Removes the preference about this node being the preferred writer for the log
-    pub fn forget_preference(&mut self) {
-        self.preference_token.take();
+    pub fn forget_preference(&self) {
+        self.preference.forget_preference();
     }
 
     /// Appends a single record to the log.
