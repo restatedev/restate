@@ -153,9 +153,8 @@ pub enum TaskKind {
     #[strum(props(OnCancel = "abort", runtime = "default"))]
     NetworkMessageHandler,
     ReplicatedLogletReadStream,
-    #[strum(props(OnCancel = "abort"))]
     // -- Log-server tasks
-    LogletWriter,
+    LogletWorker,
     // - Datafusion
     DfScanner,
 }

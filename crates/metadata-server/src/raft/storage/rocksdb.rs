@@ -335,7 +335,7 @@ impl RocksDbStorage {
             )
             .await
             .map(|_| ())
-            .map_err(|(e, _)| e.into())
+            .map_err(|e| e.into())
     }
 
     #[allow(dead_code)]

@@ -16,7 +16,6 @@ use tokio::sync::watch;
 
 use crate::logstore::LogStore;
 use restate_bifrost::loglet::OperationError;
-use restate_core::ShutdownError;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailOffsetWatch, TailState};
 use restate_types::storage::StorageMarker;
 use restate_types::{GenerationalNodeId, PlainNodeId};
@@ -97,12 +96,26 @@ impl LogletState {
         self.sequencer.set(sequencer).is_ok()
     }
 
+    pub fn notify_seal(&self) {
+        self.local_tail.notify_seal();
+    }
+
+    pub fn local_tail_watch(&self) -> &TailOffsetWatch {
+        &self.local_tail
+    }
+
     pub fn get_local_tail_watch(&self) -> TailOffsetWatch {
         self.local_tail.clone()
     }
 
-    pub fn get_global_tail_tracker(&self) -> GlobalTailTracker {
-        self.known_global_tail.clone()
+    pub fn subscribe_local_tail(&self) -> watch::Receiver<TailState<LogletOffset>> {
+        self.local_tail.subscribe()
+    }
+
+    pub fn subscribe_global_tail(&self) -> watch::Receiver<LogletOffset> {
+        let mut rx = self.known_global_tail.subscribe();
+        rx.mark_changed();
+        rx
     }
 
     pub fn is_sealed(&self) -> bool {
@@ -161,6 +174,16 @@ impl GlobalTailTracker {
         *self.watch_tx.borrow()
     }
 
+    /// Returns a watch receiver for the global tail. The receiver is
+    /// pre-marked as changed so the first `changed().await` resolves
+    /// immediately with the current value.
+    #[allow(dead_code)]
+    pub fn subscribe(&self) -> watch::Receiver<LogletOffset> {
+        let mut rx = self.watch_tx.subscribe();
+        rx.mark_changed();
+        rx
+    }
+
     pub fn notify(&self, potential_global_tail: LogletOffset) {
         self.watch_tx.send_if_modified(|known_global_tail| {
             if potential_global_tail > *known_global_tail {
@@ -169,18 +192,5 @@ impl GlobalTailTracker {
             }
             false
         });
-    }
-
-    pub async fn wait_for_offset(
-        &self,
-        offset: LogletOffset,
-    ) -> Result<LogletOffset, ShutdownError> {
-        let mut receiver = self.watch_tx.subscribe();
-        receiver.mark_changed();
-        receiver
-            .wait_for(|current| *current >= offset)
-            .await
-            .map(|m| *m)
-            .map_err(|_| ShutdownError)
     }
 }
