@@ -10,8 +10,7 @@
 
 use std::sync::Arc;
 
-use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, SliceTransform};
-use static_assertions::const_assert;
+use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, RateLimiterMode, SliceTransform};
 use tracing::{info, warn};
 
 use restate_core::ShutdownError;
@@ -21,14 +20,12 @@ use restate_types::config::{Configuration, LogServerOptions};
 use restate_types::health::HealthStatus;
 use restate_types::protobuf::common::LogServerStatus;
 
-use super::writer::LogStoreWriter;
+use super::writer::LogStoreWriterBuilder;
 use super::{DATA_CF, DB_NAME, METADATA_CF};
 use super::{RocksDbLogStore, RocksDbLogStoreError};
+use crate::logstore::LogStoreState;
 use crate::rocksdb_logstore::keys::KeyPrefix;
 use crate::rocksdb_logstore::metadata_merge::{metadata_full_merge, metadata_partial_merge};
-
-const DATA_CF_BUDGET_RATIO: f64 = 0.85;
-const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 
 #[derive(Clone)]
 pub struct RocksDbLogStoreBuilder {
@@ -65,12 +62,13 @@ impl RocksDbLogStoreBuilder {
         health_status: HealthStatus<LogServerStatus>,
     ) -> Result<RocksDbLogStore, ShutdownError> {
         let RocksDbLogStoreBuilder { rocksdb } = self;
-        // todo (asoli) load up our loglet metadata cache.
-        let writer_handle = LogStoreWriter::new(rocksdb.clone(), health_status.clone()).start()?;
+        let store_state = LogStoreState::new(health_status);
+        let writer_handle =
+            LogStoreWriterBuilder::new(rocksdb.clone(), store_state.clone()).start()?;
 
         Ok(RocksDbLogStore {
-            health_status,
             rocksdb,
+            store_state,
             writer_handle,
         })
     }
@@ -95,6 +93,15 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         let log_server_config = &Configuration::pinned().log_server;
         // amend default options from rocksdb_manager
         self.apply_db_opts_from_config(&mut db_options, &log_server_config.rocksdb);
+
+        // todo: expose
+        db_options.set_ratelimiter_with_mode(
+            300 * 1024 * 1024,
+            100_000, // 100ms.
+            10,
+            RateLimiterMode::KWritesOnly,
+            true,
+        );
 
         // log-server specific customizations
 
@@ -124,10 +131,13 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
     }
 
     fn note_config_update(&self, db: &restate_rocksdb::RocksAccess) {
-        let memory_budget = Configuration::pinned().log_server.rocksdb_memory_budget();
         // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
-        let data_budget = (memory_budget as f64 * DATA_CF_BUDGET_RATIO).floor() as usize;
-        let metadata_budget = memory_budget.saturating_sub(data_budget);
+        let (data_budget, metadata_budget) = {
+            let config = &Configuration::pinned().log_server;
+            let data_budget = config.rocksdb_data_memtables_budget();
+            let metadata_budget = config.rocksdb_metadata_memtables_budget();
+            (data_budget, metadata_budget)
+        };
 
         if data_budget == 0 || metadata_budget == 0 {
             return;
@@ -228,10 +238,7 @@ fn cf_data_options(
 ) {
     opts.set_block_based_table_factory(block_options);
 
-    let memory_budget = log_server_config.rocksdb_memory_budget();
-
-    // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
-    let memtables_budget = (memory_budget as f64 * DATA_CF_BUDGET_RATIO).floor() as usize;
+    let memtables_budget = log_server_config.rocksdb_data_memtables_budget();
     assert!(
         memtables_budget > 0,
         "memory budget should be greater than 0"
@@ -285,9 +292,8 @@ fn cf_metadata_options(
     log_server_config: &LogServerOptions,
 ) {
     opts.set_block_based_table_factory(block_options);
-    let memory_budget = log_server_config.rocksdb_memory_budget();
+    let memtables_budget = log_server_config.rocksdb_metadata_memtables_budget();
 
-    let memtables_budget = (memory_budget as f64 * (1.0 - DATA_CF_BUDGET_RATIO)).floor() as usize;
     assert!(
         memtables_budget > 0,
         "memory budget should be greater than 0"
