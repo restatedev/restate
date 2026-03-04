@@ -13,11 +13,15 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use static_assertions::const_assert;
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+
+const DATA_CF_BUDGET_RATIO: f64 = 0.85;
+const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
 
 /// # Log server options
 ///
@@ -80,11 +84,6 @@ pub struct LogServerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub always_commit_in_background: bool,
-
-    /// Trigger a commit when the batch size exceeds this threshold.
-    ///
-    /// Set to 0 or 1 to commit the write batch on every command.
-    pub writer_batch_commit_count: usize,
 
     /// The number of messages that can queue up on input network stream while request processor is busy.
     #[deprecated = "Use `data_service_memory_limit` and `metadata_service_memory_limit` instead"]
@@ -168,6 +167,22 @@ impl LogServerOptions {
             .get()
     }
 
+    pub fn rocksdb_data_memtables_budget(&self) -> usize {
+        // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
+        let budget = (self.rocksdb_memory_budget() as f64 * DATA_CF_BUDGET_RATIO).floor() as usize;
+        // sanitize minimum to 32MiB
+        std::cmp::max(budget, 32 * 1024 * 1024)
+    }
+
+    pub fn rocksdb_metadata_memtables_budget(&self) -> usize {
+        // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
+        let budget = self
+            .rocksdb_memory_budget()
+            .saturating_sub(self.rocksdb_data_memtables_budget());
+        // sanitize minimum to 4MiB
+        std::cmp::max(budget, 4 * 1024 * 1024)
+    }
+
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("log-store")
     }
@@ -186,7 +201,6 @@ impl Default for LogServerOptions {
             rocksdb_memory_ratio: 0.5,
             rocksdb_max_sub_compactions: 0,
             rocksdb_max_wal_size: 0,
-            writer_batch_commit_count: 5000,
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,
             #[allow(deprecated)]
