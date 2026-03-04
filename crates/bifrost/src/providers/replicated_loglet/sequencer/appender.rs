@@ -435,6 +435,8 @@ impl<T: TransportConnect> SequencerAppender<T> {
             match stored.status {
                 Status::Unknown => {
                     warn!(peer = %node_id, "Store failed on peer. Unknown error!");
+                    self.nodeset_status
+                        .merge(node_id, PerNodeStatus::failed_with_status(stored.status));
                     self.graylist.insert(node_id);
                 }
                 Status::Ok => {
@@ -448,19 +450,27 @@ impl<T: TransportConnect> SequencerAppender<T> {
                 Status::Sealed | Status::Sealing => {
                     self.checker
                         .set_attribute(node_id, NodeAttributes::sealed());
+                    self.nodeset_status
+                        .merge(node_id, PerNodeStatus::failed_with_status(stored.status));
                     self.graylist.insert(node_id);
                 }
                 Status::Dropped => {
                     // Overloaded, or request expired
                     debug!(peer = %node_id, status=?stored.status, "Store failed on peer. Peer is load shedding");
+                    self.nodeset_status
+                        .merge(node_id, PerNodeStatus::failed_with_status(stored.status));
                     self.graylist.insert(node_id);
                 }
                 Status::Disabled => {
                     debug!(peer = %node_id, status=?stored.status, "Store failed on peer. Peer's log-store is disabled");
+                    self.nodeset_status
+                        .merge(node_id, PerNodeStatus::failed_with_status(stored.status));
                     self.graylist.insert(node_id);
                 }
                 Status::SequencerMismatch | Status::Malformed | Status::OutOfBounds => {
                     warn!(peer = %node_id, status=?stored.status, "Store failed on peer due to unexpected error, please check logs of the peer to investigate");
+                    self.nodeset_status
+                        .merge(node_id, PerNodeStatus::failed_with_status(stored.status));
                     self.graylist.insert(node_id);
                 }
             }
@@ -487,13 +497,21 @@ impl<T: TransportConnect> SequencerAppender<T> {
     }
 }
 
+#[derive(Debug, derive_more::Display)]
+enum Failure {
+    #[display("{_0}")]
+    Status(Status),
+    #[display("{_0}")]
+    RpcError(RpcError),
+}
+
 #[derive(Default, Debug)]
 enum PerNodeStatus {
     #[default]
     NotAttempted,
     Failed {
         attempts: usize,
-        last_err: RpcError,
+        last_err: Failure,
     },
     Committed,
     Sealed,
@@ -513,10 +531,17 @@ impl Display for PerNodeStatus {
 }
 
 impl PerNodeStatus {
-    fn failed(err: RpcError) -> Self {
+    pub fn failed(err: RpcError) -> Self {
         Self::Failed {
             attempts: 1,
-            last_err: err,
+            last_err: Failure::RpcError(err),
+        }
+    }
+
+    pub fn failed_with_status(status: Status) -> Self {
+        Self::Failed {
+            attempts: 1,
+            last_err: Failure::Status(status),
         }
     }
 }

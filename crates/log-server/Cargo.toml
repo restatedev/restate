@@ -21,10 +21,12 @@ restate-workspace-hack = { workspace = true }
 restate-bifrost = { workspace = true }
 restate-clock = { workspace = true }
 restate-core = { workspace = true }
+restate-futures-util = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true }
+restate-time-util = { workspace = true }
 restate-types = { workspace = true }
 
 ahash = { workspace = true }
@@ -35,7 +37,6 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 codederror = { workspace = true }
 derive_more = { workspace = true, features = ["from", "try_from"] }
-futures = { workspace = true }
 metrics = { workspace = true }
 rocksdb = { workspace = true }
 serde_json = { workspace = true }
