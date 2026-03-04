@@ -27,6 +27,7 @@ use tracing::trace;
 
 use restate_core::network::{
     BackPressureMode, ControlServiceShards, MessageRouterBuilder, ShardControlMessage, Sharded,
+    Verdict,
 };
 use restate_core::{TaskCenter, cancellation_token};
 use restate_types::config::Configuration;
@@ -112,7 +113,13 @@ impl RequestPump {
                         &data_shards,
                         &meta_shards,
                     ).await?;
-                    decision.accept(handle.meta_tx());
+                    if handle.meta_tx().is_closed() {
+                        // remove from the shard map, bubble the error up.
+                        loglet_workers.remove(&loglet_id);
+                        decision.fail(Verdict::SortCodeNotFound);
+                    } else {
+                        decision.accept(handle.meta_tx());
+                    }
                 }
                 Some(ShardControlMessage::RegisterSortCode {sort_code, decision}) = data_svc.next() => {
                     let loglet_id = LogletId::from(sort_code);
@@ -126,7 +133,13 @@ impl RequestPump {
                         &data_shards,
                         &meta_shards,
                     ).await?;
-                    decision.accept(handle.data_tx());
+                    if handle.data_tx().is_closed() {
+                        // remove from the shard map, bubble the error up.
+                        loglet_workers.remove(&loglet_id);
+                        decision.fail(Verdict::SortCodeNotFound);
+                    } else {
+                        decision.accept(handle.data_tx());
+                    }
                 }
             }
         }
