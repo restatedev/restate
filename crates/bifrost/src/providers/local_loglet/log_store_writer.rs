@@ -285,7 +285,7 @@ impl LogStoreWriter {
             Ok(_batch) => {
                 self.send_acks(Ok(()));
             }
-            Err((e, _batch)) => {
+            Err(e) => {
                 error!("Failed to commit local loglet write batch: {}", e);
                 self.send_acks(Err(OperationError::terminal(e)));
             }

@@ -898,6 +898,11 @@ impl RawSender {
     fn same_channel(&self, other: &Self) -> bool {
         self.0.same_channel(&other.0)
     }
+
+    #[inline]
+    fn is_closed(&self) -> bool {
+        self.0.is_closed()
+    }
 }
 
 pub struct Buffered<S> {

@@ -219,6 +219,10 @@ impl<S: Service> ShardSender<S> {
         };
         let _ = self.raw_sender.send(op);
     }
+
+    pub fn is_closed(&self) -> bool {
+        self.raw_sender.is_closed()
+    }
 }
 
 impl<S> Clone for ShardSender<S> {

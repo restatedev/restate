@@ -972,7 +972,7 @@ impl Transaction for PartitionStoreTransaction<'_> {
             )
             .await
             .map(|_| ())
-            .map_err(|(error, _)| StorageError::Generic(error.into()))
+            .map_err(|error| StorageError::Generic(error.into()))
     }
 }
 
