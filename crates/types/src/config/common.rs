@@ -36,6 +36,12 @@ use crate::nodes_config::Role;
 use crate::replication::ReplicationProperty;
 use crate::retries::RetryPolicy;
 
+const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
+    NonZeroByteCount::new(NonZeroUsize::new(256 * 1024 * 1024).unwrap());
+
+const MIN_MEMTABLE_TOTAL_BUDGET: NonZeroByteCount =
+    NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
+
 const DEFAULT_STORAGE_DIRECTORY: &str = "restate-data";
 const X_RESTATE_CLUSTER_NAME: http::HeaderName =
     http::HeaderName::from_static("x-restate-cluster-name");
@@ -369,17 +375,18 @@ pub struct CommonOptions {
     /// # Total memory limit for rocksdb caches and memtables.
     ///
     /// This includes memory for uncompressed block cache and all memtables by all open databases.
-    /// The memory size used for rocksdb caches.
-    #[serde_as(as = "NonZeroByteCount")]
-    #[cfg_attr(feature = "schemars", schemars(with = "NonZeroByteCount"))]
-    pub rocksdb_total_memory_size: NonZeroUsize,
+    ///
+    /// The minimum supported is 256 MiB. Any value below this will be sanitized automatically to 256 MiB.
+    rocksdb_total_memory_size: NonZeroByteCount,
 
     /// # Rocksdb total memtable size ratio
     ///
-    /// The memory size used across all memtables (ratio between 0 to 1.0). This
+    /// The memory size used across all memtables (ratio between 0.1 to 1.0). This
     /// limits how much memory memtables can eat up from the value in rocksdb-total-memory-limit.
-    /// When set to 0, memtables can take all available memory up to the value specified
-    /// in rocksdb-total-memory-limit. This value will be sanitized to 1.0 if outside the valid bounds.
+    ///
+    /// The remaining memory will be dedicated to the block cache.
+    ///
+    /// This value will be sanitized to 1.0 if outside the valid bounds.
     rocksdb_total_memtables_ratio: f32,
 
     /// # Rocksdb Background Threads
@@ -584,15 +591,16 @@ impl CommonOptions {
         self.process_total_memory_size
     }
 
-    pub fn rocksdb_actual_total_memtables_size(&self) -> usize {
-        let sanitized = self.rocksdb_total_memtables_ratio.clamp(0.0, 1.0) as f64;
-        let total_mem = self.rocksdb_total_memory_size.get() as f64;
-        (total_mem * sanitized) as usize
+    pub fn rocksdb_total_memory_size(&self) -> NonZeroByteCount {
+        self.rocksdb_total_memory_size.max(MIN_ROCKSDB_MEMORY)
     }
 
-    pub fn rocksdb_safe_total_memtables_size(&self) -> usize {
-        // %5 safety margin
-        (self.rocksdb_actual_total_memtables_size() as f64 * 0.95).floor() as usize
+    pub fn rocksdb_total_memtables_size(&self) -> NonZeroByteCount {
+        let sanitized = self.rocksdb_total_memtables_ratio.clamp(0.1, 1.0) as f64;
+        let total_mem = self.rocksdb_total_memory_size().as_usize() as f64;
+        let memtables =
+            ((total_mem * sanitized) as usize).max(MIN_MEMTABLE_TOTAL_BUDGET.as_usize());
+        NonZeroByteCount::from(NonZeroUsize::new(memtables).unwrap())
     }
 
     pub fn storage_high_priority_bg_threads(&self) -> NonZeroUsize {
@@ -701,7 +709,9 @@ impl Default for CommonOptions {
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
             process_total_memory_size: None,
-            rocksdb_total_memory_size: NonZeroUsize::new(2 * 1024 * 1024 * 1024).unwrap(), // 2GiB
+            rocksdb_total_memory_size: NonZeroByteCount::new(
+                NonZeroUsize::new(2 * 1024 * 1024 * 1024).unwrap(),
+            ), // 2GiB
             rocksdb_total_memtables_ratio: 0.85, // (85% of rocksdb-total-memory-size)
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
