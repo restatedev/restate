@@ -127,7 +127,8 @@ fn cf_data_options(
 
     let memory_budget = metadata_server_config.rocksdb_memory_budget();
     // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
-    let memtables_budget = (memory_budget as f64 * DATA_CF_BUDGET_RATIO).floor() as usize;
+    let memtables_budget =
+        (memory_budget.as_usize() as f64 * DATA_CF_BUDGET_RATIO).floor() as usize;
     assert!(
         memtables_budget > 0,
         "memory budget should be greater than 0"
@@ -173,7 +174,8 @@ fn cf_metadata_options(
     cf_options.set_block_based_table_factory(block_options);
 
     let memory_budget = metadata_server_config.rocksdb_memory_budget();
-    let memtables_budget = (memory_budget as f64 * (1.0 - DATA_CF_BUDGET_RATIO)).floor() as usize;
+    let memtables_budget =
+        (memory_budget.as_usize() as f64 * (1.0 - DATA_CF_BUDGET_RATIO)).floor() as usize;
     assert!(
         memtables_budget > 0,
         "memory budget should be greater than 0"
