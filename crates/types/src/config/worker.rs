@@ -29,6 +29,9 @@ use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
 use crate::rate::Rate;
 use crate::retries::RetryPolicy;
 
+const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
+    NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
+
 /// # Worker options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -423,9 +426,7 @@ pub struct StorageOptions {
     ///
     /// If this value is set, it overrides the ratio defined in `rocksdb-memory-ratio`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "Option<NonZeroByteCount>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
-    rocksdb_memory_budget: Option<NonZeroUsize>,
+    rocksdb_memory_budget: Option<NonZeroByteCount>,
 
     /// The memory budget for rocksdb memtables as ratio
     ///
@@ -524,30 +525,26 @@ pub struct StorageOptions {
 impl StorageOptions {
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
-
-        // todo: move to a shared struct and deduplicate
         if self.rocksdb_memory_budget.is_none() {
             self.rocksdb_memory_budget = Some(
-                // 1MB minimum
-                NonZeroUsize::new(
-                    (common.rocksdb_safe_total_memtables_size() as f64
-                        * self.rocksdb_memory_ratio as f64)
-                        .floor()
-                        .max(1024.0 * 1024.0) as usize,
+                NonZeroByteCount::try_from(
+                    ((common.rocksdb_total_memtables_size().as_u64() as f64
+                        * self.rocksdb_memory_ratio as f64) as u64)
+                        .max(MIN_ROCKSDB_MEMORY.as_u64()),
                 )
                 .unwrap(),
             );
         }
     }
 
-    pub fn rocksdb_memory_budget(&self) -> usize {
+    pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
         self.rocksdb_memory_budget
             .unwrap_or_else(|| {
-                warn!("PartitionStore rocksdb_memory_budget is not set, defaulting to 1MB");
-                // 1MB minimum
-                NonZeroUsize::new(1024 * 1024).unwrap()
+                warn!(
+                    "PartitionStore rocksdb_memory_budget is not set, defaulting to {MIN_ROCKSDB_MEMORY}"
+                );
+                MIN_ROCKSDB_MEMORY
             })
-            .get()
     }
 
     pub fn data_dir(&self, db_name: &str) -> PathBuf {

@@ -117,12 +117,7 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         // most reads are sequential
         db_options.set_advise_random_on_open(false);
 
-        db_options.set_max_total_wal_size(
-            log_server_config
-                .rocksdb_max_wal_size()
-                .try_into()
-                .expect("fits into u64"),
-        );
+        db_options.set_max_total_wal_size(log_server_config.rocksdb_max_wal_size().as_u64());
 
         db_options.set_enable_pipelined_write(true);
         db_options.set_max_subcompactions(log_server_config.rocksdb_max_sub_compactions());
@@ -139,11 +134,8 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
             (data_budget, metadata_budget)
         };
 
-        if data_budget == 0 || metadata_budget == 0 {
-            return;
-        }
-        set_memtable_budget(db, DATA_CF, data_budget);
-        set_memtable_budget(db, METADATA_CF, metadata_budget);
+        set_memtable_budget(db, DATA_CF, data_budget.as_usize());
+        set_memtable_budget(db, METADATA_CF, metadata_budget.as_usize());
         // check if usage is higher than the new budget, then force a flush.
 
         let total_data_usage = db
@@ -156,13 +148,14 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
             .unwrap()
             .unwrap_or_default() as usize;
 
-        let will_flush = total_data_usage > data_budget || total_metadata_usage > metadata_budget;
+        let will_flush = total_data_usage > data_budget.as_usize()
+            || total_metadata_usage > metadata_budget.as_usize();
         info!(
             "Updating log-server memory budget. data_usage:{}/{}, metadata_usage:{}/{}, will_flush: {}",
             ByteCount::from(total_data_usage),
-            ByteCount::from(data_budget),
+            data_budget,
             ByteCount::from(total_metadata_usage),
-            ByteCount::from(metadata_budget),
+            metadata_budget,
             will_flush
         );
         if will_flush {
@@ -238,11 +231,7 @@ fn cf_data_options(
 ) {
     opts.set_block_based_table_factory(block_options);
 
-    let memtables_budget = log_server_config.rocksdb_data_memtables_budget();
-    assert!(
-        memtables_budget > 0,
-        "memory budget should be greater than 0"
-    );
+    let memtables_budget = log_server_config.rocksdb_data_memtables_budget().as_usize();
 
     set_memory_related_opts(opts, memtables_budget);
     opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
@@ -292,12 +281,10 @@ fn cf_metadata_options(
     log_server_config: &LogServerOptions,
 ) {
     opts.set_block_based_table_factory(block_options);
-    let memtables_budget = log_server_config.rocksdb_metadata_memtables_budget();
+    let memtables_budget = log_server_config
+        .rocksdb_metadata_memtables_budget()
+        .as_usize();
 
-    assert!(
-        memtables_budget > 0,
-        "memory budget should be greater than 0"
-    );
     set_memory_related_opts(opts, memtables_budget);
     //
     // Set compactions per level
