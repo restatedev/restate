@@ -59,7 +59,11 @@ impl<T: TransportConnect> Factory<T> {
             tc.memory_controller().create_pool(
                 // NOTE: This is a shared pool with log-server store data path
                 "log-server-data",
-                || Configuration::pinned().log_server.data_service_memory_limit,
+                || {
+                    Configuration::pinned()
+                        .log_server
+                        .rocksdb_data_memtables_budget()
+                },
             )
         });
         let data_request_pump = router_builder
