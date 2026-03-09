@@ -179,11 +179,14 @@ pub async fn create_object_store_client(
         ObjectStoreScheme::MicrosoftAzure => {
             Arc::new(MicrosoftAzureBuilder::from_env().with_url(url).build()?)
         }
-        ObjectStoreScheme::GoogleCloudStorage => Arc::new(
-            GoogleCloudStorageBuilder::from_env()
-                .with_url(url)
-                .build()?,
-        ),
+        ObjectStoreScheme::GoogleCloudStorage => {
+            let store: Arc<dyn ObjectStore> = Arc::new(
+                GoogleCloudStorageBuilder::from_env()
+                    .with_url(url)
+                    .build()?,
+            );
+            store
+        }
         #[cfg(any(test, feature = "test-util"))]
         ObjectStoreScheme::Local => object_store::parse_url(&url)?.0.into(),
         _ => bail!("Unsupported protocol: {url}"),
