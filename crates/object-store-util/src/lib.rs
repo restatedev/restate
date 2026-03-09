@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::fmt;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail};
+use arc_swap::ArcSwap;
 use aws_config::default_provider::region::DefaultRegionChain;
 use aws_config::{BehaviorVersion, Region};
 use aws_smithy_runtime_api::client::identity::ResolveCachedIdentity;
@@ -319,5 +321,129 @@ impl object_store::CredentialProvider for AwsSdkCredentialsProvider {
             }))
         }
         .boxed()
+    }
+}
+
+struct ObjectStoreHolder(Arc<dyn ObjectStore>);
+
+/// An [`ObjectStore`] wrapper that supports atomically swapping the underlying
+/// store at runtime, enabling live reconfiguration of credentials, endpoints,
+/// or other client settings without restarting the process.
+pub struct SwappableObjectStore {
+    inner: ArcSwap<ObjectStoreHolder>,
+}
+
+impl SwappableObjectStore {
+    pub fn new(store: Arc<dyn ObjectStore>) -> Self {
+        Self {
+            inner: ArcSwap::from_pointee(ObjectStoreHolder(store)),
+        }
+    }
+
+    /// Atomically replace the underlying object store client.
+    pub fn swap(&self, new_store: Arc<dyn ObjectStore>) {
+        self.inner.store(Arc::new(ObjectStoreHolder(new_store)));
+    }
+
+    fn load(&self) -> Arc<dyn ObjectStore> {
+        Arc::clone(&self.inner.load().0)
+    }
+}
+
+impl fmt::Debug for SwappableObjectStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SwappableObjectStore").finish()
+    }
+}
+
+impl fmt::Display for SwappableObjectStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SwappableObjectStore({})", self.inner.load().0)
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for SwappableObjectStore {
+    async fn put_opts(
+        &self,
+        location: &object_store::path::Path,
+        payload: object_store::PutPayload,
+        opts: object_store::PutOptions,
+    ) -> object_store::Result<object_store::PutResult> {
+        self.load().put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &object_store::path::Path,
+        opts: object_store::PutMultipartOptions,
+    ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+        self.load().put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &object_store::path::Path,
+        options: object_store::GetOptions,
+    ) -> object_store::Result<object_store::GetResult> {
+        self.load().get_opts(location, options).await
+    }
+
+    async fn get_ranges(
+        &self,
+        location: &object_store::path::Path,
+        ranges: &[std::ops::Range<u64>],
+    ) -> object_store::Result<Vec<bytes::Bytes>> {
+        self.load().get_ranges(location, ranges).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: futures::stream::BoxStream<
+            'static,
+            object_store::Result<object_store::path::Path>,
+        >,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>> {
+        self.load().delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>> {
+        self.load().list(prefix)
+    }
+
+    fn list_with_offset(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+        offset: &object_store::path::Path,
+    ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>> {
+        self.load().list_with_offset(prefix, offset)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&object_store::path::Path>,
+    ) -> object_store::Result<object_store::ListResult> {
+        self.load().list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &object_store::path::Path,
+        to: &object_store::path::Path,
+        options: object_store::CopyOptions,
+    ) -> object_store::Result<()> {
+        self.load().copy_opts(from, to, options).await
+    }
+
+    async fn rename_opts(
+        &self,
+        from: &object_store::path::Path,
+        to: &object_store::path::Path,
+        options: object_store::RenameOptions,
+    ) -> object_store::Result<()> {
+        self.load().rename_opts(from, to, options).await
     }
 }
