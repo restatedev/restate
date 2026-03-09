@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, SliceTransform};
+use rocksdb::{BlockBasedOptions, Cache, SliceTransform};
 use tracing::{info, warn};
 
 use restate_core::ShutdownError;
@@ -110,7 +110,9 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         // likely to depend on the last durably committed record for a quorum of nodes in the write
         // set.
         db_options.set_wal_recovery_mode(rocksdb::DBRecoveryMode::TolerateCorruptedTailRecords);
-        db_options.set_wal_compression_type(DBCompressionType::Zstd);
+        if !log_server_config.rocksdb.rocksdb_disable_wal_compression() {
+            db_options.set_wal_compression_type(rocksdb::DBCompressionType::Zstd);
+        }
         // most reads are sequential
         db_options.set_advise_random_on_open(false);
 
@@ -234,15 +236,20 @@ fn cf_data_options(
     opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     opts.set_num_levels(7);
 
-    opts.set_compression_per_level(&[
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-    ]);
+    let l0_l1 = if log_server_config
+        .rocksdb
+        .rocksdb_disable_l0_l1_compression()
+    {
+        rocksdb::DBCompressionType::None
+    } else {
+        rocksdb::DBCompressionType::Zstd
+    };
+    let levels = restate_rocksdb::configuration::build_compression_per_level(
+        7,
+        l0_l1,
+        rocksdb::DBCompressionType::Zstd,
+    );
+    opts.set_compression_per_level(&levels);
 
     opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(KeyPrefix::size()));
     opts.set_memtable_prefix_bloom_ratio(0.2);
@@ -251,7 +258,7 @@ fn cf_data_options(
         opts.set_enable_blob_files(true);
         opts.set_min_blob_size(512 * 1024); // 512KiB minimum to use blob files
         opts.set_enable_blob_gc(true);
-        opts.set_blob_compression_type(DBCompressionType::Zstd);
+        opts.set_blob_compression_type(rocksdb::DBCompressionType::Zstd);
     }
 }
 
@@ -287,11 +294,20 @@ fn cf_metadata_options(
     // Set compactions per level
     //
     opts.set_num_levels(3);
-    opts.set_compression_per_level(&[
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-    ]);
+    let l0_l1 = if log_server_config
+        .rocksdb
+        .rocksdb_disable_l0_l1_compression()
+    {
+        rocksdb::DBCompressionType::None
+    } else {
+        rocksdb::DBCompressionType::Zstd
+    };
+    let levels = restate_rocksdb::configuration::build_compression_per_level(
+        3,
+        l0_l1,
+        rocksdb::DBCompressionType::Zstd,
+    );
+    opts.set_compression_per_level(&levels);
     opts.set_memtable_whole_key_filtering(true);
     opts.set_max_write_buffer_number(4);
     opts.set_max_successive_merges(10);
