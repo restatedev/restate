@@ -15,6 +15,7 @@ ignore = [
 [licenses]
 version = 2
 allow = [
+    # Permissive licenses
     "MIT",
     "MIT-0",
     "Apache-2.0",
@@ -23,28 +24,24 @@ allow = [
     "ISC",
     "BSL-1.0",
     "OpenSSL",
-    "MPL-2.0",
     "CC0-1.0",
     "Zlib",
     "bzip2-1.0.6",
-    "CDDL-1.0",
     "Unicode-3.0",
     "CDLA-Permissive-2.0",
+    # Weak copyleft (file-level) licenses. These only require sharing modifications
+    # to the licensed files themselves. Unmodified use in a "Larger Work" (our
+    # binaries) does not impose any copyleft obligation on the surrounding code.
+    # Current deps: smartstring, option-ext, priority-queue (MPL-2.0);
+    # inferno (CDDL-1.0, only included when heap-flamegraph feature is enabled).
+    "MPL-2.0",
+    "CDDL-1.0",
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
 # canonical license text of a valid SPDX license file.
 # [possible values: any between 0.0 and 1.0].
 confidence-threshold = 0.8
-
-[[licenses.exceptions]]
-# We are using inferno as part of the benchmarks crate that does not get released.
-# Only modifications to inferno would have to made available under the CDDL:
-# See https://fossa.com/blog/open-source-licenses-101-cddl-common-development-distribution-license/ and
-# https://opensource.stackexchange.com/questions/8265/cddl-library-and-closed-source-application.
-allow = ["CDDL-1.0"]
-name = "inferno"
-version = "0.11"
 
 [[licenses.clarify]]
 name = "ring"
