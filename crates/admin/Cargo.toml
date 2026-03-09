@@ -28,6 +28,7 @@ restate-bifrost = { workspace = true, features = ["local-loglet", "replicated-lo
 restate-core = { workspace = true }
 restate-errors = { workspace = true }
 restate-ingestion-client = { workspace = true }
+restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
 restate-metadata-store = { workspace = true }
 restate-metadata-providers = { workspace = true }
 restate-service-client = { workspace = true }

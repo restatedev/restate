@@ -15,6 +15,9 @@ mod deployments;
 mod error;
 mod handlers;
 mod health;
+mod internal_cluster_common;
+mod internal_cluster_config;
+mod internal_cluster_status;
 mod invocations;
 mod query;
 mod services;
@@ -128,6 +131,14 @@ where
             axum::routing::put(deployments::update_deployment),
         )
         // Internal batch operation routes (for UI only, not documented in OpenAPI)
+        .route(
+            "/internal/cluster/config",
+            axum::routing::get(internal_cluster_config::get_internal_cluster_config),
+        )
+        .route(
+            "/internal/cluster/status",
+            axum::routing::get(internal_cluster_status::get_internal_cluster_status),
+        )
         .route(
             "/internal/invocations_batch_operations/kill",
             axum::routing::post(invocations::batch_kill_invocations),

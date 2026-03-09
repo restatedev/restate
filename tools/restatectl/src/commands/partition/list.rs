@@ -209,7 +209,9 @@ pub async fn list_partitions(
                         .zip(processor.status.last_applied_log_lsn)
                         .map(|(tail, applied)| {
                             // (tail - 1) - applied_lsn = tail - (applied_lsn + 1)
-                            tail.value.saturating_sub(applied.value + 1).to_string()
+                            tail.value
+                                .saturating_sub(applied.value.saturating_add(1))
+                                .to_string()
                         })
                         .unwrap_or("-".to_owned()),
                 ),
