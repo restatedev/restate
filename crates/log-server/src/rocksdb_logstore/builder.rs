@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, RateLimiterMode, SliceTransform};
+use rocksdb::{BlockBasedOptions, Cache, DBCompressionType, SliceTransform};
 use tracing::{info, warn};
 
 use restate_core::ShutdownError;
@@ -93,15 +93,6 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         let log_server_config = &Configuration::pinned().log_server;
         // amend default options from rocksdb_manager
         self.apply_db_opts_from_config(&mut db_options, &log_server_config.rocksdb);
-
-        // todo: expose
-        db_options.set_ratelimiter_with_mode(
-            300 * 1024 * 1024,
-            100_000, // 100ms.
-            10,
-            RateLimiterMode::KWritesOnly,
-            true,
-        );
 
         // log-server specific customizations
 
