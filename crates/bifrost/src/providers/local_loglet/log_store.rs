@@ -142,6 +142,13 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         let local_loglet_config = &Configuration::pinned().bifrost.local;
         // amend default options from rocksdb_manager
         self.apply_db_opts_from_config(&mut db_options, &local_loglet_config.rocksdb);
+
+        restate_rocksdb::configuration::set_background_work_budget(
+            &mut db_options,
+            local_loglet_config.rocksdb_max_background_flushes(),
+            local_loglet_config.rocksdb_max_background_compactions(),
+        );
+
         // local loglet customizations
 
         // Enable atomic flushes.
