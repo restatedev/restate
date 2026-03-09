@@ -21,6 +21,7 @@ use restate_core::{ShutdownError, TaskCenter, TaskHandle, cancellation_token};
 use restate_types::logs::Record;
 use restate_types::storage::StorageEncode;
 
+use crate::bifrost::PreferenceControl;
 use crate::error::EnqueueError;
 use crate::{Appender, InputRecord, Result};
 
@@ -57,6 +58,7 @@ impl<T: StorageEncode> BackgroundAppender<T> {
     pub fn start(self, name: &'static str) -> Result<AppenderHandle<T>, ShutdownError> {
         let (tx, rx) = tokio::sync::mpsc::channel(self.queue_capacity);
         let record_size_limit = self.appender.record_size_limit();
+        let preference = self.appender.preference.clone();
 
         let handle = TaskCenter::spawn_unmanaged_child(
             restate_core::TaskKind::BifrostAppender,
@@ -70,6 +72,7 @@ impl<T: StorageEncode> BackgroundAppender<T> {
                 arena: BytesMut::default(),
                 tx,
                 record_size_limit,
+                preference,
                 _phantom: std::marker::PhantomData,
             }),
         })
@@ -172,12 +175,6 @@ impl<T: StorageEncode> BackgroundAppender<T> {
                 AppendOperation::Canary(tx) => {
                     notif_buffer.push(tx);
                 }
-                AppendOperation::MarkAsPreferred => {
-                    appender.mark_as_preferred();
-                }
-                AppendOperation::ForgetPreference => {
-                    appender.forget_preference();
-                }
             }
         }
 
@@ -274,6 +271,10 @@ pub struct LogSender<T> {
     arena: BytesMut,
     tx: tokio::sync::mpsc::Sender<AppendOperation>,
     record_size_limit: NonZeroUsize,
+    /// Controls the recovery preference of the underlying appender.
+    ///
+    /// This is shared between the handle and the appender.
+    preference: PreferenceControl,
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -283,6 +284,7 @@ impl<T> Clone for LogSender<T> {
             arena: BytesMut::default(),
             tx: self.tx.clone(),
             record_size_limit: self.record_size_limit,
+            preference: self.preference.clone(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -439,31 +441,13 @@ impl<T: StorageEncode> LogSender<T> {
     }
 
     /// Marks this node as a preferred writer for the underlying log
-    pub async fn mark_as_preferred(&self) -> Result<(), EnqueueError<()>> {
-        if self
-            .tx
-            .send(AppendOperation::MarkAsPreferred)
-            .await
-            .is_err()
-        {
-            return Err(EnqueueError::Closed(()));
-        };
-
-        Ok(())
+    pub fn mark_as_preferred(&self) {
+        self.preference.mark_as_preferred();
     }
 
     /// Removes the preference about this node being the preferred writer for the log
-    pub async fn forget_preference(&self) -> Result<(), EnqueueError<()>> {
-        if self
-            .tx
-            .send(AppendOperation::ForgetPreference)
-            .await
-            .is_err()
-        {
-            return Err(EnqueueError::Closed(()));
-        };
-
-        Ok(())
+    pub fn forget_preference(&self) {
+        self.preference.forget_preference();
     }
 }
 
@@ -489,10 +473,6 @@ enum AppendOperation {
     // A message denoting a request to be notified when it's processed by the appender.
     // It's used to check if previously enqueued appends have been committed or not
     Canary(oneshot::Sender<()>),
-    /// Let's bifrost know that this node is the preferred writer of this log
-    MarkAsPreferred,
-    /// Let's bifrost know that this node might not be the preferred writer of this log
-    ForgetPreference,
 }
 
 impl AppendOperation {
@@ -501,8 +481,6 @@ impl AppendOperation {
             AppendOperation::Enqueue(record) => record.estimated_encode_size(),
             AppendOperation::EnqueueWithNotification(record, _) => record.estimated_encode_size(),
             AppendOperation::Canary(_) => 0,
-            AppendOperation::MarkAsPreferred => 0,
-            AppendOperation::ForgetPreference => 0,
         }
     }
 }
@@ -573,8 +551,6 @@ mod tests {
         // Test that control operations have zero cost
         let (tx, _rx) = oneshot::channel();
         assert_eq!(AppendOperation::Canary(tx).cost_in_bytes(), 0);
-        assert_eq!(AppendOperation::MarkAsPreferred.cost_in_bytes(), 0);
-        assert_eq!(AppendOperation::ForgetPreference.cost_in_bytes(), 0);
     }
 
     #[test]
@@ -639,9 +615,6 @@ mod tests {
         // Control operations don't add to byte count
         let (tx, _rx) = oneshot::channel();
         batch.push(AppendOperation::Canary(tx));
-        assert_eq!(batch.bytes_accumulated, expected_total);
-
-        batch.push(AppendOperation::MarkAsPreferred);
         assert_eq!(batch.bytes_accumulated, expected_total);
     }
 }

@@ -223,9 +223,11 @@ impl Watchdog {
         let mut config = Configuration::live();
 
         loop {
+            let shutdown_requested = TaskCenter::is_shutdown_requested();
+
             if self.in_flight_trim.is_none()
                 && !self.pending_trims.is_empty()
-                && !TaskCenter::is_shutdown_requested()
+                && !shutdown_requested
             {
                 let trims = self.pending_trims.drain().collect();
                 match self.spawn_trim(trims) {
@@ -238,6 +240,12 @@ impl Watchdog {
                 }
             }
 
+            // Do not run log improvement if the system is shutting down
+            // (watchdog will continue to run until it's asked to shutdown).
+            let disable_auto_improvement = config.live_load().bifrost.disable_auto_improvement
+                || shutdown_requested
+                || !TaskCenter::is_my_node_alive();
+
             tokio::select! {
                 biased;
                 _ = &mut shutdown => {
@@ -247,14 +255,10 @@ impl Watchdog {
                 Some(cmd) = self.inbound.recv() => {
                     self.handle_command(cmd)
                 }
-                _tick = improvement_interval.tick() => {
-                    if !config.live_load().bifrost.disable_auto_improvement
-                        && TaskCenter::is_my_node_alive()
-                        && !TaskCenter::is_shutdown_requested() {
-                            // check if we have logs to improve
-                            let logs = logs.live_load();
-                            self.improve_logs(logs);
-                    }
+                _tick = improvement_interval.tick(), if !disable_auto_improvement => {
+                    // check if we have logs to improve
+                    let logs = logs.live_load();
+                    self.improve_logs(logs);
                 }
                 Some(_) = OptionFuture::from(self.in_flight_trim.as_mut()) => {
                     self.in_flight_trim = None;
