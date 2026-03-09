@@ -64,6 +64,12 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         // amend default options from rocksdb_manager
         self.apply_db_opts_from_config(&mut db_options, &metadata_server_config.rocksdb);
 
+        restate_rocksdb::configuration::set_background_work_budget(
+            &mut db_options,
+            metadata_server_config.rocksdb_max_background_flushes(),
+            metadata_server_config.rocksdb_max_background_compactions(),
+        );
+
         // Metadata server customizations
 
         // Enable atomic flushes.
