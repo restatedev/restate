@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU32;
+
 use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
 
 use restate_types::config::{RocksDbLogLevel, RocksDbOptions, StatisticsLevel};
@@ -30,7 +32,6 @@ pub trait DbConfigurator {
         db_options: &mut rocksdb::Options,
         config: &RocksDbOptions,
     ) {
-        db_options.set_max_background_jobs(config.rocksdb_max_background_jobs().get() as i32);
         if !config.rocksdb_disable_statistics() {
             db_options.enable_statistics();
             db_options
@@ -151,6 +152,25 @@ pub trait CfConfigurator {
         global_cache: &Cache,
         write_buffer_manager: &rocksdb::WriteBufferManager,
     ) -> rocksdb::Options;
+}
+
+/// Sets the background flush and compaction concurrency for a database.
+///
+/// We intentionally use the deprecated `set_max_background_flushes` and
+/// `set_max_background_compactions` instead of the combined `set_max_background_jobs` to get
+/// precise control over how many slots are allocated to flushes vs compactions. When either of
+/// these deprecated options is set, RocksDB ignores `max_background_jobs` for the split
+/// calculation and uses the explicit values directly.
+pub fn set_background_work_budget(
+    db_options: &mut rocksdb::Options,
+    max_background_flushes: NonZeroU32,
+    max_background_compactions: NonZeroU32,
+) {
+    #[allow(deprecated)]
+    {
+        db_options.set_max_background_flushes(max_background_flushes.get() as i32);
+        db_options.set_max_background_compactions(max_background_compactions.get() as i32);
+    }
 }
 
 pub fn convert_statistics_level(input: StatisticsLevel) -> rocksdb::statistics::StatsLevel {
