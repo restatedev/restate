@@ -126,7 +126,16 @@ macro_rules! define_logserver_unary {
 }
 
 #[derive(
-    Debug, Clone, Copy, Eq, PartialEq, IntoProst, FromProst, bilrost::Enumeration, NetSerde,
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    IntoProst,
+    FromProst,
+    bilrost::Enumeration,
+    NetSerde,
+    derive_more::Display,
 )]
 #[prost(target = "crate::protobuf::log_server_common::Status")]
 #[repr(u8)]
