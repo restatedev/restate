@@ -130,18 +130,20 @@ const ROCKSDB_HISTOGRAMS: &[(Histogram, &str, MetricUnit)] = &[
 ];
 
 const ROCKSDB_DB_PROPERTIES: &[(&str, MetricUnit)] = &[
+    ("rocksdb.actual-delayed-write-rate", MetricUnit::Bytes),
+    ("rocksdb.background-errors", MetricUnit::Count),
     ("rocksdb.block-cache-capacity", MetricUnit::Bytes),
-    ("rocksdb.block-cache-usage", MetricUnit::Bytes),
     ("rocksdb.block-cache-pinned-usage", MetricUnit::Bytes),
+    ("rocksdb.block-cache-usage", MetricUnit::Bytes),
+    ("rocksdb.is-write-stopped", MetricUnit::Count),
+    ("rocksdb.num-running-compactions", MetricUnit::Count),
     ("rocksdb.num-running-flushes", MetricUnit::Count),
 ];
 
 const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
     ("rocksdb.num-immutable-mem-table", MetricUnit::Count),
     ("rocksdb.mem-table-flush-pending", MetricUnit::Count),
-    ("rocksdb.is-write-stopped", MetricUnit::Count),
     ("rocksdb.compaction-pending", MetricUnit::Count),
-    ("rocksdb.background-errors", MetricUnit::Count),
     ("rocksdb.cur-size-active-mem-table", MetricUnit::Bytes),
     ("rocksdb.cur-size-all-mem-tables", MetricUnit::Bytes),
     ("rocksdb.size-all-mem-tables", MetricUnit::Bytes),
@@ -154,12 +156,13 @@ const ROCKSDB_CF_PROPERTIES: &[(&str, MetricUnit)] = &[
     ("rocksdb.num-live-versions", MetricUnit::Count),
     ("rocksdb.estimate-live-data-size", MetricUnit::Bytes),
     ("rocksdb.live-sst-files-size", MetricUnit::Bytes),
+    ("rocksdb.obsolete-sst-files-size", MetricUnit::Bytes),
+    ("rocksdb.live-blob-file-size", MetricUnit::Bytes),
+    ("rocksdb.live-blob-file-garbage-size", MetricUnit::Bytes),
     (
         "rocksdb.estimate-pending-compaction-bytes",
         MetricUnit::Bytes,
     ),
-    ("rocksdb.num-running-compactions", MetricUnit::Count),
-    ("rocksdb.actual-delayed-write-rate", MetricUnit::Count),
     ("rocksdb.num-files-at-level0", MetricUnit::Count),
     ("rocksdb.num-files-at-level1", MetricUnit::Count),
     ("rocksdb.num-files-at-level2", MetricUnit::Count),
