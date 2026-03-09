@@ -58,14 +58,14 @@ impl SelfProposer {
         })
     }
 
-    pub async fn mark_as_leader(&mut self) {
+    pub fn mark_as_leader(&mut self) {
         // we wouldn't fail if this didn't work out, subsequent operations will fail anyway.
-        let _ = self.bifrost_appender.sender().mark_as_preferred().await;
+        self.bifrost_appender.sender().mark_as_preferred();
     }
 
-    pub async fn mark_as_non_leader(&mut self) {
+    pub fn mark_as_non_leader(&mut self) {
         // we wouldn't fail if this didn't work out, subsequent operations will fail anyway.
-        let _ = self.bifrost_appender.sender().forget_preference().await;
+        self.bifrost_appender.sender().forget_preference();
     }
 
     /// Propose many commands to bifrost
