@@ -65,7 +65,8 @@ impl IdLookup {
 
 pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
 pub const INVOKER_INVOCATION_TASKS: &str = "restate.invoker.invocation_tasks.total";
-pub const INVOKER_AVAILABLE_SLOTS: &str = "restate.invoker.available_slots";
+pub const INVOKER_CONCURRENCY_SLOTS_ACQUIRED: &str = "restate.invoker.concurrency_slots.acquired";
+pub const INVOKER_CONCURRENCY_SLOTS_RELEASED: &str = "restate.invoker.concurrency_slots.released";
 pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
 
@@ -93,10 +94,16 @@ pub(crate) fn describe_metrics() {
         "Invocation task operation"
     );
 
-    describe_gauge!(
-        INVOKER_AVAILABLE_SLOTS,
+    describe_counter!(
+        INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
         Unit::Count,
-        "Number of available slots to create new tasks"
+        "Number of concurrency slots acquired"
+    );
+
+    describe_counter!(
+        INVOKER_CONCURRENCY_SLOTS_RELEASED,
+        Unit::Count,
+        "Number of concurrency slots released"
     );
 
     describe_histogram!(
