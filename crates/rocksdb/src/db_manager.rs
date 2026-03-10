@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use parking_lot::RwLock;
-use rocksdb::{Cache, WriteBufferManager};
+use rocksdb::{Cache, RateLimiter, RateLimiterMode, WriteBufferManager};
 use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
@@ -34,6 +34,8 @@ static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 #[derive(derive_more::Debug)]
 #[debug("RocksDbManager")]
 pub struct RocksDbManager {
+    /// A shared IO write rate limiter
+    pub(crate) rate_limiter: RateLimiter,
     /// a shared rocksdb block cache
     pub(crate) cache: Cache,
     // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
@@ -88,6 +90,15 @@ impl RocksDbManager {
         // unblock write stalls.
         env.set_bottom_priority_background_threads(1);
 
+        // Setup the global write rate limiter
+        let rate_limiter = RateLimiter::new(
+            opts.rocksdb_max_write_rate_per_second.as_u64() as i64,
+            100 * 1000,
+            10,
+            RateLimiterMode::KWritesOnly,
+            true,
+        );
+
         // Create our own storage thread pools
         let high_pri_pool = threadpool::Builder::new()
             .thread_name("rs:io-hi".to_owned())
@@ -103,6 +114,7 @@ impl RocksDbManager {
 
         let manager = Self {
             env,
+            rate_limiter,
             cache,
             write_buffer_manager,
             dbs,
