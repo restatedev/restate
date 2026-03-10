@@ -65,6 +65,11 @@ impl TailOffsetWatch {
         self.sender.borrow()
     }
 
+    /// Returns true if both watches share the same underlying channel.
+    pub fn same_watch(&self, other: &TailOffsetWatch) -> bool {
+        self.sender.same_channel(&other.sender)
+    }
+
     pub fn is_sealed(&self) -> bool {
         self.sender.borrow().is_sealed()
     }

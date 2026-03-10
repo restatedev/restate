@@ -19,7 +19,6 @@ use restate_bifrost::loglet::OperationError;
 use restate_memory::MemoryLease;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::GenerationalNodeId;
-use restate_types::health::HealthStatus;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
 use restate_types::net::log_server::{
     Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
@@ -31,14 +30,16 @@ use super::keys::{KeyPrefixKind, MARKER_KEY, MetadataKey};
 use super::record_format::DataRecordDecoder;
 use super::writer::RocksDbLogWriterHandle;
 use super::{DATA_CF, METADATA_CF, RocksDbLogStoreError};
-use crate::logstore::{AsyncToken, LogStore};
+use restate_futures_util::monotonic_token::{Token, TokenListener};
+
+use crate::logstore::{Commit, LogStore, LogStoreState, LogletWriter};
 use crate::metadata::{LogStoreMarker, LogletState};
 use crate::rocksdb_logstore::keys::DataRecordKey;
 
 #[derive(Clone)]
 pub struct RocksDbLogStore {
-    pub(super) health_status: HealthStatus<LogServerStatus>,
     pub(super) rocksdb: Arc<RocksDb>,
+    pub(super) store_state: LogStoreState,
     pub(super) writer_handle: RocksDbLogWriterHandle,
 }
 
@@ -62,7 +63,91 @@ impl RocksDbLogStore {
     }
 }
 
+/// Per-loglet write handle for the RocksDB log store.
+///
+/// Created via [`RocksDbLogStore::create_loglet_writer`]. Automatically
+/// registers the loglet with the writer on creation and unregisters when dropped.
+pub struct RocksDbLogletWriter {
+    inner: LogletWriterState,
+}
+
+impl Drop for RocksDbLogletWriter {
+    fn drop(&mut self) {
+        match self.inner {
+            LogletWriterState::Active {
+                loglet_id,
+                ref loglet_state,
+                ref writer_handle,
+                ..
+            } => {
+                // Best-effort: the writer may already be gone during shutdown.
+                let _ = writer_handle.unregister_loglet(loglet_id, loglet_state.clone());
+            }
+            LogletWriterState::Disabled => {}
+        }
+    }
+}
+
+enum LogletWriterState {
+    Active {
+        loglet_id: LogletId,
+        loglet_state: LogletState,
+        writer_handle: RocksDbLogWriterHandle,
+    },
+    Disabled,
+}
+
+impl LogletWriter for RocksDbLogletWriter {
+    fn enqueue_store(
+        &mut self,
+        store_message: Store,
+        set_sequencer_in_metadata: bool,
+        reservation: MemoryLease,
+    ) -> Option<Token<Commit>> {
+        debug_assert!(store_message.first_offset != LogletOffset::INVALID);
+
+        match self.inner {
+            LogletWriterState::Active {
+                ref writer_handle, ..
+            } => writer_handle.enqueue_put_records(
+                store_message,
+                set_sequencer_in_metadata,
+                reservation,
+            ),
+            LogletWriterState::Disabled => None,
+        }
+    }
+
+    fn enqueue_seal(&mut self, seal_message: Seal) -> Option<Token<Commit>> {
+        match self.inner {
+            LogletWriterState::Active {
+                ref writer_handle, ..
+            } => writer_handle.enqueue_seal(seal_message),
+            LogletWriterState::Disabled => None,
+        }
+    }
+
+    fn enqueue_trim(&mut self, trim_message: Trim) -> Option<Token<Commit>> {
+        match self.inner {
+            LogletWriterState::Active {
+                ref writer_handle, ..
+            } => writer_handle.enqueue_trim(trim_message),
+            LogletWriterState::Disabled => None,
+        }
+    }
+
+    fn close(&mut self) {
+        self.inner = LogletWriterState::Disabled;
+    }
+}
+
 impl LogStore for RocksDbLogStore {
+    type Writer = RocksDbLogletWriter;
+
+    fn commit_listener(&self) -> TokenListener<Commit> {
+        self.writer_handle.commit_listener()
+    }
+
     async fn load_marker(&self) -> Result<Option<LogStoreMarker>, OperationError> {
         let metadata_cf = self.metadata_cf();
         let value = self
@@ -75,6 +160,10 @@ impl LogStore for RocksDbLogStore {
             .transpose()
             .map_err(RocksDbLogStoreError::from)?;
         Ok(marker)
+    }
+
+    fn state(&self) -> &LogStoreState {
+        &self.store_state
     }
 
     async fn store_marker(&self, marker: LogStoreMarker) -> Result<(), OperationError> {
@@ -94,7 +183,7 @@ impl LogStore for RocksDbLogStore {
             )
             .await
             .map(|_| ())
-            .map_err(|(e, _)| RocksDbLogStoreError::from(e))?;
+            .map_err(RocksDbLogStoreError::from)?;
         Ok(())
     }
 
@@ -196,29 +285,27 @@ impl LogStore for RocksDbLogStore {
         })
     }
 
-    async fn enqueue_store(
+    fn new_loglet_writer(
         &self,
-        store_message: Store,
-        set_sequencer_in_metadata: bool,
-        reservation: MemoryLease,
-    ) -> Result<AsyncToken, OperationError> {
-        // do not accept INVALID offsets
-        if store_message.first_offset == LogletOffset::INVALID {
-            return Err(RocksDbLogStoreError::InvalidOffset(store_message.first_offset).into());
+        loglet_id: LogletId,
+        loglet_state: &LogletState,
+    ) -> RocksDbLogletWriter {
+        if self
+            .writer_handle
+            .register_loglet(loglet_id, loglet_state.clone())
+        {
+            RocksDbLogletWriter {
+                inner: LogletWriterState::Active {
+                    loglet_id,
+                    loglet_state: loglet_state.clone(),
+                    writer_handle: self.writer_handle.clone(),
+                },
+            }
+        } else {
+            RocksDbLogletWriter {
+                inner: LogletWriterState::Disabled,
+            }
         }
-        self.writer_handle.enqueue_put_records(
-            store_message,
-            set_sequencer_in_metadata,
-            reservation,
-        )
-    }
-
-    async fn enqueue_seal(&self, seal_message: Seal) -> Result<AsyncToken, OperationError> {
-        self.writer_handle.enqueue_seal(seal_message)
-    }
-
-    async fn enqueue_trim(&self, trim_message: Trim) -> Result<AsyncToken, OperationError> {
-        self.writer_handle.enqueue_trim(trim_message)
     }
 
     async fn read_records(
@@ -351,8 +438,8 @@ impl LogStore for RocksDbLogStore {
 
             // we reached the end (or an error)
             if let Err(e) = iterator.status() {
-                // whoa, we have I/O errors, we should switch into failsafe mode (todo)
-                self.health_status.update(LogServerStatus::Failsafe);
+                self.store_state
+                    .update_health_status(LogServerStatus::Failsafe);
                 return Err(RocksDbLogStoreError::Rocksdb(e).into());
             }
 
@@ -481,8 +568,8 @@ impl LogStore for RocksDbLogStore {
             if read_pointer <= read_to
                 && let Err(e) = iterator.status()
             {
-                // whoa, we have I/O errors, we should switch into failsafe mode (todo)
-                self.health_status.update(LogServerStatus::Failsafe);
+                self.store_state
+                    .update_health_status(LogServerStatus::Failsafe);
                 return Err(RocksDbLogStoreError::Rocksdb(e).into());
             }
 
@@ -526,8 +613,8 @@ mod tests {
     use restate_types::{GenerationalNodeId, PlainNodeId};
 
     use super::RocksDbLogStore;
-    use crate::logstore::LogStore;
-    use crate::metadata::LogStoreMarker;
+    use crate::logstore::{LogStore, LogletWriter};
+    use crate::metadata::{LogStoreMarker, LogletState};
     use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
 
     async fn setup() -> Result<RocksDbLogStore> {
@@ -535,6 +622,44 @@ mod tests {
         // create logstore.
         let builder = RocksDbLogStoreBuilder::create().await?;
         Ok(builder.start(Default::default()).await?)
+    }
+
+    /// Helper: enqueue a store and wait for it to be durably committed.
+    ///
+    /// Creates a temporary `LogletState` and writer handle, enqueues the
+    /// store, and waits for the tail watch to advance. The writer handle is
+    /// dropped at the end, which auto-unregisters.
+    async fn enqueue_store_and_wait(
+        log_store: &RocksDbLogStore,
+        store_msg: Store,
+        set_sequencer_in_metadata: bool,
+    ) -> Result<()> {
+        let committed_up_to = store_msg.last_offset().expect("non-empty store").next();
+        let loglet_state = LogletState::new(
+            Some(store_msg.sequencer),
+            LogletOffset::OLDEST,
+            false,
+            LogletOffset::INVALID,
+            LogletOffset::OLDEST,
+        );
+        let mut writer = log_store.new_loglet_writer(store_msg.header.loglet_id, &loglet_state);
+        writer
+            .enqueue_store(
+                store_msg,
+                set_sequencer_in_metadata,
+                MemoryLease::unlinked(),
+            )
+            .expect("writer channel open");
+        loglet_state
+            .get_local_tail_watch()
+            .wait_for_offset(committed_up_to)
+            .await
+            .map_err(|_| {
+                restate_bifrost::loglet::OperationError::Shutdown(restate_core::ShutdownError)
+            })?;
+        // Writer handle dropped here — auto-unregisters.
+        drop(writer);
+        Ok(())
     }
 
     #[test(restate_core::test(start_paused = true))]
@@ -587,10 +712,7 @@ mod tests {
             payloads: payloads.into(),
         };
         // add record at offset=1, no sequencer set.
-        log_store
-            .enqueue_store(store_msg_1.clone(), false, MemoryLease::unlinked())
-            .await?
-            .await?;
+        enqueue_store_and_wait(&log_store, store_msg_1.clone(), false).await?;
 
         let state = log_store.load_loglet_state(loglet_id_1).await?;
         assert!(!state.is_sealed());
@@ -604,10 +726,7 @@ mod tests {
         };
 
         // add record at end of range (4B) (and set sequencer)
-        log_store
-            .enqueue_store(store_msg_2, true, MemoryLease::unlinked())
-            .await?
-            .await?;
+        enqueue_store_and_wait(&log_store, store_msg_2, true).await?;
 
         let state = log_store.load_loglet_state(loglet_id_1).await?;
         assert!(!state.is_sealed());
@@ -627,10 +746,7 @@ mod tests {
             sequencer: sequencer_2,
             ..store_msg_1
         };
-        log_store
-            .enqueue_store(store_msg_3, true, MemoryLease::unlinked())
-            .await?
-            .await?;
+        enqueue_store_and_wait(&log_store, store_msg_3, true).await?;
 
         let state = log_store.load_loglet_state(loglet_id_1).await?;
         assert!(!state.is_sealed());
@@ -701,10 +817,7 @@ mod tests {
                 flags: StoreFlags::empty(),
                 payloads: payloads.clone().into(),
             };
-            log_store
-                .enqueue_store(store_msg.clone(), true, MemoryLease::unlinked())
-                .await?
-                .await?;
+            enqueue_store_and_wait(&log_store, store_msg, true).await?;
         }
 
         // the store doesn't update local-state, so we update it manually here to 20
@@ -725,10 +838,7 @@ mod tests {
             flags: StoreFlags::empty(),
             payloads: payloads.into(),
         };
-        log_store
-            .enqueue_store(store_msg, true, MemoryLease::unlinked())
-            .await?
-            .await?;
+        enqueue_store_and_wait(&log_store, store_msg, true).await?;
         // the adjacent log is at 2
         let state2 = log_store.load_loglet_state(loglet_id_2).await?;
         assert!(!state2.is_sealed());
