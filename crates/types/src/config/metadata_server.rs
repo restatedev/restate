@@ -21,6 +21,9 @@ use super::{
     CommonOptions, Configuration, RocksDbOptions, RocksDbOptionsBuilder, StructWithDefaults,
 };
 
+const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
+    NonZeroByteCount::new(NonZeroUsize::new(8 * 1024 * 1024).unwrap());
+
 /// # Metadata store options
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder, PartialEq)]
@@ -41,9 +44,7 @@ pub struct MetadataServerOptions {
     ///
     /// If this value is set, it overrides the ratio defined in `rocksdb-memory-ratio`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "Option<NonZeroByteCount>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
-    rocksdb_memory_budget: Option<NonZeroUsize>,
+    rocksdb_memory_budget: Option<NonZeroByteCount>,
 
     /// The memory budget for rocksdb memtables as ratio
     ///
@@ -77,26 +78,22 @@ impl MetadataServerOptions {
 
         if self.rocksdb_memory_budget.is_none() {
             self.rocksdb_memory_budget = Some(
-                // 1MiB minimum
-                NonZeroUsize::new(
-                    (common.rocksdb_safe_total_memtables_size() as f64
-                        * self.rocksdb_memory_ratio as f64)
-                        .floor()
-                        .max(1024.0 * 1024.0) as usize,
+                NonZeroByteCount::try_from(
+                    ((common.rocksdb_total_memtables_size().as_u64() as f64
+                        * self.rocksdb_memory_ratio as f64) as u64)
+                        .max(MIN_ROCKSDB_MEMORY.as_u64()),
                 )
                 .unwrap(),
             );
         }
     }
 
-    pub fn rocksdb_memory_budget(&self) -> usize {
+    pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
         self.rocksdb_memory_budget
             .unwrap_or_else(|| {
-                warn!("metadata-server rocksdb_memory_budget is not set, defaulting to 1MB");
-                // 1MiB minimum
-                NonZeroUsize::new(1024 * 1024).unwrap()
+                warn!("metadata-server rocksdb_memory_budget is not set, defaulting to {MIN_ROCKSDB_MEMORY}");
+                MIN_ROCKSDB_MEMORY
             })
-            .get()
     }
 
     pub fn request_queue_length(&self) -> usize {
