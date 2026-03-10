@@ -65,16 +65,18 @@ use crate::error::{
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodyStream, InvokerRequestStreamSender,
     ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER,
-    invocation_id_to_header_value, service_protocol_version_to_header_value,
+    invocation_id_to_header_value, retry_after, service_protocol_version_to_header_value,
 };
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
 
-const GATEWAY_ERRORS_CODES: [StatusCode; 3] = [
-    StatusCode::BAD_GATEWAY,
+const GATEWAY_ERRORS_CODES: [StatusCode; 2] =
+    [StatusCode::BAD_GATEWAY, StatusCode::GATEWAY_TIMEOUT];
+
+const RATE_LIMITED_CODES: [StatusCode; 2] = [
     StatusCode::SERVICE_UNAVAILABLE,
-    StatusCode::GATEWAY_TIMEOUT,
+    StatusCode::TOO_MANY_REQUESTS,
 ];
 
 /// Runs the interaction between the server and the service endpoint.
@@ -636,6 +638,13 @@ where
         // case we still need to return the proper error
         if GATEWAY_ERRORS_CODES.contains(&parts.status) {
             return Err(InvokerError::ServiceUnavailable(parts.status));
+        }
+
+        if RATE_LIMITED_CODES.contains(&parts.status) {
+            return Err(InvokerError::RateLimited {
+                code: parts.status,
+                retry_after: retry_after::parse_retry_after(&parts),
+            });
         }
 
         // otherwise we return generic UnexpectedResponse
