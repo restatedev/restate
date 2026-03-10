@@ -50,12 +50,15 @@ pub struct RequestPump {
 
 impl RequestPump {
     pub fn new(router_builder: &mut MessageRouterBuilder) -> Self {
-        // Data service uses a dedicated memory pool with configurable capacity.
+        // Data service uses a dedicated memory pool with capacity derived from the
+        // data memtables budget of log-server.
         // When memory is exhausted, requests are rejected immediately (load shedding)
         // rather than queuing which could cause unbounded memory growth.
         let data_pool = TaskCenter::with_current(|tc| {
             tc.memory_controller().create_pool("log-server-data", || {
-                Configuration::pinned().log_server.data_service_memory_limit
+                Configuration::pinned()
+                    .log_server
+                    .rocksdb_data_memtables_budget()
             })
         });
 

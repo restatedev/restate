@@ -10,6 +10,7 @@
 
 use std::fmt::{self, Display};
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::ops::{Add, Mul};
 use std::str::FromStr;
 
 use bytesize::ByteSize;
@@ -69,6 +70,20 @@ impl ByteCount<true> {
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
+
+    pub const fn saturating_add(self, other: Self) -> ByteCount<true> {
+        ByteCount(self.0.saturating_add(other.0))
+    }
+
+    pub const fn saturating_mul(self, other: u64) -> ByteCount<true> {
+        ByteCount(self.0.saturating_mul(other))
+    }
+}
+
+impl Default for ByteCount<true> {
+    fn default() -> Self {
+        ByteCount::ZERO
+    }
 }
 
 impl ByteCount<false> {
@@ -78,6 +93,22 @@ impl ByteCount<false> {
 
     pub const fn as_non_zero_usize(&self) -> NonZeroUsize {
         NonZeroUsize::new(self.0 as usize).expect("ByteCount is not zero")
+    }
+
+    pub const fn saturating_add(self, other: Self) -> ByteCount<false> {
+        ByteCount(self.0.saturating_add(other.0))
+    }
+
+    pub const fn saturating_mul(self, other: NonZeroU64) -> ByteCount<false> {
+        ByteCount(self.0.saturating_mul(other.get()))
+    }
+}
+
+impl Mul<u64> for ByteCount<false> {
+    type Output = ByteCount<true>;
+
+    fn mul(self, rhs: u64) -> Self::Output {
+        ByteCount(self.0 * rhs)
     }
 }
 
@@ -94,6 +125,38 @@ impl<const CAN_BE_ZERO: bool> ByteCount<CAN_BE_ZERO> {
 
     pub const fn as_usize(&self) -> usize {
         self.0 as usize
+    }
+}
+
+impl Add for ByteCount<true> {
+    type Output = ByteCount<true>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        ByteCount(self.0 + rhs.0)
+    }
+}
+
+impl Add for ByteCount<false> {
+    type Output = ByteCount<false>;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        ByteCount(self.0 + rhs.0)
+    }
+}
+
+impl Mul for ByteCount<true> {
+    type Output = ByteCount<true>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        ByteCount(self.0 * rhs.0)
+    }
+}
+
+impl Mul for ByteCount<false> {
+    type Output = ByteCount<false>;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        ByteCount(self.0 * rhs.0)
     }
 }
 
@@ -115,6 +178,13 @@ impl From<NonZeroUsize> for ByteCount<false> {
 impl From<NonZeroU64> for ByteCount<false> {
     fn from(value: NonZeroU64) -> Self {
         ByteCount(value.into())
+    }
+}
+
+impl TryFrom<u64> for ByteCount<false> {
+    type Error = std::num::TryFromIntError;
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Ok(Self::from(NonZeroU64::try_from(value)?))
     }
 }
 
