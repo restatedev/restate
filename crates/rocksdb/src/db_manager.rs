@@ -71,7 +71,8 @@ impl RocksDbManager {
 
         check_memory_limit(opts);
 
-        let cache = Cache::new_lru_cache(opts.rocksdb_total_memory_size().as_usize());
+        // HCC is the newly recommended default for RocksDB.
+        let cache = Cache::new_hyper_clock_cache(opts.rocksdb_total_memory_size().as_usize(), 0);
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
             opts.rocksdb_total_memtables_size().as_usize(),
             false,
