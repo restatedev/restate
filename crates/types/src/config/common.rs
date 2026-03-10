@@ -372,6 +372,20 @@ pub struct CommonOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub process_total_memory_size: Option<NonZeroUsize>,
 
+    /// # Rocksdb global disk write rate limiter
+    ///
+    /// This lets Rocksdb calibrates its IO operations to make the best use out of
+    /// the available IO bandwidth of the underlying storage device. Rocksdb will
+    /// auto-tune the rate according to the actual background IO workload and will
+    /// use this value as an upper bound.
+    ///
+    /// You can use a tool like `fio` to measure the actual IO bandwidth of your storage
+    /// devide (use block size of 64k, direct IO, and iodepth of 32 across 4 jobs to get a
+    /// reasonable estimate).
+    ///
+    /// The default value assumes a fast NVMe with bandwidth of 7GiB (per second).
+    pub rocksdb_max_write_rate_per_second: NonZeroByteCount,
+
     /// # Total memory limit for rocksdb caches and memtables.
     ///
     /// This includes memory for uncompressed block cache and all memtables by all open databases.
@@ -708,9 +722,9 @@ impl Default for CommonOptions {
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
             process_total_memory_size: None,
-            rocksdb_total_memory_size: NonZeroByteCount::new(
-                NonZeroUsize::new(2 * 1024 * 1024 * 1024).unwrap(),
-            ), // 2GiB
+            rocksdb_max_write_rate_per_second: NonZeroByteCount::try_from(7 * 1024 * 1024 * 1024)
+                .unwrap(),
+            rocksdb_total_memory_size: NonZeroByteCount::try_from(2 * 1024 * 1024 * 1024).unwrap(), // 2GiB
             rocksdb_total_memtables_ratio: 0.85, // (85% of rocksdb-total-memory-size)
             rocksdb_bg_threads: None,
             rocksdb_high_priority_bg_threads: None,
