@@ -208,3 +208,28 @@ When that resolves the issue, you can make `clang` the default compiler by addin
 CC = "clang"
 CXX = "clang++"
 ```
+
+### krb5 and clang issues
+If you faced an issue building krb5 with clang version `>21` please do the following
+
+Update the `~/.cargo/config.toml` one more time as following:
+`# cat ~/.cargo/config.toml`
+
+```toml
+ 
+[env]
+# krb5-src 0.3.4 fails in vendored Kerberos C sources here unless we use clang
+# and append a warning override after its own -Werror flags.
+CC = { value = ".cargo/cc-clang-wrapper.sh", relative = true, force = true }
+CXX = "clang++"
+```
+
+Then create the following file 
+`# cat ~/.cargo/cc-clang-wrapper.sh`
+
+```bash
+#!/usr/bin/env sh
+exec clang "$@" -Wno-error=incompatible-pointer-types-discards-qualifiers
+```
+
+This forces override of krb5 `-Werror` flags by making sure the `-Wno-error` appears after theirs on the command line
