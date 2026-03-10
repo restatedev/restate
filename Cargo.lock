@@ -7367,6 +7367,7 @@ dependencies = [
  "restate-metadata-server",
  "restate-node",
  "restate-rocksdb",
+ "restate-serde-util",
  "restate-service-client",
  "restate-types",
  "restate-workspace-hack",
