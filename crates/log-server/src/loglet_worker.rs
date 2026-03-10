@@ -8,23 +8,35 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::pin::Pin;
+use std::time::Duration;
 
-use futures::future::OptionFuture;
-use tokio::task::JoinSet;
+use metrics::counter;
+use restate_serde_util::ByteCount;
+use tokio::time::Instant;
 use tokio_stream::StreamExt;
-use tracing::{debug, error, instrument, trace, warn};
+use tokio_stream::wrappers::WatchStream;
+use tracing::{debug, info, trace, warn};
 
-use restate_core::network::{Incoming, Rpc, ServiceMessage, ServiceStream, ShardSender, Verdict};
+use restate_core::network::{
+    Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, ServiceStream, ShardSender, Verdict,
+};
 use restate_core::task_center::TaskGuard;
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_token};
-use restate_memory::MemoryLease;
+use restate_memory::EstimatedMemorySize;
 use restate_types::GenerationalNodeId;
-use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::{RpcRequest, UnaryMessage, log_server::*};
+use restate_types::retries::with_jitter;
 
-use crate::logstore::{AsyncToken, LogStore};
+use restate_futures_util::monotonic_token::Token;
+use restate_futures_util::waiter_queue::WaiterQueue;
+
+use crate::logstore::{Commit, LogStore, LogletWriter, WriteDisableReason};
 use crate::metadata::LogletState;
+use crate::metric_definitions::{
+    LOG_SERVER_LOGLET_STARTED, LOG_SERVER_LOGLET_STOPPED, LOG_SERVER_STORE_BYTES,
+    LOG_SERVER_STORE_RECORDS,
+};
 
 /// A loglet worker
 ///
@@ -54,10 +66,23 @@ impl LogletWorkerHandle {
     }
 }
 
-pub struct LogletWorker<S> {
+pub struct LogletWorker<S: LogStore> {
     loglet_id: LogletId,
     log_store: S,
+    writer: S::Writer,
     loglet_state: LogletState,
+    seal_enqueued: bool,
+    accepting_writes: bool,
+    // The worker is the sole writer to this loglet's local-tail so it's safe
+    // to maintain a moving local tail view and serialize changes to logstore
+    // as long as we send them in the correct order.
+    staging_local_tail: LogletOffset,
+    global_tail: LogletOffset,
+    known_sequencer: Option<GenerationalNodeId>,
+    /// Wait queues for rpc reciprocals
+    /// Pending responders — drained when watches advance.
+    pending: PendingWaiters,
+    last_request: Instant,
 }
 
 impl<S: LogStore> LogletWorker<S> {
@@ -66,19 +91,33 @@ impl<S: LogStore> LogletWorker<S> {
         log_store: S,
         loglet_state: LogletState,
     ) -> Result<LogletWorkerHandle, ShutdownError> {
-        let writer = Self {
+        counter!(LOG_SERVER_LOGLET_STARTED).increment(1);
+        let writer = log_store.new_loglet_writer(loglet_id, &loglet_state);
+        let known_sequencer = loglet_state.sequencer().copied();
+        let staging_local_tail = loglet_state.local_tail().offset();
+        let global_tail = loglet_state.known_global_tail();
+        let worker = Self {
             loglet_id,
             log_store,
+            writer,
             loglet_state,
+            staging_local_tail,
+            global_tail,
+            known_sequencer,
+            seal_enqueued: false,
+            // we assume that we are accepting writes until we observe that writes are disabled.
+            accepting_writes: true,
+            pending: PendingWaiters::new(loglet_id),
+            last_request: Instant::now(),
         };
 
         let (data_tx, data_rx) = ShardSender::new();
         let (meta_tx, meta_rx) = ShardSender::new();
 
         let loglet_guard = TaskCenter::spawn_unmanaged(
-            TaskKind::LogletWriter,
+            TaskKind::LogletWorker,
             "loglet-worker",
-            writer.run(data_rx, meta_rx),
+            worker.run(data_rx, meta_rx),
         )?
         .into_guard();
         Ok(LogletWorkerHandle {
@@ -93,94 +132,227 @@ impl<S: LogStore> LogletWorker<S> {
         mut data_rx: ServiceStream<LogServerDataService>,
         mut meta_rx: ServiceStream<LogServerMetaService>,
     ) {
-        // The worker is the sole writer to this loglet's local-tail so it's safe to maintain a moving
-        // local tail view and serialize changes to logstore as long as we send them in the correct
-        // order.
-        let mut sealing_in_progress = false;
-        let mut staging_local_tail = self.loglet_state.local_tail().offset();
-        let mut in_flight_stores = JoinSet::new();
-        let mut waiting_for_seal = JoinSet::new();
-        let mut in_flight_seal = std::pin::pin!(OptionFuture::default());
+        let mut local_tail_stream = WatchStream::new(self.loglet_state.subscribe_local_tail());
+        let mut global_tail_stream = WatchStream::new(self.loglet_state.subscribe_global_tail());
+        let log_store_state = self.log_store.state().clone();
+
         let cancel_token = cancellation_token();
-        let mut draining = false;
+        let mut write_disable_fut = std::pin::pin!(log_store_state.wait_disabled());
+
+        let commit_listener = self.log_store.commit_listener();
+        let mut commit_fut = std::pin::pin!(commit_listener.changed(None));
+        let mut check_interval = tokio::time::interval(with_jitter(Duration::from_secs(10), 0.3));
+        check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
-                // todo(asoli): Benchmark on diverse workload to determine if biased causes
-                // starvation.
                 biased;
-                    // Draining flag ensures that this branch is disabled after draining
-                    // is started. If we don't do this, the loop will be stuck in this branch
-                    // since cancelled() will always be `Poll::Ready`.
-                _ = cancel_token.cancelled(), if !draining => {
-                    draining = true;
+                // Draining flag ensures that this branch is disabled after draining
+                // is started. If we don't do this, the loop will be stuck in this branch
+                // since cancelled() will always be `Poll::Ready`.
+                _ = cancel_token.cancelled() => {
                     data_rx.close();
                     meta_rx.close();
-                    debug!(
+                    info!(
                         loglet_id = %self.loglet_id,
-                        "Loglet worker shutting down. Will drain {} data and {} meta messages",
+                        "Loglet worker shutting down. Will drain {} data and {} meta messages and {} pending rpcs",
                         data_rx.len(),
                         meta_rx.len(),
+                        self.pending.len(),
                     );
+                    // drain and terminate
+                    break;
                 }
-                // The in-flight seal (if any)
-                Some(res) = &mut in_flight_seal => {
-                    sealing_in_progress = false;
-                    in_flight_seal.set(None.into());
-                    if let Err(e) = res {
-                        error!(loglet_id = %self.loglet_id, ?e, "Rocksdb writer terminated before we can seal the loglet, terminating the loglet worker");
-                        in_flight_seal.set(None.into());
+                // LogStore has disabled writes — drain pending waiters (resolving any that
+                // succeeded before the failure), but continue serving reads and meta ops.
+                reason = &mut write_disable_fut, if self.accepting_writes => {
+                    self.on_writes_disabled(reason, commit_listener.retired_through());
+                }
+                Some(current_tail) = local_tail_stream.next() => {
+                    self.on_local_tail_change(current_tail);
+                }
+                Some(global_tail) = global_tail_stream.next(), if self.pending.has_waiting_for_global_tail_updates() => {
+                    self.on_global_tail_change(global_tail);
+                }
+                token = &mut commit_fut, if self.pending.has_waiting_for_commit() => {
+                    self.on_commit_token_change(token);
+                    commit_fut.set(commit_listener.changed(Some(token)));
+                }
+                // Meta service messages
+                Some(msg) = meta_rx.next() => {
+                    self.process_info_svc_op(msg);
+                }
+                // Data service messages
+                Some(msg) = data_rx.next() => {
+                    self.process_data_svc_op(msg);
+                }
+                _ = check_interval.tick() => {
+                    if self.is_quiescent() {
+                        debug!(loglet_id = %self.loglet_id, "Loglet worker became quiescent, will terminate");
+                        data_rx.close();
+                        meta_rx.close();
                         break;
-                    } else {
-                        self.loglet_state.get_local_tail_watch().notify_seal();
-                        debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
                     }
                 }
-                // The set of requests waiting for seal to complete
-                Some(_) = waiting_for_seal.join_next() => {}
-                // LogServiceInfoService
+
+            }
+        }
+
+        debug!(loglet_id = %self.loglet_id, "Draining the rpc channels");
+
+        // Draining the RPC channels first
+        loop {
+            tokio::select! {
+                // Meta service messages
                 Some(msg) = meta_rx.next() => {
-                    self.process_info_svc_op(msg, &mut sealing_in_progress, &mut in_flight_seal, &mut waiting_for_seal).await;
+                    self.process_info_svc_op(msg);
                 }
-                Some(_) = in_flight_stores.join_next() => {}
-                // LogServiceDataService
+                // Data service messages
                 Some(msg) = data_rx.next() => {
-                    self.process_data_svc_op(msg, &sealing_in_progress, &mut staging_local_tail, &mut in_flight_stores).await;
+                    self.process_data_svc_op(msg);
                 }
-                else =>  {
+                else => {
                     break;
                 }
             }
         }
 
-        // draining in-flight operations
-        drop(data_rx);
-        drop(meta_rx);
-        tracing::debug!(loglet_id = %self.loglet_id, "Draining loglet worker");
+        debug!(loglet_id = %self.loglet_id, "Waiting for loglet worker to finish");
         loop {
             tokio::select! {
-                Some(res) = &mut in_flight_seal => {
-                    in_flight_seal.set(None.into());
-                    if res.is_ok() {
-                        self.loglet_state.get_local_tail_watch().notify_seal();
-                        debug!(loglet_id = %self.loglet_id, "Loglet is now sealed on this log-server node");
-                    }
+                // LogStore has disabled writes — drain pending waiters (resolving any that
+                // succeeded before the failure), but continue serving reads and meta ops.
+                reason = &mut write_disable_fut, if self.accepting_writes && self.pending.has_waiting_for_writes() => {
+                    self.on_writes_disabled(reason, commit_listener.retired_through());
+                    break;
                 }
-                Some(_) = in_flight_stores.join_next() => {}
-                Some(_) = waiting_for_seal.join_next() => {}
-                else => break,
+                token = &mut commit_fut, if self.pending.has_waiting_for_commit() => {
+                    self.on_commit_token_change(token);
+                    commit_fut.set(commit_listener.changed(Some(token)));
+                }
+                // We only enable this branch for stores/seals/trims. We will not wait for
+                // "wait-for-tail" rpcs at drain time.
+                Some(current_tail) = local_tail_stream.next(), if self.pending.has_waiting_for_writes() => {
+                    self.on_local_tail_change(current_tail);
+                }
+                _ = tokio::time::sleep(Duration::from_secs(20)), if self.pending.has_waiting_for_writes() => {
+                    info!(loglet_id = %self.loglet_id, "Loglet worker (local-tail: {}, staging-local-tail: {}, global-tail: {}) still waiting for {}",
+                        self.loglet_state.local_tail(),
+                        self.staging_local_tail,
+                        self.global_tail,
+                        self.pending.debug_string()
+                    );
+                }
+                else => {
+                    break;
+                }
             }
         }
-        tracing::debug!(loglet_id = %self.loglet_id, "loglet worker drained");
+
+        // If we still have anyone waiting for tail and we are sealed. We should let them know.
+        // This step is important in case we are quiescent and have received wait-for-tail requests
+        // during the drain loop above. Since we are quiescent (sealed), we'd want to notify
+        // those waiting that we are sealed before we stop the worker.
+        self.on_local_tail_change(self.loglet_state.local_tail());
+        counter!(LOG_SERVER_LOGLET_STOPPED).increment(1);
+
+        info!(loglet_id = %self.loglet_id, "loglet worker stopped");
     }
 
-    async fn process_data_svc_op(
+    fn on_commit_token_change(&mut self, token: Token<Commit>) {
+        let current_tail = self.loglet_state.local_tail();
+        trace!(loglet_id = %self.loglet_id, "token through {:?} has been committed", token);
+        if current_tail.is_sealed() && self.seal_enqueued {
+            self.seal_enqueued = false;
+            self.staging_local_tail = current_tail.offset();
+        }
+        self.pending
+            .on_commit_token_change(token, current_tail, self.global_tail);
+    }
+
+    fn on_local_tail_change(&mut self, new_tail: TailState<LogletOffset>) {
+        if new_tail.is_sealed() && self.seal_enqueued {
+            self.seal_enqueued = false;
+            self.staging_local_tail = new_tail.offset();
+        }
+        self.pending
+            .on_local_tail_change(new_tail, self.global_tail);
+    }
+
+    fn on_global_tail_change(&mut self, new_global: LogletOffset) {
+        self.pending
+            .on_global_tail_change(self.loglet_state.local_tail(), new_global);
+    }
+
+    fn is_quiescent(&self) -> bool {
+        !self.seal_enqueued
+            && self.pending.is_empty()
+            && self.loglet_state.is_sealed()
+            && self.last_request.elapsed() >= Duration::from_secs(60)
+    }
+
+    /// Returns the updated or the existing global tail
+    fn update_global_tail(&mut self, new_tail: LogletOffset) -> LogletOffset {
+        if new_tail > self.global_tail {
+            self.global_tail = new_tail;
+            self.loglet_state.notify_known_global_tail(new_tail);
+            new_tail
+        } else {
+            self.global_tail
+        }
+    }
+
+    fn on_writes_disabled(
         &mut self,
-        msg: ServiceMessage<LogServerDataService>,
-        sealing_in_progress: &bool,
-        staging_local_tail: &mut LogletOffset,
-        in_flight_stores: &mut JoinSet<()>,
+        reason: &WriteDisableReason,
+        flushed_token: Option<Token<Commit>>,
     ) {
+        warn!(loglet_id = %self.loglet_id, %reason, "LogStore writes disabled: {reason}");
+        // Switched to fail-safe mode. If we have pending rpcs, let's flush
+        // them and don't check this branch again.
+        self.accepting_writes = false;
+
+        let current_tail = self.loglet_state.local_tail();
+        self.pending
+            .on_global_tail_change(current_tail, self.global_tail);
+        self.pending
+            .on_local_tail_change(current_tail, self.global_tail);
+        if let Some(flushed_token) = flushed_token {
+            self.pending
+                .on_commit_token_change(flushed_token, current_tail, self.global_tail);
+        }
+        // Transition to read-only mode.
+        // Reset staging to match durable state. We know that no more writes will be durable after
+        // the current tail.
+        self.staging_local_tail = current_tail.offset();
+        self.seal_enqueued = false;
+
+        // Drain all waiting for seal
+        self.pending
+            .drain_waiting_seal(current_tail, self.global_tail, Status::Disabled);
+
+        // We expect no more local-tail changes to happen, close all pending wait-for-local-tail
+        // Since global tail can still change, we keep those who are waiting for global tail changes.
+        self.pending
+            .drain_local_tail_waiters(current_tail, self.global_tail, Status::Disabled);
+
+        self.pending
+            .drain_all_waiting_for_flush(current_tail, self.global_tail, Status::Disabled);
+
+        // No further stores will be processed after this point. If (on_local_tail_change) above
+        // left some stores in the queue, we know that those are not going to be processed. Let's
+        // drain them now.
+        self.pending
+            .drain_all_stores(current_tail, self.global_tail, Status::Disabled);
+
+        // Do not accept any more writes.
+        self.writer.close();
+    }
+
+    // ---- Message processing ----
+
+    fn process_data_svc_op(&mut self, msg: ServiceMessage<LogServerDataService>) {
+        self.last_request = Instant::now();
         match msg {
             // GET_RECORDS
             ServiceMessage::Rpc(msg) if msg.msg_type() == GetRecords::TYPE => {
@@ -188,73 +360,14 @@ impl<S: LogStore> LogletWorker<S> {
             }
             // STORE
             ServiceMessage::Rpc(message) if msg.msg_type() == Store::TYPE => {
-                let msg = message.into_typed::<Store>();
-                let peer = msg.peer();
-
-                let (reciprocal, msg, reservation) = msg.split_with_reservation();
-                let first_offset = msg.first_offset;
-                // this message might be telling us about a higher `known_global_tail`
-                self.loglet_state
-                    .notify_known_global_tail(msg.header.known_global_tail);
-                let next_ok_offset =
-                    std::cmp::max(*staging_local_tail, self.loglet_state.known_global_tail());
-                let (status, maybe_store_token) = self
-                    .process_store(
-                        peer,
-                        msg,
-                        staging_local_tail,
-                        next_ok_offset,
-                        sealing_in_progress,
-                        reservation,
-                    )
-                    .await;
-                // if this store is complete, the last committed is updated to this value.
-                let future_last_committed = *staging_local_tail;
-                if let Some(store_token) = maybe_store_token {
-                    // in-flight store...
-                    let local_tail_watch = self.loglet_state.get_local_tail_watch();
-                    let global_tail = self.loglet_state.get_global_tail_tracker();
-                    let loglet_id = self.loglet_id;
-                    in_flight_stores.spawn(Box::pin(async move {
-                        // wait for log store to finish
-                        let res = store_token.await;
-                        trace!(%loglet_id, %first_offset, "Store completed; responding to sequencer");
-                        match res {
-                            Ok(_) => {
-                                // advance local-tail
-                                local_tail_watch.notify_offset_update(future_last_committed);
-                                // ignoring the error if we couldn't send the response
-                                let msg = Stored::new(*local_tail_watch.get(), global_tail.get())
-                                    .with_status(status);
-                                reciprocal.send(msg);
-                            }
-                            Err(e) => {
-                                // log-store in failsafe mode and cannot process stores anymore.
-                                warn!(?e, "Log-store is in failsafe mode, dropping store");
-                                reciprocal.send(Stored::empty());
-                            }
-                        }
-                    }));
-                } else {
-                    // we didn't store, let's respond immediately with status
-                    let msg = Stored::new(
-                        self.loglet_state.local_tail(),
-                        self.loglet_state.known_global_tail(),
-                    )
-                    .with_status(status);
-                    reciprocal.send(msg);
-                }
+                self.process_store(message.into_typed::<Store>());
             }
             msg => msg.fail(Verdict::MessageUnrecognized),
         }
     }
-    async fn process_info_svc_op(
-        &mut self,
-        msg: ServiceMessage<LogServerMetaService>,
-        sealing_in_progress: &mut bool,
-        in_flight_seal: &mut Pin<&mut OptionFuture<AsyncToken>>,
-        waiting_for_seal: &mut JoinSet<()>,
-    ) {
+
+    fn process_info_svc_op(&mut self, msg: ServiceMessage<LogServerMetaService>) {
+        self.last_request = Instant::now();
         match msg {
             // RELEASE
             ServiceMessage::Unary(msg) if msg.msg_type() == Release::TYPE => {
@@ -273,13 +386,12 @@ impl<S: LogStore> LogletWorker<S> {
                 let (reciprocal, msg) = msg.split();
                 self.loglet_state
                     .notify_known_global_tail(msg.header.known_global_tail);
-                // drop response if connection is lost/congested
                 reciprocal.send(LogletInfo::new(
                     self.loglet_state.local_tail(),
                     self.loglet_state.trim_point(),
                     self.loglet_state.known_global_tail(),
                 ));
-                tracing::trace!(%peer, %self.loglet_id, local_tail = ?self.loglet_state.local_tail(), known_global_tail = %self.loglet_state.known_global_tail(), "GetLogletInfo response");
+                trace!(%peer, %self.loglet_id, local_tail = ?self.loglet_state.local_tail(), known_global_tail = %self.loglet_state.known_global_tail(), "GetLogletInfo response");
             }
             // WAIT_FOR_TAIL
             ServiceMessage::Rpc(msg) if msg.msg_type() == WaitForTail::TYPE => {
@@ -287,32 +399,7 @@ impl<S: LogStore> LogletWorker<S> {
             }
             // SEAL
             ServiceMessage::Rpc(msg) if msg.msg_type() == Seal::TYPE => {
-                let message = msg.into_typed::<Seal>();
-                let (reciprocal, msg) = message.split();
-                // this message might be telling us about a higher `known_global_tail`
-                self.loglet_state
-                    .notify_known_global_tail(msg.header.known_global_tail);
-                // If we have a seal operation in-flight, we'd want this request to wait for
-                // seal to happen
-                let tail_watcher = self.loglet_state.get_local_tail_watch();
-                let global_tail = self.loglet_state.get_global_tail_tracker();
-                waiting_for_seal
-                    .build_task()
-                    .name("loglet-wait-for-seal")
-                    .spawn(Box::pin(async move {
-                        let seal_watcher = tail_watcher.wait_for_seal();
-                        if seal_watcher.await.is_ok() {
-                            let body = Sealed::new(*tail_watcher.get(), global_tail.get())
-                                .with_status(Status::Ok);
-                            // send the response over the network
-                            reciprocal.send(body);
-                        }
-                    }))
-                    .unwrap();
-                let seal_token = self.process_seal(msg, sealing_in_progress).await;
-                if let Some(seal_token) = seal_token {
-                    in_flight_seal.set(Some(seal_token).into());
-                }
+                self.process_seal(msg.into_typed());
             }
             // TRIM
             ServiceMessage::Rpc(msg) if msg.msg_type() == Trim::TYPE => {
@@ -322,150 +409,224 @@ impl<S: LogStore> LogletWorker<S> {
         }
     }
 
-    #[instrument(level = "debug", skip_all, fields(loglet_id = %self.loglet_id, first_offset = %body.first_offset, %peer))]
-    async fn process_store(
-        &mut self,
-        peer: GenerationalNodeId,
-        body: Store,
-        staging_local_tail: &mut LogletOffset,
-        next_ok_offset: LogletOffset,
-        sealing_in_progress: &bool,
-        reservation: MemoryLease,
-    ) -> (Status, Option<AsyncToken>) {
-        // Is this a sealed loglet?
-        if !body.flags.contains(StoreFlags::IgnoreSeal) && self.loglet_state.is_sealed() {
-            return (Status::Sealed, None);
-        }
+    /// Process a store request. Returns `(status, stored)` where `stored` is true if
+    /// the data was enqueued for writing to the log-store.
+    fn process_store(&mut self, msg: Incoming<Rpc<Store>>) {
+        let local_tail = self.loglet_state.local_tail();
 
-        // even if ignore-seal is set, we must wait for the in-flight seal before we can accept
-        // writes.
-        if *sealing_in_progress {
-            return (Status::Sealing, None);
-        }
+        let peer = msg.peer();
+        let (reciprocal, body, reservation) = msg.split_with_reservation();
+        let known_global_tail = self.update_global_tail(body.header.known_global_tail);
+        trace!(
+            loglet_id = %self.loglet_id,
+            "Processing store request: from_offset: {}, to_offset: {:?}, global_tail: {}, size={}",
+            body.first_offset,
+            body.last_offset(),
+            body.header.known_global_tail,
+            ByteCount::from(body.estimated_encode_size())
+        );
 
-        // We have been holding this record for too long.
-        if body.expired() {
-            return (Status::Dropped, None);
-        }
-
-        if body.payloads.is_empty() {
-            // Can't store zero records
-            return (Status::Malformed, None);
-        }
+        let count = body.payloads.len() as u64;
+        let bytes = body.payloads.estimated_memory_size() as u64;
 
         let Some(last_offset) = body.last_offset() else {
-            // too many records
-            return (Status::Malformed, None);
+            update_store_stats(count, bytes, "malformed");
+            reciprocal
+                .send(Stored::new(local_tail, known_global_tail).with_status(Status::Malformed));
+            return;
         };
 
-        // Invalid offset cannot be accepted
-        if body.first_offset == LogletOffset::INVALID {
-            // invalid offset
-            return (Status::Malformed, None);
-        };
-
-        // if sequencer is known, reject writes that refer to a different sequencer
-        let known_sequencer = self.loglet_state.sequencer();
-        if known_sequencer.is_some_and(|s| s != &body.sequencer) {
-            return (Status::SequencerMismatch, None);
-        }
-
-        // Are we writing an older record than local-tail, this must be from the sequencer.
-        if body.first_offset < next_ok_offset
-            && peer != body.sequencer
-            // not a repair store.
-            && !body.flags.contains(StoreFlags::IgnoreSeal)
-        {
-            return (Status::SequencerMismatch, None);
-        }
-
-        if body.flags.contains(StoreFlags::IgnoreSeal) {
-            trace!("Admitting a repair store loglet to restore replication");
-        }
-
-        if body.first_offset > next_ok_offset {
-            // We can only accept writes coming in order. We don't support buffering out-of-order
-            // writes.
-            debug!(
-                "Can only accept writes coming in order, next_ok={}",
-                next_ok_offset,
-            );
-            return (Status::OutOfBounds, None);
-        }
-
-        let set_sequencer_in_metadata = if known_sequencer.is_none() {
-            self.loglet_state.set_sequencer(body.sequencer)
-        } else {
-            // sequencer is already known, no need to store it in log-store's metadata
-            false
-        };
-        // send store to log-store. Only push-back when log-store's batching capacity is
-        // exhausted.
-        match self
-            .log_store
-            .enqueue_store(body, set_sequencer_in_metadata, reservation)
-            .await
-        {
-            Ok(store_token) => {
-                *staging_local_tail = std::cmp::max(*staging_local_tail, last_offset.next());
-                (Status::Ok, Some(store_token))
+        let inner = || -> (Status, Enqueued) {
+            if body.payloads.is_empty() || body.first_offset == LogletOffset::INVALID {
+                update_store_stats(count, bytes, "malformed");
+                return (Status::Malformed, Enqueued::No);
             }
-            Err(_) => {
-                // shutting down. log-store is disabled
-                (Status::Disabled, None)
+
+            // Is this a sealed loglet?
+            if !body.flags.contains(StoreFlags::IgnoreSeal) && local_tail.is_sealed() {
+                update_store_stats(count, bytes, "sealed");
+                return (Status::Sealed, Enqueued::No);
+            }
+
+            if !self.accepting_writes {
+                update_store_stats(count, bytes, "disabled");
+                return (Status::Disabled, Enqueued::No);
+            }
+
+            // Reject writes that refer to a different sequencer.
+            if self.known_sequencer.is_some_and(|s| s != body.sequencer) {
+                update_store_stats(count, bytes, "malformed");
+                return (Status::SequencerMismatch, Enqueued::No);
+            }
+
+            let next_ok_offset = std::cmp::max(self.staging_local_tail, known_global_tail);
+
+            // Are we writing an older record than local-tail, this must be from the sequencer.
+            if body.first_offset < next_ok_offset
+                && peer != body.sequencer
+                && !body.flags.contains(StoreFlags::IgnoreSeal)
+            {
+                update_store_stats(count, bytes, "malformed");
+                return (Status::SequencerMismatch, Enqueued::No);
+            }
+
+            // Full duplicate fast-path: if the entire store range has already been
+            // accepted, skip the write entirely. Not applicable to repair stores
+            // because they could be replicating records we never had (behind our
+            // local tail doesn't mean we have them).
+            let is_repair = body.flags.contains(StoreFlags::IgnoreSeal);
+            if !is_repair && last_offset < self.staging_local_tail {
+                update_store_stats(count, bytes, "duplicate");
+                // Drop memory reservation immediately. This doesn't need to be explicit
+                // as we are returning anyway. It's here just for clarity of intent.
+                drop(reservation);
+                // Duplicate of already-accepted normal store. We treat this as
+                // "enqueued" (the waiter will latch onto the local-tail watch).
+                return (Status::Ok, Enqueued::Normal);
+            }
+
+            if body.first_offset > next_ok_offset {
+                debug!(
+                    loglet_id = %self.loglet_id,
+                    "Can only accept writes coming in order, next_ok={}",
+                    next_ok_offset,
+                );
+                update_store_stats(count, bytes, "malformed");
+                return (Status::OutOfBounds, Enqueued::No);
+            }
+
+            // We have been holding this record for too long.
+            if body.expired() {
+                update_store_stats(count, bytes, "expired");
+                return (Status::Dropped, Enqueued::No);
+            }
+
+            // Even if ignore-seal is set, we must wait for the in-flight seal before
+            // we can accept writes. Once the seal is durably committed (is_sealed()
+            // returns true), repair stores (IgnoreSeal) can proceed — the "sealing in
+            // progress" state is over.
+            if self.seal_enqueued && !local_tail.is_sealed() {
+                if is_repair {
+                    // Why we can't accept these repair writes while seal is enqueued?
+                    // Because the seal might revert the staging_local_tail to a smaller value
+                    // and the staging_local_tail was the basis of accepting this as a repair.
+                    drop(reservation);
+                    update_store_stats(count, bytes, "sealing");
+                    return (Status::Sealing, Enqueued::No);
+                } else {
+                    // if it's a normal write, we know that it will be rejected but we don't need to go
+                    // through a retry, instead. We drop the reservation and let it wait for the seal
+                    // to complete. We fake this as _if_ the store was enqueued (but it's not)
+                    // but let the store wait for the seal to complete and it will be rejected with
+                    // Status::Sealed because we'll drain all stores > seal with Sealed status. If
+                    // the log-store failed (writes disabled) and the seal was never completed, the
+                    // store will be rejected with Status::Disabled.
+                    //
+                    // Drop memory reservation immediately. This doesn't need to be explicit
+                    // as we are returning anyway. It's here just for clarity of intent.
+                    drop(reservation);
+                    update_store_stats(count, bytes, "sealed");
+                    // Note: Status is meaningless here (unuse).
+                    return (Status::Ok, Enqueued::Normal);
+                }
+            }
+
+            // Remember the sequencer if this is the first store we've seen.
+            let set_sequencer_in_metadata = if self.known_sequencer.is_none() {
+                self.known_sequencer = Some(body.sequencer);
+                self.loglet_state.set_sequencer(body.sequencer)
+            } else {
+                false
+            };
+
+            // Send store to log-store. The writer derives committed_up_to from the
+            // Store message and advances the registered loglet's tail watch after
+            // durable commit.
+            if let Some(token) =
+                self.writer
+                    .enqueue_store(body, set_sequencer_in_metadata, reservation)
+            {
+                // Advance staging_local_tail on successful enqueue so we don't advance it artificially
+                self.staging_local_tail =
+                    std::cmp::max(self.staging_local_tail, last_offset.next());
+                update_store_stats(count, bytes, if is_repair { "repair" } else { "ok" });
+                if is_repair {
+                    (Status::Ok, Enqueued::Repair(token))
+                } else {
+                    (Status::Ok, Enqueued::Normal)
+                }
+            } else {
+                self.accepting_writes = false;
+                update_store_stats(count, bytes, "disabled");
+                (Status::Disabled, Enqueued::No)
+            }
+        };
+
+        let (status, enqueued) = inner();
+        match enqueued {
+            Enqueued::Normal => {
+                // Normal store — wait on local_tail >= target_offset.
+                if local_tail.offset() > last_offset {
+                    // Already durable — respond immediately.
+                    reciprocal.send(Stored::new(local_tail, known_global_tail).with_status(status));
+                } else {
+                    self.pending.stores.push(last_offset, reciprocal);
+                }
+            }
+            Enqueued::Repair(token) => {
+                // Repair store — wait on flush token (cannot use local-tail
+                // because the target offset may be behind the current tail).
+                self.pending.repair_stores.push(token, reciprocal);
+            }
+            Enqueued::No => {
+                reciprocal.send(Stored::new(local_tail, known_global_tail).with_status(status));
             }
         }
     }
 
     fn process_wait_for_tail(&mut self, msg: Incoming<Rpc<WaitForTail>>) {
         let (reciprocal, msg) = msg.split();
-        self.loglet_state
-            .notify_known_global_tail(msg.header.known_global_tail);
+        self.update_global_tail(msg.header.known_global_tail);
 
-        let loglet_state = self.loglet_state.clone();
-        // fails on shutdown, in this case, we ignore the request
-        let _ = TaskCenter::spawn(TaskKind::Disposable, "logserver-tail-monitor", async move {
-            let local_tail_watch = loglet_state.get_local_tail_watch();
-            // If shutdown happened, this task will be disposed of and we won't send
-            // the response.
-            match msg.query {
-                TailUpdateQuery::Unknown => {
-                    reciprocal.send(TailUpdated::empty().with_status(Status::Malformed));
-                    return Ok(());
+        match msg.query {
+            TailUpdateQuery::Unknown => {
+                reciprocal.send(TailUpdated::empty().with_status(Status::Malformed));
+            }
+            TailUpdateQuery::LocalTail(target) => {
+                let current_tail = self.loglet_state.local_tail();
+                if current_tail.offset() >= target || current_tail.is_sealed() {
+                    reciprocal.send(TailUpdated::new(current_tail, self.global_tail));
+                } else {
+                    self.pending.local_tail_waiters.push(target, reciprocal);
                 }
-                TailUpdateQuery::LocalTail(target_offset) => {
-                    local_tail_watch
-                        .wait_for_offset_or_seal(target_offset)
-                        .await?;
+            }
+            TailUpdateQuery::GlobalTail(target) => {
+                let current_tail = self.loglet_state.local_tail();
+                if self.global_tail >= target || current_tail.is_sealed() {
+                    reciprocal.send(TailUpdated::new(current_tail, self.global_tail));
+                } else {
+                    self.pending.global_tail_waiters.push(target, reciprocal);
                 }
-                TailUpdateQuery::GlobalTail(target_global_tail) => {
-                    let global_tail_tracker = loglet_state.get_global_tail_tracker();
-                    tokio::select! {
-                        res = global_tail_tracker.wait_for_offset(target_global_tail) => { res.map(|_|()) },
-                        // Are we locally sealed?
-                        res = local_tail_watch.wait_for_seal() => { res.map_err(|_| ShutdownError) },
-                    }?;
+            }
+            TailUpdateQuery::LocalOrGlobal(target) => {
+                let current_tail = self.loglet_state.local_tail();
+                if current_tail.offset() >= target
+                    || self.global_tail >= target
+                    || current_tail.is_sealed()
+                {
+                    reciprocal.send(TailUpdated::new(current_tail, self.global_tail));
+                } else {
+                    self.pending
+                        .local_or_global_tail_waiters
+                        .push(target, reciprocal);
                 }
-                TailUpdateQuery::LocalOrGlobal(target_offset) => {
-                    let global_tail_tracker = loglet_state.get_global_tail_tracker();
-                    tokio::select! {
-                        res = global_tail_tracker.wait_for_offset(target_offset) => { res.map(|_|()).map_err(|_| ShutdownError) },
-                        res = local_tail_watch.wait_for_offset_or_seal(target_offset) => { res.map(|_|()).map_err(|_| ShutdownError) },
-                    }?;
-                }
-            };
-
-            let update =
-                TailUpdated::new(loglet_state.local_tail(), loglet_state.known_global_tail());
-            reciprocal.send(update);
-            Ok(())
-        });
+            }
+        }
     }
 
     fn process_get_records(&mut self, msg: Incoming<Rpc<GetRecords>>) {
         let (reciprocal, msg) = msg.split();
-        self.loglet_state
-            .notify_known_global_tail(msg.header.known_global_tail);
+        self.update_global_tail(msg.header.known_global_tail);
 
         let log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
@@ -497,8 +658,7 @@ impl<S: LogStore> LogletWorker<S> {
 
     fn process_get_digest(&mut self, msg: Incoming<Rpc<GetDigest>>) {
         let (reciprocal, msg) = msg.split();
-        self.loglet_state
-            .notify_known_global_tail(msg.header.known_global_tail);
+        self.update_global_tail(msg.header.known_global_tail);
 
         let log_store = self.log_store.clone();
         let loglet_state = self.loglet_state.clone();
@@ -526,90 +686,348 @@ impl<S: LogStore> LogletWorker<S> {
 
     fn process_trim(&mut self, msg: Incoming<Rpc<Trim>>) {
         let (reciprocal, mut msg) = msg.split();
-        self.loglet_state
-            .notify_known_global_tail(msg.header.known_global_tail);
-        // When trimming, we eagerly update the in-memory view of the trim-point _before_ we
-        // perform the trim on the log-store since it's safer to over report the trim-point than
-        // under report.
-        let loglet_id = msg.header.loglet_id;
+        let known_global_tail = self.update_global_tail(msg.header.known_global_tail);
+
         let new_trim_point = msg.trim_point;
-        let mut loglet_state = self.loglet_state.clone();
-        let local_tail = loglet_state.local_tail();
-        let known_global_tail = loglet_state.known_global_tail();
+        let local_tail = self.loglet_state.local_tail();
         let high_watermark = known_global_tail.max(local_tail.offset());
         // cannot trim beyond the global known tail (if known) or the local_tail whichever is higher.
         if new_trim_point < LogletOffset::OLDEST || new_trim_point >= high_watermark {
+            reciprocal
+                .send(Trimmed::new(local_tail, known_global_tail).with_status(Status::Malformed));
+            return;
+        }
+
+        // Clip the trim point so it doesn't exceed local_tail - 1.
+        msg.trim_point = msg.trim_point.min(local_tail.offset().prev());
+
+        // If the durable trim point already covers this request, respond immediately.
+        if self.loglet_state.trim_point() >= msg.trim_point {
+            reciprocal.send(Trimmed::new(local_tail, known_global_tail));
+            return;
+        }
+
+        // Eagerly update the trim-point watch so readers see it immediately.
+        // The RPC response waits for durability via the flush token.
+        self.loglet_state.update_trim_point(msg.trim_point);
+
+        // Enqueue the trim. Wait for durability via flush token.
+        if let Some(token) = self.writer.enqueue_trim(msg) {
+            self.pending.pending_trims.push(token, reciprocal);
+        } else {
+            reciprocal
+                .send(Trimmed::new(local_tail, known_global_tail).with_status(Status::Disabled));
+        }
+    }
+
+    /// Enqueues a seal if one hasn't been enqueued yet for this worker.
+    /// The seal is fire-and-forget: the writer will advance the seal flag
+    /// on the tail watch after durable commit. Callers (seal-waiters) are
+    /// held in `pending_seals` and drained when `is_sealed()` becomes true.
+    fn process_seal(&mut self, msg: Incoming<Rpc<Seal>>) {
+        let (reciprocal, msg) = msg.split();
+        self.loglet_state
+            .notify_known_global_tail(msg.header.known_global_tail);
+
+        // Already sealed (durably) or already enqueued — nothing to do.
+        let local_tail = self.loglet_state.local_tail();
+        if local_tail.is_sealed() {
+            self.seal_enqueued = false;
             reciprocal.send(
-                Trimmed::new(loglet_state.local_tail(), known_global_tail)
-                    .with_status(Status::Malformed),
+                Sealed::new(local_tail, self.loglet_state.known_global_tail())
+                    .with_status(Status::Ok),
             );
             return;
         }
 
-        // fails on shutdown, in this case, we ignore the request
-        let log_store = self.log_store.clone();
-        let _ = TaskCenter::spawn_child(TaskKind::Disposable, "logserver-trim", async move {
-            // The trim point cannot be at or exceed the local_tail, we clip to the
-            // local_tail-1 if that's the case.
-            msg.trim_point = msg.trim_point.min(local_tail.offset().prev());
+        // Join the seal wait list
+        if self.seal_enqueued {
+            self.pending.seals.push(reciprocal);
+            return;
+        }
 
-            let body = if loglet_state.update_trim_point(msg.trim_point) {
-                match log_store.enqueue_trim(msg).await?.await {
-                    Ok(_) => {
-                        Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
-                            .with_status(Status::Ok)
-                    }
-                    Err(_) => {
-                        warn!(
-                            %loglet_id,
-                            "Log-store is disabled, and its trim-point will falsely be reported as {} since we couldn't commit that to the log-store. Trim-point will be correct after restart.",
-                            new_trim_point
-                        );
-                        Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
-                            .with_status(Status::Disabled)
-                    }
-                }
-            } else {
-                // it's already trimmed
-                Trimmed::new(loglet_state.local_tail(), loglet_state.known_global_tail())
-            };
+        if self.writer.enqueue_seal(msg).is_some() {
+            self.seal_enqueued = true;
+            self.pending.seals.push(reciprocal);
+        } else {
+            reciprocal.send(
+                Sealed::new(local_tail, self.loglet_state.known_global_tail())
+                    .with_status(Status::Disabled),
+            );
+        }
+    }
+}
 
-            // ship the response to the original connection
-            reciprocal.send(body);
-            Ok(())
+fn update_store_stats(count: u64, bytes: u64, status: &'static str) {
+    counter!(LOG_SERVER_STORE_RECORDS, "status" => status).increment(count);
+    counter!(LOG_SERVER_STORE_BYTES, "status" => status).increment(bytes);
+}
+
+/// Tracks how a store was enqueued, determining the wait strategy.
+enum Enqueued {
+    /// Normal (sequencer) store — wait on local-tail watch.
+    Normal,
+    /// Repair store — wait on flush token.
+    Repair(Token<Commit>),
+    /// Not enqueued (rejected or disabled).
+    No,
+}
+
+/// Groups all pending waiter collections. Each tail-update variant gets its
+/// own `WaiterQueue` keyed by `target` offset, enabling `drain_up_to` with a
+/// single monotonic threshold per queue.
+///
+/// Normal (sequencer) stores wait on `local_tail >= target_offset`.
+/// Repair stores (IgnoreSeal) and trims wait on flush token — because repair
+/// stores can target offsets behind the current local tail, so the local-tail
+/// watch would resolve them prematurely.
+struct PendingWaiters {
+    loglet_id: LogletId,
+    /// Normal (sequencer) stores — keyed by target local-tail offset.
+    stores: WaiterQueue<LogletOffset, Reciprocal<Oneshot<Stored>>>,
+    /// Repair stores — keyed by flush token. These cannot use local-tail
+    /// because they may target offsets behind the current tail.
+    repair_stores: WaiterQueue<Token<Commit>, Reciprocal<Oneshot<Stored>>>,
+    seals: Vec<Reciprocal<Oneshot<Sealed>>>,
+    /// Trims — keyed by flush token. Durability is confirmed via token.
+    pending_trims: WaiterQueue<Token<Commit>, Reciprocal<Oneshot<Trimmed>>>,
+    /// Resolves when `local_tail >= target` OR sealed.
+    local_tail_waiters: WaiterQueue<LogletOffset, Reciprocal<Oneshot<TailUpdated>>>,
+    // Resolves when `global_tail >= target` OR sealed.
+    global_tail_waiters: WaiterQueue<LogletOffset, Reciprocal<Oneshot<TailUpdated>>>,
+    /// Resolves when `local_tail >= target` OR `global_tail >= target`.
+    local_or_global_tail_waiters: WaiterQueue<LogletOffset, Reciprocal<Oneshot<TailUpdated>>>,
+}
+
+impl PendingWaiters {
+    pub fn new(loglet_id: LogletId) -> Self {
+        Self {
+            loglet_id,
+            stores: Default::default(),
+            repair_stores: Default::default(),
+            seals: Default::default(),
+            pending_trims: Default::default(),
+            local_tail_waiters: Default::default(),
+            global_tail_waiters: Default::default(),
+            local_or_global_tail_waiters: Default::default(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.stores.is_empty()
+            && self.repair_stores.is_empty()
+            && self.seals.is_empty()
+            && self.pending_trims.is_empty()
+            && self.local_tail_waiters.is_empty()
+            && self.global_tail_waiters.is_empty()
+            && self.local_or_global_tail_waiters.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.stores.len()
+            + self.repair_stores.len()
+            + self.seals.len()
+            + self.pending_trims.len()
+            + self.local_tail_waiters.len()
+            + self.global_tail_waiters.len()
+            + self.local_or_global_tail_waiters.len()
+    }
+
+    pub fn debug_string(&self) -> String {
+        let a = format!(
+            "stores: {}, repair_stores: {}, seals: {}, pending_trims: {}, local_tail_waiters: {}, global_tail_waiters: {}, local_or_global_tail_waiters: {}",
+            self.stores.len(),
+            self.repair_stores.len(),
+            self.seals.len(),
+            self.pending_trims.len(),
+            self.local_tail_waiters.len(),
+            self.global_tail_waiters.len(),
+            self.local_or_global_tail_waiters.len()
+        );
+
+        let stores = self.stores.keys().collect::<Vec<_>>();
+        let b = format!("\n\n\t\t stores: {:?}", stores);
+        format!("{a} {b}")
+    }
+
+    pub fn has_waiting_for_commit(&self) -> bool {
+        !self.repair_stores.is_empty() || !self.pending_trims.is_empty()
+    }
+
+    pub fn has_waiting_for_global_tail_updates(&self) -> bool {
+        !self.local_or_global_tail_waiters.is_empty() || !self.global_tail_waiters.is_empty()
+    }
+
+    pub fn has_waiting_for_writes(&self) -> bool {
+        !self.repair_stores.is_empty()
+            || !self.pending_trims.is_empty()
+            || !self.stores.is_empty()
+            || !self.seals.is_empty()
+    }
+
+    /// Called when the local tail watch fires. Drains stores, seals, and
+    /// tail-update waiters that depend on local tail or sealed state.
+    pub fn on_local_tail_change(
+        &mut self,
+        current_tail: TailState<LogletOffset>,
+        global_tail: LogletOffset,
+    ) {
+        // Drain normal stores whose target offset has been reached.
+        self.stores
+            .drain_up_to(current_tail.offset().prev(), |reciprocal| {
+                trace!(
+                    loglet_id = %self.loglet_id,
+                    "Responding to store request for last-offset: {}",
+                    current_tail.offset().prev()
+                );
+                reciprocal.send(Stored::new(current_tail, global_tail));
+            });
+
+        // Drain seals if the loglet is now sealed.
+        if current_tail.is_sealed() {
+            for reciprocal in self.seals.drain(..) {
+                reciprocal.send(Sealed::new(current_tail, global_tail).with_status(Status::Ok));
+            }
+            // if there are stores > current_tail, we should drain them all with status SEALED.
+            self.drain_all_stores(current_tail, global_tail, Status::Sealed);
+
+            // Sealed resolves all local-tail and global-tail waiters.
+            Self::drain_tail_waiters_all(
+                current_tail,
+                global_tail,
+                &mut self.local_tail_waiters,
+                Status::Sealed,
+            );
+            Self::drain_tail_waiters_all(
+                current_tail,
+                global_tail,
+                &mut self.global_tail_waiters,
+                Status::Sealed,
+            );
+            Self::drain_tail_waiters_all(
+                current_tail,
+                global_tail,
+                &mut self.local_or_global_tail_waiters,
+                Status::Sealed,
+            );
+        } else {
+            self.local_tail_waiters
+                .drain_up_to(current_tail.offset(), |reciprocal| {
+                    reciprocal.send(TailUpdated::new(current_tail, global_tail));
+                });
+            // Local-or-global waiters: resolve if local_tail >= target.
+            self.local_or_global_tail_waiters
+                .drain_up_to(current_tail.offset(), |reciprocal| {
+                    reciprocal.send(TailUpdated::new(current_tail, global_tail));
+                });
+        }
+    }
+
+    /// Called when the global tail watch fires.
+    pub fn on_global_tail_change(
+        &mut self,
+        current_tail: TailState<LogletOffset>,
+        global_tail: LogletOffset,
+    ) {
+        // Global-tail waiters: resolve if global_tail >= target.
+        self.global_tail_waiters
+            .drain_up_to(global_tail, |reciprocal| {
+                reciprocal.send(TailUpdated::new(current_tail, global_tail));
+            });
+
+        // Local-or-global waiters: resolve if global_tail >= target.
+        self.local_or_global_tail_waiters
+            .drain_up_to(global_tail, |reciprocal| {
+                reciprocal.send(TailUpdated::new(current_tail, global_tail));
+            });
+    }
+
+    /// Called when the flush listener fires with a new token. Drains repair
+    /// stores and trims whose flush tokens have been durably committed.
+    pub fn on_commit_token_change(
+        &mut self,
+        token: Token<Commit>,
+        current_tail: TailState<LogletOffset>,
+        global_tail: LogletOffset,
+    ) {
+        // Drain repair stores whose token <= the notified token.
+        self.repair_stores.drain_up_to(token, |reciprocal| {
+            reciprocal.send(Stored::new(current_tail, global_tail));
+        });
+        // Drain trims whose token <= the notified token.
+        self.pending_trims.drain_up_to(token, |reciprocal| {
+            reciprocal.send(Trimmed::new(current_tail, global_tail));
         });
     }
 
-    async fn process_seal(
+    pub fn drain_local_tail_waiters(
         &mut self,
-        body: Seal,
-        sealing_in_progress: &mut bool,
-    ) -> Option<AsyncToken> {
-        // Is this a sealed loglet?
-        if self.loglet_state.is_sealed() {
-            *sealing_in_progress = false;
-            return None;
-        }
+        current_tail: TailState<LogletOffset>,
+        global_tail: LogletOffset,
+        status: Status,
+    ) {
+        Self::drain_tail_waiters_all(
+            current_tail,
+            global_tail,
+            &mut self.local_tail_waiters,
+            status,
+        );
+    }
 
-        *sealing_in_progress = true;
+    pub fn drain_all_waiting_for_flush(
+        &mut self,
+        current_tail: TailState<LogletOffset>,
+        global_tail: LogletOffset,
+        status: Status,
+    ) {
+        self.repair_stores.drain_all(|reciprocal| {
+            reciprocal.send(Stored::new(current_tail, global_tail).with_status(status));
+        });
 
-        #[allow(clippy::manual_ok_err)]
-        match self.log_store.enqueue_seal(body).await {
-            Ok(store_token) => Some(store_token),
-            Err(_) => {
-                // Note that this fail-safe status is in-fact non-recoverable
-                // Meanwhile seal-waiters will continue to wait indefinitely.
-                //
-                // shutting down. log-store is disabled
-                None
-            }
+        self.pending_trims.drain_all(|reciprocal| {
+            reciprocal.send(Trimmed::new(current_tail, global_tail).with_status(status));
+        });
+    }
+
+    pub fn drain_all_stores(
+        &mut self,
+        current_tail: TailState<LogletOffset>,
+        global_tail: LogletOffset,
+        status: Status,
+    ) {
+        self.stores.drain_all(|reciprocal| {
+            reciprocal.send(Stored::new(current_tail, global_tail).with_status(status));
+        });
+    }
+
+    pub fn drain_waiting_seal(
+        &mut self,
+        current_tail: TailState<LogletOffset>,
+        global_tail: LogletOffset,
+        status: Status,
+    ) {
+        for reciprocal in self.seals.drain(..) {
+            reciprocal.send(Sealed::new(current_tail, global_tail).with_status(status));
         }
+    }
+
+    fn drain_tail_waiters_all(
+        current_tail: TailState<LogletOffset>,
+        global_tail: LogletOffset,
+        queue: &mut WaiterQueue<LogletOffset, Reciprocal<Oneshot<TailUpdated>>>,
+        status: Status,
+    ) {
+        queue.drain_all(|reciprocal| {
+            reciprocal.send(TailUpdated::new(current_tail, global_tail).with_status(status));
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
+    use tokio::task::JoinSet;
 
     use super::*;
     use googletest::prelude::*;
@@ -682,9 +1100,11 @@ mod tests {
         worker.data_tx().send(msg1);
         worker.data_tx().send(msg2);
         // wait for response (in test-env, it's safe to assume that responses will arrive in order)
+        // With the watch-based model, both stores may be batched together so the
+        // local_tail in the first response may already reflect the second store.
         let stored = msg1_reply.await?;
         assert_that!(stored.status, eq(Status::Ok));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
+        assert_that!(stored.local_tail, ge(LogletOffset::new(3)));
 
         let stored = msg2_reply.await?;
         assert_that!(stored.status, eq(Status::Ok));
@@ -761,12 +1181,12 @@ mod tests {
         worker.meta_tx().send(seal1);
         // should latch onto existing seal
         worker.meta_tx().send(seal2);
-        // seal takes precedence, but it gets processed in the background. This store is likely to
-        // observe Status::Sealing.
+        // seal takes precedence, but it gets processed in the background. This store will
+        // fail with Status::Sealed.
         worker.data_tx().send(msg2);
         // sealing
         let stored = msg2_reply.await?;
-        assert_that!(stored.status, eq(Status::Sealing));
+        assert_that!(stored.status, eq(Status::Sealed));
         assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
         // seal responses can come at any order, but we'll consume waiters queue before we process
         // store messages.
@@ -907,11 +1327,12 @@ mod tests {
 
         worker.data_tx().send(msg1);
         worker.data_tx().send(msg2);
-        // first store is successful
+        // first store is successful. With the watch-based model, both stores may be
+        // batched together so the local_tail may already reflect the second store.
         let stored = msg1_reply.await?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.sealed, eq(false));
-        assert_that!(stored.local_tail, eq(LogletOffset::new(3)));
+        assert_that!(stored.local_tail, ge(LogletOffset::new(3)));
 
         // 10, 11
         let stored = msg2_reply.await?;
@@ -1025,7 +1446,7 @@ mod tests {
 
         // Wait for stores to complete.
         while let Some(stored) = stores.join_next().await {
-            let stored = stored.unwrap().unwrap();
+            let stored: Stored = stored.unwrap().unwrap();
             assert_that!(stored.status, eq(Status::Ok));
         }
 

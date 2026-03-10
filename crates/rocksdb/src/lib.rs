@@ -158,11 +158,7 @@ impl RocksDb {
     /// Write a [`rocksdb::WriteBatch`] to the database.
     ///
     /// On success, returns the batch so callers can reuse it (e.g. via
-    /// [`rocksdb::WriteBatch::clear()`]) without re-allocating. On error, the
-    /// batch is returned as `Some(batch)` when possible. The only case where
-    /// the batch is irrecoverable (`None`) is [`ShutdownError`]: the batch may
-    /// have already been moved into a background thread pool closure whose
-    /// result channel was dropped.
+    /// [`rocksdb::WriteBatch::clear()`]) without re-allocating.
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn write_batch(
         self: &Arc<Self>,
@@ -171,7 +167,7 @@ impl RocksDb {
         io_mode: IoMode,
         write_options: rocksdb::WriteOptions,
         write_batch: rocksdb::WriteBatch,
-    ) -> Result<rocksdb::WriteBatch, (RocksError, Option<rocksdb::WriteBatch>)> {
+    ) -> Result<rocksdb::WriteBatch, RocksError> {
         self.write_batch_internal(
             name,
             priority,
@@ -185,7 +181,7 @@ impl RocksDb {
 
     /// Write a [`rocksdb::WriteBatchWithIndex`] to the database.
     ///
-    /// See [`Self::write_batch`] for details on batch ownership semantics.
+    /// On success, returns the batch so callers can reuse it.
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn write_batch_with_index(
         self: &Arc<Self>,
@@ -194,8 +190,7 @@ impl RocksDb {
         io_mode: IoMode,
         write_options: rocksdb::WriteOptions,
         write_batch: rocksdb::WriteBatchWithIndex,
-    ) -> Result<rocksdb::WriteBatchWithIndex, (RocksError, Option<rocksdb::WriteBatchWithIndex>)>
-    {
+    ) -> Result<rocksdb::WriteBatchWithIndex, RocksError> {
         self.write_batch_internal(
             name,
             priority,
@@ -215,7 +210,7 @@ impl RocksDb {
         mut write_options: rocksdb::WriteOptions,
         batch: B,
         write_op: OP,
-    ) -> Result<B, (RocksError, Option<B>)>
+    ) -> Result<B, RocksError>
     where
         B: Send + 'static,
         OP: Fn(&RocksAccess, &rocksdb::WriteOptions, &B) -> Result<(), rocksdb::Error>
@@ -231,7 +226,7 @@ impl RocksDb {
                 );
                 write_options.set_no_slowdown(false);
                 if let Err(e) = write_op(&self.db, &write_options, &batch) {
-                    return Err((e.into(), Some(batch)));
+                    return Err(e.into());
                 }
                 counter!(STORAGE_IO_OP,
                     DISPOSITION => DISPOSITION_MAYBE_BLOCKING,
@@ -249,11 +244,9 @@ impl RocksDb {
                 let task = StorageTask::default()
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
-                    .op(move || -> Result<B, (rocksdb::Error, B)> {
+                    .op(move || -> Result<B, rocksdb::Error> {
                         let _x = RocksDbPerfGuard::new(name);
-                        if let Err(e) = write_op(&db.db, &write_options, &batch) {
-                            return Err((e, batch));
-                        }
+                        write_op(&db.db, &write_options, &batch)?;
                         Ok(batch)
                     })
                     .build()
@@ -266,19 +259,13 @@ impl RocksDb {
                 )
                 .increment(1);
 
-                return self
-                    .manager
-                    .async_spawn(task)
-                    .await
-                    // ShutdownError: batch is inside the closure, unrecoverable.
-                    .map_err(|e| (e.into(), None))?
-                    .map_err(|(e, batch)| (e.into(), Some(batch)));
+                return self.manager.async_spawn(task).await?.map_err(|e| e.into());
             }
             IoMode::OnlyIfNonBlocking => {
                 let _x = RocksDbPerfGuard::new(name);
                 write_options.set_no_slowdown(true);
                 if let Err(e) = write_op(&self.db, &write_options, &batch) {
-                    return Err((e.into(), Some(batch)));
+                    return Err(e.into());
                 }
                 counter!(STORAGE_IO_OP,
                     DISPOSITION => DISPOSITION_NON_BLOCKING,
@@ -325,22 +312,15 @@ impl RocksDb {
                 let task = StorageTask::default()
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
-                    .op(move || -> Result<B, (rocksdb::Error, B)> {
+                    .op(move || -> Result<B, rocksdb::Error> {
                         let _x = RocksDbPerfGuard::new(name);
-                        if let Err(e) = write_op(&db.db, &write_options, &batch) {
-                            return Err((e, batch));
-                        }
+                        write_op(&db.db, &write_options, &batch)?;
                         Ok(batch)
                     })
                     .build()
                     .unwrap();
 
-                self.manager
-                    .async_spawn(task)
-                    .await
-                    // ShutdownError: batch is inside the closure, unrecoverable.
-                    .map_err(|e| (e.into(), None))?
-                    .map_err(|(e, batch)| (e.into(), Some(batch)))
+                self.manager.async_spawn(task).await?.map_err(|e| e.into())
             }
             Err(e) => {
                 counter!(STORAGE_IO_OP,
@@ -349,7 +329,7 @@ impl RocksDb {
                     PRIORITY => priority.as_static_str(),
                 )
                 .increment(1);
-                Err((e.into(), Some(batch)))
+                Err(e.into())
             }
         }
     }
