@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use rocksdb::{BlockBasedOptions, BoundColumnFamily, Cache, DB, DBCompressionType, SliceTransform};
+use rocksdb::{BlockBasedOptions, BoundColumnFamily, Cache, DB, SliceTransform};
 use static_assertions::const_assert;
 
 use restate_rocksdb::{
@@ -164,7 +164,12 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         // we can use absolute consistency but on a single-node setup, we don't have a way to recover
         // from it, so it's not useful for us.
         db_options.set_wal_recovery_mode(rocksdb::DBRecoveryMode::TolerateCorruptedTailRecords);
-        db_options.set_wal_compression_type(DBCompressionType::Zstd);
+        if !local_loglet_config
+            .rocksdb
+            .rocksdb_disable_wal_compression()
+        {
+            db_options.set_wal_compression_type(rocksdb::DBCompressionType::Zstd);
+        }
         // most reads are sequential
         db_options.set_advise_random_on_open(false);
 
@@ -224,15 +229,20 @@ fn cf_data_options(
     opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     opts.set_num_levels(7);
 
-    opts.set_compression_per_level(&[
-        DBCompressionType::None,
-        DBCompressionType::None,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-    ]);
+    let l0_l1 = if local_loglet_config
+        .rocksdb
+        .rocksdb_disable_l0_l1_compression()
+    {
+        rocksdb::DBCompressionType::None
+    } else {
+        rocksdb::DBCompressionType::Zstd
+    };
+    let levels = restate_rocksdb::configuration::build_compression_per_level(
+        7,
+        l0_l1,
+        rocksdb::DBCompressionType::Zstd,
+    );
+    opts.set_compression_per_level(&levels);
 
     opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(DATA_KEY_PREFIX_LENGTH));
     opts.set_memtable_prefix_bloom_ratio(0.2);
@@ -274,11 +284,20 @@ fn cf_metadata_options(
     // Set compactions per level
     //
     opts.set_num_levels(3);
-    opts.set_compression_per_level(&[
-        DBCompressionType::None,
-        DBCompressionType::None,
-        DBCompressionType::Zstd,
-    ]);
+    let l0_l1 = if local_loglet_config
+        .rocksdb
+        .rocksdb_disable_l0_l1_compression()
+    {
+        rocksdb::DBCompressionType::None
+    } else {
+        rocksdb::DBCompressionType::Zstd
+    };
+    let levels = restate_rocksdb::configuration::build_compression_per_level(
+        3,
+        l0_l1,
+        rocksdb::DBCompressionType::Zstd,
+    );
+    opts.set_compression_per_level(&levels);
 
     opts.set_memtable_whole_key_filtering(true);
     opts.set_max_write_buffer_number(4);
