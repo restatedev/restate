@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use enum_map::EnumMap;
+use parking_lot::Mutex;
 use tokio::time::Instant;
 use tracing::debug;
 use tracing::{info, instrument, warn};
@@ -498,12 +499,14 @@ impl BifrostInner {
         }
     }
 
-    /// Acquire a token to tell bifrost that this node is the intended primary writer for this log.
+    /// Enables acquiring and forgetting a recovery preference token for a given log.
+    ///
+    /// An acquired preference token tells bifrost that this node is the intended primary writer for this log.
     ///
     /// The preference can be kept for as long as the token is not dropped. Multiple tokens can be
     /// taken for the same log. Preference is only lost after the last token is dropped.
-    pub fn acquire_preference_token(&self, log_id: LogId) -> PreferenceToken {
-        PreferenceToken::new(self.watchdog.clone(), log_id)
+    pub fn control_preference(&self, log_id: LogId) -> PreferenceControl {
+        PreferenceControl::new(self.watchdog.clone(), log_id)
     }
 
     /// Adds a new log if it doesn't exist.
@@ -715,6 +718,39 @@ impl Drop for PreferenceToken {
         let _ = self
             .sender
             .send(WatchdogCommand::PreferenceRelease(self.log_id));
+    }
+}
+
+/// Shared/cloneable handle to acquire/release preference token for a given log.
+#[derive(Clone)]
+pub struct PreferenceControl(Arc<Inner>);
+
+struct Inner {
+    log_id: LogId,
+    watchdog: WatchdogSender,
+    current_preference: Mutex<Option<PreferenceToken>>,
+}
+
+impl PreferenceControl {
+    fn new(watchdog: WatchdogSender, log_id: LogId) -> Self {
+        Self(Arc::new(Inner {
+            log_id,
+            watchdog,
+            current_preference: Mutex::new(None),
+        }))
+    }
+
+    /// Marks this node as a preferred writer for the underlying log
+    pub fn mark_as_preferred(&self) {
+        let mut guard = self.0.current_preference.lock();
+        if guard.is_none() {
+            *guard = Some(PreferenceToken::new(self.0.watchdog.clone(), self.0.log_id));
+        }
+    }
+
+    /// Removes the preference about this node being the preferred writer for the log
+    pub fn forget_preference(&self) {
+        self.0.current_preference.lock().take();
     }
 }
 
