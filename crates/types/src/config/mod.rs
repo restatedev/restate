@@ -52,6 +52,7 @@ pub use rocksdb::*;
 pub use worker::*;
 
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
@@ -65,6 +66,98 @@ use crate::errors::GenericError;
 use crate::live::Live;
 use crate::live::LiveLoadExt;
 use crate::nodes_config::Role;
+
+static CPU_COUNT: LazyLock<NonZeroU32> = LazyLock::new(|| {
+    let cpu_count: u32 = num_cpus::get().try_into().unwrap_or(10);
+    // fallback to 10 threads if we can't determine the number of cpus
+    NonZeroU32::new(cpu_count).unwrap_or(NonZeroU32::new(10).unwrap())
+});
+
+/// Background work budget for a single database.
+#[derive(Debug, Clone, Copy)]
+pub struct BackgroundWorkBudget {
+    pub max_background_flushes: NonZeroU32,
+    pub max_background_compactions: NonZeroU32,
+}
+
+/// Computes the background work budget for partition-store and log-server databases.
+///
+/// The budget is split between partition-store (worker role) and log-server based on which
+/// roles are active on this node. Flushes are split equally (they are latency-critical and
+/// should not be starved), while compaction slots are weighted toward the partition-store
+/// (~65%) since it typically has many more column families generating compaction demand.
+///
+/// Metadata-server and local-loglet always get a fixed small budget (1 flush, 1 compaction).
+pub fn compute_background_work_budgets(roles: &EnumSet<Role>) -> BackgroundWorkBudgets {
+    let cpu_count = CPU_COUNT.get();
+
+    // Fixed budgets for lightweight databases
+    let metadata_server = BackgroundWorkBudget {
+        max_background_flushes: NonZeroU32::new(1).unwrap(),
+        max_background_compactions: NonZeroU32::new(1).unwrap(),
+    };
+    let local_loglet = BackgroundWorkBudget {
+        max_background_flushes: NonZeroU32::new(1).unwrap(),
+        max_background_compactions: NonZeroU32::new(1).unwrap(),
+    };
+
+    let has_worker = roles.contains(Role::Worker);
+    let has_log_server = roles.contains(Role::LogServer);
+
+    // Compute flush budget: split equally between active databases
+    // We reserve 2 flush slots for the fixed-budget databases (metadata-server + local-loglet),
+    // and split the rest equally between partition-store and log-server.
+    let total_flushes = cpu_count.div_ceil(4).max(4);
+    let available_flushes = total_flushes.saturating_sub(2).max(2);
+
+    let (worker_flushes, log_server_flushes) = match (has_worker, has_log_server) {
+        (true, true) => {
+            let half = available_flushes.div_ceil(2);
+            (half, available_flushes.saturating_sub(half).max(1))
+        }
+        (true, false) => (available_flushes, available_flushes),
+        (false, true) => (available_flushes, available_flushes),
+        (false, false) => (2, 2),
+    };
+
+    // Compute compaction budget: weighted split (worker ~65%, log-server ~35%)
+    // Compactions are throughput-heavy; the partition-store with many CFs needs the lion's share.
+    let total_compactions = cpu_count.div_ceil(2).max(4);
+    let available_compactions = total_compactions.saturating_sub(2).max(2);
+
+    let (worker_compactions, log_server_compactions) = match (has_worker, has_log_server) {
+        (true, true) => {
+            let worker_share = ((available_compactions as f64 * 0.65).ceil() as u32).max(2);
+            let log_server_share = available_compactions.saturating_sub(worker_share).max(2);
+            (worker_share, log_server_share)
+        }
+        (true, false) => (available_compactions, available_compactions),
+        (false, true) => (available_compactions, available_compactions),
+        (false, false) => (2, 2),
+    };
+
+    BackgroundWorkBudgets {
+        partition_store: BackgroundWorkBudget {
+            max_background_flushes: NonZeroU32::new(worker_flushes).unwrap(),
+            max_background_compactions: NonZeroU32::new(worker_compactions).unwrap(),
+        },
+        log_server: BackgroundWorkBudget {
+            max_background_flushes: NonZeroU32::new(log_server_flushes).unwrap(),
+            max_background_compactions: NonZeroU32::new(log_server_compactions).unwrap(),
+        },
+        metadata_server,
+        local_loglet,
+    }
+}
+
+/// Pre-computed background work budgets for all database types.
+#[derive(Debug, Clone, Copy)]
+pub struct BackgroundWorkBudgets {
+    pub partition_store: BackgroundWorkBudget,
+    pub log_server: BackgroundWorkBudget,
+    pub metadata_server: BackgroundWorkBudget,
+    pub local_loglet: BackgroundWorkBudget,
+}
 
 /// Overrides production profile
 pub static PRODUCTION_PROFILE_DEFAULTS: LazyLock<Configuration> = LazyLock::new(|| {
@@ -265,6 +358,20 @@ impl Configuration {
         self.bifrost.set_derived_values(&self.networking);
         self.metadata_server.apply_common(&self.common);
         self.log_server.apply_common(&self.common);
+
+        // Compute and apply role-aware background work budgets for all databases.
+        let budgets = compute_background_work_budgets(&self.common.roles);
+        self.worker
+            .storage
+            .apply_background_work_budget(&budgets.partition_store);
+        self.log_server
+            .apply_background_work_budget(&budgets.log_server);
+        self.metadata_server
+            .apply_background_work_budget(&budgets.metadata_server);
+        self.bifrost
+            .local
+            .apply_background_work_budget(&budgets.local_loglet);
+
         self
     }
 
