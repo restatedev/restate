@@ -19,21 +19,8 @@ use tracing::warn;
 
 use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
-// We'd like to leave as much space as possible for data memtables. The strategy
-// is to avoid triggering data cf because metadata is full, instead, we'd like to
-// have the data cf to be the trigger and metadata cf to follow (due to atomic flush).
-//
-// This means that we'd want to give enough space to the metadata cf such that it almost
-// never causes flush. Given that the metadata updates are tiny, we assume that an 8MiB
-// is sufficiently large to achieve this goal.
-const METADATA_MEMORY_BUDGET: NonZeroByteCount =
-    NonZeroByteCount::new(NonZeroUsize::new(8 * 1024 * 1024).unwrap());
-
-const MIN_DATA_MEMTABLES_MEMORY: NonZeroByteCount =
-    NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
-
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
-    MIN_DATA_MEMTABLES_MEMORY.saturating_add(METADATA_MEMORY_BUDGET);
+    NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
 
 /// # Log server options
 ///
@@ -205,17 +192,10 @@ impl LogServerOptions {
     }
 
     pub fn rocksdb_data_memtables_budget(&self) -> NonZeroByteCount {
-        // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
-        let budget = self
-            .rocksdb_memory_budget()
-            .as_usize()
-            .saturating_sub(METADATA_MEMORY_BUDGET.as_usize());
-        // sanitize minimum to 32MiB
-        NonZeroByteCount::new(NonZeroUsize::new(std::cmp::max(budget, 32 * 1024 * 1024)).unwrap())
-    }
-
-    pub fn rocksdb_metadata_memtables_budget(&self) -> NonZeroByteCount {
-        METADATA_MEMORY_BUDGET
+        // The entire memory budget goes to the data CF. The metadata CF's write_buffer_size
+        // matches the data CF to avoid independently triggering atomic flushes, but its
+        // actual memory consumption is negligible (a few KB of real data per flush).
+        self.rocksdb_memory_budget()
     }
 
     pub fn data_dir(&self) -> PathBuf {
