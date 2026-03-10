@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -52,12 +52,6 @@ pub struct RocksDbOptions {
     /// Default: False (statistics enabled)
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_disable_statistics: Option<bool>,
-
-    /// # RocksDB max background jobs (flushes and compactions)
-    ///
-    /// Default: the number of CPU cores on this node.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rocksdb_max_background_jobs: Option<NonZeroU32>,
 
     /// # RocksDB compaction readahead size in bytes
     ///
@@ -165,9 +159,6 @@ impl RocksDbOptions {
         if self.rocksdb_disable_statistics.is_none() {
             self.rocksdb_disable_statistics = Some(common.rocksdb_disable_statistics());
         }
-        if self.rocksdb_max_background_jobs.is_none() {
-            self.rocksdb_max_background_jobs = Some(common.rocksdb_max_background_jobs());
-        }
         if self.rocksdb_compaction_readahead_size.is_none() {
             self.rocksdb_compaction_readahead_size =
                 Some(common.rocksdb_compaction_readahead_size());
@@ -210,15 +201,6 @@ impl RocksDbOptions {
 
     pub fn rocksdb_disable_statistics(&self) -> bool {
         self.rocksdb_disable_statistics.unwrap_or(false)
-    }
-
-    pub fn rocksdb_max_background_jobs(&self) -> NonZeroU32 {
-        self.rocksdb_max_background_jobs.unwrap_or(
-            std::thread::available_parallelism()
-                .unwrap_or(NonZeroUsize::new(2).unwrap())
-                .try_into()
-                .expect("number of cpu cores fits in u32"),
-        )
     }
 
     pub fn rocksdb_compaction_readahead_size(&self) -> NonZeroUsize {
