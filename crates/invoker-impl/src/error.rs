@@ -171,10 +171,26 @@ pub(crate) enum InvokerError {
     ServiceUnavailable(http::StatusCode),
 
     #[error(
+        "service is rate limited due to '{code}'{}",
+        retry_after_display(retry_after)
+    )]
+    #[code(restate_errors::RT0023)]
+    RateLimited {
+        code: http::StatusCode,
+        retry_after: Option<Duration>,
+    },
+    #[error(
         "service {0} is exposed by the deprecated deployment {1}, please upgrade the SDK used by the service."
     )]
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
+}
+
+fn retry_after_display(after: &Option<Duration>) -> String {
+    match after {
+        Some(duration) => format!(" (retry after: {} seconds)", duration.as_secs()),
+        None => String::new(),
+    }
 }
 
 impl InvokerError {
@@ -220,6 +236,7 @@ impl InvokerError {
                 next_retry_interval_override,
                 ..
             }) => *next_retry_interval_override,
+            InvokerError::RateLimited { retry_after, .. } => *retry_after,
             _ => None,
         }
     }
