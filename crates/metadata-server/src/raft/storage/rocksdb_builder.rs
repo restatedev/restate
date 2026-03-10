@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use rocksdb::{BlockBasedOptions, Cache, DBCompressionType};
+use rocksdb::{BlockBasedOptions, Cache};
 use static_assertions::const_assert;
 
 use restate_rocksdb::{
@@ -85,7 +85,12 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         // an incomplete write (see https://github.com/facebook/rocksdb/wiki/WAL-Recovery-Modes#ktoleratecorruptedtailrecords).
         db_options.set_wal_recovery_mode(rocksdb::DBRecoveryMode::TolerateCorruptedTailRecords);
 
-        db_options.set_wal_compression_type(DBCompressionType::Zstd);
+        if !metadata_server_config
+            .rocksdb
+            .rocksdb_disable_wal_compression()
+        {
+            db_options.set_wal_compression_type(rocksdb::DBCompressionType::Zstd);
+        }
         // most reads are sequential
         db_options.set_advise_random_on_open(false);
 
@@ -144,15 +149,20 @@ fn cf_data_options(
     cf_options.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     cf_options.set_num_levels(7);
 
-    cf_options.set_compression_per_level(&[
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-    ]);
+    let l0_l1 = if metadata_server_config
+        .rocksdb
+        .rocksdb_disable_l0_l1_compression()
+    {
+        rocksdb::DBCompressionType::None
+    } else {
+        rocksdb::DBCompressionType::Zstd
+    };
+    let levels = restate_rocksdb::configuration::build_compression_per_level(
+        7,
+        l0_l1,
+        rocksdb::DBCompressionType::Zstd,
+    );
+    cf_options.set_compression_per_level(&levels);
 }
 
 fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
@@ -191,11 +201,20 @@ fn cf_metadata_options(
     // Set compactions per level
     //
     cf_options.set_num_levels(3);
-    cf_options.set_compression_per_level(&[
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-        DBCompressionType::Zstd,
-    ]);
+    let l0_l1 = if metadata_server_config
+        .rocksdb
+        .rocksdb_disable_l0_l1_compression()
+    {
+        rocksdb::DBCompressionType::None
+    } else {
+        rocksdb::DBCompressionType::Zstd
+    };
+    let levels = restate_rocksdb::configuration::build_compression_per_level(
+        3,
+        l0_l1,
+        rocksdb::DBCompressionType::Zstd,
+    );
+    cf_options.set_compression_per_level(&levels);
     cf_options.set_memtable_whole_key_filtering(true);
     cf_options.set_max_write_buffer_number(4);
     cf_options.set_max_successive_merges(10);

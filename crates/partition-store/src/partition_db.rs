@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 use rocksdb::table_properties::TablePropertiesExt;
-use rocksdb::{BoundColumnFamily, DBCompressionType, ExportImportFilesMetaData};
+use rocksdb::{BoundColumnFamily, ExportImportFilesMetaData};
 use tokio::sync::{RwLock as AsyncRwLock, watch};
 use tokio::time::Instant;
 use tracing::{debug, info, instrument, warn};
@@ -568,15 +568,17 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         // As much as we can to increase the chances to observe a deletion.
         //
         cf_options.set_num_levels(7);
-        cf_options.set_compression_per_level(&[
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-            DBCompressionType::Zstd,
-        ]);
+        let l0_l1 = if config.rocksdb.rocksdb_disable_l0_l1_compression() {
+            rocksdb::DBCompressionType::None
+        } else {
+            rocksdb::DBCompressionType::Zstd
+        };
+        let levels = restate_rocksdb::configuration::build_compression_per_level(
+            7,
+            l0_l1,
+            rocksdb::DBCompressionType::Zstd,
+        );
+        cf_options.set_compression_per_level(&levels);
 
         // Always collect applied LSN table properties in partition store CFs
         cf_options.add_table_properties_collector_factory(AppliedLsnCollectorFactory);
