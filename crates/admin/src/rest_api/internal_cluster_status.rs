@@ -54,20 +54,7 @@ const OPTIONAL_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 type NodeRuntimeInfoMap = HashMap<PlainNodeId, Result<IdentResponse, String>>;
 type MetadataServerStatusMap =
-    HashMap<PlainNodeId, Result<MetadataServerStatusResponse, MetadataProbeError>>;
-
-#[derive(Debug)]
-enum MetadataProbeError {
-    Rpc(tonic::Status),
-}
-
-impl std::fmt::Display for MetadataProbeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Rpc(status) => write!(f, "{status}"),
-        }
-    }
-}
+    HashMap<PlainNodeId, Result<MetadataServerStatusResponse, tonic::Status>>;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InternalClusterStatusResponse {
@@ -488,8 +475,7 @@ async fn fetch_metadata_server_status(
                 let result = new_metadata_server_client(channel, &networking)
                     .status(())
                     .await
-                    .map(|response| response.into_inner())
-                    .map_err(MetadataProbeError::Rpc);
+                    .map(|response| response.into_inner());
 
                 (plain_node_id, result)
             }
@@ -783,7 +769,7 @@ fn build_partitions_section(cluster_state: &ClusterState) -> PartitionsSection {
     }
 
     let mut rows = Vec::<TempRow>::new();
-    let mut dead_nodes = Vec::<DeadNodeRow>::new();
+    let mut dead_nodes = Vec::<(PlainNodeId, DeadNodeRow)>::new();
     let mut max_epoch_per_partition = HashMap::<u32, u64>::new();
 
     for (node_id, node_state) in &cluster_state.nodes {
@@ -811,19 +797,23 @@ fn build_partitions_section(cluster_state: &ClusterState) -> PartitionsSection {
                 }
             }
             Some(node_state::State::Dead(dead)) => {
-                dead_nodes.push(DeadNodeRow {
-                    node_id: PlainNodeId::from(*node_id).to_string(),
-                    last_seen_alive_unix_millis: dead
-                        .last_seen_alive
-                        .as_ref()
-                        .and_then(|ts| timestamp_to_unix_millis(ts.seconds, ts.nanos)),
-                });
+                let plain_node_id = PlainNodeId::from(*node_id);
+                dead_nodes.push((
+                    plain_node_id,
+                    DeadNodeRow {
+                        node_id: plain_node_id.to_string(),
+                        last_seen_alive_unix_millis: dead
+                            .last_seen_alive
+                            .as_ref()
+                            .and_then(|ts| timestamp_to_unix_millis(ts.seconds, ts.nanos)),
+                    },
+                ));
             }
             None => {}
         }
     }
 
-    dead_nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    dead_nodes.sort_by_key(|(node_id, _)| *node_id);
 
     let processors = rows
         .into_iter()
@@ -916,7 +906,7 @@ fn build_partitions_section(cluster_state: &ClusterState) -> PartitionsSection {
             .map(|v| v.value)
             .unwrap_or_default(),
         processors,
-        dead_nodes,
+        dead_nodes: dead_nodes.into_iter().map(|(_, row)| row).collect(),
     }
 }
 
@@ -1004,13 +994,11 @@ fn build_metadata_servers_section(
 }
 
 fn compact_metadata_status(
-    metadata_status: Option<&Result<MetadataServerStatusResponse, MetadataProbeError>>,
+    metadata_status: Option<&Result<MetadataServerStatusResponse, tonic::Status>>,
 ) -> String {
     match metadata_status {
         Some(Ok(status)) => normalize_proto_enum(status.status().as_str_name()),
-        Some(Err(MetadataProbeError::Rpc(status))) if status.code() == Code::Unimplemented => {
-            "local".to_owned()
-        }
+        Some(Err(status)) if status.code() == Code::Unimplemented => "local".to_owned(),
         Some(Err(_)) => "unreachable".to_owned(),
         None => normalize_proto_enum(MetadataServerStatus::Unknown.as_str_name()),
     }
