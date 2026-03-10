@@ -43,12 +43,7 @@ impl Snapshots {
         .await?;
 
         let concurrency_limit = Arc::new(Semaphore::new(
-            config
-                .worker
-                .storage
-                .rocksdb
-                .rocksdb_max_background_jobs()
-                .get() as usize,
+            config.worker.snapshots.export_concurrency_limit() as usize,
         ));
 
         Ok(Self {

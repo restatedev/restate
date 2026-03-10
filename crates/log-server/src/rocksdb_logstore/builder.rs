@@ -94,6 +94,12 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         // amend default options from rocksdb_manager
         self.apply_db_opts_from_config(&mut db_options, &log_server_config.rocksdb);
 
+        restate_rocksdb::configuration::set_background_work_budget(
+            &mut db_options,
+            log_server_config.rocksdb_max_background_flushes(),
+            log_server_config.rocksdb_max_background_compactions(),
+        );
+
         // log-server specific customizations
 
         // This is Rocksdb's default, it's added here for clarity.

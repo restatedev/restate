@@ -20,8 +20,8 @@ use restate_serde_util::{ByteCount, NonZeroByteCount};
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
-    CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions, ObjectStoreOptions,
-    RocksDbOptions, RocksDbOptionsBuilder,
+    BackgroundWorkBudget, CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions,
+    ObjectStoreOptions, RocksDbOptions, RocksDbOptionsBuilder,
 };
 use crate::config::IngestionOptions;
 use crate::identifiers::PartitionId;
@@ -520,6 +520,28 @@ pub struct StorageOptions {
     ///
     /// [Supports configuration hot-reloading]
     pub rocksdb_disable_auto_memory_reclaimer: bool,
+
+    /// # Max background flushes
+    ///
+    /// Maximum number of concurrent flush operations for the partition-store database.
+    /// Flushes are latency-critical (they unblock writes) and are allocated equally
+    /// across databases.
+    ///
+    /// If unset, defaults are computed based on CPU count and active node roles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_max_background_flushes: Option<NonZeroU32>,
+
+    /// # Max background compactions
+    ///
+    /// Maximum number of concurrent compaction operations for the partition-store database.
+    /// The partition-store typically has many column families generating compaction demand,
+    /// so it gets a larger share of the compaction budget (~65%).
+    ///
+    /// If unset, defaults are computed based on CPU count and active node roles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_max_background_compactions: Option<NonZeroU32>,
 }
 
 impl StorageOptions {
@@ -535,6 +557,25 @@ impl StorageOptions {
                 .unwrap(),
             );
         }
+    }
+
+    pub fn apply_background_work_budget(&mut self, budget: &BackgroundWorkBudget) {
+        if self.rocksdb_max_background_flushes.is_none() {
+            self.rocksdb_max_background_flushes = Some(budget.max_background_flushes);
+        }
+        if self.rocksdb_max_background_compactions.is_none() {
+            self.rocksdb_max_background_compactions = Some(budget.max_background_compactions);
+        }
+    }
+
+    pub fn rocksdb_max_background_flushes(&self) -> NonZeroU32 {
+        self.rocksdb_max_background_flushes
+            .unwrap_or(NonZeroU32::new(2).unwrap())
+    }
+
+    pub fn rocksdb_max_background_compactions(&self) -> NonZeroU32 {
+        self.rocksdb_max_background_compactions
+            .unwrap_or(NonZeroU32::new(2).unwrap())
     }
 
     pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
@@ -578,6 +619,8 @@ impl Default for StorageOptions {
             rocksdb_compact_on_deletions_min_sst_file_size:
                 serde_helpers::default_compact_on_deletions_min_sst_file_size(),
             rocksdb_disable_auto_memory_reclaimer: false,
+            rocksdb_max_background_flushes: None,
+            rocksdb_max_background_compactions: None,
         }
     }
 }
@@ -660,6 +703,16 @@ pub struct SnapshotsOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub experimental_num_retained: Option<NonZeroU8>,
 
+    /// # Export concurrency limit
+    ///
+    /// Maximum number of concurrent partition snapshot exports. This controls how
+    /// many partition stores can simultaneously export snapshots to the snapshot
+    /// repository.
+    ///
+    /// Default: 4
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub export_concurrency_limit: Option<NonZeroU32>,
+
     #[cfg(any(test, feature = "test-util"))]
     pub enable_cleanup: bool,
 }
@@ -673,6 +726,7 @@ impl Default for SnapshotsOptions {
             object_store: Default::default(),
             object_store_retry_policy: Self::default_retry_policy(),
             experimental_num_retained: None,
+            export_concurrency_limit: None,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
         }
@@ -687,6 +741,10 @@ impl SnapshotsOptions {
             Some(10),
             Some(Duration::from_secs(10)),
         )
+    }
+
+    pub fn export_concurrency_limit(&self) -> u32 {
+        self.export_concurrency_limit.map(|v| v.get()).unwrap_or(4)
     }
 
     pub fn snapshots_base_dir(&self) -> PathBuf {

@@ -500,9 +500,13 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
             write_buffer_manager,
         );
 
-        self.apply_db_opts_from_config(
+        let storage_config = &Configuration::pinned().worker.storage;
+        self.apply_db_opts_from_config(&mut db_options, &storage_config.rocksdb);
+
+        restate_rocksdb::configuration::set_background_work_budget(
             &mut db_options,
-            &Configuration::pinned().worker.storage.rocksdb,
+            storage_config.rocksdb_max_background_flushes(),
+            storage_config.rocksdb_max_background_compactions(),
         );
 
         let event_listener = DurableLsnEventListener::new(&self.shared_state);
