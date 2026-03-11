@@ -13,15 +13,27 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use static_assertions::const_assert;
 
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
 use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
-const DATA_CF_BUDGET_RATIO: f64 = 0.85;
-const_assert!(DATA_CF_BUDGET_RATIO < 1.0);
+// We'd like to leave as much space as possible for data memtables. The strategy
+// is to avoid triggering data cf because metadata is full, instead, we'd like to
+// have the data cf to be the trigger and metadata cf to follow (due to atomic flush).
+//
+// This means that we'd want to give enough space to the metadata cf such that it almost
+// never causes flush. Given that the metadata updates are tiny, we assume that an 8MiB
+// is sufficiently large to achieve this goal.
+const METADATA_MEMORY_BUDGET: NonZeroByteCount =
+    NonZeroByteCount::new(NonZeroUsize::new(8 * 1024 * 1024).unwrap());
+
+const MIN_DATA_MEMTABLES_MEMORY: NonZeroByteCount =
+    NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
+
+const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
+    MIN_DATA_MEMTABLES_MEMORY.saturating_add(METADATA_MEMORY_BUDGET);
 
 /// # Log server options
 ///
@@ -40,14 +52,12 @@ pub struct LogServerOptions {
     ///
     /// If this value is set, it overrides the ratio defined in `rocksdb-memory-ratio`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde_as(as = "Option<NonZeroByteCount>")]
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
-    rocksdb_memory_budget: Option<NonZeroUsize>,
+    rocksdb_memory_budget: Option<NonZeroByteCount>,
 
     /// The memory budget for rocksdb memtables as ratio
     ///
-    /// This defines the total memory for rocksdb as a ratio of all memory available to the
-    /// log-server.
+    /// This defines the total memory for rocksdb as a ratio of the node's total budget
+    /// for rocksdb memtables.
     ///
     /// (See `rocksdb-total-memtables-ratio` in common).
     rocksdb_memory_ratio: f32,
@@ -67,18 +77,16 @@ pub struct LogServerOptions {
     /// Use this to limit the size of WAL files. If the size of all WAL files exceeds this limit,
     /// the oldest WAL file will be deleted and if needed, memtable flush will be triggered.
     ///
-    /// Note: RocksDB internally counts the uncompressed bytes to determine the WAL size, and since the WAL
-    /// is compressed, the actual size on disk will be significantly smaller than this value (~1/4
+    /// Note: RocksDB internally counts the uncompressed bytes to determine the WAL size, and since the
+    /// WAL may be compressed, the actual size on disk might be significantly smaller than this value (~1/4
     /// depending on the compression ratio). For instance, if this is set to "1 MiB", then rocksdb
     /// might decide to flush if the total WAL (on disk) reached ~260 KiB (compressed).
     ///
-    /// Default is `0` which translates into 6 times the memory allocated for membtables for this
+    /// Default is `0` which translates into 6 times the memory allocated for memtables for this
     /// database.
     #[serde(skip_serializing_if = "is_zero")]
-    #[serde_as(as = "ByteCount")]
     #[serde(default)]
-    #[cfg_attr(feature = "schemars", schemars(with = "ByteCount"))]
-    rocksdb_max_wal_size: usize,
+    rocksdb_max_wal_size: ByteCount<true>,
 
     /// Whether to perform commits in background IO thread pools eagerly or not
     #[cfg_attr(feature = "schemars", schemars(skip))]
@@ -86,17 +94,9 @@ pub struct LogServerOptions {
     pub always_commit_in_background: bool,
 
     /// The number of messages that can queue up on input network stream while request processor is busy.
-    #[deprecated = "Use `data_service_memory_limit` and `metadata_service_memory_limit` instead"]
+    #[deprecated = "Memory-based flow control is now managed through memory pools"]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub incoming_network_queue_length: Option<NonZeroUsize>,
-
-    /// Memory limit for incoming data service messages (Store, GetRecords).
-    ///
-    /// When this limit is reached, new data messages are rejected with load shedding
-    /// error code. This prevents memory ballooning when RocksDB writes are stalling.
-    ///
-    /// Default is 256 MiB.
-    pub data_service_memory_limit: NonZeroByteCount,
 
     /// Enable storing large blobs in separate files
     ///
@@ -110,8 +110,8 @@ pub struct LogServerOptions {
     pub rocksdb_enable_blob_separation: bool,
 }
 
-fn is_zero(value: &usize) -> bool {
-    *value == 0
+fn is_zero(value: &ByteCount<true>) -> bool {
+    *value == ByteCount::ZERO
 }
 
 impl LogServerOptions {
@@ -119,12 +119,10 @@ impl LogServerOptions {
         self.rocksdb.apply_common(&common.rocksdb);
         if self.rocksdb_memory_budget.is_none() {
             self.rocksdb_memory_budget = Some(
-                // 1MiB minimum
-                NonZeroUsize::new(
-                    (common.rocksdb_safe_total_memtables_size() as f64
-                        * self.rocksdb_memory_ratio as f64)
-                        .floor()
-                        .max(1024.0 * 1024.0) as usize,
+                NonZeroByteCount::try_from(
+                    ((common.rocksdb_total_memtables_size().as_u64() as f64
+                        * self.rocksdb_memory_ratio as f64) as u64)
+                        .max(MIN_ROCKSDB_MEMORY.as_u64()),
                 )
                 .unwrap(),
             );
@@ -135,12 +133,13 @@ impl LogServerOptions {
         self.rocksdb_disable_wal_fsync
     }
 
-    pub fn rocksdb_max_wal_size(&self) -> usize {
-        if self.rocksdb_max_wal_size == 0 {
-            6 * self.rocksdb_memory_budget()
+    pub fn rocksdb_max_wal_size(&self) -> NonZeroByteCount {
+        NonZeroByteCount::try_from(if self.rocksdb_max_wal_size == ByteCount::ZERO {
+            6 * self.rocksdb_memory_budget().as_u64()
         } else {
-            self.rocksdb_max_wal_size
-        }
+            self.rocksdb_max_wal_size.as_u64()
+        })
+        .unwrap()
     }
 
     pub fn rocksdb_max_sub_compactions(&self) -> u32 {
@@ -157,30 +156,28 @@ impl LogServerOptions {
         }
     }
 
-    pub fn rocksdb_memory_budget(&self) -> usize {
-        self.rocksdb_memory_budget
-            .unwrap_or_else(|| {
-                warn!("LogServer's rocksdb_memory_budget is not set, defaulting to 1MB");
-                // 1MiB minimum
-                NonZeroUsize::new(1024 * 1024).unwrap()
-            })
-            .get()
+    pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
+        self.rocksdb_memory_budget.unwrap_or_else(|| {
+            warn!(
+                "LogServer's rocksdb_memory_budget is not set, defaulting to {}",
+                MIN_ROCKSDB_MEMORY
+            );
+            MIN_ROCKSDB_MEMORY
+        })
     }
 
-    pub fn rocksdb_data_memtables_budget(&self) -> usize {
-        // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
-        let budget = (self.rocksdb_memory_budget() as f64 * DATA_CF_BUDGET_RATIO).floor() as usize;
-        // sanitize minimum to 32MiB
-        std::cmp::max(budget, 32 * 1024 * 1024)
-    }
-
-    pub fn rocksdb_metadata_memtables_budget(&self) -> usize {
+    pub fn rocksdb_data_memtables_budget(&self) -> NonZeroByteCount {
         // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
         let budget = self
             .rocksdb_memory_budget()
-            .saturating_sub(self.rocksdb_data_memtables_budget());
-        // sanitize minimum to 4MiB
-        std::cmp::max(budget, 4 * 1024 * 1024)
+            .as_usize()
+            .saturating_sub(METADATA_MEMORY_BUDGET.as_usize());
+        // sanitize minimum to 32MiB
+        NonZeroByteCount::new(NonZeroUsize::new(std::cmp::max(budget, 32 * 1024 * 1024)).unwrap())
+    }
+
+    pub fn rocksdb_metadata_memtables_budget(&self) -> NonZeroByteCount {
+        METADATA_MEMORY_BUDGET
     }
 
     pub fn data_dir(&self) -> PathBuf {
@@ -200,15 +197,11 @@ impl Default for LogServerOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.5,
             rocksdb_max_sub_compactions: 0,
-            rocksdb_max_wal_size: 0,
+            rocksdb_max_wal_size: ByteCount::ZERO,
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,
             #[allow(deprecated)]
             incoming_network_queue_length: None,
-            // 256 MiB for data service
-            data_service_memory_limit: NonZeroByteCount::new(
-                NonZeroUsize::new(256 * 1024 * 1024).unwrap(),
-            ),
             rocksdb_enable_blob_separation: false,
         }
     }
