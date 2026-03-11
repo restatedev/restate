@@ -19,7 +19,7 @@ use restate_types::time::NanosSinceEpoch;
 #[derive(Debug, derive_more::TryFrom, Eq, PartialEq, Ord, PartialOrd)]
 #[try_from(repr)]
 #[repr(u8)]
-pub(super) enum RecordFormat {
+pub enum RecordFormat {
     CustomV1 = 0x01,
 }
 
@@ -60,7 +60,7 @@ enum KeyStyle {
 }
 
 /// Helpers to encode/decode the record payload as rocksdb value
-pub(super) struct DataRecordDecoder<'a> {
+pub struct DataRecordDecoder<'a> {
     keys: Keys,
     buffer: &'a [u8],
 }
@@ -108,7 +108,7 @@ impl<'a> DataRecordDecoder<'a> {
 }
 
 #[derive(derive_more::From)]
-pub(super) struct DataRecordEncoder<'a>(&'a Record);
+pub struct DataRecordEncoder<'a>(&'a Record);
 
 impl DataRecordEncoder<'_> {
     /// On-disk record layout.
