@@ -20,11 +20,13 @@ restate-workspace-hack = { workspace = true }
 
 # Restate crates
 restate-cli-util = { workspace = true }
+restate-log-server = { workspace = true, features = ["expose-internals"] }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-serde-util = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
+restate-wal-protocol = { workspace = true }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
@@ -34,6 +36,7 @@ cling = { workspace = true }
 comfy-table = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = { version = "3.4" }
+jiff = { workspace = true }
 rlimit = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
