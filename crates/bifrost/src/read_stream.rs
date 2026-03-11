@@ -30,6 +30,7 @@ use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::live::Live;
 use restate_types::logs::KeyFilter;
+use restate_types::logs::LogletId;
 use restate_types::logs::MatchKeyQuery;
 use restate_types::logs::SequenceNumber;
 use restate_types::logs::TailState;
@@ -55,6 +56,7 @@ use crate::bifrost::MaybeLoglet;
 use crate::error::AdminError;
 use crate::loglet::OperationError;
 use crate::loglet_wrapper::LogletReadStreamWrapper;
+use crate::read_stream_registry::{ReadStreamId, ReadStreamState, SharedReadStreamState};
 
 /// A read stream reads from the virtual log. The stream provides a unified view over
 /// the virtual log addressing space in the face of seals, reconfiguration, and trims.
@@ -62,7 +64,7 @@ use crate::loglet_wrapper::LogletReadStreamWrapper;
 // The use of [pin_project] is not strictly necessary but it's left to allow future
 // substream implementations to be !Unpin without changing the read_stream.
 #[must_use = "streams do nothing unless polled"]
-#[pin_project(project = ReadStreamProj)]
+#[pin_project(project = ReadStreamProj, PinnedDrop)]
 pub struct LogReadStream {
     log_id: LogId,
     /// Chooses which records to read/return.
@@ -84,6 +86,10 @@ pub struct LogReadStream {
     /// Current substream we are reading from
     #[pin]
     substream: Option<LogletReadStreamWrapper>,
+    /// Introspection: unique ID for this stream in the registry.
+    registry_id: ReadStreamId,
+    /// Introspection: shared state updated on each state transition.
+    shared_state: SharedReadStreamState,
     // IMPORTANT: Do not re-order this field. `inner` must be dropped last. This allows
     // `state` to reference its lifetime as 'static.
     bifrost_inner: Arc<BifrostInner>,
@@ -167,6 +173,12 @@ impl LogReadStream {
         // Accidental reads from Lsn::INVALID are reset to Lsn::OLDEST
         let start_lsn = std::cmp::max(Lsn::OLDEST, start_lsn);
         let log_metadata = Metadata::with_current(|m| m.updateable_logs_metadata());
+
+        let introspection_state = ReadStreamState::new(log_id, start_lsn, end_lsn);
+        let (registry_id, shared_state) = bifrost_inner
+            .read_stream_registry
+            .register(introspection_state);
+
         Ok(Self {
             bifrost_inner,
             log_id,
@@ -178,6 +190,8 @@ impl LogReadStream {
             log_metadata,
             substream: None,
             state: State::New,
+            registry_id,
+            shared_state,
         })
     }
 
@@ -219,6 +233,16 @@ impl FusedStream for LogReadStream {
     }
 }
 
+#[pin_project::pinned_drop]
+impl PinnedDrop for LogReadStream {
+    fn drop(self: Pin<&mut Self>) {
+        let this = self.project();
+        this.bifrost_inner
+            .read_stream_registry
+            .deregister(*this.registry_id);
+    }
+}
+
 /// Read the next record from the log at the current read pointer. The stream will yield
 /// after the record is available to read, this will async-block indefinitely if no records are
 /// ever written and released at the read pointer.
@@ -237,6 +261,9 @@ impl Stream for LogReadStream {
 
         let mut this = self.as_mut().project();
         loop {
+            // Update introspection state before processing.
+            update_shared_state(&this);
+
             let state = this.state.as_mut().project();
             // We have reached the end of the stream.
             if *this.read_pointer == Lsn::MAX || *this.read_pointer > *this.end_lsn {
@@ -670,6 +697,41 @@ fn deliver_trim_gap(
     this.substream.set(None);
     this.state.set(State::FindingLoglet { find_loglet_fut });
     record
+}
+
+fn state_name(state: &State) -> &'static str {
+    match state {
+        State::New => "New",
+        State::FindingLoglet { .. } => "FindingLoglet",
+        State::CreatingSubstream { .. } => "CreatingSubstream",
+        State::Reading { .. } => "Reading",
+        State::AwaitingReconfiguration => "AwaitingReconfiguration",
+        State::AwaitingOrSealChain { .. } => "AwaitingOrSealChain",
+        State::SealingChain { .. } => "SealingChain",
+        State::Terminated => "Terminated",
+    }
+}
+
+fn update_shared_state(this: &ReadStreamProj) {
+    let segment = this
+        .substream
+        .as_ref()
+        .as_pin_ref()
+        .map(|s| s.loglet().segment_index());
+    let loglet_id = segment.map(|seg| LogletId::new(*this.log_id, seg));
+    let safe_tail = match &*this.state {
+        State::Reading {
+            safe_known_tail, ..
+        } => *safe_known_tail,
+        _ => None,
+    };
+    let mut shared = this.shared_state.lock();
+    shared.read_pointer = *this.read_pointer;
+    shared.state = state_name(&this.state);
+    shared.safe_known_tail = safe_tail;
+    shared.current_segment = segment;
+    shared.loglet_id = loglet_id;
+    shared.is_terminated = matches!(&*this.state, State::Terminated);
 }
 
 #[cfg(all(test, feature = "local-loglet"))]

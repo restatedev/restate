@@ -276,6 +276,11 @@ impl Bifrost {
         )?;
         reader.try_collect().await
     }
+
+    /// Returns a reference to the active read stream registry for introspection.
+    pub fn read_stream_registry(&self) -> &crate::read_stream_registry::ActiveReadStreamRegistry {
+        &self.inner.read_stream_registry
+    }
 }
 
 // compile-time check
@@ -288,6 +293,7 @@ pub struct BifrostInner {
     // Initialized after BifrostService::start completes.
     pub(crate) providers: OnceLock<EnumMap<ProviderKind, Option<Arc<dyn LogletProvider>>>>,
     shutting_down: AtomicBool,
+    pub(crate) read_stream_registry: crate::read_stream_registry::ActiveReadStreamRegistry,
 }
 
 impl BifrostInner {
@@ -296,6 +302,7 @@ impl BifrostInner {
             watchdog,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
+            read_stream_registry: Default::default(),
         }
     }
 
