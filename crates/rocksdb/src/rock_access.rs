@@ -13,7 +13,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, ImportColumnFamilyOptions, WriteBufferManager,
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, ImportColumnFamilyOptions, RateLimiter,
+    WriteBufferManager,
 };
 use rocksdb::{CompactOptions, ExportImportFilesMetaData};
 use tokio::time::Instant;
@@ -113,11 +114,14 @@ impl RocksAccess {
         env: &rocksdb::Env,
         write_buffer_manager: &WriteBufferManager,
         global_cache: &Cache,
+        limiter: &RateLimiter,
     ) -> Result<Self, RocksError> {
-        let db_options =
-            db_spec
-                .db_configurator
-                .get_db_options(db_spec.name(), env, write_buffer_manager);
+        let db_options = db_spec.db_configurator.get_db_options(
+            db_spec.name(),
+            env,
+            write_buffer_manager,
+            limiter,
+        );
         let mut all_cfs: HashSet<CfName> = match rocksdb::DB::list_cf(&db_options, &db_spec.path) {
             Ok(existing) => existing.into_iter().map(Into::into).collect(),
             Err(e) => {
