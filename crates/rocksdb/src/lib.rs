@@ -125,6 +125,7 @@ impl RocksDb {
                     &manager.env,
                     &manager.write_buffer_manager,
                     &manager.cache,
+                    &manager.rate_limiter,
                 )
             })
             .build()

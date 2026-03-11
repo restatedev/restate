@@ -52,12 +52,14 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
         db_name: &DbName,
         env: &rocksdb::Env,
         write_buffer_manager: &rocksdb::WriteBufferManager,
+        limiter: &rocksdb::RateLimiter,
     ) -> rocksdb::Options {
         let mut db_options = restate_rocksdb::configuration::create_default_db_options(
             env,
             db_name,
             true, /* create_db_if_missing */
             write_buffer_manager,
+            limiter,
         );
         // load config from the input configuration
         let metadata_server_config = &Configuration::pinned().metadata_server;
