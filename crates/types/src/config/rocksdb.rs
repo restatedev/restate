@@ -122,6 +122,27 @@ pub struct RocksDbOptions {
     #[serde_as(as = "Option<NonZeroByteCount>")]
     #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
     rocksdb_block_size: Option<NonZeroUsize>,
+
+    /// # Disable WAL compression
+    ///
+    /// When false (the default), the Write-Ahead Log is compressed with Zstd.
+    /// Set to true to disable WAL compression. Only applies when WAL is enabled.
+    ///
+    /// Default: false (WAL compression enabled)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_disable_wal_compression: Option<bool>,
+
+    /// # Disable L0/L1 SST compression
+    ///
+    /// When false (the default), L0 and L1 SST files are compressed with Zstd.
+    /// Higher levels (L2+) always use Zstd regardless of this setting.
+    /// Set to true to disable compression for L0/L1, which can improve write
+    /// throughput at the cost of higher disk usage since these files are
+    /// short-lived and frequently compacted.
+    ///
+    /// Default: false (L0/L1 compression enabled)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_disable_l0_l1_compression: Option<bool>,
 }
 
 /// Verbosity of the LOG.
@@ -184,6 +205,13 @@ impl RocksDbOptions {
         if self.rocksdb_block_size.is_none() {
             self.rocksdb_block_size = Some(common.rocksdb_block_size());
         }
+        if self.rocksdb_disable_wal_compression.is_none() {
+            self.rocksdb_disable_wal_compression = Some(common.rocksdb_disable_wal_compression());
+        }
+        if self.rocksdb_disable_l0_l1_compression.is_none() {
+            self.rocksdb_disable_l0_l1_compression =
+                Some(common.rocksdb_disable_l0_l1_compression());
+        }
     }
 
     pub fn rocksdb_disable_wal(&self) -> bool {
@@ -239,6 +267,14 @@ impl RocksDbOptions {
     pub fn rocksdb_block_size(&self) -> NonZeroUsize {
         self.rocksdb_block_size
             .unwrap_or(NonZeroUsize::new(64 * 1024).unwrap())
+    }
+
+    pub fn rocksdb_disable_wal_compression(&self) -> bool {
+        self.rocksdb_disable_wal_compression.unwrap_or(false)
+    }
+
+    pub fn rocksdb_disable_l0_l1_compression(&self) -> bool {
+        self.rocksdb_disable_l0_l1_compression.unwrap_or(false)
     }
 }
 

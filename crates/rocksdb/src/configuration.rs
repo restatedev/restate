@@ -196,3 +196,22 @@ pub fn convert_log_level(input: RocksDbLogLevel) -> rocksdb::LogLevel {
         RocksDbLogLevel::Warn => LogLevel::Warn,
     }
 }
+
+/// Builds a per-level compression array for `num_levels` levels.
+///
+/// L0 and L1 use `l0_l1_compression`, remaining levels use `upper_compression`.
+pub fn build_compression_per_level(
+    num_levels: usize,
+    l0_l1_compression: rocksdb::DBCompressionType,
+    upper_compression: rocksdb::DBCompressionType,
+) -> Vec<rocksdb::DBCompressionType> {
+    (0..num_levels)
+        .map(|level| {
+            if level <= 1 {
+                l0_l1_compression
+            } else {
+                upper_compression
+            }
+        })
+        .collect()
+}
