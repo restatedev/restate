@@ -202,7 +202,8 @@ impl LogStoreWriterBuilder {
                     // family.
                     //
                     // todo(asoli): replace 4 with a shared const.
-                    let target_batch_size_bytes = config.rocksdb_data_memtables_budget() / 4;
+                    let target_batch_size_bytes =
+                        config.rocksdb_data_memtables_budget().as_usize() / 4;
                     tokio::select! {
                         biased;
                         Some(cmd)= hi_pri_rx.recv() => {
