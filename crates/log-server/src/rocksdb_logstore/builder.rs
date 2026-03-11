@@ -118,48 +118,48 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
 
         db_options.set_max_total_wal_size(log_server_config.rocksdb_max_wal_size().as_u64());
 
-        db_options.set_enable_pipelined_write(true);
+        // Flush both CFs atomically. This ensures the metadata CF (trim points, seals)
+        // and the data CF are always consistent on disk without requiring WAL replay to
+        // reconstruct the relationship. The metadata CF is sized so that it never triggers
+        // a flush on its own — it piggybacks on data CF flushes.
+        //
+        // Note: atomic_flush is incompatible with enable_pipelined_write, and it forces
+        // min_write_buffer_number_to_merge=1 on all CFs (which is what we want anyway).
+        db_options.set_atomic_flush(true);
         db_options.set_max_subcompactions(log_server_config.rocksdb_max_sub_compactions());
 
         db_options
     }
 
     fn note_config_update(&self, db: &restate_rocksdb::RocksAccess) {
-        // memory budget is in bytes. We divide the budget between the data cf and metadata cf.
-        let (data_budget, metadata_budget) = {
+        let data_budget = {
             let config = &Configuration::pinned().log_server;
-            let data_budget = config.rocksdb_data_memtables_budget();
-            let metadata_budget = config.rocksdb_metadata_memtables_budget();
-            (data_budget, metadata_budget)
+            config.rocksdb_data_memtables_budget()
         };
 
-        set_memtable_budget(db, DATA_CF, data_budget.as_usize());
-        set_memtable_budget(db, METADATA_CF, metadata_budget.as_usize());
-        // check if usage is higher than the new budget, then force a flush.
+        update_data_cf_budget(db, data_budget.as_usize());
+        // Keep metadata CF write_buffer_size in sync so it never triggers a flush on
+        // its own (atomic_flush means any CF triggering a flush drags all CFs along).
+        update_metadata_cf_write_buffer_size(db, data_budget.as_usize());
 
+        // If current memtable usage exceeds the new budget, trigger a flush so that
+        // memory is reclaimed promptly. With atomic_flush, flushing the data CF will
+        // also flush the metadata CF.
         let total_data_usage = db
             .get_property_int_cf(DATA_CF, "rocksdb.cur-size-all-mem-tables")
             .unwrap()
             .unwrap_or_default() as usize;
 
-        let total_metadata_usage = db
-            .get_property_int_cf(METADATA_CF, "rocksdb.cur-size-all-mem-tables")
-            .unwrap()
-            .unwrap_or_default() as usize;
-
-        let will_flush = total_data_usage > data_budget.as_usize()
-            || total_metadata_usage > metadata_budget.as_usize();
+        let will_flush = total_data_usage > data_budget.as_usize();
         info!(
-            "Updating log-server memory budget. data_usage:{}/{}, metadata_usage:{}/{}, will_flush: {}",
+            "Updating log-server data CF memory budget. usage:{}/{}, will_flush: {}",
             ByteCount::from(total_data_usage),
             data_budget,
-            ByteCount::from(total_metadata_usage),
-            metadata_budget,
             will_flush
         );
         if will_flush {
             db.flush_memtables(
-                &[CfName::from(DATA_CF), CfName::from(METADATA_CF)],
+                &[CfName::from(DATA_CF)],
                 // do not wait for flush to complete to avoid blocking the runtime.
                 false,
             )
@@ -168,25 +168,42 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
     }
 }
 
-fn set_memtable_budget(db: &restate_rocksdb::RocksAccess, cf: &str, memory_budget: usize) {
-    let max_bytes_for_level_base = memory_budget;
-    let single_memtable_budget = memory_budget / 4;
-    let target_file_size_base = memory_budget / 8;
+/// Dynamically updates the data CF sizing options to match the new memory budget.
+///
+/// Must stay in sync with the initial values set by [`cf_data_options`]:
+///   - `write_buffer_size = budget / 4`
+///   - `target_file_size_base = budget / 8`
+///   - `max_bytes_for_level_base = budget * 2` (= trigger × write_buffer_size = 8 × budget/4)
+///
+/// `level0_file_num_compaction_trigger` (8) is a constant that doesn't depend on the
+/// budget — the ratio `8 × (budget/4) = 2 × budget` holds for any budget value.
+fn update_data_cf_budget(db: &restate_rocksdb::RocksAccess, memory_budget: usize) {
+    let write_buffer_size = (memory_budget / 4).to_string();
+    let target_file_size_base = (memory_budget / 8).to_string();
+    let max_bytes_for_level_base = (memory_budget * 2).to_string();
 
-    let max_bytes_for_level_base_str = max_bytes_for_level_base.to_string();
-    let single_memtable_budget_str = single_memtable_budget.to_string();
-    let target_file_size_base_str = target_file_size_base.to_string();
-    // setting data-cf memory budget
     if let Err(err) = db.set_options_cf(
-        cf,
+        DATA_CF,
         &[
-            ("write_buffer_size", &single_memtable_budget_str),
-            ("target_file_size_base", &target_file_size_base_str),
-            ("max_bytes_for_level_base", &max_bytes_for_level_base_str),
+            ("write_buffer_size", &write_buffer_size),
+            ("target_file_size_base", &target_file_size_base),
+            ("max_bytes_for_level_base", &max_bytes_for_level_base),
         ],
     ) {
         warn!(
-            "Failed to update memory budget for {}/{cf}: {err}",
+            "Failed to update data CF memory budget for {}/{DATA_CF}: {err}",
+            db.name(),
+        );
+    }
+}
+
+/// Keeps the metadata CF write_buffer_size in sync with the data CF so that
+/// the metadata CF never independently triggers a flush under atomic_flush.
+fn update_metadata_cf_write_buffer_size(db: &restate_rocksdb::RocksAccess, data_budget: usize) {
+    let write_buffer_size = (data_budget / 4).to_string();
+    if let Err(err) = db.set_options_cf(METADATA_CF, &[("write_buffer_size", &write_buffer_size)]) {
+        warn!(
+            "Failed to update metadata CF write_buffer_size for {}/{METADATA_CF}: {err}",
             db.name(),
         );
     }
@@ -203,10 +220,6 @@ impl restate_rocksdb::configuration::CfConfigurator for RocksConfigurator {
         let config = &Configuration::pinned().log_server;
         let mut cf_options =
             restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
-        let block_options = restate_rocksdb::configuration::create_default_block_options(
-            &config.rocksdb,
-            Some(global_cache),
-        );
 
         cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
         if let Some(compaction_period) = config.rocksdb.rocksdb_periodic_compaction_seconds() {
@@ -214,13 +227,31 @@ impl restate_rocksdb::configuration::CfConfigurator for RocksConfigurator {
         }
 
         if cf_name == DATA_CF {
+            let block_options = restate_rocksdb::configuration::create_default_block_options(
+                &config.rocksdb,
+                Some(global_cache),
+            );
             cf_data_options(&mut cf_options, &block_options, config);
         } else if cf_name == METADATA_CF {
+            let block_options = metadata_block_options(&config.rocksdb, global_cache);
             cf_metadata_options(&mut cf_options, &block_options, config);
         }
 
         cf_options
     }
+}
+
+/// Block options for the metadata CF. Uses a smaller block size than the default (4KiB vs
+/// 64KiB) since this CF is small and accessed via point lookups where large blocks waste
+/// read bandwidth.
+fn metadata_block_options(
+    opts: &restate_types::config::RocksDbOptions,
+    global_cache: &Cache,
+) -> BlockBasedOptions {
+    let mut block_options =
+        restate_rocksdb::configuration::create_default_block_options(opts, Some(global_cache));
+    block_options.set_block_size(4 * 1024);
+    block_options
 }
 
 fn cf_data_options(
@@ -233,6 +264,17 @@ fn cf_data_options(
     let memtables_budget = log_server_config.rocksdb_data_memtables_budget().as_usize();
 
     set_memory_related_opts(opts, memtables_budget);
+    // With atomic_flush enabled, min_write_buffer_number_to_merge is forced to 1 by
+    // RocksDB. Each flush produces one L0 file of ~(budget / 4).
+    //
+    // We intentionally delay L0→L1 compaction (trigger=8) to give trimming a chance to
+    // reclaim data before compaction runs. Reads are rare thanks to the RecordCache, so
+    // higher L0 read amplification is acceptable. At trigger=8, L0 accumulates up to
+    // ~2×budget before compaction, with comfortable headroom to the default slowdown (20)
+    // and stop (36) triggers.
+    opts.set_level_zero_file_num_compaction_trigger(8);
+    // L1 target = trigger × write_buffer_size = 8 × (budget/4) = 2 × budget.
+    opts.set_max_bytes_for_level_base(memtables_budget as u64 * 2);
     opts.set_compaction_style(rocksdb::DBCompactionStyle::Level);
     opts.set_num_levels(7);
 
@@ -251,6 +293,11 @@ fn cf_data_options(
     );
     opts.set_compression_per_level(&levels);
 
+    // Override the global default. We want bloom filters on the last level because
+    // trimmed ranges (via DeleteRange) can cause scans to hit levels where data no longer
+    // exists, and last-level bloom filters help skip those blocks.
+    opts.set_optimize_filters_for_hits(false);
+
     opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(KeyPrefix::size()));
     opts.set_memtable_prefix_bloom_ratio(0.2);
 
@@ -262,21 +309,16 @@ fn cf_data_options(
     }
 }
 
+/// Sets common memtable and SST sizing for the data column family.
+///
+/// With 4 write buffers (1 mutable + 3 immutable), each memtable is `budget / 4`.
+/// The caller must separately set `level_zero_file_num_compaction_trigger` and
+/// `max_bytes_for_level_base` to satisfy the invariant:
+///   `trigger × write_buffer_size ≈ max_bytes_for_level_base`
 fn set_memory_related_opts(opts: &mut rocksdb::Options, memtables_budget: usize) {
-    // We set the budget to allow 1 mutable + 3 immutable.
     opts.set_write_buffer_size(memtables_budget / 4);
-
-    // merge 2 memtables when flushing to L0
-    opts.set_min_write_buffer_number_to_merge(2);
     opts.set_max_write_buffer_number(4);
-    // start flushing L0->L1 as soon as possible. each file on level0 is
-    // (memtable_memory_budget / 2). This will flush level 0 when it's bigger than
-    // memtable_memory_budget.
-    opts.set_level_zero_file_num_compaction_trigger(2);
-    // doesn't really matter much, but we don't want to create too many files
     opts.set_target_file_size_base(memtables_budget as u64 / 8);
-    // make Level1 size equal to Level0 size, so that L0->L1 compactions are fast
-    opts.set_max_bytes_for_level_base(memtables_budget as u64);
 }
 
 fn cf_metadata_options(
@@ -285,32 +327,28 @@ fn cf_metadata_options(
     log_server_config: &LogServerOptions,
 ) {
     opts.set_block_based_table_factory(block_options);
-    let memtables_budget = log_server_config
-        .rocksdb_metadata_memtables_budget()
-        .as_usize();
 
-    set_memory_related_opts(opts, memtables_budget);
-    //
-    // Set compactions per level
-    //
-    opts.set_num_levels(3);
-    let l0_l1 = if log_server_config
-        .rocksdb
-        .rocksdb_disable_l0_l1_compression()
-    {
-        rocksdb::DBCompressionType::None
-    } else {
-        rocksdb::DBCompressionType::Zstd
-    };
-    let levels = restate_rocksdb::configuration::build_compression_per_level(
-        3,
-        l0_l1,
-        rocksdb::DBCompressionType::Zstd,
-    );
-    opts.set_compression_per_level(&levels);
-    opts.set_memtable_whole_key_filtering(true);
+    // The metadata CF uses the data CF's write_buffer_size so it never independently
+    // triggers a flush (with atomic_flush, any CF triggering drags all CFs along).
+    // Metadata writes are tiny (~20 bytes per op), so actual memory use is negligible.
+    let data_memtables_budget = log_server_config.rocksdb_data_memtables_budget().as_usize();
+    opts.set_write_buffer_size(data_memtables_budget / 4);
     opts.set_max_write_buffer_number(4);
-    opts.set_max_successive_merges(10);
-    // Merge operator for some metadata updates
+
+    // The metadata CF holds a handful of small keys per loglet (trim point, sequencer,
+    // seal). Total data is typically a few hundred KB even with thousands of loglets —
+    // SST files will never approach the default target_file_size_base or level limits,
+    // so we leave those at RocksDB defaults. Compact eagerly to keep L0 clean for point
+    // lookups (e.g. load_loglet_state).
+    opts.set_level_zero_file_num_compaction_trigger(2);
+    opts.set_num_levels(3);
+    // The metadata CF is tiny — disable compression entirely to avoid unnecessary CPU
+    // overhead on flushes and point lookups. The disk savings are negligible.
+    opts.set_compression_type(rocksdb::DBCompressionType::None);
+    opts.set_memtable_whole_key_filtering(true);
+    // Merge operator for trim-point updates (monotonic max). The merge is trivially cheap
+    // (max on 8-byte offsets) and trim points are rarely read, so we leave
+    // max_successive_merges at the default (0 = disabled) to avoid unnecessary memtable
+    // lookups on the write path. Merge chains are naturally bounded by flush frequency.
     opts.set_merge_operator("MetadataMerge", metadata_full_merge, metadata_partial_merge);
 }
