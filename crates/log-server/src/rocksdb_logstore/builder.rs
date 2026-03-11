@@ -305,9 +305,33 @@ fn cf_data_options(
 
     if log_server_config.rocksdb_enable_blob_separation {
         opts.set_enable_blob_files(true);
-        opts.set_min_blob_size(512 * 1024); // 512KiB minimum to use blob files
+        opts.set_min_blob_size(log_server_config.rocksdb_blob_min_size().as_u64());
+        let blob_compression = if log_server_config.rocksdb_disable_blob_compression {
+            rocksdb::DBCompressionType::None
+        } else {
+            rocksdb::DBCompressionType::Zstd
+        };
+        opts.set_blob_compression_type(blob_compression);
+
+        // Blob GC: relocate live blobs during compaction to reclaim space after trimming.
         opts.set_enable_blob_gc(true);
-        opts.set_blob_compression_type(rocksdb::DBCompressionType::Zstd);
+        // All blob files are eligible for GC. Data is append-only so blob GC is purely
+        // about cleanup after DeleteRange trimming — there's no benefit to limiting
+        // eligibility to the oldest fraction.
+        opts.set_blob_gc_age_cutoff(1.0);
+        // Trigger forced compactions when >=50% of data in eligible blob files is garbage.
+        // Without this (default 1.0 = disabled), SSTs referencing trimmed blob data may
+        // not be picked for compaction naturally, delaying disk space reclamation.
+        opts.set_blob_gc_force_threshold(0.5);
+        // Use the same readahead size for blob files as for SST files during compaction.
+        // Blob GC reads blobs from old files during compaction; readahead improves
+        // throughput, especially with direct I/O enabled.
+        opts.set_blob_compaction_readahead_size(
+            log_server_config
+                .rocksdb
+                .rocksdb_compaction_readahead_size()
+                .get() as u64,
+        );
     }
 }
 
