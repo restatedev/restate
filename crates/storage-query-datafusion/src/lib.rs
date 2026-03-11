@@ -21,7 +21,9 @@ mod journal;
 mod journal_events;
 mod keyed_service_status;
 mod log;
+pub mod loglet_worker;
 mod node;
+mod node_fan_out;
 mod partition;
 mod partition_replica_set;
 mod partition_state;
@@ -35,7 +37,8 @@ mod statistics;
 pub mod table_docs;
 mod table_macro;
 mod table_providers;
-mod table_util;
+pub use table_providers::Scan;
+pub mod table_util;
 
 use std::sync::Arc;
 

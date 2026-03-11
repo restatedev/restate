@@ -55,6 +55,7 @@ restate-worker = { workspace = true }
 ahash = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+datafusion = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 codederror = { workspace = true }

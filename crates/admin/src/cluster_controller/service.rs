@@ -35,6 +35,10 @@ use restate_core::{cancellation_token, my_node_id};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_storage_query_datafusion::BuildError;
 use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
+use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
+use restate_storage_query_datafusion::remote_query_scanner_manager::{
+    RemoteScannerManager, create_partition_locator,
+};
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::health::HealthStatus;
@@ -107,14 +111,23 @@ where
         let options = configuration.live_load();
         let heartbeat_interval = Self::create_heartbeat_interval(&options.admin);
 
-        let cluster_query_context = QueryContext::create(
-            &options.admin.query_engine,
-            ClusterTables::new(
-                replica_set_states.clone(),
-                cluster_state_refresher.cluster_state_watcher().watch(),
+        let remote_scanner_manager = RemoteScannerManager::new(
+            create_remote_scanner_service(networking.clone()),
+            create_partition_locator(
+                restate_core::partitions::PartitionRouting::new(
+                    replica_set_states.clone(),
+                    TaskCenter::current(),
+                ),
+                Metadata::current(),
             ),
-        )
-        .await?;
+        );
+        let cluster_tables = ClusterTables::new(
+            replica_set_states.clone(),
+            cluster_state_refresher.cluster_state_watcher().watch(),
+            remote_scanner_manager,
+        );
+        let cluster_query_context =
+            QueryContext::create(&options.admin.query_engine, cluster_tables).await?;
 
         // Registering ClusterCtrlSvc grpc service to network server
         server_builder.register_grpc_service(

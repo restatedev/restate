@@ -37,6 +37,7 @@ derive_more = { workspace = true, features = ["debug"] }
 enumset = { workspace = true }
 futures = { workspace = true }
 itertools = { workspace = true }
+parking_lot = { workspace = true }
 paste = { workspace = true }
 prost = { workspace = true }
 schemars = { workspace = true, optional = true }

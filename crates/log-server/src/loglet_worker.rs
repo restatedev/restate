@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use metrics::counter;
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, info, trace, warn};
@@ -32,7 +33,7 @@ use restate_types::net::{RpcRequest, UnaryMessage, log_server::*};
 use restate_types::retries::with_jitter;
 
 use crate::logstore::{Commit, LogStore, LogletWriter, WriteDisableReason};
-use crate::metadata::LogletState;
+use crate::metadata::{IntrospectLogletWorker, LogletState, LogletWorkerState};
 use crate::metric_definitions::{
     LOG_SERVER_LOGLET_STARTED, LOG_SERVER_LOGLET_STOPPED, LOG_SERVER_STORE_BYTES,
     LOG_SERVER_STORE_RECORDS,
@@ -49,6 +50,7 @@ use crate::metric_definitions::{
 pub struct LogletWorkerHandle {
     meta_tx: ShardSender<LogServerMetaService>,
     data_tx: ShardSender<LogServerDataService>,
+    introspection_tx: mpsc::Sender<IntrospectLogletWorker>,
     loglet_guard: TaskGuard<()>,
 }
 
@@ -63,6 +65,10 @@ impl LogletWorkerHandle {
 
     pub fn meta_tx(&self) -> ShardSender<LogServerMetaService> {
         self.meta_tx.clone()
+    }
+
+    pub fn introspection_tx(&self) -> &mpsc::Sender<IntrospectLogletWorker> {
+        &self.introspection_tx
     }
 }
 
@@ -115,16 +121,18 @@ impl<S: LogStore> LogletWorker<S> {
 
         let (data_tx, data_rx) = ShardSender::new();
         let (meta_tx, meta_rx) = ShardSender::new();
+        let (introspection_tx, introspection_rx) = mpsc::channel(10);
 
         let loglet_guard = TaskCenter::spawn_unmanaged(
             TaskKind::LogletWorker,
             "loglet-worker",
-            worker.run(data_rx, meta_rx),
+            worker.run(data_rx, meta_rx, introspection_rx),
         )?
         .into_guard();
         Ok(LogletWorkerHandle {
             data_tx,
             meta_tx,
+            introspection_tx,
             loglet_guard,
         })
     }
@@ -133,6 +141,7 @@ impl<S: LogStore> LogletWorker<S> {
         mut self,
         mut data_rx: ServiceStream<LogServerDataService>,
         mut meta_rx: ServiceStream<LogServerMetaService>,
+        mut introspection_rx: mpsc::Receiver<IntrospectLogletWorker>,
     ) {
         let mut local_tail_stream = WatchStream::new(self.loglet_state.subscribe_local_tail());
         let mut global_tail_stream = WatchStream::new(self.loglet_state.subscribe_global_tail());
@@ -164,6 +173,9 @@ impl<S: LogStore> LogletWorker<S> {
                     );
                     // drain and terminate
                     break;
+                }
+                Some(cmd) = introspection_rx.recv() => {
+                    self.on_introspection_command(cmd);
                 }
                 // LogStore has disabled writes — drain pending waiters (resolving any that
                 // succeeded before the failure), but continue serving reads and meta ops.
@@ -225,6 +237,9 @@ impl<S: LogStore> LogletWorker<S> {
         debug!(loglet_id = %self.loglet_id, "Waiting for loglet worker to finish");
         loop {
             tokio::select! {
+                Some(cmd) = introspection_rx.recv(), if self.pending.has_waiting_for_writes() => {
+                    self.on_introspection_command(cmd);
+                }
                 // LogStore has disabled writes — drain pending waiters (resolving any that
                 // succeeded before the failure), but continue serving reads and meta ops.
                 reason = &mut write_disable_fut, if self.accepting_writes && self.pending.has_waiting_for_writes() => {
@@ -288,6 +303,27 @@ impl<S: LogStore> LogletWorker<S> {
     fn on_global_tail_change(&mut self, new_global: LogletOffset) {
         self.pending
             .on_global_tail_change(self.loglet_state.local_tail(), new_global);
+    }
+
+    fn on_introspection_command(&mut self, cmd: IntrospectLogletWorker) {
+        match cmd {
+            IntrospectLogletWorker::GetState(tx) => {
+                let _ = tx.send(LogletWorkerState {
+                    staging_local_tail: self.staging_local_tail,
+                    accepting_writes: self.accepting_writes,
+                    seal_enqueued: self.seal_enqueued,
+                    pending_stores: self.pending.stores.len() as u32,
+                    pending_repair_stores: self.pending.repair_stores.len() as u32,
+                    pending_seals: self.pending.seals.len() as u32,
+                    pending_trims: self.pending.pending_trims.len() as u32,
+                    pending_tail_waiters: (self.pending.local_tail_waiters.len()
+                        + self.pending.global_tail_waiters.len()
+                        + self.pending.local_or_global_tail_waiters.len())
+                        as u32,
+                    last_request_at: self.last_request,
+                });
+            }
+        }
     }
 
     fn is_quiescent(&self) -> bool {

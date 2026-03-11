@@ -11,6 +11,7 @@
 mod cluster_marker;
 mod failure_detector;
 mod init;
+mod introspection;
 mod metric_definitions;
 mod network_server;
 mod roles;
@@ -33,6 +34,12 @@ use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
 use restate_log_server::LogServerService;
+use restate_storage_query_datafusion::context::{NoTables, QueryContext};
+use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
+use restate_storage_query_datafusion::remote_query_scanner_manager::{
+    RemoteScannerManager, create_partition_locator,
+};
+use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 
 use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
@@ -139,6 +146,7 @@ pub struct Node {
     worker_role: Option<WorkerRole<GrpcConnector>>,
     ingress_role: Option<IngressRole<GrpcConnector>>,
     log_server: Option<LogServerService>,
+    datafusion_remote_scanner: RemoteQueryScannerServer,
     networking: Networking<GrpcConnector>,
     is_provisioned: bool,
     prometheus: Prometheus,
@@ -281,6 +289,18 @@ impl Node {
             }),
         );
 
+        // Create a node-level RemoteScannerManager shared across all roles.
+        // The partition locator routes partition-scoped scan RPCs to the right
+        // node, and the RemoteQueryScannerServer below serves scan RPCs for
+        // all registered scanners regardless of role.
+        let remote_scanner_manager = RemoteScannerManager::new(
+            create_remote_scanner_service(networking.clone()),
+            create_partition_locator(
+                PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+                metadata.clone(),
+            ),
+        );
+
         let worker_role = if config.has_role(Role::Worker) {
             Some(
                 WorkerRole::create(
@@ -292,12 +312,35 @@ impl Node {
                     bifrost_svc.handle(),
                     ingestion_client.clone(),
                     metadata_manager.writer(),
+                    remote_scanner_manager.clone(),
                 )
                 .await?,
             )
         } else {
             None
         };
+
+        // Register loglet_workers local scanner if the log-server role is present.
+        if let Some(log_server) = &log_server {
+            let local_scanner = introspection::loglet_workers::create_local_scanner(
+                log_server.state_map().clone(),
+                log_server.active_worker_map().clone(),
+                metadata.clone(),
+            );
+            remote_scanner_manager.register_node_scanner("loglet_workers", local_scanner);
+        }
+
+        // Create a minimal QueryContext for the remote scanner server — it only
+        // needs task_ctx() for physical expression deserialization.
+        let scanner_query_context = QueryContext::create(&config.admin.query_engine, NoTables)
+            .await
+            .expect("creating minimal QueryContext should not fail");
+
+        let datafusion_remote_scanner = RemoteQueryScannerServer::new(
+            scanner_query_context,
+            remote_scanner_manager,
+            &mut router_builder,
+        );
 
         let ingress_role = if config.has_role(Role::HttpIngress) {
             Some(IngressRole::create(
@@ -369,6 +412,7 @@ impl Node {
             ingress_role,
             worker_role,
             log_server,
+            datafusion_remote_scanner,
             server_builder,
             networking,
             is_provisioned,
@@ -530,6 +574,14 @@ impl Node {
             &config,
         )
         .await?;
+
+        // Start the DataFusion remote scanner server — serves scan RPCs from
+        // the admin node for node-level and partition-level tables.
+        TaskCenter::spawn(
+            TaskKind::SystemService,
+            "datafusion-scan-server",
+            self.datafusion_remote_scanner.run(),
+        )?;
 
         if let Some(log_server) = self.log_server {
             log_server.start(metadata_writer).await?;
