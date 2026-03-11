@@ -63,7 +63,7 @@ impl RequestPump {
         });
 
         let data_svc = router_builder
-            .register_sharded_service_with_pool(data_pool, BackPressureMode::PushBack);
+            .register_sharded_service_with_pool(data_pool, BackPressureMode::Lossy);
         // Meta service uses the default shared memory pool.
         let meta_svc = router_builder.register_sharded_service(BackPressureMode::Lossy);
 
