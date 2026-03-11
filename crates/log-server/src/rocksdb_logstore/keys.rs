@@ -15,7 +15,7 @@ use bytes::{Buf, BufMut};
 use restate_types::logs::{LogletId, LogletOffset};
 
 // log-store marker
-pub(super) const MARKER_KEY: &[u8] = b"storage-marker";
+pub const MARKER_KEY: &[u8] = b"storage-marker";
 
 // makes sure that it doesn't go unnoticed if this changed by mistake.
 static_assertions::const_assert_eq!(9, KeyPrefix::size());
@@ -25,7 +25,7 @@ static_assertions::const_assert_eq!(9, KeyPrefix::size());
 #[derive(Debug, Clone, Copy, PartialEq, Eq, derive_more::TryFrom)]
 #[try_from(repr)]
 #[repr(u8)]
-pub(super) enum KeyPrefixKind {
+pub enum KeyPrefixKind {
     // data column family
     DataRecord = b'd',
     // metadata column family
@@ -37,7 +37,7 @@ pub(super) enum KeyPrefixKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct KeyPrefix {
+pub struct KeyPrefix {
     kind: KeyPrefixKind,
     loglet_id: LogletId,
 }
@@ -85,13 +85,13 @@ impl KeyPrefix {
     }
 
     /// The number of bytes required for the binary representation of this value
-    pub(super) const fn size() -> usize {
+    pub const fn size() -> usize {
         size_of::<KeyPrefixKind>() + size_of::<LogletId>()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct DataRecordKey {
+pub struct DataRecordKey {
     prefix: KeyPrefix,
     offset: LogletOffset,
 }
@@ -152,7 +152,7 @@ impl DataRecordKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct MetadataKey {
+pub struct MetadataKey {
     prefix: KeyPrefix,
 }
 
