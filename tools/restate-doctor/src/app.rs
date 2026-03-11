@@ -16,6 +16,7 @@ use restate_cli_util::{CliContext, CommonOpts};
 
 use crate::commands::completions::Completions;
 use crate::commands::id;
+use crate::commands::log_server;
 use crate::commands::partition_store;
 
 /// Restate Doctor - Diagnostic tools Restate storage
@@ -53,6 +54,9 @@ pub enum Command {
     /// Analyze partition store (RocksDB)
     #[clap(subcommand)]
     PartitionStore(partition_store::PartitionStoreCommand),
+    /// Analyze log-server store (RocksDB)
+    #[clap(subcommand)]
+    LogServer(log_server::LogServerCommand),
     /// Decode and analyze resource IDs
     #[clap(subcommand)]
     Id(id::IdCommand),

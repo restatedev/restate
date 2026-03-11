@@ -19,7 +19,7 @@ use crate::rocksdb_logstore::keys::{KeyPrefixKind, MetadataKey};
 ///
 /// This merges some metadata updates to ensure that trimpoints can be processed out of order but
 /// it strictly moves forward on the storage layer.
-pub(super) fn metadata_full_merge(
+pub fn metadata_full_merge(
     mut key_buf: &[u8],
     existing_val: Option<&[u8]>,
     operands: &MergeOperands,
@@ -43,7 +43,7 @@ pub(super) fn metadata_full_merge(
     Some(current_trim_point.to_binary_array().into())
 }
 
-pub(super) fn metadata_partial_merge(
+pub fn metadata_partial_merge(
     key: &[u8],
     _unused: Option<&[u8]>,
     operands: &MergeOperands,
