@@ -25,7 +25,9 @@ use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
 use crate::retries::RetryPolicy;
 
 use super::networking::DEFAULT_MESSAGE_SIZE_LIMIT;
-use super::{CommonOptions, NetworkingOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{
+    BackgroundWorkBudget, CommonOptions, NetworkingOptions, RocksDbOptions, RocksDbOptionsBuilder,
+};
 
 /// # Bifrost options
 #[serde_as]
@@ -209,6 +211,24 @@ pub struct LocalLogletOptions {
     /// Trigger a commit when the time since the last commit exceeds this threshold.
     /// Batching is disabled if this is set to zero.
     pub writer_batch_commit_duration: FriendlyDuration,
+
+    /// # Max background flushes
+    ///
+    /// Maximum number of concurrent flush operations for the local-loglet database.
+    ///
+    /// If unset, defaults to 1 (local-loglet has a lightweight workload).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_max_background_flushes: Option<NonZeroU32>,
+
+    /// # Max background compactions
+    ///
+    /// Maximum number of concurrent compaction operations for the local-loglet database.
+    ///
+    /// If unset, defaults to 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_max_background_compactions: Option<NonZeroU32>,
 }
 
 impl LocalLogletOptions {
@@ -226,6 +246,25 @@ impl LocalLogletOptions {
                 .unwrap(),
             );
         }
+    }
+
+    pub fn apply_background_work_budget(&mut self, budget: &BackgroundWorkBudget) {
+        if self.rocksdb_max_background_flushes.is_none() {
+            self.rocksdb_max_background_flushes = Some(budget.max_background_flushes);
+        }
+        if self.rocksdb_max_background_compactions.is_none() {
+            self.rocksdb_max_background_compactions = Some(budget.max_background_compactions);
+        }
+    }
+
+    pub fn rocksdb_max_background_flushes(&self) -> NonZeroU32 {
+        self.rocksdb_max_background_flushes
+            .unwrap_or(NonZeroU32::new(1).unwrap())
+    }
+
+    pub fn rocksdb_max_background_compactions(&self) -> NonZeroU32 {
+        self.rocksdb_max_background_compactions
+            .unwrap_or(NonZeroU32::new(1).unwrap())
     }
 
     pub fn rocksdb_disable_wal_fsync(&self) -> bool {
@@ -262,6 +301,8 @@ impl Default for LocalLogletOptions {
             writer_batch_commit_duration: FriendlyDuration::ZERO,
             rocksdb_disable_wal_fsync: false,
             always_commit_in_background: false,
+            rocksdb_max_background_flushes: None,
+            rocksdb_max_background_compactions: None,
         }
     }
 }

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{DeserializeAs, serde_as};
@@ -18,7 +18,8 @@ use restate_serde_util::NonZeroByteCount;
 use restate_time_util::NonZeroFriendlyDuration;
 
 use super::{
-    CommonOptions, Configuration, RocksDbOptions, RocksDbOptionsBuilder, StructWithDefaults,
+    BackgroundWorkBudget, CommonOptions, Configuration, RocksDbOptions, RocksDbOptionsBuilder,
+    StructWithDefaults,
 };
 
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
@@ -66,6 +67,24 @@ pub struct MetadataServerOptions {
     /// Defines whether this node should auto join the metadata store cluster when being started
     /// for the first time.
     pub auto_join: bool,
+
+    /// # Max background flushes
+    ///
+    /// Maximum number of concurrent flush operations for this database.
+    ///
+    /// If unset, defaults to 1 (metadata-server has a lightweight workload).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_max_background_flushes: Option<NonZeroU32>,
+
+    /// # Max background compactions
+    ///
+    /// Maximum number of concurrent compaction operations for this database.
+    ///
+    /// If unset, defaults to 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_max_background_compactions: Option<NonZeroU32>,
 }
 
 impl MetadataServerOptions {
@@ -96,6 +115,25 @@ impl MetadataServerOptions {
             })
     }
 
+    pub fn apply_background_work_budget(&mut self, budget: &BackgroundWorkBudget) {
+        if self.rocksdb_max_background_flushes.is_none() {
+            self.rocksdb_max_background_flushes = Some(budget.max_background_flushes);
+        }
+        if self.rocksdb_max_background_compactions.is_none() {
+            self.rocksdb_max_background_compactions = Some(budget.max_background_compactions);
+        }
+    }
+
+    pub fn rocksdb_max_background_flushes(&self) -> NonZeroU32 {
+        self.rocksdb_max_background_flushes
+            .unwrap_or(NonZeroU32::new(1).unwrap())
+    }
+
+    pub fn rocksdb_max_background_compactions(&self) -> NonZeroU32 {
+        self.rocksdb_max_background_compactions
+            .unwrap_or(NonZeroU32::new(1).unwrap())
+    }
+
     pub fn request_queue_length(&self) -> usize {
         self.request_queue_length.get()
     }
@@ -120,6 +158,8 @@ impl Default for MetadataServerOptions {
             rocksdb,
             raft_options: RaftOptions::default(),
             auto_join: true,
+            rocksdb_max_background_flushes: None,
+            rocksdb_max_background_compactions: None,
         }
     }
 }
