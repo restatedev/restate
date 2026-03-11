@@ -17,7 +17,7 @@ use serde_with::serde_as;
 use restate_serde_util::{ByteCount, NonZeroByteCount};
 use tracing::warn;
 
-use super::{CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
+use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions, RocksDbOptionsBuilder};
 
 // We'd like to leave as much space as possible for data memtables. The strategy
 // is to avoid triggering data cf because metadata is full, instead, we'd like to
@@ -108,6 +108,25 @@ pub struct LogServerOptions {
     /// This is safe to enable/disable at any time.
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub rocksdb_enable_blob_separation: bool,
+
+    /// # Max background flushes
+    ///
+    /// Maximum number of concurrent flush operations for this database. Flushes are
+    /// latency-critical (they unblock writes) and are allocated equally across databases.
+    ///
+    /// If unset, defaults are computed based on CPU count and active node roles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_max_background_flushes: Option<NonZeroU32>,
+
+    /// # Max background compactions
+    ///
+    /// Maximum number of concurrent compaction operations for this database.
+    ///
+    /// If unset, defaults are computed based on CPU count and active node roles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_max_background_compactions: Option<NonZeroU32>,
 }
 
 fn is_zero(value: &ByteCount<true>) -> bool {
@@ -127,6 +146,25 @@ impl LogServerOptions {
                 .unwrap(),
             );
         }
+    }
+
+    pub fn apply_background_work_budget(&mut self, budget: &BackgroundWorkBudget) {
+        if self.rocksdb_max_background_flushes.is_none() {
+            self.rocksdb_max_background_flushes = Some(budget.max_background_flushes);
+        }
+        if self.rocksdb_max_background_compactions.is_none() {
+            self.rocksdb_max_background_compactions = Some(budget.max_background_compactions);
+        }
+    }
+
+    pub fn rocksdb_max_background_flushes(&self) -> NonZeroU32 {
+        self.rocksdb_max_background_flushes
+            .unwrap_or(NonZeroU32::new(2).unwrap())
+    }
+
+    pub fn rocksdb_max_background_compactions(&self) -> NonZeroU32 {
+        self.rocksdb_max_background_compactions
+            .unwrap_or(NonZeroU32::new(2).unwrap())
     }
 
     pub fn rocksdb_disable_wal_fsync(&self) -> bool {
@@ -203,6 +241,8 @@ impl Default for LogServerOptions {
             #[allow(deprecated)]
             incoming_network_queue_length: None,
             rocksdb_enable_blob_separation: false,
+            rocksdb_max_background_flushes: None,
+            rocksdb_max_background_compactions: None,
         }
     }
 }

@@ -34,7 +34,6 @@ static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 #[derive(derive_more::Debug)]
 #[debug("RocksDbManager")]
 pub struct RocksDbManager {
-    pub(crate) env: rocksdb::Env,
     /// a shared rocksdb block cache
     pub(crate) cache: Cache,
     // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
@@ -44,6 +43,8 @@ pub struct RocksDbManager {
     close_db_tasks: TaskTracker,
     high_pri_pool: threadpool::ThreadPool,
     low_pri_pool: threadpool::ThreadPool,
+    // Keep at the end of the struct to ensure it's dropped last
+    pub(crate) env: rocksdb::Env,
 }
 
 impl RocksDbManager {
@@ -78,9 +79,13 @@ impl RocksDbManager {
         );
         // Setup the shared rocksdb environment
         let mut env = rocksdb::Env::new().expect("rocksdb env is created");
-        env.set_low_priority_background_threads(opts.rocksdb_bg_threads().get() as i32);
-        env.set_high_priority_background_threads(opts.rocksdb_high_priority_bg_threads.get() as i32);
-        env.set_background_threads(opts.rocksdb_bg_threads().get() as i32);
+        env.set_low_priority_background_threads(opts.rocksdb_low_priority_bg_threads().get() as i32);
+        env.set_high_priority_background_threads(
+            opts.rocksdb_high_priority_bg_threads().get() as i32
+        );
+        // Cap the bottom-most compaction to leave room for flushes/compactions that
+        // unblock write stalls.
+        env.set_bottom_priority_background_threads(1);
 
         // Create our own storage thread pools
         let high_pri_pool = threadpool::Builder::new()
