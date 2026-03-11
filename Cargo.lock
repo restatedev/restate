@@ -7445,6 +7445,7 @@ dependencies = [
  "restate-workspace-hack",
  "rust-rocksdb",
  "serde_json",
+ "smallvec",
  "static_assertions",
  "test-log",
  "thiserror 2.0.17",

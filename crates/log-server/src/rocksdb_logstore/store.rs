@@ -12,7 +12,6 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use rocksdb::{BoundColumnFamily, DB, ReadOptions, WriteBatch, WriteOptions};
-use tokio::time::Instant;
 use tracing::trace;
 
 use restate_bifrost::loglet::OperationError;
@@ -102,6 +101,7 @@ impl LogletWriter for RocksDbLogletWriter {
         &mut self,
         store_message: Store,
         set_sequencer_in_metadata: bool,
+        known_global_tail: LogletOffset,
         reservation: MemoryLease,
     ) -> Option<Token<Commit>> {
         debug_assert!(store_message.first_offset != LogletOffset::INVALID);
@@ -112,27 +112,47 @@ impl LogletWriter for RocksDbLogletWriter {
             } => writer_handle.enqueue_put_records(
                 store_message,
                 set_sequencer_in_metadata,
+                known_global_tail,
                 reservation,
             ),
             LogletWriterState::Disabled => None,
         }
     }
 
-    fn enqueue_seal(&mut self, seal_message: Seal) -> Option<Token<Commit>> {
+    fn enqueue_seal(
+        &mut self,
+        seal_message: Seal,
+        known_global_tail: LogletOffset,
+    ) -> Option<Token<Commit>> {
         match self.inner {
             LogletWriterState::Active {
                 ref writer_handle, ..
-            } => writer_handle.enqueue_seal(seal_message),
+            } => writer_handle.enqueue_seal(seal_message, known_global_tail),
             LogletWriterState::Disabled => None,
         }
     }
 
-    fn enqueue_trim(&mut self, trim_message: Trim) -> Option<Token<Commit>> {
+    fn enqueue_trim(
+        &mut self,
+        trim_message: Trim,
+        known_global_tail: LogletOffset,
+    ) -> Option<Token<Commit>> {
         match self.inner {
             LogletWriterState::Active {
                 ref writer_handle, ..
-            } => writer_handle.enqueue_trim(trim_message),
+            } => writer_handle.enqueue_trim(trim_message, known_global_tail),
             LogletWriterState::Disabled => None,
+        }
+    }
+
+    fn set_known_global_tail(&mut self, known_global_tail: LogletOffset) {
+        if let LogletWriterState::Active {
+            loglet_id,
+            ref writer_handle,
+            ..
+        } = self.inner
+        {
+            writer_handle.enqueue_set_global_tail(loglet_id, known_global_tail);
         }
     }
 
@@ -188,12 +208,13 @@ impl LogStore for RocksDbLogStore {
     }
 
     async fn load_loglet_state(&self, loglet_id: LogletId) -> Result<LogletState, OperationError> {
-        let start = Instant::now();
         block_in_place(|| {
             let metadata_cf = self.metadata_cf();
             let data_cf = self.data_cf();
             let keys = [
                 // keep byte-wise sorted
+                &MetadataKey::new(KeyPrefixKind::LastKnownGlobalTail, loglet_id).to_binary_array(),
+                &MetadataKey::new(KeyPrefixKind::LocalTail, loglet_id).to_binary_array(),
                 &MetadataKey::new(KeyPrefixKind::Sequencer, loglet_id).to_binary_array(),
                 &MetadataKey::new(KeyPrefixKind::TrimPoint, loglet_id).to_binary_array(),
                 &MetadataKey::new(KeyPrefixKind::Seal, loglet_id).to_binary_array(),
@@ -207,7 +228,7 @@ impl LogStore for RocksDbLogStore {
                 true,
                 &readopts,
             );
-            debug_assert_eq!(3, results.len());
+            debug_assert_eq!(5, results.len());
             // If the key exists, it means a seal is set.
             let is_sealed = results
                 .pop()
@@ -225,56 +246,69 @@ impl LogStore for RocksDbLogStore {
                 .unwrap()
                 .map_err(RocksDbLogStoreError::from)?
                 .map(|raw_slice| GenerationalNodeId::decode(raw_slice.as_ref()));
+            let local_tail = results
+                .pop()
+                .unwrap()
+                .map_err(RocksDbLogStoreError::from)?
+                .map(|raw_slice| LogletOffset::decode(raw_slice.as_ref()));
 
-            // Find the last locally committed offset
-            let oldest_key = DataRecordKey::new(loglet_id, LogletOffset::INVALID);
-            let max_legal_record = DataRecordKey::new(loglet_id, LogletOffset::MAX);
-            let upper_bound = DataRecordKey::exclusive_upper_bound(loglet_id);
-            readopts.fill_cache(false);
-            readopts.set_total_order_seek(false);
-            readopts.set_prefix_same_as_start(true);
-            readopts.set_iterate_lower_bound(oldest_key.to_binary_array());
-            // upper bound is exclusive
-            readopts.set_iterate_upper_bound(upper_bound);
-            let mut iterator = self
-                .rocksdb
-                .inner()
-                .as_raw_db()
-                .raw_iterator_cf_opt(&data_cf, readopts);
-            // see to the max key that exists
-            iterator.seek_for_prev(max_legal_record.to_binary_array());
-            let mut local_tail = if iterator.valid() {
-                let decoded_key = DataRecordKey::from_slice(iterator.key().unwrap());
-                trace!(
-                    %loglet_id,
-                    elapsed = ?start.elapsed(),
-                    "Found last record of loglet {} is {}",
-                    decoded_key.loglet_id(),
-                    decoded_key.offset(),
-                );
-                decoded_key.offset().next()
-            } else {
-                trace!(
-                %loglet_id,
-                elapsed = ?start.elapsed(),
-                "No data records for loglet {}", loglet_id);
-                LogletOffset::OLDEST
+            let known_global_tail = results
+                .pop()
+                .unwrap()
+                .map_err(RocksDbLogStoreError::from)?
+                .map(|raw_slice| LogletOffset::decode(raw_slice.as_ref()))
+                .unwrap_or(LogletOffset::OLDEST);
+
+            let mut local_tail = match local_tail {
+                Some(local_tail) => local_tail,
+                None => {
+                    // Find the last locally committed offset
+                    let oldest_key = DataRecordKey::new(loglet_id, LogletOffset::INVALID);
+                    let max_legal_record = DataRecordKey::new(loglet_id, LogletOffset::MAX);
+                    let upper_bound = DataRecordKey::exclusive_upper_bound(loglet_id);
+                    readopts.fill_cache(false);
+                    readopts.set_total_order_seek(false);
+                    readopts.set_prefix_same_as_start(true);
+                    readopts.set_iterate_lower_bound(oldest_key.to_binary_array());
+                    // upper bound is exclusive
+                    readopts.set_iterate_upper_bound(upper_bound);
+                    let mut iterator = self
+                        .rocksdb
+                        .inner()
+                        .as_raw_db()
+                        .raw_iterator_cf_opt(&data_cf, readopts);
+                    // see to the max key that exists
+                    iterator.seek_for_prev(max_legal_record.to_binary_array());
+                    if iterator.valid() {
+                        let decoded_key = DataRecordKey::from_slice(iterator.key().unwrap());
+                        trace!(
+                            %loglet_id,
+                            "Found last record of loglet {} is {}",
+                            decoded_key.loglet_id(),
+                            decoded_key.offset(),
+                        );
+                        decoded_key.offset().next()
+                    } else {
+                        trace!(
+                            %loglet_id,
+                            "No data records for loglet {}", loglet_id
+                        );
+                        LogletOffset::OLDEST
+                    }
+                }
             };
             // If the loglet is trimmed (all records were removed) and we know the trim_point, then we
             // use the trim_point.next() as the local_tail.
             //
-            // Another way to describe this is `if trim_point >= local_tail` but at this stage, I
-            // prefer to be conservative and explicit to catch unintended corner cases.
-            if local_tail == LogletOffset::OLDEST && trim_point > LogletOffset::INVALID {
+            // Another way to describe this is `if trim_point >= local_tail`.
+            if trim_point >= local_tail {
                 local_tail = trim_point.next();
             }
 
             // We can only trim records that are known to be globally committed, let's use that trim
-            // point to initialize our known_global_tail
-            let known_global_tail = trim_point.next();
+            // point to adjust our known_global_tail
+            let known_global_tail = known_global_tail.max(trim_point.next());
 
-            // todo(asoli): Persist last_known_global_tail for more efficient tail repairs if the
-            // loglet is not trimmed.
             Ok(LogletState::new(
                 sequencer,
                 local_tail,
@@ -647,6 +681,7 @@ mod tests {
             .enqueue_store(
                 store_msg,
                 set_sequencer_in_metadata,
+                LogletOffset::INVALID,
                 MemoryLease::unlinked(),
             )
             .expect("writer channel open");

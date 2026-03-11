@@ -28,6 +28,12 @@ static_assertions::const_assert_eq!(9, KeyPrefix::size());
 pub(super) enum KeyPrefixKind {
     // data column family
     DataRecord = b'd',
+    /// Introduced in v1.6.3. No compatibility version barrier required.
+    /// Will receive writes in 1.6.3
+    LastKnownGlobalTail = b'g',
+    // Introduced in v1.6.3 for forward-compatibility.
+    // Should receive writes in >= v1.8
+    LocalTail = b'l',
     // metadata column family
     Sequencer = b's',
     TrimPoint = b't',

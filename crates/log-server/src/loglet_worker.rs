@@ -83,6 +83,7 @@ pub struct LogletWorker<S: LogStore> {
     /// Pending responders — drained when watches advance.
     pending: PendingWaiters,
     last_request: MillisSinceEpoch,
+    last_periodically_synced_global_tail: LogletOffset,
 }
 
 impl<S: LogStore> LogletWorker<S> {
@@ -109,6 +110,7 @@ impl<S: LogStore> LogletWorker<S> {
             accepting_writes: true,
             pending: PendingWaiters::new(loglet_id),
             last_request: WallClock::recent_ms(),
+            last_periodically_synced_global_tail: global_tail,
         };
 
         let (data_tx, data_rx) = ShardSender::new();
@@ -192,7 +194,10 @@ impl<S: LogStore> LogletWorker<S> {
                         data_rx.close();
                         meta_rx.close();
                         break;
+                    } else {
+                        self.persist_global_tail();
                     }
+
                 }
 
             }
@@ -254,6 +259,7 @@ impl<S: LogStore> LogletWorker<S> {
         // during the drain loop above. Since we are quiescent (sealed), we'd want to notify
         // those waiting that we are sealed before we stop the worker.
         self.on_local_tail_change(self.loglet_state.local_tail());
+        self.persist_global_tail();
         counter!(LOG_SERVER_LOGLET_STOPPED).increment(1);
 
         info!(loglet_id = %self.loglet_id, "loglet worker stopped");
@@ -372,8 +378,7 @@ impl<S: LogStore> LogletWorker<S> {
             // RELEASE
             ServiceMessage::Unary(msg) if msg.msg_type() == Release::TYPE => {
                 let release = msg.into_typed::<Release>().into_body();
-                self.loglet_state
-                    .notify_known_global_tail(release.header.known_global_tail);
+                self.update_global_tail(release.header.known_global_tail);
             }
             // GET_DIGEST
             ServiceMessage::Rpc(msg) if msg.msg_type() == GetDigest::TYPE => {
@@ -384,14 +389,13 @@ impl<S: LogStore> LogletWorker<S> {
                 let msg = msg.into_typed::<GetLogletInfo>();
                 let peer = msg.peer();
                 let (reciprocal, msg) = msg.split();
-                self.loglet_state
-                    .notify_known_global_tail(msg.header.known_global_tail);
+                let known_global_tail = self.update_global_tail(msg.header.known_global_tail);
                 reciprocal.send(LogletInfo::new(
                     self.loglet_state.local_tail(),
                     self.loglet_state.trim_point(),
-                    self.loglet_state.known_global_tail(),
+                    known_global_tail,
                 ));
-                trace!(%peer, %self.loglet_id, local_tail = ?self.loglet_state.local_tail(), known_global_tail = %self.loglet_state.known_global_tail(), "GetLogletInfo response");
+                trace!(%peer, %self.loglet_id, local_tail = ?self.loglet_state.local_tail(), %known_global_tail, "GetLogletInfo response");
             }
             // WAIT_FOR_TAIL
             ServiceMessage::Rpc(msg) if msg.msg_type() == WaitForTail::TYPE => {
@@ -542,10 +546,12 @@ impl<S: LogStore> LogletWorker<S> {
             // Send store to log-store. The writer derives committed_up_to from the
             // Store message and advances the registered loglet's tail watch after
             // durable commit.
-            if let Some(token) =
-                self.writer
-                    .enqueue_store(body, set_sequencer_in_metadata, reservation)
-            {
+            if let Some(token) = self.writer.enqueue_store(
+                body,
+                set_sequencer_in_metadata,
+                known_global_tail,
+                reservation,
+            ) {
                 // Advance staging_local_tail on successful enqueue so we don't advance it artificially
                 self.staging_local_tail =
                     std::cmp::max(self.staging_local_tail, last_offset.next());
@@ -712,7 +718,7 @@ impl<S: LogStore> LogletWorker<S> {
         self.loglet_state.update_trim_point(msg.trim_point);
 
         // Enqueue the trim. Wait for durability via flush token.
-        if let Some(token) = self.writer.enqueue_trim(msg) {
+        if let Some(token) = self.writer.enqueue_trim(msg, known_global_tail) {
             self.pending.pending_trims.push(token, reciprocal);
         } else {
             reciprocal
@@ -726,17 +732,13 @@ impl<S: LogStore> LogletWorker<S> {
     /// held in `pending_seals` and drained when `is_sealed()` becomes true.
     fn process_seal(&mut self, msg: Incoming<Rpc<Seal>>) {
         let (reciprocal, msg) = msg.split();
-        self.loglet_state
-            .notify_known_global_tail(msg.header.known_global_tail);
+        let known_global_tail = self.update_global_tail(msg.header.known_global_tail);
 
         // Already sealed (durably) or already enqueued — nothing to do.
         let local_tail = self.loglet_state.local_tail();
         if local_tail.is_sealed() {
             self.seal_enqueued = false;
-            reciprocal.send(
-                Sealed::new(local_tail, self.loglet_state.known_global_tail())
-                    .with_status(Status::Ok),
-            );
+            reciprocal.send(Sealed::new(local_tail, known_global_tail).with_status(Status::Ok));
             return;
         }
 
@@ -746,14 +748,22 @@ impl<S: LogStore> LogletWorker<S> {
             return;
         }
 
-        if self.writer.enqueue_seal(msg).is_some() {
+        if self.writer.enqueue_seal(msg, known_global_tail).is_some() {
             self.seal_enqueued = true;
             self.pending.seals.push(reciprocal);
         } else {
-            reciprocal.send(
-                Sealed::new(local_tail, self.loglet_state.known_global_tail())
-                    .with_status(Status::Disabled),
-            );
+            reciprocal
+                .send(Sealed::new(local_tail, known_global_tail).with_status(Status::Disabled));
+        }
+    }
+
+    fn persist_global_tail(&mut self) {
+        if !self.accepting_writes {
+            return;
+        }
+        if self.global_tail > self.last_periodically_synced_global_tail {
+            self.writer.set_known_global_tail(self.global_tail);
+            self.last_periodically_synced_global_tail = self.global_tail;
         }
     }
 }
