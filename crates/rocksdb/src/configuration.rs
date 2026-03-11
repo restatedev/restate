@@ -25,6 +25,7 @@ pub trait DbConfigurator {
         db_name: &DbName,
         env: &rocksdb::Env,
         write_buffer_manager: &rocksdb::WriteBufferManager,
+        limiter: &rocksdb::RateLimiter,
     ) -> rocksdb::Options;
 
     fn apply_db_opts_from_config(
@@ -66,9 +67,11 @@ pub fn create_default_db_options(
     db_name: &DbName,
     create_db_if_missing: bool,
     write_buffer_manager: &rocksdb::WriteBufferManager,
+    limiter: &rocksdb::RateLimiter,
 ) -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
     db_options.set_env(env);
+    db_options.set_shared_ratelimiter(limiter);
     if create_db_if_missing {
         db_options.create_if_missing(true);
     }
@@ -76,13 +79,7 @@ pub fn create_default_db_options(
     // write buffer is controlled by write buffer manager
     db_options.set_write_buffer_manager(write_buffer_manager);
     db_options.set_avoid_unnecessary_blocking_io(true);
-    // Disable WAL archiving.
-    // the following two options has to be both 0 to disable WAL log archive.
-    db_options.set_wal_size_limit_mb(0);
-    db_options.set_wal_ttl_seconds(0);
-    //
     // Let rocksdb decide for level sizes.
-    //
     db_options.set_level_compaction_dynamic_level_bytes(true);
     //
     // [Not important setting, consider removing], allows to shard compressed

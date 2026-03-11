@@ -492,12 +492,14 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
         db_name: &DbName,
         env: &rocksdb::Env,
         write_buffer_manager: &rocksdb::WriteBufferManager,
+        limiter: &rocksdb::RateLimiter,
     ) -> rocksdb::Options {
         let mut db_options = restate_rocksdb::configuration::create_default_db_options(
             env,
             db_name,
             true, /* create_db_if_missing */
             write_buffer_manager,
+            limiter,
         );
 
         let storage_config = &Configuration::pinned().worker.storage;
