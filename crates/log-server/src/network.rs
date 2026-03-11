@@ -39,7 +39,7 @@ use restate_types::protobuf::common::LogServerStatus;
 
 use crate::loglet_worker::{LogletWorker, LogletWorkerHandle};
 use crate::logstore::LogStore;
-use crate::metadata::LogletStateMap;
+use crate::metadata::{ActiveWorkerMap, LogletStateMap};
 
 type LogletWorkerMap = HashMap<LogletId, LogletWorkerHandle>;
 
@@ -77,6 +77,7 @@ impl RequestPump {
         log_store: S,
         state_map: LogletStateMap,
         _storage_state: StorageState,
+        active_worker_map: ActiveWorkerMap,
     ) -> anyhow::Result<()>
     where
         S: LogStore + Clone + Sync + Send + 'static,
@@ -115,10 +116,12 @@ impl RequestPump {
                         &mut loglet_workers,
                         &data_shards,
                         &meta_shards,
+                        &active_worker_map,
                     ).await?;
                     if handle.meta_tx().is_closed() {
                         // remove from the shard map, bubble the error up.
                         loglet_workers.remove(&loglet_id);
+                        active_worker_map.remove(&loglet_id);
                         decision.fail(Verdict::SortCodeNotFound);
                     } else {
                         decision.accept(handle.meta_tx());
@@ -135,10 +138,12 @@ impl RequestPump {
                         &mut loglet_workers,
                         &data_shards,
                         &meta_shards,
+                        &active_worker_map,
                     ).await?;
                     if handle.data_tx().is_closed() {
                         // remove from the shard map, bubble the error up.
                         loglet_workers.remove(&loglet_id);
+                        active_worker_map.remove(&loglet_id);
                         decision.fail(Verdict::SortCodeNotFound);
                     } else {
                         decision.accept(handle.data_tx());
@@ -171,6 +176,7 @@ impl RequestPump {
         loglet_workers: &'a mut LogletWorkerMap,
         data_shards: &'a ControlServiceShards<LogServerDataService>,
         meta_shards: &'a ControlServiceShards<LogServerMetaService>,
+        active_worker_map: &ActiveWorkerMap,
     ) -> anyhow::Result<&'a LogletWorkerHandle> {
         if let hash_map::Entry::Vacant(e) = loglet_workers.entry(loglet_id) {
             let state = state_map
@@ -181,6 +187,7 @@ impl RequestPump {
 
             data_shards.force_register_sort_code(loglet_id.into(), handle.data_tx());
             meta_shards.force_register_sort_code(loglet_id.into(), handle.meta_tx());
+            active_worker_map.register(loglet_id, handle.introspection_tx().clone());
 
             e.insert(handle);
         }

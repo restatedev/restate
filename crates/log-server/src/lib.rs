@@ -32,4 +32,5 @@ mod rocksdb_logstore;
 mod service;
 
 pub use error::LogServerBuildError;
+pub use metadata::{ActiveWorkerMap, LogletState, LogletStateMap, LogletWorkerState};
 pub use service::LogServerService;
