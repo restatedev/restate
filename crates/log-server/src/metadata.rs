@@ -9,13 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::watch;
+use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot};
 
 use crate::logstore::LogStore;
 use restate_bifrost::loglet::OperationError;
+use restate_clock::time::MillisSinceEpoch;
 use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailOffsetWatch, TailState};
 use restate_types::storage::StorageMarker;
 use restate_types::{GenerationalNodeId, PlainNodeId};
@@ -33,6 +34,12 @@ impl LogletStateMap {
     // todo (optimization to preload from log_store)
     pub async fn load_all<S: LogStore>(_log_store: &S) -> Result<Self, OperationError> {
         Ok(Self::default())
+    }
+
+    /// Returns a snapshot of all currently cached loglet states.
+    pub async fn snapshot(&self) -> HashMap<LogletId, LogletState> {
+        let guard = self.inner.lock().await;
+        guard.clone()
     }
 
     pub async fn get_or_load<S: LogStore>(
@@ -192,5 +199,76 @@ impl GlobalTailTracker {
             }
             false
         });
+    }
+}
+
+pub enum IntrospectLogletWorker {
+    GetState(oneshot::Sender<LogletWorkerState>),
+}
+
+/// Snapshot of a loglet worker's live operational state, published for introspection.
+#[derive(Debug, Clone)]
+pub struct LogletWorkerState {
+    pub staging_local_tail: LogletOffset,
+    pub accepting_writes: bool,
+    pub seal_enqueued: bool,
+    pub pending_stores: u32,
+    pub pending_repair_stores: u32,
+    pub pending_seals: u32,
+    pub pending_trims: u32,
+    pub pending_tail_waiters: u32,
+    pub last_request_at: MillisSinceEpoch,
+}
+
+/// Thread-safe registry of active loglet workers' introspection channels.
+///
+/// The `RequestPump` registers workers when they start and unregisters them
+/// when they shut down. External observers (e.g., the `loglet_workers`
+/// DataFusion table scanner) use this to send on-demand introspection
+/// commands to each active worker.
+#[derive(Clone, Default)]
+pub struct ActiveWorkerMap {
+    inner: Arc<Mutex<HashMap<LogletId, mpsc::Sender<IntrospectLogletWorker>>>>,
+}
+
+impl ActiveWorkerMap {
+    /// Registers a worker's introspection channel.
+    pub fn register(&self, loglet_id: LogletId, sender: mpsc::Sender<IntrospectLogletWorker>) {
+        self.inner
+            .lock()
+            .expect("ActiveWorkerMap lock poisoned")
+            .insert(loglet_id, sender);
+    }
+
+    /// Removes a worker's introspection channel (called when the worker shuts down).
+    pub fn remove(&self, loglet_id: &LogletId) {
+        self.inner
+            .lock()
+            .expect("ActiveWorkerMap lock poisoned")
+            .remove(loglet_id);
+    }
+
+    /// Queries all active workers for their current state.
+    ///
+    /// Sends `GetState` to each registered worker and collects responses.
+    /// Workers that fail to respond (channel full or closed) are skipped.
+    pub async fn get_all_worker_states(&self) -> HashMap<LogletId, LogletWorkerState> {
+        let senders: Vec<_> = {
+            let guard = self.inner.lock().expect("ActiveWorkerMap lock poisoned");
+            guard.iter().map(|(id, tx)| (*id, tx.clone())).collect()
+        };
+
+        let mut result = HashMap::with_capacity(senders.len());
+        for (loglet_id, tx) in senders {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            if tx
+                .try_send(IntrospectLogletWorker::GetState(reply_tx))
+                .is_ok()
+                && let Ok(state) = reply_rx.await
+            {
+                result.insert(loglet_id, state);
+            }
+        }
+        result
     }
 }

@@ -55,7 +55,7 @@ pub(crate) fn make_ordering(columns: Vec<Arc<dyn PhysicalExpr>>) -> Vec<Physical
         .collect()
 }
 
-pub(crate) trait Builder {
+pub trait Builder {
     fn new(projected_schema: SchemaRef) -> Self;
 
     fn num_rows(&self) -> usize;

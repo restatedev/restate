@@ -478,7 +478,7 @@ where
 
 // Generic-based table provider that provides node-level or global data rather than
 // partition-keyed data.
-pub(crate) trait Scan: Debug + Send + Sync + 'static {
+pub trait Scan: Debug + Send + Sync + 'static {
     fn scan(
         &self,
         projection: SchemaRef,
@@ -710,7 +710,7 @@ impl DisplayAs for GenericExecutionPlan {
 }
 
 /// Display helper: comma-separated column names from a schema.
-struct ProjectedColumns<'a>(&'a SchemaRef);
+pub(crate) struct ProjectedColumns<'a>(pub(crate) &'a SchemaRef);
 
 impl Display for ProjectedColumns<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
@@ -744,9 +744,9 @@ impl Display for ExprList<'_> {
 }
 
 /// Stream wrapper that records [`BaselineMetrics`] using [`BaselineMetrics::record_poll`].
-struct MeteredStream<S> {
-    inner: S,
-    baseline_metrics: BaselineMetrics,
+pub(crate) struct MeteredStream<S> {
+    pub(crate) inner: S,
+    pub(crate) baseline_metrics: BaselineMetrics,
 }
 
 impl<S> Stream for MeteredStream<S>

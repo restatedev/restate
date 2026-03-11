@@ -43,11 +43,9 @@ use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_partition_store::snapshots::SnapshotRepository;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
-use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
-use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
@@ -97,7 +95,6 @@ pub enum BuildError {
 
 pub struct Worker<T> {
     storage_query_context: QueryContext,
-    datafusion_remote_scanner: RemoteQueryScannerServer,
     ingress_kafka: IngressKafkaService<T>,
     subscription_controller_handle: SubscriptionControllerHandle,
     partition_processor_manager: PartitionProcessorManager<T>,
@@ -117,6 +114,7 @@ where
         ingestion_client: IngestionClient<T, Envelope>,
         router_builder: &mut MessageRouterBuilder,
         metadata_writer: MetadataWriter,
+        remote_scanner_manager: RemoteScannerManager,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
         restate_vqueues::describe_metrics();
@@ -182,29 +180,23 @@ where
             ppm_ingestion_client,
         );
 
-        let remote_scanner_manager = RemoteScannerManager::new(
-            create_remote_scanner_service(networking),
-            create_partition_locator(partition_routing, metadata),
-        );
+        // Set up partition locator so that the shared RemoteScannerManager can
+        // route partition-based scans on this worker node.
+        remote_scanner_manager
+            .set_partition_locator(create_partition_locator(partition_routing, metadata));
+
         let storage_query_context = QueryContext::with_user_tables(
             &config.admin.query_engine,
             SelectPartitionsFromMetadata,
             partition_store_manager,
             Some(partition_processor_manager.invokers_status_reader()),
             schema,
-            remote_scanner_manager.clone(),
+            remote_scanner_manager,
         )
         .await?;
 
-        let datafusion_remote_scanner = RemoteQueryScannerServer::new(
-            storage_query_context.clone(),
-            remote_scanner_manager,
-            router_builder,
-        );
-
         Ok(Self {
             storage_query_context,
-            datafusion_remote_scanner,
             ingress_kafka,
             subscription_controller_handle,
             partition_processor_manager,
@@ -224,13 +216,6 @@ where
             TaskKind::MetadataBackgroundSync,
             "subscription_controller",
             Self::watch_subscriptions(self.subscription_controller_handle.clone()),
-        )?;
-
-        // Datafusion remote scanner
-        TaskCenter::spawn_child(
-            TaskKind::SystemService,
-            "datafusion-scan-server",
-            self.datafusion_remote_scanner.run(),
         )?;
 
         // Kafka Ingress

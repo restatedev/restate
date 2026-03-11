@@ -127,6 +127,17 @@ pub trait RegisterTable: Send + Sync + 'static {
     fn register(&self, ctx: &QueryContext) -> impl Future<Output = Result<(), BuildError>>;
 }
 
+/// A no-op registerer that creates a minimal query context with no tables.
+/// Useful for nodes that only need to serve remote scanner RPCs (e.g.,
+/// log-server-only nodes), where only `task_ctx()` is needed.
+pub struct NoTables;
+
+impl RegisterTable for NoTables {
+    async fn register(&self, _ctx: &QueryContext) -> Result<(), BuildError> {
+        Ok(())
+    }
+}
+
 /// A query context registerer for user tables
 pub struct UserTables<P, S, D> {
     partition_selector: P,
@@ -231,19 +242,28 @@ pub struct ClusterTables {
     cluster_state: restate_types::cluster_state::ClusterState,
     replica_set_states: PartitionReplicaSetStates,
     cluster_state_watch: watch::Receiver<Arc<LegacyClusterState>>,
+    remote_scanner_manager: RemoteScannerManager,
 }
 
 impl ClusterTables {
     pub fn new(
         replica_set_states: PartitionReplicaSetStates,
         cluster_state_watch: watch::Receiver<Arc<LegacyClusterState>>,
+        remote_scanner_manager: RemoteScannerManager,
     ) -> Self {
         let cluster_state = TaskCenter::with_current(|tc| tc.cluster_state().clone());
         Self {
             cluster_state,
             replica_set_states,
             cluster_state_watch,
+            remote_scanner_manager,
         }
+    }
+
+    /// Returns a reference to the remote scanner manager. This can be used to
+    /// register node-level scanners (e.g., log-server tables) after construction.
+    pub fn remote_scanner_manager(&self) -> &RemoteScannerManager {
+        &self.remote_scanner_manager
     }
 }
 
@@ -258,8 +278,16 @@ impl RegisterTable for ClusterTables {
             self.cluster_state.clone(),
             self.replica_set_states.clone(),
         )?;
-        crate::log::register_self(ctx, metadata)?;
+        crate::log::register_self(ctx, metadata.clone())?;
         crate::partition_state::register_self(ctx, self.cluster_state_watch.clone())?;
+
+        // Node-fan-out tables
+        crate::loglet_worker::register_self(
+            ctx,
+            metadata,
+            self.remote_scanner_manager.remote_scanner_service(),
+            None, // local scanner is registered separately if this node is also a log-server
+        )?;
 
         ctx.datafusion_context
             .sql(CLUSTER_LOGS_TAIL_SEGMENTS_VIEW)

@@ -110,10 +110,12 @@ impl<T: TransportConnect> AdminRole<T> {
         let query_context = if let Some(query_context) = local_query_context {
             query_context
         } else {
-            let remote_scanner_manager = RemoteScannerManager::new(
-                create_remote_scanner_service(networking.clone()),
-                create_partition_locator(partition_routing.clone(), metadata.clone()),
-            );
+            let remote_scanner_manager =
+                RemoteScannerManager::new(create_remote_scanner_service(networking.clone()));
+            remote_scanner_manager.set_partition_locator(create_partition_locator(
+                partition_routing.clone(),
+                metadata.clone(),
+            ));
 
             // need to create a remote query context since we are not co-located with a worker role
             QueryContext::with_user_tables(
