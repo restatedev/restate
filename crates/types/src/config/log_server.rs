@@ -85,16 +85,41 @@ pub struct LogServerOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub incoming_network_queue_length: Option<NonZeroUsize>,
 
-    /// Enable storing large blobs in separate files
+    /// Enable storing large values in separate blob files
     ///
     /// [Experimental]
-    /// Enables the use of BlobDB to store payloads larger than 512 KiB to separate blob
-    /// files. This may improve performance and write amplification at the cost of some
-    /// space amplification.
+    /// Enables BlobDB key-value separation for the data column family. Values at or
+    /// above `rocksdb-blob-min-size` are written to dedicated blob files, leaving only
+    /// small pointers in the LSM tree. This dramatically reduces write amplification
+    /// during compaction at the cost of some space amplification from unreferenced blobs
+    /// awaiting garbage collection.
     ///
     /// This is safe to enable/disable at any time.
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub rocksdb_enable_blob_separation: bool,
+
+    /// Minimum value size for blob file separation
+    ///
+    /// Values at or above this threshold are stored in separate blob files when
+    /// blob separation is enabled. Smaller values remain inline in SST files.
+    /// Lower thresholds reduce write amplification (compactions only rewrite small
+    /// BlobIndex pointers) at the cost of an extra read indirection on cache misses.
+    ///
+    /// Only takes effect when `rocksdb-enable-blob-separation` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    rocksdb_blob_min_size: Option<NonZeroByteCount>,
+
+    /// Disable compression for blob files
+    ///
+    /// When false (default), blob files are compressed with Zstd. Set to true to
+    /// store blobs uncompressed, trading higher disk usage for reduced CPU overhead
+    /// on writes and blob-GC reads.
+    ///
+    /// Only takes effect when `rocksdb-enable-blob-separation` is true.
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub rocksdb_disable_blob_compression: bool,
 
     /// # Max background flushes
     ///
@@ -198,6 +223,12 @@ impl LogServerOptions {
         self.rocksdb_memory_budget()
     }
 
+    /// Minimum value size for blob separation. Defaults to 4 KiB.
+    pub fn rocksdb_blob_min_size(&self) -> NonZeroByteCount {
+        self.rocksdb_blob_min_size
+            .unwrap_or(NonZeroByteCount::new(NonZeroUsize::new(4 * 1024).unwrap()))
+    }
+
     pub fn data_dir(&self) -> PathBuf {
         super::data_dir("log-store")
     }
@@ -221,6 +252,8 @@ impl Default for LogServerOptions {
             #[allow(deprecated)]
             incoming_network_queue_length: None,
             rocksdb_enable_blob_separation: false,
+            rocksdb_blob_min_size: None,
+            rocksdb_disable_blob_compression: false,
             rocksdb_max_background_flushes: None,
             rocksdb_max_background_compactions: None,
         }
