@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use rocksdb::{DB, LiveFile, Options};
+use rocksdb::{ColumnFamilyDescriptor, DB, LiveFile, Options};
 
 /// Mode for opening the database
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -101,7 +101,7 @@ pub fn extract_file_number(filename: &str) -> Option<u64> {
         .and_then(|s| s.parse::<u64>().ok())
 }
 
-/// Open a RocksDB database for read-only analysis
+/// Open a RocksDB database for read-only analysis with default CF options.
 ///
 /// If `max_open_files` is `Some`, limits the number of open file handles RocksDB will use.
 /// This is useful in environments where the file descriptor limit cannot be increased.
@@ -109,6 +109,21 @@ pub fn open_db(
     path: impl AsRef<Path>,
     mode: OpenMode,
     max_open_files: Option<i32>,
+) -> Result<DbInfo> {
+    open_db_with_cf_options(path, mode, max_open_files, |_| Options::default())
+}
+
+/// Open a RocksDB database for read-only analysis with per-CF options.
+///
+/// `cf_opts_fn` is called for each column family name and should return the
+/// `Options` to use when opening that CF. This is required when the database
+/// was created with CF-specific settings (e.g., prefix extractor, merge
+/// operators) that must match at open time.
+pub fn open_db_with_cf_options(
+    path: impl AsRef<Path>,
+    mode: OpenMode,
+    max_open_files: Option<i32>,
+    cf_opts_fn: impl Fn(&str) -> Options,
 ) -> Result<DbInfo> {
     let path = path.as_ref().to_path_buf();
 
@@ -131,11 +146,17 @@ pub fn open_db(
         opts.set_max_open_files(limit);
     }
 
+    let descriptors: Vec<ColumnFamilyDescriptor> = cf_names
+        .iter()
+        .map(|name| ColumnFamilyDescriptor::new(name, cf_opts_fn(name)))
+        .collect();
+
     let db = match mode {
-        OpenMode::ReadOnly => DB::open_cf_for_read_only(&opts, &path, &cf_names, false).context(
+        OpenMode::ReadOnly => DB::open_cf_descriptors_read_only(&opts, &path, descriptors, false)
+            .context(
             "Failed to open database in read-only mode. \
-             This requires exclusive access - is the Restate server running? \
-             Try using --secondary to analyze while the server is active.",
+                 This requires exclusive access - is the Restate server running? \
+                 Try using --secondary to analyze while the server is active.",
         )?,
         OpenMode::Secondary => {
             // Secondary mode requires a secondary path for WAL replay
@@ -143,7 +164,7 @@ pub fn open_db(
                 .join(format!("restate-doctor-secondary-{}", std::process::id()));
             std::fs::create_dir_all(&secondary_path)?;
 
-            DB::open_cf_as_secondary(&opts, &path, &secondary_path, &cf_names)
+            DB::open_cf_descriptors_as_secondary(&opts, &path, &secondary_path, descriptors)
                 .context("Failed to open database as secondary instance.")?
         }
     };
@@ -170,6 +191,29 @@ pub fn open_db(
         column_families: cf_names,
         live_files,
     })
+}
+
+/// Resolve the log store path from data directory or explicit path
+pub fn resolve_log_store_path(
+    data_dir: Option<&Path>,
+    explicit_path: Option<&Path>,
+) -> Result<PathBuf> {
+    if let Some(path) = explicit_path {
+        return Ok(path.to_path_buf());
+    }
+
+    if let Some(data_dir) = data_dir {
+        let db_path = data_dir.join("log-store");
+        if db_path.exists() {
+            return Ok(db_path);
+        }
+        bail!(
+            "Could not find log store at {}/log-store. Specify --path explicitly.",
+            data_dir.display()
+        );
+    }
+
+    bail!("Either --data-dir or --path must be specified");
 }
 
 /// Resolve the partition store path from data directory or explicit path
