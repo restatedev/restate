@@ -15,6 +15,7 @@ use ahash::{HashMap, HashSet};
 use bytes::BytesMut;
 use metrics::{Histogram, histogram};
 use rocksdb::{BoundColumnFamily, WriteBatch};
+use smallvec::{SmallVec, smallvec, smallvec_inline};
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace};
 
@@ -56,17 +57,25 @@ impl std::fmt::Debug for LogStoreWriteCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LogStoreWriteCommand::Write(cmd) => {
-                let kind = match (&cmd.data_update, &cmd.metadata_update) {
-                    (Some(DataUpdate::StoreBatch { .. }), _) => "Store",
-                    (Some(DataUpdate::TrimLogRecords { .. }), _) => "Trim",
-                    (None, Some(MetadataUpdate::Seal)) => "Seal",
-                    (None, Some(MetadataUpdate::SetSequencer { .. })) => "SetSequencer",
-                    (None, Some(MetadataUpdate::UpdateTrimPoint { .. })) => "UpdateTrimPoint",
-                    (None, None) => "Noop!",
-                };
+                write!(f, "Write(")?;
+                match &cmd.data_update {
+                    Some(DataUpdate::StoreBatch { .. }) => write!(f, "Store")?,
+                    Some(DataUpdate::TrimLogRecords { .. }) => write!(f, "Trim")?,
+                    None if cmd.metadata_updates.is_empty() => write!(f, "Noop!")?,
+                    None => {}
+                }
+                for update in &cmd.metadata_updates {
+                    match update {
+                        MetadataUpdate::Seal => write!(f, "+Seal")?,
+                        MetadataUpdate::SetSequencer { .. } => write!(f, "+SetSequencer")?,
+                        MetadataUpdate::UpdateTrimPoint { .. } => write!(f, "+UpdateTrimPoint")?,
+                        MetadataUpdate::UpdateGlobalTail { .. } => write!(f, "+UpdateGlobalTail")?,
+                        MetadataUpdate::UpdateLocalTail { .. } => write!(f, "+UpdateLocalTail")?,
+                    }
+                }
                 write!(
                     f,
-                    "Write({kind}, loglet={}, token={:?}, reservation={})",
+                    ", loglet={}, token={:?}, reservation={})",
                     cmd.loglet_id,
                     cmd.token,
                     cmd.reservation.size(),
@@ -104,16 +113,10 @@ struct WriteCommand {
     token: Token<Commit>,
     loglet_id: LogletId,
     data_update: Option<DataUpdate>,
-    metadata_update: Option<MetadataUpdate>,
+    metadata_updates: SmallVec<[MetadataUpdate; 2]>,
     /// Memory reservation held until the write is committed to RocksDB.
     /// This ensures backpressure from RocksDB stalls propagates to the network layer.
     reservation: MemoryLease,
-}
-
-impl WriteCommand {
-    fn requires_sync_write(&self) -> bool {
-        matches!(&self.metadata_update, Some(MetadataUpdate::Seal))
-    }
 }
 
 enum DataUpdate {
@@ -122,8 +125,20 @@ enum DataUpdate {
 }
 
 enum MetadataUpdate {
-    SetSequencer { sequencer: GenerationalNodeId },
-    UpdateTrimPoint { new_trim_point: LogletOffset },
+    SetSequencer {
+        sequencer: GenerationalNodeId,
+    },
+    UpdateTrimPoint {
+        new_trim_point: LogletOffset,
+    },
+    UpdateGlobalTail {
+        known_global_tail: LogletOffset,
+    },
+    /// Can be used to write the local-tail directly to metadata cf as of v1.8
+    #[allow(dead_code)]
+    UpdateLocalTail {
+        new_local_tail: LogletOffset,
+    },
     Seal,
 }
 
@@ -373,14 +388,15 @@ impl LogStoreWriter<'_> {
                         .max_batch_token
                         .map_or(command.token, |t| t.max(command.token)),
                 );
-                batch.sync_write_is_required |= command.requires_sync_write();
 
-                if let Some(metadata_update) = &command.metadata_update {
+                for metadata_update in &command.metadata_updates {
                     // We won't write the seal again to the database, but we
                     // will still consider the Token for this operation as flushed.
                     if let MetadataUpdate::Seal = metadata_update
                         && !self.sealed_loglets.contains(&command.loglet_id)
                     {
+                        // We'd like to always sync-write the seal
+                        batch.sync_write_is_required = true;
                         // We immediately consider this loglet as sealed so we can
                         // drop the remaining stores in the batch.
                         self.sealed_loglets.insert(command.loglet_id);
@@ -391,7 +407,7 @@ impl LogStoreWriter<'_> {
                         &self.metadata_cf,
                         &mut batch.write_batch,
                         command.loglet_id,
-                        command.metadata_update.unwrap(),
+                        metadata_update,
                     )
                 }
 
@@ -475,7 +491,7 @@ impl LogStoreWriter<'_> {
         metadata_cf: &Arc<BoundColumnFamily>,
         write_batch: &mut WriteBatch,
         loglet_id: LogletId,
-        update: MetadataUpdate,
+        update: &MetadataUpdate,
     ) {
         match update {
             MetadataUpdate::SetSequencer { sequencer } => {
@@ -492,6 +508,15 @@ impl LogStoreWriter<'_> {
                 let key = MetadataKey::new(KeyPrefixKind::Seal, loglet_id).to_binary_array();
                 let now = chrono::Utc::now().to_rfc3339();
                 write_batch.put_cf(metadata_cf, key, now);
+            }
+            MetadataUpdate::UpdateLocalTail { new_local_tail } => {
+                let key = MetadataKey::new(KeyPrefixKind::LocalTail, loglet_id).to_binary_array();
+                write_batch.put_cf(metadata_cf, key, new_local_tail.to_binary_array());
+            }
+            MetadataUpdate::UpdateGlobalTail { known_global_tail } => {
+                let key = MetadataKey::new(KeyPrefixKind::LastKnownGlobalTail, loglet_id)
+                    .to_binary_array();
+                write_batch.put_cf(metadata_cf, key, known_global_tail.to_binary_array());
             }
         }
     }
@@ -633,14 +658,23 @@ impl RocksDbLogWriterHandle {
             .is_ok()
     }
 
-    pub fn enqueue_seal(&self, seal_message: Seal) -> Option<Token<Commit>> {
+    pub fn enqueue_seal(
+        &self,
+        seal_message: Seal,
+        known_global_tail: LogletOffset,
+    ) -> Option<Token<Commit>> {
         let token = self.tokens.next();
+        let metadata_updates = smallvec_inline![
+            MetadataUpdate::UpdateGlobalTail { known_global_tail },
+            MetadataUpdate::Seal
+        ];
+
         self.hi_pri_tx
             .send(LogStoreWriteCommand::Write(WriteCommand {
                 token,
                 loglet_id: seal_message.header.loglet_id,
                 data_update: None,
-                metadata_update: Some(MetadataUpdate::Seal),
+                metadata_updates,
                 reservation: MemoryLease::unlinked(),
             }))
             .is_ok()
@@ -654,12 +688,17 @@ impl RocksDbLogWriterHandle {
         &self,
         store_message: Store,
         set_sequencer_in_metadata: bool,
+        known_global_tail: LogletOffset,
         reservation: MemoryLease,
     ) -> Option<Token<Commit>> {
         let loglet_id = store_message.header.loglet_id;
-        let metadata_update = set_sequencer_in_metadata.then_some(MetadataUpdate::SetSequencer {
-            sequencer: store_message.sequencer,
-        });
+        let mut metadata_updates = SmallVec::default();
+        if set_sequencer_in_metadata {
+            metadata_updates.push(MetadataUpdate::SetSequencer {
+                sequencer: store_message.sequencer,
+            });
+        }
+        metadata_updates.push(MetadataUpdate::UpdateGlobalTail { known_global_tail });
         let token = self.tokens.next();
         trace!(loglet_id = %store_message.header.loglet_id, "Sending store ({}..{:?}) to writer at token {token:?}", store_message.first_offset, store_message.last_offset());
         let data_update = DataUpdate::StoreBatch { store_message };
@@ -667,29 +706,50 @@ impl RocksDbLogWriterHandle {
             token,
             loglet_id,
             data_update: Some(data_update),
-            metadata_update,
+            metadata_updates,
             reservation,
         }))
         .then_some(token)
     }
 
-    pub fn enqueue_trim(&self, trim_message: Trim) -> Option<Token<Commit>> {
+    pub fn enqueue_trim(
+        &self,
+        trim_message: Trim,
+        known_global_tail: LogletOffset,
+    ) -> Option<Token<Commit>> {
         let data_update = DataUpdate::TrimLogRecords {
             trim_point: trim_message.trim_point,
         };
-        let metadata_update = Some(MetadataUpdate::UpdateTrimPoint {
-            new_trim_point: trim_message.trim_point,
-        });
+        let metadata_updates = smallvec_inline![
+            MetadataUpdate::UpdateGlobalTail { known_global_tail },
+            MetadataUpdate::UpdateTrimPoint {
+                new_trim_point: trim_message.trim_point,
+            },
+        ];
 
         let token = self.tokens.next();
         self.send_command(LogStoreWriteCommand::Write(WriteCommand {
             token,
             loglet_id: trim_message.header.loglet_id,
             data_update: Some(data_update),
-            metadata_update,
+            metadata_updates,
             reservation: MemoryLease::unlinked(),
         }))
         .then_some(token)
+    }
+
+    pub fn enqueue_set_global_tail(&self, loglet_id: LogletId, known_global_tail: LogletOffset) {
+        let metadata_updates = smallvec![MetadataUpdate::UpdateGlobalTail { known_global_tail }];
+        let token = self.tokens.next();
+        let _ = self
+            .hi_pri_tx
+            .send(LogStoreWriteCommand::Write(WriteCommand {
+                token,
+                loglet_id,
+                data_update: None,
+                metadata_updates,
+                reservation: MemoryLease::unlinked(),
+            }));
     }
 
     fn send_command(&self, command: LogStoreWriteCommand) -> bool {

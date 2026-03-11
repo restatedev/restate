@@ -17,7 +17,7 @@ use tokio::sync::SetOnce;
 use restate_bifrost::loglet::OperationError;
 use restate_memory::MemoryLease;
 use restate_types::health::{HealthStatus, LogServerStatus};
-use restate_types::logs::LogletId;
+use restate_types::logs::{LogletId, LogletOffset};
 use restate_types::net::log_server::{Digest, GetDigest, GetRecords, Records, Seal, Store, Trim};
 
 use restate_futures_util::monotonic_token::{Token, TokenListener};
@@ -169,16 +169,28 @@ pub trait LogletWriter: Send + 'static {
         &mut self,
         store_message: Store,
         set_sequencer_in_metadata: bool,
+        known_global_tail: LogletOffset,
         reservation: MemoryLease,
     ) -> Option<Token<Commit>>;
 
     /// Enqueues a seal operation. After durable commit, the writer notifies the seal
     /// through the registered TailOffsetWatch.
-    fn enqueue_seal(&mut self, seal_message: Seal) -> Option<Token<Commit>>;
+    fn enqueue_seal(
+        &mut self,
+        seal_message: Seal,
+        known_global_tail: LogletOffset,
+    ) -> Option<Token<Commit>>;
 
     /// Enqueues a trim operation. After durable commit, the writer will advance
     /// the trim-point in via the LogState's trim-point watch.
-    fn enqueue_trim(&mut self, trim_message: Trim) -> Option<Token<Commit>>;
+    fn enqueue_trim(
+        &mut self,
+        trim_message: Trim,
+        known_global_tail: LogletOffset,
+    ) -> Option<Token<Commit>>;
+
+    /// Best-effort store the known global tail in the log-store.
+    fn set_known_global_tail(&mut self, known_global_tail: LogletOffset);
 
     /// Closes this log-store writer and unregisters from the writer task.
     fn close(&mut self);
