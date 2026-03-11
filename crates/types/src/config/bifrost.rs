@@ -218,7 +218,7 @@ impl LocalLogletOptions {
             self.rocksdb_memory_budget = Some(
                 // 1MB minimum
                 NonZeroUsize::new(
-                    (common.rocksdb_safe_total_memtables_size() as f64
+                    (common.rocksdb_total_memtables_size().as_usize() as f64
                         * self.rocksdb_memory_ratio as f64)
                         .floor()
                         .max(1024.0 * 1024.0) as usize,

@@ -37,6 +37,7 @@ impl MemoryBudget {
                 .worker
                 .storage
                 .rocksdb_memory_budget()
+                .as_usize()
                 / INITIAL_NUM_PARTITIONS,
         );
 
@@ -47,7 +48,7 @@ impl MemoryBudget {
 
     pub fn get_total_memory_budget(&self) -> usize {
         let config = Configuration::pinned();
-        config.worker.storage.rocksdb_memory_budget()
+        config.worker.storage.rocksdb_memory_budget().as_usize()
     }
 
     pub fn current_per_partition_budget(&self) -> usize {
