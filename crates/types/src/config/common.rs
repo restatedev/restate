@@ -22,7 +22,7 @@ use restate_serde_util::{NonZeroByteCount, SerdeableHeaderHashMap};
 use restate_time_util::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
-    AwsLambdaOptions, DEFAULT_MESSAGE_SIZE_LIMIT, GossipOptions, HttpOptions,
+    AwsLambdaOptions, CPU_COUNT, DEFAULT_MESSAGE_SIZE_LIMIT, GossipOptions, HttpOptions,
     InvalidConfigurationError, ObjectStoreOptions, PerfStatsLevel, RocksDbOptions,
 };
 use crate::PlainNodeId;
@@ -307,7 +307,7 @@ pub struct CommonOptions {
     /// Size of the default thread pool used to perform internal tasks.
     /// If not set, it defaults to the number of CPU cores.
     #[builder(setter(strip_option))]
-    default_thread_pool_size: Option<usize>,
+    default_thread_pool_size: Option<u32>,
 
     #[serde(flatten)]
     pub tracing: TracingOptions,
@@ -389,9 +389,9 @@ pub struct CommonOptions {
     /// This value will be sanitized to 1.0 if outside the valid bounds.
     rocksdb_total_memtables_ratio: f32,
 
-    /// # Rocksdb Background Threads
+    /// # Rocksdb Low Priority Background Threads
     ///
-    /// The number of threads to reserve to Rocksdb background tasks. Defaults to the number of
+    /// The number of threads to reserve to lower priority Rocksdb background tasks. Defaults to the number of
     /// cores on the machine.
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_bg_threads: Option<NonZeroU32>,
@@ -399,7 +399,8 @@ pub struct CommonOptions {
     /// # Rocksdb High Priority Background Threads
     ///
     /// The number of threads to reserve to high priority Rocksdb background tasks.
-    pub rocksdb_high_priority_bg_threads: NonZeroU32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rocksdb_high_priority_bg_threads: Option<NonZeroU32>,
 
     /// # Rocksdb performance statistics level
     ///
@@ -604,37 +605,35 @@ impl CommonOptions {
     }
 
     pub fn storage_high_priority_bg_threads(&self) -> NonZeroUsize {
-        self.storage_high_priority_bg_threads.unwrap_or(
-            std::thread::available_parallelism()
-                // Shouldn't really fail, but just in case.
-                .unwrap_or(NonZeroUsize::new(4).unwrap()),
-        )
+        self.storage_high_priority_bg_threads
+            .unwrap_or((*CPU_COUNT).try_into().unwrap())
     }
 
     pub fn default_thread_pool_size(&self) -> usize {
-        self.default_thread_pool_size.unwrap_or(
-            std::thread::available_parallelism()
-                // Shouldn't really fail, but just in case.
-                .unwrap_or(NonZeroUsize::new(4).unwrap())
-                .get(),
-        )
+        self.default_thread_pool_size.unwrap_or(CPU_COUNT.get()) as usize
     }
 
     pub fn storage_low_priority_bg_threads(&self) -> NonZeroUsize {
-        self.storage_low_priority_bg_threads.unwrap_or(
-            std::thread::available_parallelism()
-                // Shouldn't really fail, but just in case.
-                .unwrap_or(NonZeroUsize::new(4).unwrap()),
-        )
+        self.storage_low_priority_bg_threads
+            .unwrap_or((*CPU_COUNT).try_into().unwrap())
     }
 
-    pub fn rocksdb_bg_threads(&self) -> NonZeroU32 {
-        self.rocksdb_bg_threads.unwrap_or(
-            std::thread::available_parallelism()
-                .unwrap_or(NonZeroUsize::new(3).unwrap())
-                .try_into()
-                .expect("number of cpu cores fits in u32"),
-        )
+    pub fn rocksdb_high_priority_bg_threads(&self) -> NonZeroU32 {
+        // This controls the number of concurrent flushes we can do to rocksdb. Since
+        // the background threads are shared across all databases, we want to make sure
+        // we have enough threads to perform flushes concurrently (in a modern nvme this
+        // is usually the best).
+        let user_specified_threads = self.rocksdb_high_priority_bg_threads.unwrap_or(*CPU_COUNT);
+
+        // The very least is that we we want to have a thread available per database + 1 thread for
+        // background purges.
+        user_specified_threads.max(NonZeroU32::new(4).unwrap())
+    }
+
+    pub fn rocksdb_low_priority_bg_threads(&self) -> NonZeroU32 {
+        // Gives us 1/2 the core count unless the user wants to override it.
+        self.rocksdb_bg_threads
+            .unwrap_or(CPU_COUNT.div_ceil(NonZeroU32::new(2).unwrap()))
     }
 
     /// set derived values if they are not configured to reduce verbose configurations
@@ -714,7 +713,7 @@ impl Default for CommonOptions {
             ), // 2GiB
             rocksdb_total_memtables_ratio: 0.85, // (85% of rocksdb-total-memory-size)
             rocksdb_bg_threads: None,
-            rocksdb_high_priority_bg_threads: NonZeroU32::new(2).unwrap(),
+            rocksdb_high_priority_bg_threads: None,
             rocksdb_perf_level: PerfStatsLevel::EnableCount,
             rocksdb: Default::default(),
             metadata_update_interval: NonZeroFriendlyDuration::from_secs_unchecked(10),
