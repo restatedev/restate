@@ -681,6 +681,7 @@ mod tests {
             .enqueue_store(
                 store_msg,
                 set_sequencer_in_metadata,
+                LogletOffset::INVALID,
                 MemoryLease::unlinked(),
             )
             .expect("writer channel open");
