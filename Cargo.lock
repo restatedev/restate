@@ -7618,6 +7618,7 @@ dependencies = [
  "axum",
  "bytes",
  "codederror",
+ "datafusion",
  "derive_builder",
  "derive_more",
  "enumset",

@@ -29,7 +29,7 @@ use restate_types::protobuf::common::LogServerStatus;
 use crate::error::LogServerBuildError;
 use crate::grpc_svc_handler::LogServerSvcHandler;
 use crate::logstore::LogStore;
-use crate::metadata::{LogStoreMarker, LogletStateMap};
+use crate::metadata::{ActiveWorkerMap, LogStoreMarker, LogletStateMap};
 use crate::metric_definitions::describe_metrics;
 use crate::network::RequestPump;
 use crate::rocksdb_logstore::{RocksDbLogStore, RocksDbLogStoreBuilder};
@@ -40,6 +40,7 @@ pub struct LogServerService {
     request_processor: RequestPump,
     state_map: LogletStateMap,
     log_store: RocksDbLogStore,
+    active_worker_map: ActiveWorkerMap,
 }
 
 impl LogServerService {
@@ -82,6 +83,7 @@ impl LogServerService {
         );
 
         let request_processor = RequestPump::new(router_builder);
+        let active_worker_map = ActiveWorkerMap::default();
 
         Ok(Self {
             health_status,
@@ -89,7 +91,18 @@ impl LogServerService {
             request_processor,
             state_map,
             log_store,
+            active_worker_map,
         })
+    }
+
+    /// Returns a handle to the active loglet worker map for external introspection.
+    pub fn active_worker_map(&self) -> &ActiveWorkerMap {
+        &self.active_worker_map
+    }
+
+    /// Returns a handle to the loglet state cache for external introspection.
+    pub fn state_map(&self) -> &LogletStateMap {
+        &self.state_map
     }
 
     pub async fn start(self, mut metadata_writer: MetadataWriter) -> anyhow::Result<()> {
@@ -99,6 +112,7 @@ impl LogServerService {
             request_processor: request_pump,
             state_map,
             mut log_store,
+            active_worker_map,
         } = self;
 
         // Run log-store checks and self-provision if needed.
@@ -108,7 +122,13 @@ impl LogServerService {
         let _ = TaskCenter::spawn(
             TaskKind::LogServerRole,
             "log-server",
-            request_pump.run(health_status, log_store, state_map, storage_state),
+            request_pump.run(
+                health_status,
+                log_store,
+                state_map,
+                storage_state,
+                active_worker_map,
+            ),
         )?;
 
         Ok(())

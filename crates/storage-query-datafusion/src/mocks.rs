@@ -181,7 +181,13 @@ impl MockQueryEngine {
                 manager,
                 Some(status),
                 Live::from_value(schemas),
-                RemoteScannerManager::new(Arc::new(NoopSvc), Arc::new(AlwaysLocalPartitionLocator)),
+                {
+                    let mgr = RemoteScannerManager::new(Arc::new(NoopSvc));
+                    mgr.set_partition_locator(
+                        Arc::new(AlwaysLocalPartitionLocator) as Arc<dyn PartitionLocator>
+                    );
+                    mgr
+                },
             )
             .await
             .unwrap(),

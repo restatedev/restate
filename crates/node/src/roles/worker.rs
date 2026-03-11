@@ -13,15 +13,15 @@ use std::sync::Arc;
 use codederror::CodedError;
 
 use restate_bifrost::Bifrost;
-use restate_core::TaskKind;
 use restate_core::network::MessageRouterBuilder;
 use restate_core::network::Networking;
 use restate_core::network::TransportConnect;
 use restate_core::worker_api::ProcessorsManagerHandle;
-use restate_core::{MetadataWriter, TaskCenter};
+use restate_core::{MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::PartitionStoreManager;
 use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_types::health::HealthStatus;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
@@ -56,6 +56,7 @@ where
         bifrost: Bifrost,
         ingestion_client: IngestionClient<T, Envelope>,
         metadata_writer: MetadataWriter,
+        remote_scanner_manager: RemoteScannerManager,
     ) -> Result<Self, WorkerRoleBuildError> {
         let worker = Worker::create(
             health_status,
@@ -66,6 +67,7 @@ where
             ingestion_client,
             router_builder,
             metadata_writer,
+            remote_scanner_manager,
         )
         .await?;
 
