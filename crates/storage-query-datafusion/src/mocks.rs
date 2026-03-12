@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
-use datafusion::execution::SendableRecordBatchStream;
+
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
@@ -202,7 +202,7 @@ impl MockQueryEngine {
     pub async fn execute(
         &self,
         sql: impl AsRef<str> + Send,
-    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+    ) -> datafusion::common::Result<crate::context::QueryResult> {
         self.2.execute(sql.as_ref()).await
     }
 }
