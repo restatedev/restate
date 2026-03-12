@@ -546,9 +546,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.14.1"
+version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "879b6c89592deb404ba4dc0ae6b58ffd1795c78991cbb5b8bc441c48a070440d"
+checksum = "94bffc006df10ac2a68c83692d734a465f8ee6c5b384d8545a636f81d858f4bf"
 dependencies = [
  "aws-lc-sys",
  "untrusted 0.7.1",
@@ -557,11 +557,10 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.32.3"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "107a4e9d9cab9963e04e84bb8dee0e25f2a987f9a8bad5ed054abd439caa8f8c"
+checksum = "4321e568ed89bb5a7d291a7f37997c2c0df89809d7b6d12062c81ddb54aa782e"
 dependencies = [
- "bindgen",
  "cc",
  "cmake",
  "dunce",
@@ -1106,8 +1105,6 @@ dependencies = [
  "cexpr",
  "clang-sys",
  "itertools 0.13.0",
- "log",
- "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
@@ -4473,9 +4470,9 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "10.2.0"
+version = "10.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c76e1c7d7df3e34443b3621b459b066a7b79644f059fc8b2db7070c825fd417e"
+checksum = "0529410abe238729a60b108898784df8984c87f6054c9c4fcacc47e4803c1ce1"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -7015,7 +7012,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "jsonwebtoken 10.2.0",
+ "jsonwebtoken 10.3.0",
  "restate-workspace-hack",
  "serde",
  "thiserror 2.0.17",
@@ -7878,7 +7875,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
- "jsonwebtoken 10.2.0",
+ "jsonwebtoken 10.3.0",
  "pem",
  "restate-types",
  "restate-workspace-hack",
