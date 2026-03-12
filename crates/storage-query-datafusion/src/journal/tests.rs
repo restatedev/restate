@@ -86,7 +86,8 @@ async fn get_entries() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -179,7 +180,8 @@ async fn select_count_star() {
         .execute("SELECT COUNT(*) AS count FROM sys_journal")
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();

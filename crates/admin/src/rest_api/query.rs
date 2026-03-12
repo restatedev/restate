@@ -98,18 +98,18 @@ where
         return Err(QueryError::Unavailable);
     };
 
-    let record_batch_stream = query_context.execute(&payload.query).await?;
+    let query_result = query_context.execute(&payload.query).await?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
-            WriteRecordBatchStream::<JsonWriter>::new(record_batch_stream, payload.query)?
+            WriteRecordBatchStream::<JsonWriter>::new(query_result.stream, payload.query)?
                 .map_ok(Frame::data)
                 .left_stream(),
             "application/json",
         ),
         _ => (
             WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
-                record_batch_stream,
+                query_result.stream,
                 payload.query,
             )?
             .map_ok(Frame::data)
