@@ -28,7 +28,7 @@ use futures::stream::BoxStream;
 use futures::{FutureExt, Stream};
 use tokio::sync::oneshot;
 
-use restate_types::logs::{KeyFilter, LogletOffset, Record, TailState};
+use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, TailState};
 
 use crate::LogEntry;
 use crate::Result;
@@ -69,6 +69,9 @@ use crate::Result;
 
 #[async_trait]
 pub trait Loglet: Send + Sync {
+    /// The unique identifier of this loglet (if any).
+    fn id(&self) -> Option<LogletId>;
+
     /// A string describing this instance of the loglet, used for debugging purposes.
     fn debug_str(&self) -> Cow<'static, str>;
 
