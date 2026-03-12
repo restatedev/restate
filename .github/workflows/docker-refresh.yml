@@ -28,6 +28,7 @@ env:
 
 jobs:
   refresh:
+    if: github.repository_owner == 'restatedev'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
