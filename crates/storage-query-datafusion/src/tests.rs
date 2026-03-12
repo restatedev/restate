@@ -113,7 +113,8 @@ async fn query_sys_invocation() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -136,7 +137,8 @@ async fn query_sys_invocation() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -159,7 +161,8 @@ async fn query_sys_invocation() {
         ))
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -221,7 +224,8 @@ async fn query_sys_invocation_with_protocol_v4() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -302,7 +306,8 @@ async fn query_sys_invocation_status_completed() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
@@ -369,7 +374,8 @@ async fn query_sys_invocation_suspended_waiting() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();
