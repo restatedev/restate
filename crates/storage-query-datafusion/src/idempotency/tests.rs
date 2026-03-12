@@ -61,7 +61,8 @@ async fn get_idempotency_key() {
         )
         .await
         .unwrap()
-        .collect::<Vec<Result<RecordBatch, _>>>()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
         .await
         .remove(0)
         .unwrap();

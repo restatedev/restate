@@ -87,6 +87,7 @@ impl StorageAccountingTask {
             .query_context
             .execute(STORAGE_QUERY)
             .await?
+            .stream
             .collect::<Vec<_>>()
             .await
             .into_iter()
