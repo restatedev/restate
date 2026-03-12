@@ -124,6 +124,10 @@ impl LocalLoglet {
 
 #[async_trait]
 impl Loglet for LocalLoglet {
+    fn id(&self) -> Option<LogletId> {
+        Some(LogletId::from(self.loglet_id))
+    }
+
     fn debug_str(&self) -> Cow<'static, str> {
         Cow::from(format!("local/{}", LogletId::from(self.loglet_id)))
     }

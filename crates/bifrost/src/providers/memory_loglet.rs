@@ -328,6 +328,10 @@ impl Stream for MemoryReadStream {
 
 #[async_trait]
 impl Loglet for MemoryLoglet {
+    fn id(&self) -> Option<LogletId> {
+        Some(self.loglet_id)
+    }
+
     fn debug_str(&self) -> Cow<'static, str> {
         Cow::from(format!("in-memory/{}", self.loglet_id))
     }
