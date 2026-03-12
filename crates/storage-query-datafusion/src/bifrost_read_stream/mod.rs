@@ -8,11 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Node-level introspection scanners for DataFusion tables.
-//!
-//! Each sub-module provides a local scanner implementation that reads
-//! in-memory state from a specific node role and produces Arrow record
-//! batches for fan-out SQL queries.
+mod schema;
+mod table;
 
-pub(crate) mod bifrost_read_streams;
-pub(crate) mod loglet_workers;
+pub use schema::BifrostReadStreamsBuilder;
+pub(crate) use table::register_self;

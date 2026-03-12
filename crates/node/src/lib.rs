@@ -330,6 +330,16 @@ impl Node {
             remote_scanner_manager.register_node_scanner("loglet_workers", local_scanner);
         }
 
+        // Register bifrost_read_streams scanner — available on every node since
+        // any node with bifrost can have active read streams.
+        {
+            let local_scanner = introspection::bifrost_read_streams::create_local_scanner(
+                bifrost.read_stream_registry().clone(),
+                metadata.clone(),
+            );
+            remote_scanner_manager.register_node_scanner("bifrost_read_streams", local_scanner);
+        }
+
         // Create a minimal QueryContext for the remote scanner server — it only
         // needs task_ctx() for physical expression deserialization.
         let scanner_query_context = QueryContext::create(&config.admin.query_engine, NoTables)

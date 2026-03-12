@@ -16,7 +16,7 @@ use async_trait::async_trait;
 use futures::stream::{self, BoxStream};
 use futures::{Stream, StreamExt};
 
-use restate_types::logs::{KeyFilter, LogletOffset, Record, SequenceNumber, TailState};
+use restate_types::logs::{KeyFilter, LogletId, LogletOffset, Record, SequenceNumber, TailState};
 
 use crate::LogEntry;
 use crate::Result;
@@ -62,6 +62,10 @@ impl Stream for SealedLogletReadStream {
 
 #[async_trait]
 impl Loglet for SealedLoglet {
+    fn id(&self) -> Option<LogletId> {
+        None
+    }
+
     fn debug_str(&self) -> Cow<'static, str> {
         Cow::from("sealed")
     }
