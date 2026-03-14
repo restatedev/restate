@@ -13,8 +13,8 @@ use cling::prelude::*;
 use comfy_table::{Cell, Table};
 use tempfile::tempdir;
 
-use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
-use restate_cli_util::{c_println, c_title};
+use restate_cli_util::ui::console::{StyledTable, confirm, confirm_or_exit};
+use restate_cli_util::{CliContext, c_eprintln, c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::commands::state::util::{
@@ -52,8 +52,20 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     let edit_file = tempdir.path().join(".restate_edit");
     let current_state_json = as_json(current_state, opts.binary)?;
     write_json_file(&edit_file, current_state_json)?;
-    env.open_default_editor(&edit_file)?;
-    let modified_state_json = read_json_file(&edit_file)?;
+    let modified_state_json = loop {
+        env.open_default_editor(&edit_file)?;
+        match read_json_file(&edit_file) {
+            Ok(json) => break json,
+            Err(err) => {
+                c_eprintln!("{:#}", err);
+                // In non-interactive mode (--yes / CI), retrying would loop forever
+                // since the editor can't fix the file without human input.
+                if CliContext::get().auto_confirm() || !confirm("Re-open editor to fix?") {
+                    return Err(err);
+                }
+            }
+        }
+    };
 
     //
     // confirm change
