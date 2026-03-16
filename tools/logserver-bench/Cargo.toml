@@ -25,7 +25,7 @@ restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true, features = ["clap"] }
 
 anyhow = { workspace = true }
-axum = { workspace = true }
+axum = { workspace = true, features = ["tokio", "http1"] }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_help", "usage", "suggestions", "error-context", "std"] }
 codederror = { workspace = true }
