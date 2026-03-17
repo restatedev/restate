@@ -449,8 +449,6 @@ impl<S: LogStore> LogletWorker<S> {
         }
     }
 
-    /// Process a store request. Returns `(status, stored)` where `stored` is true if
-    /// the data was enqueued for writing to the log-store.
     fn process_store(&mut self, msg: Incoming<Rpc<Store>>) {
         let local_tail = self.loglet_state.local_tail();
 
