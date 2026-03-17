@@ -159,6 +159,11 @@ pub struct LogServerOptions {
     /// If unset, the write batch will only be limited by its size in bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub write_batch_count: Option<NonZeroUsize>,
+
+    /// Starts in read-only mode
+    ///
+    /// This is useful for testing, debugging, and development.
+    pub read_only: bool,
 }
 
 fn is_zero(value: &ByteCount<true>) -> bool {
@@ -276,6 +281,7 @@ impl Default for LogServerOptions {
             .build()
             .unwrap();
         Self {
+            read_only: false,
             rocksdb,
             // set by apply_common in runtime
             rocksdb_memory_budget: None,

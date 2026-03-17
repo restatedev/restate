@@ -16,6 +16,9 @@ use crate::CfName;
 
 #[derive(Debug, Clone, thiserror::Error, CodedError)]
 pub enum RocksError {
+    #[error("db is read-only")]
+    #[code(unknown)]
+    ReadOnly,
     #[error("db is locked: {0}")]
     #[code(restate_errors::RT0005)]
     DbLocked(rocksdb::Error),
