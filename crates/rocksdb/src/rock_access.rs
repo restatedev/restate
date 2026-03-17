@@ -20,12 +20,12 @@ use rocksdb::{CompactOptions, ExportImportFilesMetaData};
 use tokio::time::Instant;
 use tracing::{debug, info, trace, warn};
 
-use crate::DbName;
 use crate::DbSpec;
 use crate::RawRocksDb;
 use crate::RocksError;
 use crate::configuration::create_default_cf_options;
 use crate::{CfName, RocksDbPerfGuard};
+use crate::{DbName, OpenMode};
 
 /// Operations in this wrapper can be IO blocking, prefer using [`crate::RocksDb`]
 /// for async access to the database.
@@ -122,6 +122,7 @@ impl RocksAccess {
             write_buffer_manager,
             limiter,
         );
+
         let mut all_cfs: HashSet<CfName> = match rocksdb::DB::list_cf(&db_options, &db_spec.path) {
             Ok(existing) => existing.into_iter().map(Into::into).collect(),
             Err(e) => {
@@ -144,13 +145,33 @@ impl RocksAccess {
             prepare_descriptors(&db_spec, write_buffer_manager, global_cache, &mut all_cfs)?;
         trace!(path = %db_spec.path.display(), "Opening rocksdb database '{}'", db_spec.name());
 
-        rocksdb::DB::open_cf_descriptors(&db_options, &db_spec.path, descriptors)
-            .map(|db| RocksAccess {
-                db,
-                db_options,
-                db_spec,
-            })
-            .map_err(RocksError::from_rocksdb_error)
+        match db_spec.open_mode() {
+            OpenMode::ReadWrite => {
+                trace!(path = %db_spec.path.display(), "Opening rocksdb database '{}'", db_spec.name());
+                rocksdb::DB::open_cf_descriptors(&db_options, &db_spec.path, descriptors)
+                    .map(|db| RocksAccess {
+                        db,
+                        db_options,
+                        db_spec,
+                    })
+                    .map_err(RocksError::from_rocksdb_error)
+            }
+            OpenMode::ReadOnly => {
+                warn!(path = %db_spec.path.display(), "Opening rocksdb database '{}' in read-only mode", db_spec.name());
+                rocksdb::DB::open_cf_descriptors_read_only(
+                    &db_options,
+                    &db_spec.path,
+                    descriptors,
+                    false,
+                )
+                .map(|db| RocksAccess {
+                    db,
+                    db_options,
+                    db_spec,
+                })
+                .map_err(RocksError::from_rocksdb_error)
+            }
+        }
     }
 
     pub fn spec(&self) -> &DbSpec {

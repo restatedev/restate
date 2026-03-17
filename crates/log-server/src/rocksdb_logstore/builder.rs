@@ -14,7 +14,9 @@ use rocksdb::{BlockBasedOptions, Cache, SliceTransform};
 use tracing::{info, warn};
 
 use restate_core::ShutdownError;
-use restate_rocksdb::{CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager};
+use restate_rocksdb::{
+    CfExactPattern, CfName, DbName, DbSpecBuilder, OpenMode, RocksDb, RocksDbManager,
+};
 use restate_serde_util::ByteCount;
 use restate_types::config::{Configuration, LogServerOptions};
 use restate_types::health::HealthStatus;
@@ -77,6 +79,14 @@ impl RocksDbLogStoreBuilder {
 struct RocksConfigurator;
 
 impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
+    fn get_db_open_mode(&self) -> OpenMode {
+        if Configuration::pinned().log_server.read_only {
+            OpenMode::ReadOnly
+        } else {
+            OpenMode::ReadWrite
+        }
+    }
+
     fn get_db_options(
         &self,
         db_name: &DbName,

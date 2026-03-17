@@ -848,10 +848,14 @@ pub mod test_util {
 
     impl<O: RpcResponse + WireEncode + WireDecode> Reciprocal<Oneshot<O>> {
         pub fn mock() -> (Self, OneshotRxMock<O>) {
+            Self::mock_with_version(restate_types::net::CURRENT_PROTOCOL_VERSION)
+        }
+
+        pub fn mock_with_version(protocol_version: ProtocolVersion) -> (Self, OneshotRxMock<O>) {
             let (tx, rx) = RpcReplyPort::new();
             (
                 Reciprocal {
-                    protocol_version: Default::default(),
+                    protocol_version,
                     reply_port: Oneshot {
                         inner: tx,
                         _phantom: PhantomData,
