@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Context;
 use tracing::{debug, instrument, warn};
 
-use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
+use restate_core::network::tonic_service_filter::{StatusInRange, TonicServiceFilter};
 use restate_core::network::{MessageRouterBuilder, NetworkServerBuilder};
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
@@ -77,7 +77,11 @@ impl LogServerService {
             TonicServiceFilter::new(
                 LogServerSvcHandler::new(log_store.clone(), state_map.clone())
                     .into_server(&updateable_config.live_load().networking),
-                WaitForReady::new(health_status.clone(), LogServerStatus::Ready),
+                StatusInRange::new(
+                    health_status.clone(),
+                    LogServerStatus::Ready,
+                    LogServerStatus::Failsafe,
+                ),
             ),
             crate::protobuf::FILE_DESCRIPTOR_SET,
         );

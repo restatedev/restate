@@ -12,16 +12,16 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use rocksdb::{BoundColumnFamily, DB, ReadOptions, WriteBatch, WriteOptions};
-use tracing::trace;
+use tracing::{error, trace};
 
 use restate_bifrost::loglet::OperationError;
 use restate_memory::MemoryLease;
 use restate_rocksdb::{IoMode, Priority, RocksDb};
 use restate_types::GenerationalNodeId;
-use restate_types::logs::{LogletId, LogletOffset, SequenceNumber};
+use restate_types::logs::{LogletId, LogletOffset, SequenceNumber, TailState};
 use restate_types::net::log_server::{
     Digest, DigestEntry, Gap, GetDigest, GetRecords, LogServerResponseHeader, MaybeRecord,
-    RecordStatus, Records, Seal, Store, Trim,
+    RecordStatus, Records, Seal, Status, Store, Trim,
 };
 use restate_types::protobuf::common::LogServerStatus;
 
@@ -29,11 +29,11 @@ use super::keys::{KeyPrefixKind, MARKER_KEY, MetadataKey};
 use super::record_format::DataRecordDecoder;
 use super::writer::RocksDbLogWriterHandle;
 use super::{DATA_CF, METADATA_CF, RocksDbLogStoreError};
-use restate_futures_util::monotonic_token::{Token, TokenListener};
 
-use crate::logstore::{Commit, LogStore, LogStoreState, LogletWriter};
+use crate::logstore::{LogStore, LogStoreState, LogletWriter};
 use crate::metadata::{LogStoreMarker, LogletState};
 use crate::rocksdb_logstore::keys::DataRecordKey;
+use crate::tasks::{OnComplete, StoreStorageTask, TrimStorageTask};
 
 #[derive(Clone)]
 pub struct RocksDbLogStore {
@@ -103,7 +103,8 @@ impl LogletWriter for RocksDbLogletWriter {
         set_sequencer_in_metadata: bool,
         known_global_tail: LogletOffset,
         reservation: MemoryLease,
-    ) -> Option<Token<Commit>> {
+        mut task: StoreStorageTask,
+    ) -> bool {
         debug_assert!(store_message.first_offset != LogletOffset::INVALID);
 
         match self.inner {
@@ -114,21 +115,21 @@ impl LogletWriter for RocksDbLogletWriter {
                 set_sequencer_in_metadata,
                 known_global_tail,
                 reservation,
+                task,
             ),
-            LogletWriterState::Disabled => None,
+            LogletWriterState::Disabled => {
+                task.on_complete(TailState::invalid(), known_global_tail, Status::Disabled);
+                false
+            }
         }
     }
 
-    fn enqueue_seal(
-        &mut self,
-        seal_message: Seal,
-        known_global_tail: LogletOffset,
-    ) -> Option<Token<Commit>> {
+    fn enqueue_seal(&mut self, seal_message: Seal, known_global_tail: LogletOffset) -> bool {
         match self.inner {
             LogletWriterState::Active {
                 ref writer_handle, ..
             } => writer_handle.enqueue_seal(seal_message, known_global_tail),
-            LogletWriterState::Disabled => None,
+            LogletWriterState::Disabled => false,
         }
     }
 
@@ -136,12 +137,16 @@ impl LogletWriter for RocksDbLogletWriter {
         &mut self,
         trim_message: Trim,
         known_global_tail: LogletOffset,
-    ) -> Option<Token<Commit>> {
+        mut task: TrimStorageTask,
+    ) -> bool {
         match self.inner {
             LogletWriterState::Active {
                 ref writer_handle, ..
-            } => writer_handle.enqueue_trim(trim_message, known_global_tail),
-            LogletWriterState::Disabled => None,
+            } => writer_handle.enqueue_trim(trim_message, known_global_tail, task),
+            LogletWriterState::Disabled => {
+                task.on_complete(TailState::invalid(), known_global_tail, Status::Disabled);
+                false
+            }
         }
     }
 
@@ -163,10 +168,6 @@ impl LogletWriter for RocksDbLogletWriter {
 
 impl LogStore for RocksDbLogStore {
     type Writer = RocksDbLogletWriter;
-
-    fn commit_listener(&self) -> TokenListener<Commit> {
-        self.writer_handle.commit_listener()
-    }
 
     async fn load_marker(&self) -> Result<Option<LogStoreMarker>, OperationError> {
         let metadata_cf = self.metadata_cf();
@@ -470,6 +471,7 @@ impl LogStore for RocksDbLogStore {
 
             // we reached the end (or an error)
             if let Err(e) = iterator.status() {
+                error!("Failed to iterate over log store: {}", e);
                 self.store_state
                     .update_health_status(LogServerStatus::Failsafe);
                 return Err(RocksDbLogStoreError::Rocksdb(e).into());
@@ -648,6 +650,7 @@ mod tests {
     use crate::logstore::{LogStore, LogletWriter};
     use crate::metadata::{LogStoreMarker, LogletState};
     use crate::rocksdb_logstore::RocksDbLogStoreBuilder;
+    use crate::tasks::StoreStorageTask;
 
     async fn setup() -> Result<RocksDbLogStore> {
         RocksDbManager::init();
@@ -666,6 +669,7 @@ mod tests {
         store_msg: Store,
         set_sequencer_in_metadata: bool,
     ) -> Result<()> {
+        let loglet_id = store_msg.header.loglet_id;
         let committed_up_to = store_msg.last_offset().expect("non-empty store").next();
         let loglet_state = LogletState::new(
             Some(store_msg.sequencer),
@@ -675,14 +679,18 @@ mod tests {
             LogletOffset::OLDEST,
         );
         let mut writer = log_store.new_loglet_writer(store_msg.header.loglet_id, &loglet_state);
-        writer
-            .enqueue_store(
+        let (reciprocal, _rx) = restate_core::network::Reciprocal::mock();
+        let task = StoreStorageTask::new(loglet_id, reciprocal);
+        assert!(
+            writer.enqueue_store(
                 store_msg,
                 set_sequencer_in_metadata,
                 LogletOffset::INVALID,
                 MemoryLease::unlinked(),
-            )
-            .expect("writer channel open");
+                task,
+            ),
+            "writer channel open"
+        );
         loglet_state
             .get_local_tail_watch()
             .wait_for_offset(committed_up_to)
