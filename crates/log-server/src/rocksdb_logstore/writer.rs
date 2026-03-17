@@ -176,8 +176,8 @@ impl LogStoreWriterBuilder {
         let (hi_pri_tx, mut hi_pri_rx) = mpsc::unbounded_channel();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
-        TaskCenter::spawn_unmanaged(
-            TaskKind::SystemService,
+        TaskCenter::spawn(
+            TaskKind::LogStoreWriter,
             "log-server-rocksdb-writer",
             async move {
                 let data_cf = self
@@ -270,6 +270,7 @@ impl LogStoreWriterBuilder {
                          the underlying reason has been resolved. Reason: {reason}",
                     );
                 }
+                Ok(())
             },
         )?;
         Ok(RocksDbLogWriterHandle { tx, hi_pri_tx })
