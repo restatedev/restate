@@ -30,6 +30,7 @@ pub mod rocksdb_logstore;
 #[cfg(not(feature = "expose-internals"))]
 mod rocksdb_logstore;
 mod service;
+mod tasks;
 
 pub use error::LogServerBuildError;
 pub use metadata::{ActiveWorkerMap, LogletState, LogletStateMap, LogletWorkerState};
