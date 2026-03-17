@@ -12,7 +12,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use rocksdb::{BoundColumnFamily, DB, ReadOptions, WriteBatch, WriteOptions};
-use tracing::trace;
+use tracing::{error, trace};
 
 use restate_bifrost::loglet::OperationError;
 use restate_memory::MemoryLease;
@@ -471,6 +471,7 @@ impl LogStore for RocksDbLogStore {
 
             // we reached the end (or an error)
             if let Err(e) = iterator.status() {
+                error!("Failed to iterate over log store: {}", e);
                 self.store_state
                     .update_health_status(LogServerStatus::Failsafe);
                 return Err(RocksDbLogStoreError::Rocksdb(e).into());
